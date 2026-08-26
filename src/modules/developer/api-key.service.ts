@@ -35,6 +35,7 @@ export class ApiKeyService {
       prefix,
       hashedKey,
       permissions: input.permissions,
+      allowedIps: input.allowedIps || [],
       expiresAt,
     });
 
