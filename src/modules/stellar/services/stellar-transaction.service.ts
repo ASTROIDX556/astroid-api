@@ -49,8 +49,9 @@ export class StellarTransactionService {
       const unrecognizedSigners: string[] = [];
 
       for (const signature of signatureSet) {
-        const signatureBuf = signature.signature();
-        const hint = signature.hint();
+        const sig = signature as { signature: () => Buffer; hint: () => Buffer };
+        const signatureBuf = sig.signature();
+        const hint = sig.hint();
 
         let found = false;
         for (const expectedSigner of expectedSigners) {
