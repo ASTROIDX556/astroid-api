@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { nativeToScVal, xdr } from '@stellar/stellar-sdk';
+import { nativeToScVal } from '@stellar/stellar-sdk';
 import {
   SorobanEventParserService,
   SOROBAN_EVENT_PARSED,
@@ -22,7 +22,7 @@ function makeTransferRaw(overrides: Partial<RawSorobanEvent> = {}): RawSorobanEv
     topic: [
       scValToBase64('transfer'),
       scValToBase64('GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF'),
-      scValToBase64('GBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB'),
+      scValToBase64('GBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB'),
     ],
     value: scValToBase64(1_000_000n),
     ...overrides,
@@ -87,7 +87,6 @@ describe('SorobanEventParserService', () => {
 
     expect(() => service.parseEvents([bad])).not.toThrow();
     const [parsed] = service.parseEvents([bad]);
-    // topics may be error-kind; overall still returns a row
     expect(parsed.contractId).toBe('CBad');
     expect(parsed.txHash).toBe('bad-tx');
   });
