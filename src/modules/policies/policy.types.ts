@@ -162,4 +162,10 @@ export interface EvaluablePolicy {
   enabled: boolean;
   agentId?: string | null;
   configuration: PolicyConfiguration;
+  // Temporary spending override (issue #21). While overrideUntil is in the
+  // future the max-amount check uses overrideLimit; on expiry it falls back to
+  // originalLimit (or the configured maxAmount).
+  overrideLimit?: number | null;
+  overrideUntil?: Date | null;
+  originalLimit?: number | null;
 }

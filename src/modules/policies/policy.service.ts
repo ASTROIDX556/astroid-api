@@ -260,5 +260,8 @@ function toEvaluable(policy: Policy): EvaluablePolicy {
     enabled: policy.enabled,
     agentId: policy.agentId,
     configuration: (policy.configuration as PolicyConfiguration) ?? {},
+    overrideLimit: policy.overrideLimit?.toNumber() ?? null,
+    overrideUntil: policy.overrideUntil,
+    originalLimit: policy.originalLimit?.toNumber() ?? null,
   };
 }

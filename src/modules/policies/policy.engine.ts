@@ -32,7 +32,7 @@ export class PolicyEngine {
 
     for (const policy of active) {
       const config = policy.configuration;
-      violations.push(...this.checkAmount(policy, config, intent));
+      violations.push(...this.checkAmount(policy, config, intent, at));
       violations.push(...this.checkAssets(policy, config, intent));
       violations.push(...this.checkRecipients(policy, config, intent));
       violations.push(...this.checkPeriodicLimits(policy, config, intent));
@@ -61,14 +61,16 @@ export class PolicyEngine {
     policy: EvaluablePolicy,
     config: PolicyConfiguration,
     intent: TransactionIntent,
+    at: Date,
   ): PolicyViolation[] {
     const out: PolicyViolation[] = [];
-    if (config.maxAmount !== undefined && intent.amount > config.maxAmount) {
+    const effectiveMax = this.effectiveMaxAmount(policy, config, at);
+    if (effectiveMax !== undefined && intent.amount > effectiveMax) {
       out.push(
         this.violation(
           policy,
           'MAX_AMOUNT_EXCEEDED',
-          `Amount ${intent.amount} exceeds maximum ${config.maxAmount}`,
+          `Amount ${intent.amount} exceeds maximum ${effectiveMax}`,
         ),
       );
     }
@@ -82,6 +84,26 @@ export class PolicyEngine {
       );
     }
     return out;
+  }
+
+  // Resolves the effective max amount for a policy at a point in time. When a
+  // temporary override is active (overrideLimit set, overrideUntil in the
+  // future), the overrideLimit wins. Otherwise the engine falls back to the
+  // recorded originalLimit, or the configured maxAmount when no override was
+  // ever captured.
+  private effectiveMaxAmount(
+    policy: EvaluablePolicy,
+    config: PolicyConfiguration,
+    at: Date,
+  ): number | undefined {
+    const overrideActive =
+      policy.overrideLimit != null &&
+      policy.overrideUntil != null &&
+      at <= policy.overrideUntil;
+    if (overrideActive) {
+      return policy.overrideLimit ?? undefined;
+    }
+    return policy.originalLimit ?? config.maxAmount;
   }
 
   private checkAssets(

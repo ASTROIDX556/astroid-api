@@ -31,6 +31,7 @@ export const DomainEventName = {
   PolicyDeleted: 'policy.deleted',
   PolicyEvaluated: 'policy.evaluated',
   PolicyViolated: 'policy.violated',
+  PolicyOverrideExpired: 'policy.override_expired',
 
   // Budget
   BudgetCreated: 'budget.created',
