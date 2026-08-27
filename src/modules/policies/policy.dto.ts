@@ -1,14 +1,14 @@
 import { z } from 'zod';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { PolicyType } from '@prisma/client';
-import { policyConfigurationSchema } from './policy.types';
+import { policyConfigurationSchemaStrict } from './policy.types';
 
 export const createPolicySchema = z.object({
   name: z.string().min(1).max(120),
   description: z.string().max(500).optional(),
   type: z.nativeEnum(PolicyType),
   agentId: z.string().uuid().optional(),
-  configuration: policyConfigurationSchema.default({}),
+  configuration: policyConfigurationSchemaStrict.default({}),
   priority: z.number().int().min(0).max(1000).default(100),
   enabled: z.boolean().default(true),
 });
