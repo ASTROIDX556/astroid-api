@@ -29,6 +29,18 @@ export class PolicyRepository {
     });
   }
 
+  /** Returns enabled policies for a specific agent (used for velocity checks). */
+  findActiveForEvaluationByAgent(agentId: string) {
+    return this.prisma.policy.findMany({
+      where: {
+        agentId,
+        enabled: true,
+        deletedAt: null,
+      },
+      orderBy: { priority: 'asc' },
+    });
+  }
+
   async findManyAndCount(where: Prisma.PolicyWhereInput, pagination: PrismaPagination) {
     const [items, total] = await this.prisma.$transaction([
       this.prisma.policy.findMany({ where, ...pagination }),

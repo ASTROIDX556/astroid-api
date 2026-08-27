@@ -11,6 +11,7 @@ import {
 } from '@prisma/client';
 import { TransactionRepository } from './transaction.repository';
 import { CreateTransactionInput } from './transaction.dto';
+import { TransactionsValidator } from './transactions.validator';
 import { WalletService, toNetworkName } from '../wallets/wallet.service';
 import { PolicyService } from '../policies/policy.service';
 import { RiskService } from '../risk/risk.service';
@@ -72,6 +73,11 @@ export class TransactionService {
   async create(organizationId: string, actorId: string, input: CreateTransactionInput) {
     const amount = Number(input.amount);
     const { wallet } = await this.preflight(organizationId, input);
+
+    // 2.5. Velocity limit check for agent spending
+    if (input.agentId) {
+      await this.policies.checkVelocityLimit(input.agentId, amount, input.asset);
+    }
 
     // 3. Policy evaluation — a hard failure blocks the transaction outright.
     const intent = this.toIntent(organizationId, input, amount);
@@ -279,7 +285,9 @@ export class TransactionService {
   ): Promise<{ wallet: Wallet; agent?: Agent }> {
     const wallet = await this.wallets.getOrThrow(organizationId, input.walletId);
     this.assertWalletSpendable(wallet);
-    this.stellar.assertValidAddress(input.recipientAddress);
+
+    // Validate Stellar address and memo format using the new validator
+    TransactionsValidator.validateTransactionInput(input.recipientAddress, input.memo);
 
     let agent: Agent | undefined;
     if (input.agentId) {
