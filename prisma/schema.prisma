@@ -321,6 +321,13 @@ model Policy {
   updatedAt      DateTime   @updatedAt
   deletedAt      DateTime?
 
+  // Temporary spending override (issue #21). While overrideUntil is in the
+  // future the max-amount check uses overrideLimit; on expiry it falls back to
+  // originalLimit (or the configured maxAmount). The cleanup job clears these.
+  overrideLimit Decimal?    @db.Decimal(30, 7)
+  overrideUntil DateTime?
+  originalLimit Decimal?    @db.Decimal(30, 7)
+
   organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   agent        Agent?        @relation(fields: [agentId], references: [id])
   transactions Transaction[]
@@ -329,6 +336,7 @@ model Policy {
   @@index([agentId])
   @@index([enabled])
   @@index([organizationId, enabled])
+  @@index([overrideUntil])
   @@map("policies")
 }
 
