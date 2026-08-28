@@ -8,6 +8,7 @@ import { Observable } from 'rxjs';
 import { v7 as uuidv7 } from 'uuid';
 import { Request } from 'express';
 import { TraceContext, TraceContextData } from '../context/trace.context';
+import { AuthenticatedUser } from '../interfaces/authenticated-user.interface';
 import {
   CORRELATION_ID_HEADER,
   REQUEST_ID_HEADER,
@@ -19,9 +20,9 @@ import {
  */
 @Injectable()
 export class AgentTraceInterceptor implements NestInterceptor {
-  intercept(context: ExecutionContext, next: CallHandler): Observable<any> {
+  intercept(context: ExecutionContext, next: CallHandler): Observable<unknown> {
     const http = context.switchToHttp();
-    const req = http.getRequest<Request>();
+    const req = http.getRequest<Request & { user?: AuthenticatedUser }>();
 
     const traceId =
       (req.headers[CORRELATION_ID_HEADER] as string) ||
@@ -35,7 +36,7 @@ export class AgentTraceInterceptor implements NestInterceptor {
       (req.headers['x-agent-id'] as string) ||
       undefined;
 
-    const user = (req as any).user;
+    const user = req.user;
     const organizationId =
       user?.organizationId ||
       (req.params?.organizationId as string) ||

@@ -19,6 +19,18 @@ export interface StellarHealthReport {
   sorobanRpc: EndpointHealthStatus;
 }
 
+/** The subset of Horizon's root document this indicator reads. */
+interface HorizonRoot {
+  history_latest_ledger?: number;
+  core_latest_ledger?: number;
+  protocol_version?: number;
+}
+
+/** The subset of a Soroban RPC `getHealth` response this indicator reads. */
+interface SorobanHealthResponse {
+  result?: { status?: string; latestLedger?: number };
+}
+
 @Injectable()
 export class StellarHealthIndicator {
   private readonly logger = new Logger(StellarHealthIndicator.name);
@@ -77,7 +89,7 @@ export class StellarHealthIndicator {
         };
       }
 
-      const data: any = await response.json();
+      const data = (await response.json()) as HorizonRoot;
       const status: 'up' | 'degraded' =
         latencyMs > this.degradedLatencyThresholdMs ? 'degraded' : 'up';
 
@@ -88,15 +100,16 @@ export class StellarHealthIndicator {
         ledgerSequence: data.history_latest_ledger || data.core_latest_ledger || undefined,
         protocolVersion: data.protocol_version || undefined,
       };
-    } catch (err: any) {
+    } catch (err) {
       clearTimeout(timer);
       const latencyMs = Date.now() - start;
-      this.logger.warn(`Horizon health check failed for ${url}: ${err.message}`);
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.warn(`Horizon health check failed for ${url}: ${message}`);
       return {
         status: 'down',
         latencyMs,
         url,
-        error: err.message || 'Connection failed',
+        error: message || 'Connection failed',
       };
     }
   }
@@ -129,7 +142,7 @@ export class StellarHealthIndicator {
         };
       }
 
-      const data: any = await response.json();
+      const data = (await response.json()) as SorobanHealthResponse;
       const status: 'up' | 'degraded' =
         latencyMs > this.degradedLatencyThresholdMs || data.result?.status !== 'healthy'
           ? 'degraded'
@@ -141,15 +154,16 @@ export class StellarHealthIndicator {
         url,
         ledgerSequence: data.result?.latestLedger || undefined,
       };
-    } catch (err: any) {
+    } catch (err) {
       clearTimeout(timer);
       const latencyMs = Date.now() - start;
-      this.logger.warn(`Soroban RPC health check failed for ${url}: ${err.message}`);
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.warn(`Soroban RPC health check failed for ${url}: ${message}`);
       return {
         status: 'down',
         latencyMs,
         url,
-        error: err.message || 'Connection failed',
+        error: message || 'Connection failed',
       };
     }
   }

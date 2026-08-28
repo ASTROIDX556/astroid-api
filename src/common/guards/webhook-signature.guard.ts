@@ -52,7 +52,7 @@ export class WebhookSignatureGuard implements CanActivate {
       'astroid-webhook-secret-key-default';
 
     const payload =
-      (request as any).rawBody ||
+      (request as Request & { rawBody?: Buffer | string }).rawBody ||
       (typeof request.body === 'string'
         ? request.body
         : JSON.stringify(request.body ?? {}));

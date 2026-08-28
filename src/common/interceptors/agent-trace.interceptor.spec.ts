@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { ExecutionContext, CallHandler } from '@nestjs/common';
 import { of } from 'rxjs';
-import { AgentTraceInterceptor } from '../agent-trace.interceptor';
-import { TraceContext } from '../../context/trace.context';
+import { AgentTraceInterceptor } from './agent-trace.interceptor';
+import { TraceContext } from '../context/trace.context';
 
 describe('AgentTraceInterceptor', () => {
   const interceptor = new AgentTraceInterceptor();

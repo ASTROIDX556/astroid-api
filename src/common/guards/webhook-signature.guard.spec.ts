@@ -19,7 +19,7 @@ describe('WebhookSignatureGuard', () => {
 
   const guard = new WebhookSignatureGuard(mockConfigService);
 
-  function createMockContext(headers: Record<string, string>, body: any): ExecutionContext {
+  function createMockContext(headers: Record<string, string>, body: unknown): ExecutionContext {
     return {
       switchToHttp: () => ({
         getRequest: () => ({

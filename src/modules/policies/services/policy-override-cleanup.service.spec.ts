@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import { PrismaService } from '../../../database/prisma.service';
 import { EventBusService } from '../../../events/event-bus.service';
 import { DomainEventName } from '../../../events/event-names';
@@ -9,11 +9,15 @@ const dec = (n: number) => ({ toNumber: () => n });
 
 const now = new Date('2026-08-01T00:00:00Z');
 
+/** The slice of the Prisma transaction client this service touches. */
+type TxMock = { policy: { findUnique: Mock; updateMany: Mock } };
+
 describe('PolicyOverrideCleanupService', () => {
   let prisma: Partial<PrismaService>;
-  let tx: any;
+  let tx: TxMock;
   let eventBus: Partial<EventBusService>;
   let service: PolicyOverrideCleanupService;
+  let policyFindMany: Mock;
 
   beforeEach(() => {
     tx = {
@@ -22,9 +26,10 @@ describe('PolicyOverrideCleanupService', () => {
         updateMany: vi.fn(),
       },
     };
+    policyFindMany = vi.fn();
     prisma = {
-      policy: { findMany: vi.fn() },
-      $transaction: vi.fn(async (cb: any) => cb(tx)),
+      policy: { findMany: policyFindMany },
+      $transaction: vi.fn(async (cb: (client: TxMock) => unknown) => cb(tx)),
     } as unknown as Partial<PrismaService>;
     eventBus = { emit: vi.fn().mockResolvedValue(undefined) };
     service = new PolicyOverrideCleanupService(
@@ -49,9 +54,9 @@ describe('PolicyOverrideCleanupService', () => {
       overrideUntil: new Date('2026-07-31T00:00:00Z'),
       originalLimit: dec(500),
     };
-    (prisma.policy as any).findMany.mockResolvedValue([row]);
-    (tx.policy as any).findUnique.mockResolvedValue(policyRow);
-    (tx.policy as any).updateMany.mockResolvedValue({ count: 1 });
+    policyFindMany.mockResolvedValue([row]);
+    tx.policy.findUnique.mockResolvedValue(policyRow);
+    tx.policy.updateMany.mockResolvedValue({ count: 1 });
 
     const results = await service.runCleanup(now);
 
@@ -97,9 +102,9 @@ describe('PolicyOverrideCleanupService', () => {
       overrideUntil: new Date('2026-07-31T00:00:00Z'),
       originalLimit: null,
     };
-    (prisma.policy as any).findMany.mockResolvedValue([row]);
-    (tx.policy as any).findUnique.mockResolvedValue(policyRow);
-    (tx.policy as any).updateMany.mockResolvedValue({ count: 1 });
+    policyFindMany.mockResolvedValue([row]);
+    tx.policy.findUnique.mockResolvedValue(policyRow);
+    tx.policy.updateMany.mockResolvedValue({ count: 1 });
 
     const results = await service.runCleanup(now);
 
@@ -127,9 +132,9 @@ describe('PolicyOverrideCleanupService', () => {
       overrideUntil: new Date('2026-07-31T00:00:00Z'),
       originalLimit: dec(500),
     };
-    (prisma.policy as any).findMany.mockResolvedValue([row]);
-    (tx.policy as any).findUnique.mockResolvedValue(policyRow);
-    (tx.policy as any).updateMany.mockResolvedValue({ count: 0 });
+    policyFindMany.mockResolvedValue([row]);
+    tx.policy.findUnique.mockResolvedValue(policyRow);
+    tx.policy.updateMany.mockResolvedValue({ count: 0 });
 
     const results = await service.runCleanup(now);
 
@@ -138,7 +143,7 @@ describe('PolicyOverrideCleanupService', () => {
   });
 
   it('does nothing when there are no expired overrides', async () => {
-    (prisma.policy as any).findMany.mockResolvedValue([]);
+    policyFindMany.mockResolvedValue([]);
 
     const results = await service.runCleanup(now);
 

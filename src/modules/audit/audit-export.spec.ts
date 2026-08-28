@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
-import { AuditService } from '../audit.service';
-import { AuditRepository } from '../audit.repository';
+import { AuditService } from './audit.service';
+import { AuditRepository } from './audit.repository';
 
 describe('AuditService - Export Compliance', () => {
   const mockRepository = {

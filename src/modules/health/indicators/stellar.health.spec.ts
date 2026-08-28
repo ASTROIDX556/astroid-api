@@ -26,7 +26,7 @@ describe('StellarHealthIndicator', () => {
   });
 
   it('should return UP when both Horizon and Soroban endpoints are healthy', async () => {
-    vi.spyOn(global, 'fetch').mockImplementation((url: any) => {
+    vi.spyOn(global, 'fetch').mockImplementation((url: RequestInfo | URL) => {
       if (String(url).includes('horizon')) {
         return Promise.resolve({
           ok: true,
@@ -36,7 +36,7 @@ describe('StellarHealthIndicator', () => {
               history_latest_ledger: 54321,
               protocol_version: 21,
             }),
-        } as any);
+        } as unknown as Response);
       }
       return Promise.resolve({
         ok: true,
@@ -48,7 +48,7 @@ describe('StellarHealthIndicator', () => {
               latestLedger: 54321,
             },
           }),
-      } as any);
+      } as unknown as Response);
     });
 
     const report = await indicator.checkHealth();
@@ -78,7 +78,7 @@ describe('StellarHealthIndicator', () => {
         ok: false,
         status: 503,
         statusText: 'Service Unavailable',
-      } as any);
+      } as unknown as Response);
     });
 
     const report = await indicator.checkHealth();

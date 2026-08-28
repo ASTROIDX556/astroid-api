@@ -10,6 +10,11 @@ import { Paginated } from '../../common/interfaces/api-response.interface';
 
 const SORTABLE = ['createdAt', 'action', 'entity'];
 
+/** An audit row as returned by `AuditRepository.exportLogs`, with its joined user. */
+type ExportedAuditLog = Prisma.AuditLogGetPayload<{
+  include: { user: { select: { id: true; email: true; name: true } } };
+}>;
+
 /**
  * Writes and queries the immutable audit trail. Records Who / When / Where /
  * Why / Old / New for every important action. Never updates or deletes.
@@ -101,7 +106,7 @@ export class AuditService {
     };
   }
 
-  formatAsCsv(records: any[]): string {
+  formatAsCsv(records: ExportedAuditLog[]): string {
     const headers = [
       'id',
       'organizationId',
