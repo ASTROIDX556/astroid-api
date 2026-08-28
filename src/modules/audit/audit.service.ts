@@ -39,6 +39,115 @@ export class AuditService {
     return new Paginated(items, buildPaginationMeta(total, query.page, query.limit));
   }
 
+  async export(organizationId: string, query: import('./audit-export.dto').ExportAuditLogsQuery) {
+    const where: Prisma.AuditLogWhereInput = { organizationId };
+
+    if (query.userId) {
+      where.userId = query.userId;
+    }
+
+    if (query.actionType) {
+      where.action = query.actionType;
+    }
+
+    if (query.agentId) {
+      where.OR = [
+        { entityId: query.agentId },
+        {
+          oldValue: {
+            path: ['agentId'],
+            equals: query.agentId,
+          },
+        },
+        {
+          newValue: {
+            path: ['agentId'],
+            equals: query.agentId,
+          },
+        },
+      ];
+    }
+
+    if (query.startDate || query.endDate) {
+      where.createdAt = {};
+      if (query.startDate) {
+        where.createdAt.gte = new Date(query.startDate);
+      }
+      if (query.endDate) {
+        where.createdAt.lte = new Date(query.endDate);
+      }
+    }
+
+    const limit = Math.min(query.limit ?? 100, 1000);
+    const records = await this.repository.exportLogs(where, limit, query.cursor);
+
+    let nextCursor: string | null = null;
+    let items = records;
+    if (records.length > limit) {
+      items = records.slice(0, limit);
+      nextCursor = items[items.length - 1]?.id ?? null;
+    }
+
+    if (query.format === 'csv') {
+      const csv = this.formatAsCsv(items);
+      return { format: 'csv', data: csv, count: items.length, nextCursor };
+    }
+
+    return {
+      format: 'json',
+      data: items,
+      count: items.length,
+      nextCursor,
+    };
+  }
+
+  formatAsCsv(records: any[]): string {
+    const headers = [
+      'id',
+      'organizationId',
+      'userId',
+      'userEmail',
+      'action',
+      'entity',
+      'entityId',
+      'ipAddress',
+      'device',
+      'oldValue',
+      'newValue',
+      'createdAt',
+    ];
+
+    const escapeCsvField = (value: unknown): string => {
+      if (value === null || value === undefined) return '';
+      const str = typeof value === 'object' ? JSON.stringify(value) : String(value);
+      if (str.includes(',') || str.includes('"') || str.includes('\n') || str.includes('\r')) {
+        return `"${str.replace(/"/g, '""')}"`;
+      }
+      return str;
+    };
+
+    const lines = [headers.join(',')];
+    for (const r of records) {
+      const row = [
+        escapeCsvField(r.id),
+        escapeCsvField(r.organizationId),
+        escapeCsvField(r.userId),
+        escapeCsvField(r.user?.email ?? ''),
+        escapeCsvField(r.action),
+        escapeCsvField(r.entity),
+        escapeCsvField(r.entityId),
+        escapeCsvField(r.ipAddress),
+        escapeCsvField(r.device),
+        escapeCsvField(r.oldValue),
+        escapeCsvField(r.newValue),
+        escapeCsvField(r.createdAt ? new Date(r.createdAt).toISOString() : ''),
+      ];
+      lines.push(row.join(','));
+    }
+
+    return lines.join('\n');
+  }
+
   findById(organizationId: string, id: string) {
     return this.repository.findById(organizationId, id);
   }
