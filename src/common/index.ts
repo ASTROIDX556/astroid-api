@@ -16,3 +16,4 @@ export * from './decorators/api-envelope.decorator';
 export * from './guards/jwt-auth.guard';
 export * from './guards/roles.guard';
 export * from './guards/throttler.guard';
+export * from './guards/api-key-throttler.guard';
