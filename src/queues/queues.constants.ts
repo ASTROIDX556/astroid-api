@@ -13,6 +13,8 @@ export const Queues = {
   Analytics: 'analytics',
   /** Long-running exports and scheduled reports. */
   Reports: 'reports',
+  /** Periodic budget period reset cron job. */
+  BudgetReset: 'budget-reset',
 } as const;
 
 export type QueueName = (typeof Queues)[keyof typeof Queues];
