@@ -539,6 +539,7 @@ model ApiKey {
   prefix         String
   hashedKey      String    @unique
   permissions    String[]  @default([])
+  allowedIps     String[]  @default([])
   lastUsedAt     DateTime?
   expiresAt      DateTime?
   revokedAt      DateTime?
