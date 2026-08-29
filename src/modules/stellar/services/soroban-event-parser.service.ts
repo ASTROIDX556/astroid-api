@@ -3,7 +3,6 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { xdr, scValToNative, Address } from '@stellar/stellar-sdk';
 import { DomainEventName } from '../../../events/event-names';
 
-/** Raw event shape from Stellar RPC `getEvents` / tx meta. */
 export interface RawSorobanEvent {
   type?: string;
   ledger?: number;
@@ -11,9 +10,7 @@ export interface RawSorobanEvent {
   contractId?: string;
   id?: string;
   pagingToken?: string;
-  /** Base64-encoded SCVal XDR topics */
   topic?: string[];
-  /** Base64-encoded SCVal XDR value */
   value?: string;
   inSuccessfulContractCall?: boolean;
   txHash?: string;
@@ -33,9 +30,7 @@ export interface ParsedSorobanEvent {
   type: string | null;
   topics: ParsedTopic[];
   value: unknown;
-  /** High-level classification when recognized */
   pattern: SorobanEventPattern;
-  /** Normalized payload for known patterns */
   normalized: SacTransferEvent | SacMintEvent | SacBurnEvent | Record<string, unknown> | null;
 }
 
@@ -75,7 +70,6 @@ export interface SacBurnEvent {
   ledger: number | null;
 }
 
-/** Nest domain event name for successfully parsed Soroban events. */
 export const SOROBAN_EVENT_PARSED = 'stellar.soroban_event_parsed';
 
 @Injectable()
@@ -84,10 +78,6 @@ export class SorobanEventParserService {
 
   constructor(private readonly emitter: EventEmitter2) {}
 
-  /**
-   * Parse a batch of raw RPC events. Never throws for individual bad rows —
-   * unparseable entries are logged and returned with pattern `unparseable`.
-   */
   parseEvents(rawEvents: RawSorobanEvent[]): ParsedSorobanEvent[] {
     if (!Array.isArray(rawEvents)) {
       this.logger.warn('parseEvents called with non-array input');
@@ -96,10 +86,6 @@ export class SorobanEventParserService {
     return rawEvents.map((raw) => this.parseOne(raw));
   }
 
-  /**
-   * Parse, classify, and emit domain events for successfully translated rows.
-   * Safe for worker loops: decode failures do not throw.
-   */
   async ingestAndEmit(rawEvents: RawSorobanEvent[]): Promise<ParsedSorobanEvent[]> {
     const parsed = this.parseEvents(rawEvents);
 
@@ -118,7 +104,10 @@ export class SorobanEventParserService {
         }
       } catch (err) {
         this.logger.warn(
-          `EventEmitter failed for contract=${event.contractId}: ${(err as Error).message}`,
+          'EventEmitter failed for contract=' +
+            String(event.contractId) +
+            ': ' +
+            (err as Error).message,
         );
       }
     }
@@ -151,7 +140,12 @@ export class SorobanEventParserService {
       return base;
     } catch (err) {
       this.logger.warn(
-        `Failed to parse Soroban event contractId=\( {raw.contractId ?? '?'} tx= \){raw.txHash ?? '?'}: ${(err as Error).message}`,
+        'Failed to parse Soroban event contractId=' +
+          String(raw.contractId ?? '?') +
+          ' tx=' +
+          String(raw.txHash ?? '?') +
+          ': ' +
+          (err as Error).message,
       );
       return base;
     }
@@ -165,15 +159,17 @@ export class SorobanEventParserService {
         const native = this.decodeScValBase64(rawBase64);
         out.push({
           index: i,
-          rawBase64,
-          native,
+          rawBase64: rawBase64,
+          native: native,
           kind: this.topicKind(native),
         });
       } catch (err) {
-        this.logger.warn(`Unparseable topic[${i}]: ${(err as Error).message}`);
+        this.logger.warn(
+          'Unparseable topic[' + String(i) + ']: ' + (err as Error).message,
+        );
         out.push({
           index: i,
-          rawBase64,
+          rawBase64: rawBase64,
           native: null,
           kind: 'error',
         });
@@ -182,10 +178,6 @@ export class SorobanEventParserService {
     return out;
   }
 
-  /**
-   * Decode a single base64 SCVal XDR blob to a JS native value.
-   * Throws on malformed input — callers catch per-item.
-   */
   decodeScValBase64(base64: string | undefined | null): unknown {
     if (base64 === undefined || base64 === null || base64 === '') {
       return null;
@@ -222,13 +214,13 @@ export class SorobanEventParserService {
         pattern: 'sac.transfer',
         normalized: {
           pattern: 'sac.transfer',
-          contractId,
-          from,
-          to,
-          amount,
-          txHash,
-          ledger,
-        } satisfies SacTransferEvent,
+          contractId: contractId,
+          from: from,
+          to: to,
+          amount: amount,
+          txHash: txHash,
+          ledger: ledger,
+        },
       };
     }
 
@@ -239,12 +231,12 @@ export class SorobanEventParserService {
         pattern: 'sac.mint',
         normalized: {
           pattern: 'sac.mint',
-          contractId,
-          to,
-          amount,
-          txHash,
-          ledger,
-        } satisfies SacMintEvent,
+          contractId: contractId,
+          to: to,
+          amount: amount,
+          txHash: txHash,
+          ledger: ledger,
+        },
       };
     }
 
@@ -255,12 +247,12 @@ export class SorobanEventParserService {
         pattern: 'sac.burn',
         normalized: {
           pattern: 'sac.burn',
-          contractId,
-          from,
-          amount,
-          txHash,
-          ledger,
-        } satisfies SacBurnEvent,
+          contractId: contractId,
+          from: from,
+          amount: amount,
+          txHash: txHash,
+          ledger: ledger,
+        },
       };
     }
 
@@ -269,11 +261,11 @@ export class SorobanEventParserService {
         pattern: 'sac.approve',
         normalized: {
           pattern: 'sac.approve',
-          contractId,
+          contractId: contractId,
           topics: topics.map((t) => t.native),
-          value,
-          txHash,
-          ledger,
+          value: value,
+          txHash: txHash,
+          ledger: ledger,
         },
       };
     }
@@ -281,16 +273,15 @@ export class SorobanEventParserService {
     return {
       pattern: 'unknown',
       normalized: {
-        contractId,
+        contractId: contractId,
         topics: topics.map((t) => t.native),
-        value,
-        txHash,
-        ledger,
+        value: value,
+        txHash: txHash,
+        ledger: ledger,
       },
     };
   }
 
-  /** First topic is usually a Symbol event name for SAC / contract events. */
   private eventName(topics: ParsedTopic[]): string | null {
     if (topics.length === 0) return null;
     const n = topics[0].native;
@@ -308,7 +299,7 @@ export class SorobanEventParserService {
     try {
       if (n instanceof Address) return n.toString();
     } catch {
-      /* ignore */
+      // ignore
     }
     return n != null ? String(n) : null;
   }
@@ -329,4 +320,4 @@ export class SorobanEventParserService {
     if (typeof v === 'string' && v.length > 0) return v;
     return null;
   }
-        }
+            }
