@@ -197,7 +197,8 @@ model Organization {
   transactions  Transaction[]
   auditLogs     AuditLog[]
   apiKeys       ApiKey[]
-  webhooks      Webhook[]
+  webhooks           Webhook[]
+  webhookDeliveries  WebhookDelivery[]
   notifications Notification[]
   memoryRecords MemoryRecord[]
   domainEvents  DomainEvent[]
@@ -553,6 +554,13 @@ model ApiKey {
   @@map("api_keys")
 }
 
+enum WebhookDeliveryStatus {
+  PENDING
+  RETRYING
+  FAILED
+  DELIVERED
+}
+
 // ---------------------------------------------------------------------------
 // 13. Webhook  (HMAC secret; dot.case event subscriptions)
 // ---------------------------------------------------------------------------
@@ -567,11 +575,37 @@ model Webhook {
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
-  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  organization Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  deliveries   WebhookDelivery[]
 
   @@index([organizationId])
   @@index([enabled])
   @@map("webhooks")
+}
+
+model WebhookDelivery {
+  id             String                 @id @default(uuid(7))
+  webhookId      String
+  organizationId String
+  eventName      String
+  eventId        String
+  payload        Json                   @default("{}")
+  status         WebhookDeliveryStatus  @default(PENDING)
+  attempts       Int                    @default(0)
+  lastError      String?
+  responseStatus Int?
+  createdAt      DateTime               @default(now())
+  updatedAt      DateTime               @updatedAt
+
+  webhook      Webhook      @relation(fields: [webhookId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([webhookId])
+  @@index([organizationId])
+  @@index([status])
+  @@index([eventId])
+  @@index([createdAt])
+  @@map("webhook_deliveries")
 }
 
 // ---------------------------------------------------------------------------

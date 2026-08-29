@@ -36,7 +36,7 @@ describe('WebhookDeliveryService', () => {
         attempts: 5,
         backoff: {
           type: 'exponential',
-          delay: 1000,
+          delay: 2000,
         },
         removeOnComplete: { count: 1000 },
         removeOnFail: { age: 24 * 3600 },
@@ -86,14 +86,14 @@ describe('WebhookDeliveryService', () => {
     await expect(service.queueDelivery(jobData)).rejects.toThrow('Redis connection failed');
   });
 
-  it('configures exponential backoff with 1000ms base delay', async () => {
+  it('configures exponential backoff with 2000ms base delay', async () => {
     const jobData = createJobData();
     await service.queueDelivery(jobData);
 
     const callArgs = vi.mocked(mockQueue.add).mock.calls[0];
     expect(callArgs?.[2]?.backoff).toEqual({
       type: 'exponential',
-      delay: 1000,
+      delay: 2000,
     });
   });
 
