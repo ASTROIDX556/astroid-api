@@ -20,6 +20,8 @@ export class WebhookDeliveryService {
   /**
    * Queues a webhook delivery job with exponential backoff retry policy.
    * The job will be processed by the webhook worker with automatic retries.
+   * Uses 2000ms base delay for exponential backoff: 2000ms, 4000ms, 8000ms, 16000ms.
+   * Maximum 5 attempts total.
    */
   async queueDelivery(data: WebhookJobData): Promise<void> {
     try {
@@ -27,7 +29,7 @@ export class WebhookDeliveryService {
         attempts: 5,
         backoff: {
           type: 'exponential',
-          delay: 1000,
+          delay: 2000,
         },
         removeOnComplete: { count: 1000 },
         removeOnFail: { age: 24 * 3600 },
