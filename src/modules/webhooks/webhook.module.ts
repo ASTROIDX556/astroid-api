@@ -6,6 +6,7 @@ import { WebhookRepository } from './webhook.repository';
 import { WebhookDispatcher } from './webhook.dispatcher';
 import { WebhookDeliveryService } from './services/webhook-delivery.service';
 import { WebhookWorker } from './workers/webhook.worker';
+import { WebhooksProcessor } from './webhooks.processor';
 import { Queues } from '../../queues/queues.constants';
 import { redisConfig } from '../../config/redis.config';
 
@@ -25,6 +26,15 @@ import { redisConfig } from '../../config/redis.config';
     }),
     BullModule.registerQueue({
       name: Queues.Webhooks,
+      defaultJobOptions: {
+        attempts: 5,
+        backoff: {
+          type: 'exponential',
+          delay: 2000,
+        },
+        removeOnComplete: { count: 1000 },
+        removeOnFail: { age: 24 * 3600 },
+      },
     }),
   ],
   controllers: [WebhookController],
@@ -34,6 +44,7 @@ import { redisConfig } from '../../config/redis.config';
     WebhookDispatcher,
     WebhookDeliveryService,
     WebhookWorker,
+    WebhooksProcessor,
   ],
   exports: [WebhookService],
 })
