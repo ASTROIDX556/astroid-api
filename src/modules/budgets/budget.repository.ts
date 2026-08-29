@@ -35,11 +35,19 @@ export class BudgetRepository {
     return this.prisma.budget.update({ where: { id }, data });
   }
 
-  /** Atomically increments `spent` by `amount` (positive) — used on consume. */
+  /** Atomically increments `spent` by `amount` (positive) — used to persist a reservation. */
   incrementSpent(id: string, amount: Prisma.Decimal): Promise<Budget> {
     return this.prisma.budget.update({
       where: { id },
       data: { spent: { increment: amount } },
+    });
+  }
+
+  /** Atomically decrements `spent` by `amount` (positive) — used to release a reservation. */
+  decrementSpent(id: string, amount: Prisma.Decimal): Promise<Budget> {
+    return this.prisma.budget.update({
+      where: { id },
+      data: { spent: { decrement: amount } },
     });
   }
 
