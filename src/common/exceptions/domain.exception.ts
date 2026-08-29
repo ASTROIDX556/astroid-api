@@ -76,3 +76,9 @@ export class NotImplementedException extends DomainException {
     super(ErrorCode.NOT_IMPLEMENTED, message);
   }
 }
+
+export class VelocityLimitExceededException extends DomainException {
+  constructor(message: string, details?: unknown) {
+    super(ErrorCode.POLICY_VIOLATION, message, details);
+  }
+}

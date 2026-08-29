@@ -151,3 +151,48 @@ describe('PolicyEngine', () => {
     expect(result.evaluatedPolicyIds).toEqual(['a', 'b']);
   });
 });
+
+describe('PolicyEngine temporary overrides (issue #21)', () => {
+  const engine = new PolicyEngine();
+
+  it('enforces the override limit while an override is active', () => {
+    const at = new Date('2026-08-01T12:00:00Z');
+    const p = policy({
+      id: 'p-override',
+      configuration: { maxAmount: 100 },
+      overrideLimit: 1000,
+      overrideUntil: new Date('2026-08-02T00:00:00Z'),
+      originalLimit: 100,
+    });
+    // A 500 amount is above the base 100 but below the 1000 override, so it passes.
+    expect(engine.evaluate({ ...baseIntent, amount: 500, at }, [p]).passed).toBe(true);
+    // A 2000 amount exceeds the override limit, so it fails.
+    expect(engine.evaluate({ ...baseIntent, amount: 2000, at }, [p]).passed).toBe(false);
+  });
+
+  it('falls back to the base amount once the override has expired', () => {
+    const at = new Date('2026-08-03T00:00:00Z');
+    const p = policy({
+      id: 'p-expired',
+      configuration: { maxAmount: 100 },
+      overrideLimit: 1000,
+      overrideUntil: new Date('2026-08-02T00:00:00Z'),
+      originalLimit: 100,
+    });
+    expect(engine.evaluate({ ...baseIntent, amount: 500, at }, [p]).passed).toBe(false);
+  });
+
+  it('restores the originalLimit after the override clears', () => {
+    const at = new Date('2026-08-03T00:00:00Z');
+    // Likely state after the cleanup job has run: columns cleared, config intact.
+    const p = policy({
+      id: 'p-cleared',
+      configuration: { maxAmount: 100 },
+      overrideLimit: null,
+      overrideUntil: null,
+      originalLimit: 100,
+    });
+    expect(engine.evaluate({ ...baseIntent, amount: 50, at }, [p]).passed).toBe(true);
+    expect(engine.evaluate({ ...baseIntent, amount: 200, at }, [p]).passed).toBe(false);
+  });
+});
