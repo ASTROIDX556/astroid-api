@@ -28,6 +28,7 @@ export class ApiKeyRepository {
           name: true,
           prefix: true,
           permissions: true,
+          allowedIps: true,
           lastUsedAt: true,
           expiresAt: true,
           revokedAt: true,
