@@ -5,6 +5,7 @@ export const createApiKeySchema = z
   .object({
     name: z.string().min(1).max(120),
     permissions: z.array(z.string().max(60)).max(50).default([]),
+    allowedIps: z.array(z.string().max(45)).max(50).default([]),
     expiresInDays: z.number().int().positive().max(365).optional(),
   })
   .strict();
@@ -18,6 +19,13 @@ export class CreateApiKeyDto {
 
   @ApiPropertyOptional({ type: [String], example: ['transactions:read', 'wallets:read'] })
   permissions?: string[];
+
+  @ApiPropertyOptional({
+    type: [String],
+    description: 'Optional list of allowed IP addresses or CIDR ranges',
+    example: ['192.168.1.50', '10.0.0.0/24'],
+  })
+  allowedIps?: string[];
 
   @ApiPropertyOptional({ description: 'Optional expiry in days (max 365)' })
   expiresInDays?: number;

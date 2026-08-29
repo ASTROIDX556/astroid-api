@@ -36,6 +36,7 @@ export enum ErrorCode {
   // Stellar
   STELLAR_ERROR = 'STELLAR_ERROR',
   INVALID_STELLAR_ADDRESS = 'INVALID_STELLAR_ADDRESS',
+  INVALID_STELLAR_TRANSACTION = 'INVALID_STELLAR_TRANSACTION',
 }
 
 /** HTTP status codes paired with the domain error codes above. */
@@ -66,4 +67,5 @@ export const ERROR_STATUS: Record<ErrorCode, number> = {
   [ErrorCode.VELOCITY_LIMIT_EXCEEDED]: 422,
   [ErrorCode.STELLAR_ERROR]: 502,
   [ErrorCode.INVALID_STELLAR_ADDRESS]: 400,
+  [ErrorCode.INVALID_STELLAR_TRANSACTION]: 400,
 };

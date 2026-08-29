@@ -8,6 +8,7 @@ import {
   StellarClient,
 } from '../../integrations/stellar';
 import { StellarService } from './stellar.service';
+import { StellarTransactionService } from './services/stellar-transaction.service';
 import { StellarController } from './stellar.controller';
 
 /**
@@ -28,7 +29,8 @@ import { StellarController } from './stellar.controller';
       },
     },
     StellarService,
+    StellarTransactionService,
   ],
-  exports: [StellarService],
+  exports: [StellarService, StellarTransactionService],
 })
 export class StellarModule {}
