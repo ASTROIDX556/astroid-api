@@ -170,9 +170,7 @@ export class SorobanEventParserService {
           kind: this.topicKind(native),
         });
       } catch (err) {
-        this.logger.warn(
-          `Unparseable topic[${i}]: ${(err as Error).message}`,
-        );
+        this.logger.warn(`Unparseable topic[${i}]: ${(err as Error).message}`);
         out.push({
           index: i,
           rawBase64,
@@ -308,7 +306,6 @@ export class SorobanEventParserService {
       return String((n as { address: string }).address);
     }
     try {
-      // Some SDK paths return Address-like objects
       if (n instanceof Address) return n.toString();
     } catch {
       /* ignore */
@@ -332,4 +329,4 @@ export class SorobanEventParserService {
     if (typeof v === 'string' && v.length > 0) return v;
     return null;
   }
-}
+        }
