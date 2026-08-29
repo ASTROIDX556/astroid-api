@@ -8,6 +8,7 @@ import {
   StellarClient,
 } from '../../integrations/stellar';
 import { StellarService } from './stellar.service';
+import { StellarTransactionService } from './services/stellar-transaction.service';
 import { StellarController } from './stellar.controller';
 import { SorobanEventParserService } from './services/soroban-event-parser.service';
 
@@ -29,8 +30,8 @@ import { SorobanEventParserService } from './services/soroban-event-parser.servi
       },
     },
     StellarService,
-    SorobanEventParserService,
+    StellarTransactionService,
   ],
-  exports: [StellarService, SorobanEventParserService],
+  exports: [StellarService, StellarTransactionService],
 })
 export class StellarModule {}

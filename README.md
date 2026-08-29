@@ -122,7 +122,7 @@ See [`.env.example`](.env.example) for the full list. Required variables:
 
 | Name | GitHub | Contact |
 |---|---|---|
-| Astroid Team | [@ASTROIDX556](https://github.com/ASTROIDX556) | Open an issue or discussion |
+| joshua chekube | [@ASTROIDX556](https://github.com/ASTROIDX556) | Open an issue or discussion |
 
 ## Contributing
 
