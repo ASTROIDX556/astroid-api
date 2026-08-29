@@ -22,7 +22,6 @@ describe('PolicyOverrideCleanupService', () => {
   let tx: MockTx;
   let eventBus: Partial<EventBusService>;
   let service: PolicyOverrideCleanupService;
-  let policyFindMany: Mock;
 
   beforeEach(() => {
     tx = {
@@ -31,7 +30,6 @@ describe('PolicyOverrideCleanupService', () => {
         updateMany: vi.fn(),
       },
     };
-    policyFindMany = vi.fn();
     prisma = {
       policy: { findMany: vi.fn() },
       $transaction: vi.fn(async (cb: (t: MockTx) => Promise<MockTx>) => cb(tx)),
