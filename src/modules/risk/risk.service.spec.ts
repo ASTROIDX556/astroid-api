@@ -3,6 +3,7 @@ import { RiskBand } from '@prisma/client';
 import { RiskService } from './risk.service';
 import { RiskEngine } from './risk.engine';
 import { RiskFactorsInput } from './risk.types';
+import { EventBusService } from '../../events/event-bus.service';
 
 const lowRisk: RiskFactorsInput = {
   amount: 20,
@@ -14,14 +15,14 @@ const lowRisk: RiskFactorsInput = {
   hourUtc: 12,
 };
 
-function createEventBus() {
+function createEventBus(): Pick<EventBusService, 'emit'> {
   return { emit: vi.fn().mockResolvedValue(undefined) };
 }
 
 describe('RiskService', () => {
   it('emits a RiskEvaluated event with full factor breakdown', async () => {
     const eventBus = createEventBus();
-    const service = new RiskService(new RiskEngine(), eventBus as any);
+    const service = new RiskService(new RiskEngine(), eventBus as unknown as EventBusService);
 
     const assessment = await service.evaluate('org-1', lowRisk, {
       transactionId: 'tx-1',
@@ -43,7 +44,7 @@ describe('RiskService', () => {
 
   it('assess() returns a result without emitting events', async () => {
     const eventBus = createEventBus();
-    const service = new RiskService(new RiskEngine(), eventBus as any);
+    const service = new RiskService(new RiskEngine(), eventBus as unknown as EventBusService);
 
     const assessment = service.assess(lowRisk);
     expect(assessment.band).toBe(RiskBand.LOW);
@@ -52,7 +53,7 @@ describe('RiskService', () => {
 
   it('passes config overrides through to the engine', async () => {
     const eventBus = createEventBus();
-    const service = new RiskService(new RiskEngine(), eventBus as any);
+    const service = new RiskService(new RiskEngine(), eventBus as unknown as EventBusService);
 
     const assessment = service.assess(
       { ...lowRisk, amount: 100 },

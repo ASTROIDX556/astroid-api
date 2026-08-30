@@ -1,11 +1,10 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { RiskBand } from '@prisma/client';
 import { clamp } from '../../utils/decimal.util';
 import {
   DEFAULT_RISK_CONFIG,
   RiskAssessment,
   RiskConfig,
-  RiskFactorScore,
   RiskFactorsInput,
   RiskRuleContext,
   RiskRule,
@@ -33,8 +32,6 @@ import {
  */
 @Injectable()
 export class RiskEngine {
-  private readonly logger = new Logger(RiskEngine.name);
-
   /** Built-in rules registered by default. */
   private readonly defaultRules: RiskRule[] = [
     AmountRule,
