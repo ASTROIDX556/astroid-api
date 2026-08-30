@@ -3,7 +3,7 @@ import { PassportStrategy } from '@nestjs/passport';
 import { Strategy } from 'passport-strategy';
 import { Request } from 'express';
 import { UserRole } from '@prisma/client';
-import { API_KEY_HEADER } from '../../common/constants/headers';
+import { extractApiKeyFromRequest } from '../../common/helpers/extract-api-key';
 import { ErrorCode } from '../../common/constants/error-codes';
 import { UnauthorizedException } from '../../common/exceptions/domain.exception';
 import { AuthenticatedApiKey } from '../../common/interfaces/authenticated-user.interface';
@@ -16,25 +16,7 @@ export class HeaderApiKeyPassportStrategy extends Strategy {
   readonly name = 'api-key';
 
   authenticate(req: Request, _options?: unknown): void {
-    const rawHeader =
-      req.headers[API_KEY_HEADER] ??
-      req.headers[API_KEY_HEADER.toLowerCase()] ??
-      req.headers['x-api-key'];
-
-    let apiKey: string | undefined;
-
-    if (typeof rawHeader === 'string' && rawHeader.trim().length > 0) {
-      apiKey = rawHeader.trim();
-    } else if (Array.isArray(rawHeader) && rawHeader.length > 0) {
-      apiKey = rawHeader[0].trim();
-    } else if (req.headers.authorization && typeof req.headers.authorization === 'string') {
-      const authHeader = req.headers.authorization.trim();
-      if (/^ApiKey\s+/i.test(authHeader)) {
-        apiKey = authHeader.replace(/^ApiKey\s+/i, '').trim();
-      } else if (/^Bearer\s+ak_/i.test(authHeader)) {
-        apiKey = authHeader.replace(/^Bearer\s+/i, '').trim();
-      }
-    }
+    const apiKey = extractApiKeyFromRequest(req);
 
     if (!apiKey) {
       return this.fail(

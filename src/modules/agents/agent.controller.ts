@@ -12,6 +12,7 @@ import {
 } from './agent.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
+import { UseAgentLock } from '../../common/locks/agent-lock.decorator';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 import { AuthenticatedUser } from '../../common/interfaces/authenticated-user.interface';
 import { PaginationQuery, paginationQuerySchema } from '../../common/helpers/pagination';
@@ -48,6 +49,7 @@ export class AgentController {
 
   @Patch(':id')
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.DEVELOPER)
+  @UseAgentLock()
   @ApiOperation({ summary: 'Update an agent' })
   update(
     @CurrentUser() user: AuthenticatedUser,
@@ -59,6 +61,7 @@ export class AgentController {
 
   @Post(':id/pause')
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.DEVELOPER)
+  @UseAgentLock()
   @ApiOperation({ summary: 'Pause an agent' })
   pause(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
     return this.agentService.setStatus(user.organizationId, user.id, id, AgentStatus.PAUSED);
@@ -66,6 +69,7 @@ export class AgentController {
 
   @Post(':id/resume')
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.DEVELOPER)
+  @UseAgentLock()
   @ApiOperation({ summary: 'Reactivate an agent' })
   resume(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
     return this.agentService.setStatus(user.organizationId, user.id, id, AgentStatus.ACTIVE);
@@ -73,6 +77,7 @@ export class AgentController {
 
   @Post(':id/suspend')
   @Roles(UserRole.OWNER, UserRole.ADMIN)
+  @UseAgentLock()
   @ApiOperation({ summary: 'Suspend an agent' })
   suspend(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
     return this.agentService.setStatus(user.organizationId, user.id, id, AgentStatus.SUSPENDED);
@@ -80,6 +85,7 @@ export class AgentController {
 
   @Post(':id/wallet')
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.DEVELOPER)
+  @UseAgentLock()
   @ApiOperation({ summary: 'Assign a primary wallet to an agent' })
   assignWallet(
     @CurrentUser() user: AuthenticatedUser,
@@ -91,6 +97,7 @@ export class AgentController {
 
   @Delete(':id')
   @Roles(UserRole.OWNER, UserRole.ADMIN)
+  @UseAgentLock()
   @ApiOperation({ summary: 'Archive (soft delete) an agent' })
   remove(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
     return this.agentService.remove(user.organizationId, user.id, id);
