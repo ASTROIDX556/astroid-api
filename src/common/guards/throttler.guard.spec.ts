@@ -1,12 +1,9 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { ExecutionContext } from '@nestjs/common';
-import { Reflector } from '@nestjs/core';
 import { ConfigService } from '@nestjs/config';
 import { AstroidThrottlerGuard } from './throttler.guard';
-import { THROTTLE_TIER_KEY } from '../decorators/throttle-tier.decorator';
 
 /** Minimal mock for ThrottlerRequest used by handleRequest. */
-function mockThrottlerRequest(tier: string, throttlerName: string) {
+function mockThrottlerRequest(throttlerName: string) {
   return {
     context: {
       getHandler: () => ({}),
@@ -25,10 +22,8 @@ function mockThrottlerRequest(tier: string, throttlerName: string) {
 
 describe('AstroidThrottlerGuard', () => {
   let guard: AstroidThrottlerGuard;
-  let reflector: Reflector;
 
   beforeEach(() => {
-    reflector = new Reflector();
     const config = {
       getOrThrow: () => ({
         throttle: {
@@ -43,32 +38,31 @@ describe('AstroidThrottlerGuard', () => {
       }),
     };
     guard = new AstroidThrottlerGuard(config as unknown as ConfigService);
-    // Inject the reflector via the prototype since ThrottlerGuard expects it
-    (guard as any).reflector = reflector;
+    // Inject a mock reflector via the prototype chain
+    (guard as Record<string, unknown>).reflector = {
+      getAllAndOverride: vi.fn().mockReturnValue(undefined),
+    };
   });
 
   it('allows requests when the throttler name matches the route tier', async () => {
-    // Mock the parent handleRequest to always return true
     vi.spyOn(Object.getPrototypeOf(Object.getPrototypeOf(guard)), 'handleRequest').mockResolvedValue(true);
 
-    const requestProps = mockThrottlerRequest('api', 'api');
-    const result = await (guard as any).handleRequest(requestProps);
+    const requestProps = mockThrottlerRequest('api');
+    const result = await (guard as Record<string, unknown>).handleRequest(requestProps);
     expect(result).toBe(true);
   });
 
   it('skips counting when throttler name does not match route tier', async () => {
-    const requestProps = mockThrottlerRequest('api', 'auth');
-    const result = await (guard as any).handleRequest(requestProps);
-    // Should return true immediately without calling parent
+    const requestProps = mockThrottlerRequest('auth');
+    const result = await (guard as Record<string, unknown>).handleRequest(requestProps);
     expect(result).toBe(true);
   });
 
   it('defaults to api tier when no tier decorator is set', async () => {
     vi.spyOn(Object.getPrototypeOf(Object.getPrototypeOf(guard)), 'handleRequest').mockResolvedValue(true);
 
-    // When reflector returns undefined (no decorator), tier defaults to 'api'
-    const requestProps = mockThrottlerRequest(undefined as any, 'api');
-    const result = await (guard as any).handleRequest(requestProps);
+    const requestProps = mockThrottlerRequest('api');
+    const result = await (guard as Record<string, unknown>).handleRequest(requestProps);
     expect(result).toBe(true);
   });
 
@@ -77,7 +71,7 @@ describe('AstroidThrottlerGuard', () => {
 
     const setHeader = vi.fn();
     const requestProps = {
-      ...mockThrottlerRequest('api', 'api'),
+      ...mockThrottlerRequest('api'),
       context: {
         getHandler: () => ({}),
         getClass: () => ({}),
@@ -88,7 +82,7 @@ describe('AstroidThrottlerGuard', () => {
       },
     };
 
-    await (guard as any).handleRequest(requestProps);
+    await (guard as Record<string, unknown>).handleRequest(requestProps);
     expect(setHeader).toHaveBeenCalledWith('X-RateLimit-Limit', 120);
     expect(setHeader).toHaveBeenCalledWith('X-RateLimit-Reset', expect.any(Number));
   });
@@ -98,7 +92,7 @@ describe('AstroidThrottlerGuard', () => {
 
     const setHeader = vi.fn();
     const requestProps = {
-      ...mockThrottlerRequest('api', 'api'),
+      ...mockThrottlerRequest('api'),
       context: {
         getHandler: () => ({}),
         getClass: () => ({}),
@@ -109,7 +103,7 @@ describe('AstroidThrottlerGuard', () => {
       },
     };
 
-    await (guard as any).handleRequest(requestProps);
+    await (guard as Record<string, unknown>).handleRequest(requestProps);
     expect(setHeader).toHaveBeenCalledWith('Retry-After', expect.any(Number));
   });
 
@@ -117,21 +111,21 @@ describe('AstroidThrottlerGuard', () => {
     it('allows the first request in a burst window', async () => {
       vi.spyOn(Object.getPrototypeOf(Object.getPrototypeOf(guard)), 'handleRequest').mockResolvedValue(true);
 
-      const requestProps = mockThrottlerRequest('auth', 'auth');
-      const result = await (guard as any).handleRequest(requestProps);
+      const requestProps = mockThrottlerRequest('auth');
+      const result = await (guard as Record<string, unknown>).handleRequest(requestProps);
       expect(result).toBe(true);
     });
 
     it('rejects requests exceeding the burst limit within 1 second', async () => {
       vi.spyOn(Object.getPrototypeOf(Object.getPrototypeOf(guard)), 'handleRequest').mockResolvedValue(true);
 
-      const requestProps = mockThrottlerRequest('auth', 'auth');
+      const requestProps = mockThrottlerRequest('auth');
       // Auth burst limit is 3 — send 4 requests rapidly
       for (let i = 0; i < 3; i++) {
-        await (guard as any).handleRequest(requestProps);
+        await (guard as Record<string, unknown>).handleRequest(requestProps);
       }
       // 4th request should be burst-exceeded
-      const result = await (guard as any).handleRequest(requestProps);
+      const result = await (guard as Record<string, unknown>).handleRequest(requestProps);
       expect(result).toBe(false);
     });
   });
