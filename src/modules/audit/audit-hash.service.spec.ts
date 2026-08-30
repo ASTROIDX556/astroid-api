@@ -18,7 +18,7 @@ describe('AuditHashService', () => {
       },
     };
 
-    service = new AuditHashService(mockPrisma as any);
+    service = new AuditHashService(mockPrisma as unknown as import('../../database/prisma.service').PrismaService);
   });
 
   describe('computeEntryHash', () => {
