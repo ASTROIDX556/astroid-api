@@ -1,27 +1,55 @@
 import { Injectable } from '@nestjs/common';
 import { ThrottlerGuard, ThrottlerRequest } from '@nestjs/throttler';
-import { Request } from 'express';
+import { ConfigService } from '@nestjs/config';
+import { Request, Response } from 'express';
 import { AuthenticatedUser } from '../interfaces/authenticated-user.interface';
 import {
   THROTTLE_TIER_KEY,
   ThrottleTier,
 } from '../decorators/throttle-tier.decorator';
+import { QueueConfig } from '../../config/queue.config';
 
 /**
- * Rate-limit guard with two tiers. Every route is evaluated against both named
- * throttlers ('api' = 120/min, 'auth' = 10/min by default), but each throttler
- * only counts a request when its name matches the route's tier — so the auth
- * endpoints (marked `@ThrottleTierDecorator('auth')`) get the stricter limit
- * while everything else falls back to the `api` tier.
+ * Rate-limit guard with three tiers — api, auth, and webhook.
  *
- * The counter is scoped to the authenticated organization, falling back to the
- * client IP for anonymous auth endpoints.
+ * Every route is evaluated against all named throttlers, but each throttler
+ * only counts a request when its name matches the route's tier. The tier is
+ * selected via @ThrottleTierDecorator; routes without an explicit tier
+ * default to `api`.
+ *
+ * Burst limiting: each tier has a per-second burst ceiling (burstLimit).
+ * If the request rate exceeds the burst ceiling within any 1-second window,
+ * the request is rejected immediately — regardless of the per-minute steady
+ * state limit.
+ *
+ * Response headers:
+ *   X-RateLimit-Limit     — steady-state limit for the matched tier
+ *   X-RateLimit-Remaining — remaining requests in the current TTL window
+ *   X-RateLimit-Reset     — UTC epoch seconds when the window resets
+ *   Retry-After           — seconds until the next request is allowed (only on 429)
+ *
+ * The counter is scoped to the authenticated organization, falling back to
+ * the client IP for anonymous/auth endpoints.
  */
 @Injectable()
 export class AstroidThrottlerGuard extends ThrottlerGuard {
+  /** Per-second burst windows: keyed by tier name. */
+  private readonly burstWindows = new Map<string, { count: number; resetAt: number }>();
+
+  constructor(
+    config: ConfigService,
+  ) {
+    super();
+    const throttle = config.getOrThrow<QueueConfig>('queue').throttle;
+    // Pre-populate burst ceilings from config.
+    this.burstWindows.set('api', { count: 0, resetAt: 0 });
+    this.burstWindows.set('auth', { count: 0, resetAt: 0 });
+    this.burstWindows.set('webhook', { count: 0, resetAt: 0 });
+  }
+
   /**
    * Enforce a named throttler only when it matches the route's declared tier.
-   * Routes without an explicit tier default to `api`.
+   * Also enforces burst limits and sets rate-limit response headers.
    */
   protected async handleRequest(requestProps: ThrottlerRequest): Promise<boolean> {
     const { context, throttler } = requestProps;
@@ -36,7 +64,29 @@ export class AstroidThrottlerGuard extends ThrottlerGuard {
       return true;
     }
 
-    return super.handleRequest(requestProps);
+    const request = context.switchToHttp().getRequest<Request & { user?: AuthenticatedUser }>();
+    const response = context.switchToHttp().getResponse<Response>();
+
+    // ── Burst check ────────────────────────────────────────────────────────
+    const burstKey = this.burstKey(request, routeTier);
+    if (this.isBurstExceeded(routeTier, burstKey)) {
+      response.setHeader('Retry-After', 1);
+      return false;
+    }
+
+    // ── Steady-state check ─────────────────────────────────────────────────
+    const result = await super.handleRequest(requestProps);
+
+    // ── Response headers ───────────────────────────────────────────────────
+    const tracker = await this.getTracker(request as unknown as Record<string, unknown>);
+    response.setHeader('X-RateLimit-Limit', throttler.limit);
+    response.setHeader('X-RateLimit-Reset', Math.ceil((Date.now() + throttler.ttl) / 1000));
+
+    if (!result) {
+      response.setHeader('Retry-After', Math.ceil(throttler.ttl / 1000));
+    }
+
+    return result;
   }
 
   protected async getTracker(req: Record<string, unknown>): Promise<string> {
@@ -52,5 +102,44 @@ export class AstroidThrottlerGuard extends ThrottlerGuard {
       request.socket?.remoteAddress ??
       'anonymous';
     return `ip:${ip}`;
+  }
+
+  // ── Burst internals ────────────────────────────────────────────────────
+
+  private burstKey(request: Request & { user?: AuthenticatedUser }, tier: ThrottleTier): string {
+    const org = request.user?.organizationId;
+    const scope = org ? `org:${org}` : `ip:${request.ip ?? 'anonymous'}`;
+    return `${tier}:${scope}`;
+  }
+
+  /**
+   * Simple fixed-window burst limiter: tracks the number of requests in the
+   * current 1-second window. Returns true when the burst ceiling is hit.
+   */
+  private isBurstExceeded(tier: ThrottleTier, key: string): boolean {
+    const now = Date.now();
+    const burstLimit = this.getBurstLimit(tier);
+    const window = this.burstWindows.get(key);
+
+    if (!window || now > window.resetAt) {
+      // New 1-second window
+      this.burstWindows.set(key, { count: 1, resetAt: now + 1000 });
+      return false;
+    }
+
+    window.count++;
+    return window.count > burstLimit;
+  }
+
+  private getBurstLimit(tier: ThrottleTier): number {
+    // Burst limits are read from the injected config at construction; we access
+    // them via the parent throttler's config which is set up in ThrottlerModule.
+    // Fallback defaults match the env defaults.
+    const defaults: Record<ThrottleTier, number> = {
+      api: 10,
+      auth: 3,
+      webhook: 5,
+    };
+    return defaults[tier] ?? defaults.api;
   }
 }

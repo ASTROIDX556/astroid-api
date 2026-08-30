@@ -19,11 +19,13 @@ import {
 } from './webhook.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
+import { ThrottleTierDecorator } from '../../common/decorators/throttle-tier.decorator';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 import { PaginationQuery, paginationQuerySchema } from '../../common/helpers/pagination';
 
 @ApiTags('webhooks')
 @Controller('webhooks')
+@ThrottleTierDecorator('webhook')
 export class WebhookController {
   constructor(private readonly webhookService: WebhookService) {}
 
