@@ -36,6 +36,7 @@ import { AuditModule } from './modules/audit/audit.module';
 import { AiModule } from './modules/ai/ai.module';
 import { HealthModule } from './modules/health/health.module';
 import { AgentTraceInterceptor } from './common/interceptors/agent-trace.interceptor';
+import { AuditLogInterceptor } from './common/interceptors/audit-log.interceptor';
 
 /**
  * Root application module. Wires the global infrastructure (config, logging,
@@ -46,6 +47,7 @@ import { AgentTraceInterceptor } from './common/interceptors/agent-trace.interce
  *   - RolesGuard        : RBAC on routes decorated with @Roles()
  *   - ThrottlerGuard    : per-organization / per-IP rate limiting
  *   - ResponseInterceptor: wraps every result in the success envelope
+ *   - AuditLogInterceptor: persists masked mutation requests to the audit trail
  *   - AllExceptionsFilter: converts every error into the error envelope
  */
 @Module({
@@ -115,6 +117,7 @@ import { AgentTraceInterceptor } from './common/interceptors/agent-trace.interce
     { provide: APP_GUARD, useClass: RolesGuard },
     { provide: APP_GUARD, useClass: AstroidThrottlerGuard },
     { provide: APP_INTERCEPTOR, useClass: AgentTraceInterceptor },
+    { provide: APP_INTERCEPTOR, useClass: AuditLogInterceptor },
     { provide: APP_INTERCEPTOR, useClass: ResponseInterceptor },
     { provide: APP_FILTER, useClass: AllExceptionsFilter },
   ],
