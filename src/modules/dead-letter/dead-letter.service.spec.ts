@@ -5,6 +5,7 @@ import { DomainEventName } from '../../events/event-names';
 
 const getJob = vi.fn();
 const add = vi.fn();
+const remove = vi.fn();
 const queueClose = vi.fn();
 const eventsClose = vi.fn();
 const eventsOn = vi.fn();
@@ -51,9 +52,10 @@ function buildExhaustedJob(overrides: Record<string, unknown> = {}) {
     id: 'job-123',
     name: 'webhook-delivery',
     data: { webhookId: 'wh-1', organizationId: 'org-1', url: 'https://example.com/hook' },
-    attemptsMade: 3,
-    stacktrace: ['Error: HTTP 500 (attempt 3)', '    at deliver (webhook.worker.ts:88)'],
+    attemptsMade: 5,
+    stacktrace: ['Error: HTTP 500 (attempt 5)', '    at deliver (webhook.worker.ts:88)'],
     opts: { attempts: 5, backoff: { type: 'exponential' } },
+    remove,
     ...overrides,
   };
 }
@@ -95,15 +97,39 @@ describe('DeadLetterService', () => {
           queue: 'webhooks',
           jobId: 'job-123',
           name: 'webhook-delivery',
-          attemptsMade: 3,
+          attemptsMade: 5,
           failedReason: 'HTTP 500',
           stacktrace: expect.arrayContaining([
-            'Error: HTTP 500 (attempt 3)',
+            'Error: HTTP 500 (attempt 5)',
             '    at deliver (webhook.worker.ts:88)',
           ]),
           data: expect.objectContaining({ webhookId: 'wh-1' }),
         }),
       );
+    });
+
+    it('does not persist mid-retry failures that still have attempts remaining', async () => {
+      getJob.mockResolvedValue(
+        buildExhaustedJob({ attemptsMade: 2, opts: { attempts: 5, backoff: { type: 'exponential' } } }),
+      );
+
+      await service.handleFailed(Queues.Webhooks, 'job-123', 'HTTP 503');
+
+      expect(prismaMock.domainEvent.create).not.toHaveBeenCalled();
+    });
+
+    it('captures unrecoverable failures on the first attempt', async () => {
+      getJob.mockResolvedValue(
+        buildExhaustedJob({
+          attemptsMade: 1,
+          opts: { attempts: 5, backoff: { type: 'exponential' } },
+          stacktrace: ['UnrecoverableError: HTTP 422 validation failed'],
+        }),
+      );
+
+      await service.handleFailed(Queues.Webhooks, 'job-422', 'HTTP 422 validation failed');
+
+      expect(prismaMock.domainEvent.create).toHaveBeenCalledTimes(1);
     });
 
     it('does not throw when the persistence layer fails', async () => {
@@ -172,6 +198,34 @@ describe('DeadLetterService', () => {
     });
   });
 
+  describe('purge', () => {
+    it('removes a failed job from Redis and records a purge ledger entry', async () => {
+      remove.mockResolvedValue(undefined);
+      getJob.mockResolvedValue(buildExhaustedJob());
+
+      const result = await service.purge(Queues.Webhooks, 'job-123');
+
+      expect(remove).toHaveBeenCalledTimes(1);
+      const createMock = prismaMock.domainEvent.create as Mock;
+      expect(createMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            name: DomainEventName.JobPurged,
+            aggregateId: 'job-123',
+            payload: expect.objectContaining({ queue: 'webhooks', jobId: 'job-123' }),
+          }),
+        }),
+      );
+      expect(result).toEqual({ queue: 'webhooks', jobId: 'job-123', purged: true });
+    });
+
+    it('throws when the job to purge cannot be found', async () => {
+      getJob.mockResolvedValue(null);
+
+      await expect(service.purge(Queues.Webhooks, 'missing')).rejects.toThrow('job not found');
+    });
+  });
+
   describe('listForOrganization', () => {
     it('queries the ledger scoped to DLQ events and an organization', async () => {
       prismaMock.domainEvent.findMany.mockResolvedValue([{ id: 'evt-1' }]);
@@ -184,6 +238,7 @@ describe('DeadLetterService', () => {
       expect(where.name.in).toEqual([
         DomainEventName.JobFailed,
         DomainEventName.JobRequeued,
+        DomainEventName.JobPurged,
       ]);
       expect(where.payload).toEqual({ path: ['queue'], equals: 'webhooks' });
       expect(result).toHaveLength(1);

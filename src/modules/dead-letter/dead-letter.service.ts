@@ -4,6 +4,7 @@ import { Queues, QueueName } from '../../queues/queues.constants';
 import { redisConfig } from '../../config/redis.config';
 import { PrismaService } from '../../database/prisma.service';
 import { DomainEventName } from '../../events/event-names';
+import { isTerminalJobFailure } from '../../workers/dlq.processor';
 import type { Prisma } from '@prisma/client';
 
 /**
@@ -30,7 +31,11 @@ export interface JobFailureContext {
   failedAt: Date;
 }
 
-const DLQ_EVENT_NAMES = [DomainEventName.JobFailed, DomainEventName.JobRequeued];
+const DLQ_EVENT_NAMES = [
+  DomainEventName.JobFailed,
+  DomainEventName.JobRequeued,
+  DomainEventName.JobPurged,
+];
 
 /**
  * Dead-letter queue (DLQ) monitoring service.
@@ -108,6 +113,9 @@ export class DeadLetterService implements OnModuleInit, OnModuleDestroy {
     try {
       const job = await this.loadJob(queue, jobId);
       if (job) {
+        if (!isTerminalJobFailure(job, failedReason)) {
+          return;
+        }
         context.name = job.name;
         context.data = this.safeJson(context.data ?? job.data);
         context.attemptsMade = job.attemptsMade ?? 0;
@@ -157,6 +165,34 @@ export class DeadLetterService implements OnModuleInit, OnModuleDestroy {
     }).catch(() => undefined);
 
     return { queue: normalized, jobId, requeuedJobId };
+  }
+
+  /**
+   * Permanently removes a failed job from Redis after operator review. The
+   * purge is recorded in the append-only DLQ ledger for audit.
+   */
+  async purge(queue: string, jobId: string): Promise<{ queue: string; jobId: string; purged: true }> {
+    const normalized = this.normalizeQueue(queue);
+    const job = await this.loadJob(normalized, jobId);
+    if (!job) {
+      throw new Error(`Cannot purge ${normalized}/${jobId}: job not found`);
+    }
+
+    await job.remove();
+    this.logger.warn(`DLQ purge: removed ${normalized}/${jobId} from Redis`);
+
+    await this.safePersist({
+      organizationId: this.extractOrganizationId(job.data),
+      name: DomainEventName.JobPurged,
+      aggregateId: jobId,
+      payload: {
+        queue: normalized,
+        jobId,
+        purgedAt: new Date().toISOString(),
+      },
+    }).catch(() => undefined);
+
+    return { queue: normalized, jobId, purged: true };
   }
 
   /**

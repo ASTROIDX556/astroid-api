@@ -1,4 +1,4 @@
-import { Controller, Get, Param, Post, Query } from '@nestjs/common';
+import { Controller, Delete, Get, Param, Post, Query } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { UserRole } from '@prisma/client';
 import { DeadLetterService } from './dead-letter.service';
@@ -35,5 +35,11 @@ export class DeadLetterController {
   @ApiOperation({ summary: 'Re-drive a failed job back onto its queue' })
   retry(@Param('queue') queue: string, @Param('jobId') jobId: string) {
     return this.deadLetterService.requeue(queue, jobId);
+  }
+
+  @Delete(':queue/:jobId')
+  @ApiOperation({ summary: 'Purge a failed job from the queue after review' })
+  purge(@Param('queue') queue: string, @Param('jobId') jobId: string) {
+    return this.deadLetterService.purge(queue, jobId);
   }
 }

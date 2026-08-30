@@ -10,6 +10,11 @@ function buildMockService() {
       jobId: 'job-123',
       requeuedJobId: 'dlq-retry-job-123-1',
     }),
+    purge: vi.fn().mockResolvedValue({
+      queue: Queues.Webhooks,
+      jobId: 'job-123',
+      purged: true as const,
+    }),
   };
 }
 
@@ -35,5 +40,12 @@ describe('DeadLetterController', () => {
 
     expect(service.requeue).toHaveBeenCalledWith(Queues.Webhooks, 'job-123');
     expect(result.requeuedJobId).toContain('dlq-retry-job-123');
+  });
+
+  it('purges a failed job through the service', async () => {
+    const result = await controller.purge(Queues.Webhooks, 'job-123');
+
+    expect(service.purge).toHaveBeenCalledWith(Queues.Webhooks, 'job-123');
+    expect(result.purged).toBe(true);
   });
 });
