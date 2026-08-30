@@ -2,12 +2,12 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { OutboxService } from './outbox.service';
 import { getQueueToken } from '@nestjs/bullmq';
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
-import { PrismaClient } from '@prisma/client';
 
 describe('OutboxService', () => {
   let service: OutboxService;
-  let queueMock: any;
-  let prismaMock: any;
+  let queueMock: { add: ReturnType<typeof vi.fn> };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let prismaMock: Record<string, any>;
 
   beforeEach(async () => {
     queueMock = {
@@ -34,6 +34,7 @@ describe('OutboxService', () => {
         deleteMany: vi.fn(),
       },
     };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (service as any).prisma = prismaMock;
   });
 

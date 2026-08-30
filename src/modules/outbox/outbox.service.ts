@@ -4,6 +4,13 @@ import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { Cron, CronExpression } from '@nestjs/schedule';
 
+interface OutboxEvent {
+  id: string;
+  eventType: string;
+  payload: Record<string, unknown>;
+  retryCount: number;
+}
+
 @Injectable()
 export class OutboxService {
   private readonly logger = new Logger(OutboxService.name);
@@ -19,7 +26,7 @@ export class OutboxService {
     try {
       // Fetch pending events with FOR UPDATE SKIP LOCKED
       // Prisma raw query is needed for this specific lock
-      const pendingEvents = await this.prisma.$queryRaw<any[]>`
+      const pendingEvents = await this.prisma.$queryRaw<OutboxEvent[]>`
         SELECT * FROM "outbox_events"
         WHERE status = 'PENDING' OR (status = 'FAILED' AND "retryCount" < 3)
         ORDER BY "createdAt" ASC
@@ -51,14 +58,16 @@ export class OutboxService {
               processedAt: new Date(),
             },
           });
-        } catch (error: any) {
-          this.logger.error(`Failed to enqueue outbox event ${event.id}:`, error.stack);
+        } catch (error: unknown) {
+          const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+          const errorStack = error instanceof Error ? error.stack : undefined;
+          this.logger.error(`Failed to enqueue outbox event ${event.id}:`, errorStack);
           await this.prisma.outboxEvent.update({
             where: { id: event.id },
             data: {
               status: 'FAILED',
               retryCount: event.retryCount + 1,
-              error: error.message,
+              error: errorMessage,
             },
           });
         }

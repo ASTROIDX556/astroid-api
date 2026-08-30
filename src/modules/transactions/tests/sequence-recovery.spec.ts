@@ -2,8 +2,8 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { StellarTxService } from '../services/stellar-tx.service';
 import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
-import { Horizon, Keypair, Transaction, TransactionBuilder, Networks, Account } from '@stellar/stellar-sdk';
-import { describe, it, expect, beforeEach, vi, Mock } from 'vitest';
+import { Keypair, Account } from '@stellar/stellar-sdk';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 vi.mock('@stellar/stellar-sdk', async () => {
   const actual = await vi.importActual('@stellar/stellar-sdk');
@@ -20,8 +20,8 @@ vi.mock('@stellar/stellar-sdk', async () => {
 
 describe('StellarTxService Sequence Recovery', () => {
   let service: StellarTxService;
-  let redisMock: any;
-  let horizonServerMock: any;
+  let redisMock: { set: ReturnType<typeof vi.fn>; del: ReturnType<typeof vi.fn> };
+  let horizonServerMock: { loadAccount: ReturnType<typeof vi.fn>; submitTransaction: ReturnType<typeof vi.fn> };
   const mockConfigService = {
     get: vi.fn().mockReturnValue('https://horizon-testnet.stellar.org'),
   };
@@ -41,7 +41,8 @@ describe('StellarTxService Sequence Recovery', () => {
     }).compile();
 
     service = module.get<StellarTxService>(StellarTxService);
-    // Cast horizon back to any so we can mock the methods easily
+    // Cast horizon back to a mockable type so we can mock the methods easily
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     horizonServerMock = (service as any).horizon;
   });
 
@@ -52,11 +53,11 @@ describe('StellarTxService Sequence Recovery', () => {
     horizonServerMock.loadAccount.mockResolvedValue(accountResponse);
     horizonServerMock.submitTransaction.mockResolvedValue({ successful: true });
 
-    const buildFn = vi.fn().mockImplementation((acc) => {
-      return { sign: vi.fn() } as any;
+    const buildFn = vi.fn().mockImplementation((_acc: unknown) => {
+      return { sign: vi.fn() };
     });
 
-    const result = await service.submitTransactionWithSequenceRecovery(keypair.secret(), buildFn);
+    const result = await service.submitTransactionWithSequenceRecovery(keypair.secret(), buildFn) as { successful: boolean };
     
     expect(result.successful).toBe(true);
     expect(horizonServerMock.loadAccount).toHaveBeenCalledTimes(1);
@@ -90,18 +91,20 @@ describe('StellarTxService Sequence Recovery', () => {
       .mockRejectedValueOnce(badSeqError)
       .mockResolvedValueOnce({ successful: true });
 
-    const buildFn = vi.fn().mockImplementation((acc) => {
-      return { sign: vi.fn() } as any;
+    const buildFn = vi.fn().mockImplementation((_acc: unknown) => {
+      return { sign: vi.fn() };
     });
 
     // Mock sleep to be instant
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     vi.spyOn(service as any, 'sleep').mockResolvedValue(undefined);
 
-    const result = await service.submitTransactionWithSequenceRecovery(keypair.secret(), buildFn);
+    const result = await service.submitTransactionWithSequenceRecovery(keypair.secret(), buildFn) as { successful: boolean };
     
     expect(result.successful).toBe(true);
     expect(horizonServerMock.loadAccount).toHaveBeenCalledTimes(2);
     expect(horizonServerMock.submitTransaction).toHaveBeenCalledTimes(2);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect((service as any).sleep).toHaveBeenCalledWith(1000); // 1st retry
   });
 
@@ -125,10 +128,11 @@ describe('StellarTxService Sequence Recovery', () => {
 
     horizonServerMock.submitTransaction.mockRejectedValue(badSeqError);
 
-    const buildFn = vi.fn().mockImplementation((acc) => {
-      return { sign: vi.fn() } as any;
+    const buildFn = vi.fn().mockImplementation((_acc: unknown) => {
+      return { sign: vi.fn() };
     });
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     vi.spyOn(service as any, 'sleep').mockResolvedValue(undefined);
 
     await expect(service.submitTransactionWithSequenceRecovery(keypair.secret(), buildFn))

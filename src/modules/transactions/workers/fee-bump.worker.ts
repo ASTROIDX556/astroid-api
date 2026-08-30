@@ -11,6 +11,31 @@ export interface FeeBumpJobData {
   networkPassphrase: string;
 }
 
+interface BalanceLine {
+  asset_type: string;
+  balance: string;
+}
+
+interface AccountResponse {
+  balances: BalanceLine[];
+}
+
+interface TransactionResponse {
+  successful: boolean;
+  fee_charged?: number | string;
+}
+
+interface HorizonError {
+  response?: {
+    data?: {
+      extras?: {
+        result_codes?: unknown;
+      };
+    };
+  };
+  message?: string;
+}
+
 @Injectable()
 @Processor('stellar-fee-bump')
 export class FeeBumpWorker extends WorkerHost {
@@ -23,7 +48,7 @@ export class FeeBumpWorker extends WorkerHost {
     this.horizon = new Horizon.Server(horizonUrl);
   }
 
-  async process(job: Job<FeeBumpJobData>): Promise<any> {
+  async process(job: Job<FeeBumpJobData>): Promise<TransactionResponse> {
     const { isSponsorshipEnabled, innerTransactionXdr, networkPassphrase } = job.data;
     
     // Convert base64 XDR to Transaction
@@ -40,9 +65,9 @@ export class FeeBumpWorker extends WorkerHost {
       const sponsorKeypair = Keypair.fromSecret(sponsorSecret);
       
       try {
-        const sponsorAccount = await this.horizon.loadAccount(sponsorKeypair.publicKey());
+        const sponsorAccount = await this.horizon.loadAccount(sponsorKeypair.publicKey()) as unknown as AccountResponse;
         // Simple check to see if sponsor has funds, although the actual submit will fail if not
-        const xlmBalance = sponsorAccount.balances.find((b: any) => b.asset_type === 'native');
+        const xlmBalance = sponsorAccount.balances.find((b: BalanceLine) => b.asset_type === 'native');
         if (!xlmBalance || parseFloat(xlmBalance.balance) < 1) {
           throw new Error('Sponsor account lacks sufficient XLM for fee bump.');
         }
@@ -59,13 +84,14 @@ export class FeeBumpWorker extends WorkerHost {
         feeBumpTx.sign(sponsorKeypair);
         txToSubmit = feeBumpTx;
         this.logger.log(`FeeBumpTransaction built for inner tx ${innerTx.hash().toString('hex')}`);
-      } catch (error: any) {
-        throw new Error(`Failed to apply fee bump: ${error.message}`);
+      } catch (error: unknown) {
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        throw new Error(`Failed to apply fee bump: ${errorMessage}`);
       }
     }
 
     try {
-      const response = await this.horizon.submitTransaction(txToSubmit);
+      const response = await this.horizon.submitTransaction(txToSubmit) as unknown as TransactionResponse;
       
       if (isSponsorshipEnabled && txToSubmit instanceof FeeBumpTransaction) {
         const sponsorKey = txToSubmit.feeSource;
@@ -74,8 +100,9 @@ export class FeeBumpWorker extends WorkerHost {
       }
       
       return response;
-    } catch (error: any) {
-      const errReason = error?.response?.data?.extras?.result_codes || error.message;
+    } catch (error: unknown) {
+      const horizonError = error as HorizonError;
+      const errReason = horizonError?.response?.data?.extras?.result_codes || horizonError.message || 'Unknown error';
       throw new Error(`Transaction submission failed: ${JSON.stringify(errReason)}`);
     }
   }

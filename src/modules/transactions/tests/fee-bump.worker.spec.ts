@@ -1,7 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { FeeBumpWorker, FeeBumpJobData } from '../workers/fee-bump.worker';
 import { ConfigService } from '@nestjs/config';
-import { Horizon, Keypair, Transaction, Networks, Account, TransactionBuilder } from '@stellar/stellar-sdk';
+import { Keypair, Transaction, Networks, Account, TransactionBuilder } from '@stellar/stellar-sdk';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { Job } from 'bullmq';
 
@@ -20,10 +20,11 @@ vi.mock('@stellar/stellar-sdk', async () => {
 
 describe('FeeBumpWorker', () => {
   let worker: FeeBumpWorker;
-  let horizonServerMock: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let horizonServerMock: { loadAccount: ReturnType<typeof vi.fn>; submitTransaction: ReturnType<typeof vi.fn> };
   const sponsorKeypair = Keypair.random();
   const mockConfigService = {
-    get: vi.fn().mockImplementation((key) => {
+    get: vi.fn().mockImplementation((key: string) => {
       if (key === 'STELLAR_FEE_SPONSOR_SECRET') return sponsorKeypair.secret();
       return 'https://horizon-testnet.stellar.org';
     }),
@@ -38,6 +39,7 @@ describe('FeeBumpWorker', () => {
     }).compile();
 
     worker = module.get<FeeBumpWorker>(FeeBumpWorker);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     horizonServerMock = (worker as any).horizon;
   });
 

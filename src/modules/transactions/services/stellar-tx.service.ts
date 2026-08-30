@@ -1,7 +1,19 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { Horizon, Keypair, TransactionBuilder, Networks, Transaction } from '@stellar/stellar-sdk';
+import { Horizon, Keypair, Networks, Transaction } from '@stellar/stellar-sdk';
 import Redis from 'ioredis';
 import { ConfigService } from '@nestjs/config';
+
+interface HorizonError {
+  response?: {
+    data?: {
+      extras?: {
+        result_codes?: {
+          transaction?: string;
+        };
+      };
+    };
+  };
+}
 
 @Injectable()
 export class StellarTxService {
@@ -20,8 +32,8 @@ export class StellarTxService {
   async submitTransactionWithSequenceRecovery(
     sourceSecret: string,
     buildTxFn: (sourceAccount: Horizon.AccountResponse) => Transaction,
-    networkPassphrase = Networks.TESTNET
-  ): Promise<Horizon.SubmitTransactionResponse> {
+    _networkPassphrase = Networks.TESTNET
+  ): Promise<unknown> {
     const keypair = Keypair.fromSecret(sourceSecret);
     const publicKey = keypair.publicKey();
     const lockKey = `lock:stellar_account:${publicKey}`;
@@ -53,11 +65,12 @@ export class StellarTxService {
         } finally {
           await this.releaseLock(lockKey);
         }
-      } catch (error: any) {
+      } catch (error: unknown) {
+        const horizonError = error as HorizonError;
         const isTxBadSeq =
-          error?.response?.data?.extras?.result_codes?.transaction === 'tx_bad_seq';
+          horizonError?.response?.data?.extras?.result_codes?.transaction === 'tx_bad_seq';
 
-        if (isTxBadSeq && attempts < maxAttempts) {
+        if (isTxBadSeq) {
           this.logger.warn(`tx_bad_seq encountered for ${publicKey}. Recovering sequence (attempt ${attempts}/${maxAttempts})...`);
           // Backoff before retry
           await this.sleep(attempts * 1000);

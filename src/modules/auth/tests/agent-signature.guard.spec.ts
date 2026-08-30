@@ -12,7 +12,7 @@ describe('AgentSignatureGuard', () => {
     vi.setSystemTime(new Date(1000000000000)); // fixed time
   });
 
-  const createMockContext = (headers: any, body: any = {}): ExecutionContext => {
+  const createMockContext = (headers: Record<string, string>, body: Record<string, unknown> = {}): ExecutionContext => {
     return {
       switchToHttp: () => ({
         getRequest: () => ({
@@ -76,7 +76,7 @@ describe('AgentSignatureGuard', () => {
         'x-agent-timestamp': timestamp,
       },
       body,
-    };
+    } as Record<string, unknown>;
 
     const context = {
       switchToHttp: () => ({
@@ -86,7 +86,9 @@ describe('AgentSignatureGuard', () => {
 
     const result = guard.canActivate(context);
     expect(result).toBe(true);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect((req as any).agent).toBeDefined();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect((req as any).agent.publicKey).toBe(keypair.publicKey());
   });
 });

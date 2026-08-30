@@ -47,12 +47,12 @@ export class AgentSignatureGuard implements CanActivate {
       if (!isValid) {
         throw new UnauthorizedException('Invalid agent signature');
       }
-    } catch (error) {
+    } catch {
       throw new UnauthorizedException('Malformed signature or public key');
     }
 
     // Attach agent context
-    (request as any).agent = { publicKey };
+    (request as unknown as Record<string, unknown>).agent = { publicKey };
     
     return true;
   }
