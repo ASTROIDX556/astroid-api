@@ -3,6 +3,8 @@ import { SorobanSimulationService } from './soroban-simulation.service';
 import { SorobanClient, SorobanSimulationResult } from '../../../integrations/stellar/soroban.interface';
 import { RiskEngine } from '../../risk/risk.engine';
 import { EventBusService } from '../../../events/event-bus.service';
+import { CircuitOpenException, DomainException } from '../../../common/exceptions/domain.exception';
+import { ErrorCode } from '../../../common/constants/error-codes';
 
 function buildMockSorobanClient(overrides: Partial<SorobanSimulationResult> = {}): SorobanClient {
   return {
@@ -170,6 +172,35 @@ describe('SorobanSimulationService', () => {
       });
 
       expect(result.requiresApproval).toBe(true);
+    });
+  });
+
+  describe('circuit breaker integration', () => {
+    it('opens the Soroban circuit after repeated RPC failures and fails fast without calling the client again', async () => {
+      (sorobanClient.simulateTransaction as ReturnType<typeof vi.fn>).mockRejectedValue(
+        Object.assign(new Error('Soroban RPC unreachable'), { code: 'ECONNREFUSED' }),
+      );
+
+      for (let i = 0; i < 5; i++) {
+        await expect(
+          service.simulate({ transactionXdr: buildValidXdr(), organizationId: 'org-1' }),
+        ).rejects.toMatchObject({ code: ErrorCode.STELLAR_ERROR });
+      }
+      expect(sorobanClient.simulateTransaction).toHaveBeenCalledTimes(5);
+
+      (sorobanClient.simulateTransaction as ReturnType<typeof vi.fn>).mockClear();
+
+      let thrown: unknown;
+      try {
+        await service.simulate({ transactionXdr: buildValidXdr(), organizationId: 'org-1' });
+      } catch (error) {
+        thrown = error;
+      }
+
+      expect(thrown).toBeInstanceOf(CircuitOpenException);
+      expect(thrown).toBeInstanceOf(DomainException);
+      expect((thrown as DomainException).code).toBe(ErrorCode.CIRCUIT_OPEN);
+      expect(sorobanClient.simulateTransaction).not.toHaveBeenCalled();
     });
   });
 });
