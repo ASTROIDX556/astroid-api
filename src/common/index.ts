@@ -17,6 +17,7 @@ export * from './decorators/throttle-tier.decorator';
 export * from './decorators/api-envelope.decorator';
 export * from './guards/jwt-auth.guard';
 export * from './guards/api-key.guard';
+export * from './guards/api-key-auth.guard';
 export * from './guards/scopes.guard';
 export * from './guards/roles.guard';
 export * from './guards/throttler.guard';
