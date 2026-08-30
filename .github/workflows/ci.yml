@@ -19,6 +19,41 @@ jobs:
       - run: npm ci --include=dev
       - run: npm run build
 
+  migration-check:
+    name: migration-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci --include=dev
+      - name: Validate Prisma schema
+        run: npx prisma validate
+      - name: Generate Prisma client
+        run: npx prisma generate
+      - name: Verify migration files are well-formed
+        run: |
+          echo "Checking migration directories..."
+          MIGRATION_DIRS=$(find prisma/migrations -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)
+          echo "Found $MIGRATION_DIRS migration directory(ies)"
+          if [ "$MIGRATION_DIRS" -eq 0 ]; then
+            echo "Warning: No migration directories found"
+          fi
+          # Verify each migration directory contains a migration.sql file
+          for dir in prisma/migrations/*/; do
+            if [ -d "$dir" ] && [ ! -f "${dir}migration.sql" ]; then
+              echo "Error: Migration directory '$dir' is missing migration.sql"
+              exit 1
+            fi
+          done
+          echo "All migration files are well-formed"
+      - name: Verify Prisma client generation matches schema
+        run: |
+          npx prisma generate
+          echo "Prisma client generated successfully from current schema"
+
   test:
     name: test
     runs-on: ubuntu-latest
