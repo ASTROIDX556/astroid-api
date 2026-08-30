@@ -37,6 +37,8 @@ import { StellarModule } from './modules/stellar/stellar.module';
 import { AuditModule } from './modules/audit/audit.module';
 import { AiModule } from './modules/ai/ai.module';
 import { HealthModule } from './modules/health/health.module';
+import { MetricsModule } from './modules/metrics/metrics.module';
+import { RequestMetricsMiddleware } from './modules/metrics/metrics.middleware';
 import { AgentTraceInterceptor } from './common/interceptors/agent-trace.interceptor';
 
 /**
@@ -112,6 +114,7 @@ import { AgentTraceInterceptor } from './common/interceptors/agent-trace.interce
     AuditModule,
     AiModule,
     HealthModule,
+    MetricsModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: JwtAuthGuard },
@@ -127,5 +130,6 @@ import { AgentTraceInterceptor } from './common/interceptors/agent-trace.interce
 export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer): void {
     consumer.apply(RequestIdMiddleware).forRoutes('*');
+    consumer.apply(RequestMetricsMiddleware).forRoutes('*');
   }
 }
