@@ -5,7 +5,7 @@ describe('createTransactionSchema memo validation', () => {
   const baseInput = {
     walletId: '550e8400-e29b-41d4-a716-446655440000',
     amount: '10.0000000',
-    recipientAddress: 'GAXIG46PCLJEOI4R3F3ZLPA5CYPB3G2M3B4V6BQ5FQHTL5M4B5A6O7A8',
+    recipientAddress: 'GDEGSXLGANKHK7QFOV63XCBHBTZ3YRKUJV7ZB7JMSJQB5CNBRLL5QIG5',
   };
 
   describe('legacy string memo (TEXT type)', () => {
