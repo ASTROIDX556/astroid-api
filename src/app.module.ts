@@ -39,6 +39,7 @@ import { AiModule } from './modules/ai/ai.module';
 import { HealthModule } from './modules/health/health.module';
 import { MetricsModule } from './modules/metrics/metrics.module';
 import { RequestMetricsMiddleware } from './modules/metrics/metrics.middleware';
+import { DeadLetterModule } from './modules/dead-letter/dead-letter.module';
 import { AgentTraceInterceptor } from './common/interceptors/agent-trace.interceptor';
 
 /**
@@ -115,6 +116,7 @@ import { AgentTraceInterceptor } from './common/interceptors/agent-trace.interce
     AiModule,
     HealthModule,
     MetricsModule,
+    DeadLetterModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: JwtAuthGuard },
