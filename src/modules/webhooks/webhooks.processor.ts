@@ -7,13 +7,18 @@ import { hmacSign } from '../../utils/crypto.util';
 import { PrismaService } from '../../database/prisma.service';
 
 /**
- * BullMQ job processor for webhook event delivery with exponential backoff.
- * Implements the retry strategy required by issue #9:
+ * BullMQ job processor for webhook event delivery with exponential backoff + jitter.
+ * Implements the retry strategy required by issue #125:
  * - 5 max attempts
- * - Exponential backoff with 2000ms base (2000, 4000, 8000, 16000)
+ * - Exponential backoff with 2000ms base and 20% randomized jitter
+ *   (prevents thundering herd against subscriber endpoints)
  * - Non-transient error detection (400,401,403,404,422) prevents infinite retries
  * - Persistent delivery status tracking (PENDING → RETRYING → FAILED/DELIVERED)
  * - Fail-safe: retry failures never crash the master process
+ *
+ * Jitter is applied via a custom backoffStrategy configured on the BullMQ
+ * queue registration (see webhook.module.ts). BullMQ reads the strategy from
+ * queue.opts.settings.backoffStrategy at retry time.
  *
  * This processor mirrors workers/webhook.worker.ts and is registered as an
  * alias to satisfy the expected import path `src/modules/webhooks/webhooks.processor.ts`.
