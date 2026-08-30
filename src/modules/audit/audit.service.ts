@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { AuditRepository, CreateAuditLogData } from './audit.repository';
+import { AuditHashService } from './audit-hash.service';
 import {
   buildPaginationMeta,
   PaginationQuery,
@@ -18,13 +19,40 @@ type ExportedAuditLog = Prisma.AuditLogGetPayload<{
 /**
  * Writes and queries the immutable audit trail. Records Who / When / Where /
  * Why / Old / New for every important action. Never updates or deletes.
+ * Integrates cryptographic hash chaining for tamper-evident audit history.
  */
 @Injectable()
 export class AuditService {
-  constructor(private readonly repository: AuditRepository) {}
+  constructor(
+    private readonly repository: AuditRepository,
+    private readonly hashService: AuditHashService,
+  ) {}
 
-  record(data: CreateAuditLogData) {
-    return this.repository.create(data);
+  async record(data: CreateAuditLogData) {
+    const previousHash = await this.hashService.getLatestHash(data.organizationId);
+    const createdAt = new Date();
+
+    const hashResult = this.hashService.computeEntryHash(
+      {
+        organizationId: data.organizationId,
+        userId: data.userId,
+        action: data.action,
+        entity: data.entity,
+        entityId: data.entityId,
+        oldValue: data.oldValue,
+        newValue: data.newValue,
+        ipAddress: data.ipAddress,
+        device: data.device,
+        createdAt,
+      },
+      previousHash,
+    );
+
+    return this.repository.create({
+      ...data,
+      previousHash: hashResult.previousHash,
+      hash: hashResult.hash,
+    });
   }
 
   async list(organizationId: string, query: PaginationQuery) {
@@ -155,5 +183,20 @@ export class AuditService {
 
   findById(organizationId: string, id: string) {
     return this.repository.findById(organizationId, id);
+  }
+
+  /**
+   * Verifies the integrity of the entire audit chain for an organization.
+   * Returns detailed information about chain validity.
+   */
+  async verifyIntegrity(organizationId: string) {
+    return this.hashService.verifyChainIntegrity(organizationId);
+  }
+
+  /**
+   * Verifies the integrity of a single audit log entry.
+   */
+  async verifyEntryIntegrity(entryId: string, organizationId: string) {
+    return this.hashService.verifyEntryIntegrity(entryId, organizationId);
   }
 }

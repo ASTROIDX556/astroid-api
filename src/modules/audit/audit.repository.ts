@@ -13,6 +13,8 @@ export interface CreateAuditLogData {
   newValue?: Prisma.InputJsonValue;
   ipAddress?: string | null;
   device?: string | null;
+  previousHash?: string | null;
+  hash?: string | null;
 }
 
 /** Persistence for the append-only audit log. Writes and reads only — no updates. */
@@ -32,6 +34,8 @@ export class AuditRepository {
         newValue: data.newValue,
         ipAddress: data.ipAddress ?? null,
         device: data.device ?? null,
+        previousHash: data.previousHash ?? null,
+        hash: data.hash ?? null,
       },
     });
   }
