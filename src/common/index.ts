@@ -7,6 +7,7 @@ export * from './exceptions/domain.exception';
 export * from './filters/all-exceptions.filter';
 export * from './interceptors/response.interceptor';
 export * from './pipes/zod-validation.pipe';
+export * from './validators';
 export * from './helpers/pagination';
 export * from './decorators/current-user.decorator';
 export * from './decorators/roles.decorator';

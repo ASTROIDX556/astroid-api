@@ -37,6 +37,9 @@ export enum ErrorCode {
   STELLAR_ERROR = 'STELLAR_ERROR',
   INVALID_STELLAR_ADDRESS = 'INVALID_STELLAR_ADDRESS',
   INVALID_STELLAR_TRANSACTION = 'INVALID_STELLAR_TRANSACTION',
+
+  // Resilience
+  CIRCUIT_OPEN = 'CIRCUIT_OPEN',
 }
 
 /** HTTP status codes paired with the domain error codes above. */
@@ -68,4 +71,5 @@ export const ERROR_STATUS: Record<ErrorCode, number> = {
   [ErrorCode.STELLAR_ERROR]: 502,
   [ErrorCode.INVALID_STELLAR_ADDRESS]: 400,
   [ErrorCode.INVALID_STELLAR_TRANSACTION]: 400,
+  [ErrorCode.CIRCUIT_OPEN]: 503,
 };
