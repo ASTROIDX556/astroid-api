@@ -12,6 +12,7 @@ import {
 } from './policy.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
+import { AuditAction } from '../../common/decorators/audit-action.decorator';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 import { AuthenticatedUser } from '../../common/interfaces/authenticated-user.interface';
 import {
@@ -35,6 +36,7 @@ export class PolicyController {
 
   @Post()
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.FINANCE)
+  @AuditAction('POLICY_CREATED')
   @ApiOperation({ summary: 'Create a policy' })
   create(
     @CurrentUser() user: AuthenticatedUser,
@@ -60,6 +62,7 @@ export class PolicyController {
 
   @Patch(':id')
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.FINANCE)
+  @AuditAction('POLICY_UPDATED')
   @ApiOperation({ summary: 'Update a policy' })
   update(
     @CurrentUser() user: AuthenticatedUser,
@@ -71,6 +74,7 @@ export class PolicyController {
 
   @Delete(':id')
   @Roles(UserRole.OWNER, UserRole.ADMIN)
+  @AuditAction('POLICY_DELETED')
   @ApiOperation({ summary: 'Delete (soft) a policy' })
   remove(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
     return this.policyService.remove(user.organizationId, user.id, id);
