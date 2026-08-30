@@ -19,6 +19,11 @@ export const appEnvSchema = z.object({
 
 export const databaseEnvSchema = z.object({
   DATABASE_URL: z.string().min(1, 'DATABASE_URL is required'),
+  SLOW_QUERY_THRESHOLD_MS: z.coerce.number().int().nonnegative().default(250),
+  ENABLE_SLOW_QUERY_LOGGING: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((value) => value === 'true'),
 });
 
 export const redisEnvSchema = z.object({

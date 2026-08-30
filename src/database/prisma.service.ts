@@ -1,5 +1,7 @@
-import { INestApplication, Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { INestApplication, Injectable, Logger, OnModuleDestroy, OnModuleInit, Optional } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { PrismaClient } from '@prisma/client';
+import { createSlowQueryMiddleware } from './slow-query.logger';
 
 /**
  * The single Prisma client for the application. Manages connection lifecycle
@@ -9,13 +11,24 @@ import { PrismaClient } from '@prisma/client';
 export class PrismaService extends PrismaClient implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(PrismaService.name);
 
-  constructor() {
+  constructor(@Optional() private readonly configService?: ConfigService) {
     super({
       log: [
         { level: 'warn', emit: 'event' },
         { level: 'error', emit: 'event' },
       ],
     });
+
+    const thresholdMs = this.configService?.get<number>('database.slowQueryThresholdMs') ?? 250;
+    const enabled = this.configService?.get<boolean>('database.enableSlowQueryLogging') ?? true;
+
+    this.$use(
+      createSlowQueryMiddleware({
+        thresholdMs,
+        enabled,
+        logger: this.logger,
+      }),
+    );
   }
 
   async onModuleInit(): Promise<void> {
