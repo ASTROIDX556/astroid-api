@@ -3,6 +3,7 @@ import { Controller, ExecutionContext, Get, Post, UseGuards } from '@nestjs/comm
 import { Test, TestingModule } from '@nestjs/testing';
 import { PassportModule } from '@nestjs/passport';
 import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
+import { ApiKeyAuthGuard } from '../../../common/guards/api-key-auth.guard';
 import { ScopesGuard } from '../../../common/guards/scopes.guard';
 import { RequireScopes } from '../../../common/decorators/scopes.decorator';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
@@ -34,6 +35,7 @@ describe('API Key Authentication with Scoped Permissions (Integration)', () => {
   let app: TestingModule;
   let apiKeyService: { verify: ReturnType<typeof vi.fn> };
   let jwtAuthGuard: JwtAuthGuard;
+  let apiKeyAuthGuard: ApiKeyAuthGuard;
   let scopesGuard: ScopesGuard;
 
   const validKey = 'ak_live_validkey1234567890abcdef1234567890abcdef';
@@ -61,11 +63,13 @@ describe('API Key Authentication with Scoped Permissions (Integration)', () => {
         ApiKeyStrategy,
         { provide: ApiKeyService, useValue: apiKeyService },
         JwtAuthGuard,
+        ApiKeyAuthGuard,
         ScopesGuard,
       ],
     }).compile();
 
     jwtAuthGuard = app.get<JwtAuthGuard>(JwtAuthGuard);
+    apiKeyAuthGuard = app.get<ApiKeyAuthGuard>(ApiKeyAuthGuard);
     scopesGuard = app.get<ScopesGuard>(ScopesGuard);
   });
 
@@ -187,5 +191,25 @@ describe('API Key Authentication with Scoped Permissions (Integration)', () => {
     const context = createExecutionContext({ 'x-api-key': 'ak_live_invalidkey' }, handler);
 
     await expect(jwtAuthGuard.canActivate(context)).rejects.toThrow();
+  });
+
+  it('ApiKeyAuthGuard authenticates valid keys and ScopesGuard returns 403 for missing scopes', async () => {
+    apiKeyService.verify.mockResolvedValue({
+      id: 'key-200',
+      organizationId: orgId,
+      name: 'Read Only Key',
+      prefix: 'ak_live_validk',
+      hashedKey: sha256(validKey),
+      permissions: ['transactions:read'],
+      allowedIps: [],
+    });
+
+    const handler = TestProtectedController.prototype.createTransaction;
+    const context = createExecutionContext({ 'x-api-key': validKey }, handler);
+
+    await expect(apiKeyAuthGuard.canActivate(context)).resolves.toBe(true);
+    expect(() => scopesGuard.canActivate(context)).toThrowError(
+      /Insufficient API key permissions.*transactions:write/,
+    );
   });
 });
