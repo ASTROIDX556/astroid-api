@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { stellarMemoTypeSchema } from '../../common/validators/stellar-memo.schema';
 
 const amountString = z
   .string()
@@ -14,11 +15,107 @@ export const createTransactionSchema = z
     asset: z.string().min(1).max(24).default('XLM'),
     amount: amountString,
     recipientAddress: z.string().min(1),
-    memo: z.string().max(28).optional(),
+    memo: z.string().max(128).optional(),
+    memoType: stellarMemoTypeSchema.optional(),
+    memoValue: z.string().optional(),
     purpose: z.string().max(280).optional(),
     metadata: z.record(z.unknown()).default({}),
   })
-  .strict();
+  .strict()
+  .superRefine((data, ctx) => {
+    const hasTyped = data.memoType !== undefined;
+    const hasLegacy = data.memo !== undefined;
+
+    if (!hasTyped && !hasLegacy) return;
+
+    if (hasTyped && !data.memoValue) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'memoValue is required when memoType is specified',
+        path: ['memoValue'],
+      });
+      return;
+    }
+
+    if (!hasTyped && hasLegacy) {
+      const byteLength = new TextEncoder().encode(data.memo!).byteLength;
+      if (byteLength === 0) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'Memo cannot be empty',
+          path: ['memo'],
+        });
+      } else if (byteLength > 28) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `Memo exceeds maximum length of 28 bytes (got ${byteLength} bytes)`,
+          path: ['memo'],
+        });
+      }
+      return;
+    }
+
+    if (hasTyped && data.memoValue !== undefined) {
+      switch (data.memoType) {
+        case 'text': {
+          const byteLength = new TextEncoder().encode(data.memoValue).byteLength;
+          if (byteLength === 0) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              message: 'Text memo cannot be empty',
+              path: ['memoValue'],
+            });
+          } else if (byteLength > 28) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              message: `Text memo exceeds maximum length of 28 bytes (got ${byteLength} bytes)`,
+              path: ['memoValue'],
+            });
+          }
+          break;
+        }
+        case 'id': {
+          if (!/^\d+$/.test(data.memoValue)) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              message: 'Memo ID must be a non-negative integer string',
+              path: ['memoValue'],
+            });
+          } else {
+            try {
+              const big = BigInt(data.memoValue);
+              if (big < BigInt(0) || big > BigInt('18446744073709551615')) {
+                ctx.addIssue({
+                  code: z.ZodIssueCode.custom,
+                  message: 'Memo ID must be in range 0 to 18446744073709551615',
+                  path: ['memoValue'],
+                });
+              }
+            } catch {
+              ctx.addIssue({
+                code: z.ZodIssueCode.custom,
+                message: 'Memo ID is not a valid unsigned 64-bit integer',
+                path: ['memoValue'],
+              });
+            }
+          }
+          break;
+        }
+        case 'hash':
+        case 'return': {
+          if (!/^[0-9a-fA-F]{64}$/.test(data.memoValue)) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              message: `${data.memoType === 'hash' ? 'Hash' : 'Return'} memo must be exactly 64 hex characters (32 bytes)`,
+              path: ['memoValue'],
+            });
+          }
+          break;
+        }
+      }
+    }
+  });
+
 export type CreateTransactionInput = z.infer<typeof createTransactionSchema>;
 
 export const simulateTransactionSchema = createTransactionSchema;
@@ -45,8 +142,22 @@ export class CreateTransactionDto {
   @ApiProperty({ example: 'GB...' })
   recipientAddress!: string;
 
-  @ApiPropertyOptional({ maxLength: 28 })
+  @ApiPropertyOptional({
+    description: 'Memo text (legacy format, max 28 bytes UTF-8)',
+    maxLength: 28,
+  })
   memo?: string;
+
+  @ApiPropertyOptional({
+    description: 'Stellar memo type: text, id, hash, or return',
+    enum: ['text', 'id', 'hash', 'return'],
+  })
+  memoType?: 'text' | 'id' | 'hash' | 'return';
+
+  @ApiPropertyOptional({
+    description: 'Memo value for typed memos (required when memoType is specified)',
+  })
+  memoValue?: string;
 
   @ApiPropertyOptional()
   purpose?: string;
