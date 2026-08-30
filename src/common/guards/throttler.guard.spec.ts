@@ -20,8 +20,11 @@ function mockThrottlerRequest(throttlerName: string) {
   };
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type GuardAny = AstroidThrottlerGuard & Record<string, any>;
+
 describe('AstroidThrottlerGuard', () => {
-  let guard: AstroidThrottlerGuard;
+  let guard: GuardAny;
 
   beforeEach(() => {
     const config = {
@@ -37,9 +40,8 @@ describe('AstroidThrottlerGuard', () => {
         },
       }),
     };
-    guard = new AstroidThrottlerGuard(config as unknown as ConfigService);
-    // Inject a mock reflector via the prototype chain
-    (guard as Record<string, unknown>).reflector = {
+    guard = new AstroidThrottlerGuard(config as unknown as ConfigService) as GuardAny;
+    guard.reflector = {
       getAllAndOverride: vi.fn().mockReturnValue(undefined),
     };
   });
@@ -48,13 +50,13 @@ describe('AstroidThrottlerGuard', () => {
     vi.spyOn(Object.getPrototypeOf(Object.getPrototypeOf(guard)), 'handleRequest').mockResolvedValue(true);
 
     const requestProps = mockThrottlerRequest('api');
-    const result = await (guard as Record<string, unknown>).handleRequest(requestProps);
+    const result = await guard.handleRequest(requestProps);
     expect(result).toBe(true);
   });
 
   it('skips counting when throttler name does not match route tier', async () => {
     const requestProps = mockThrottlerRequest('auth');
-    const result = await (guard as Record<string, unknown>).handleRequest(requestProps);
+    const result = await guard.handleRequest(requestProps);
     expect(result).toBe(true);
   });
 
@@ -62,7 +64,7 @@ describe('AstroidThrottlerGuard', () => {
     vi.spyOn(Object.getPrototypeOf(Object.getPrototypeOf(guard)), 'handleRequest').mockResolvedValue(true);
 
     const requestProps = mockThrottlerRequest('api');
-    const result = await (guard as Record<string, unknown>).handleRequest(requestProps);
+    const result = await guard.handleRequest(requestProps);
     expect(result).toBe(true);
   });
 
@@ -82,7 +84,7 @@ describe('AstroidThrottlerGuard', () => {
       },
     };
 
-    await (guard as Record<string, unknown>).handleRequest(requestProps);
+    await guard.handleRequest(requestProps);
     expect(setHeader).toHaveBeenCalledWith('X-RateLimit-Limit', 120);
     expect(setHeader).toHaveBeenCalledWith('X-RateLimit-Reset', expect.any(Number));
   });
@@ -103,7 +105,7 @@ describe('AstroidThrottlerGuard', () => {
       },
     };
 
-    await (guard as Record<string, unknown>).handleRequest(requestProps);
+    await guard.handleRequest(requestProps);
     expect(setHeader).toHaveBeenCalledWith('Retry-After', expect.any(Number));
   });
 
@@ -112,7 +114,7 @@ describe('AstroidThrottlerGuard', () => {
       vi.spyOn(Object.getPrototypeOf(Object.getPrototypeOf(guard)), 'handleRequest').mockResolvedValue(true);
 
       const requestProps = mockThrottlerRequest('auth');
-      const result = await (guard as Record<string, unknown>).handleRequest(requestProps);
+      const result = await guard.handleRequest(requestProps);
       expect(result).toBe(true);
     });
 
@@ -122,10 +124,10 @@ describe('AstroidThrottlerGuard', () => {
       const requestProps = mockThrottlerRequest('auth');
       // Auth burst limit is 3 — send 4 requests rapidly
       for (let i = 0; i < 3; i++) {
-        await (guard as Record<string, unknown>).handleRequest(requestProps);
+        await guard.handleRequest(requestProps);
       }
       // 4th request should be burst-exceeded
-      const result = await (guard as Record<string, unknown>).handleRequest(requestProps);
+      const result = await guard.handleRequest(requestProps);
       expect(result).toBe(false);
     });
   });
@@ -133,19 +135,19 @@ describe('AstroidThrottlerGuard', () => {
   describe('getTracker', () => {
     it('returns org-scoped tracker when user is authenticated', async () => {
       const req = { user: { organizationId: 'org-42' }, ip: '10.0.0.1', headers: {} };
-      const tracker = await guard['getTracker'](req);
+      const tracker = await guard.getTracker(req);
       expect(tracker).toBe('org:org-42');
     });
 
     it('falls back to IP tracker for anonymous requests', async () => {
       const req = { ip: '192.168.1.1', headers: {} };
-      const tracker = await guard['getTracker'](req);
+      const tracker = await guard.getTracker(req);
       expect(tracker).toBe('ip:192.168.1.1');
     });
 
     it('uses x-forwarded-for header when available', async () => {
       const req = { ip: '127.0.0.1', headers: { 'x-forwarded-for': '203.0.113.50' } };
-      const tracker = await guard['getTracker'](req);
+      const tracker = await guard.getTracker(req);
       expect(tracker).toBe('ip:203.0.113.50');
     });
   });
