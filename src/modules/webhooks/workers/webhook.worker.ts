@@ -8,11 +8,15 @@ import { PrismaService } from '../../../database/prisma.service';
 
 /**
  * BullMQ worker for processing webhook delivery jobs.
- * Implements exponential backoff retry logic (2000ms base, 5 attempts) with:
+ * Implements exponential backoff with randomized jitter retry logic (2000ms base, 5 attempts):
+ * - Jitter prevents thundering herd problems against subscriber endpoints
  * - Persistent delivery status tracking (PENDING, RETRYING, FAILED, DELIVERED)
  * - Non-transient error detection (400,401,403,404,422) via UnrecoverableError
  * - Non-blocking DB persistence after network I/O completes
  * - Fail-safe error handling that never crashes the master process
+ *
+ * Jitter is applied via a custom backoffStrategy configured on the BullMQ
+ * queue registration (see webhook.module.ts).
  */
 @Processor(Queues.Webhooks)
 export class WebhookWorker extends WorkerHost {
