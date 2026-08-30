@@ -64,4 +64,19 @@ export class AuditController {
   findOne(@CurrentUser('organizationId') organizationId: string, @Param('id') id: string) {
     return this.auditService.findById(organizationId, id);
   }
+
+  @Get('integrity/verify')
+  @ApiOperation({ summary: 'Verify the integrity of the entire audit chain' })
+  verifyIntegrity(@CurrentUser('organizationId') organizationId: string) {
+    return this.auditService.verifyIntegrity(organizationId);
+  }
+
+  @Get(':id/integrity')
+  @ApiOperation({ summary: 'Verify the integrity of a single audit log entry' })
+  verifyEntryIntegrity(
+    @CurrentUser('organizationId') organizationId: string,
+    @Param('id') id: string,
+  ) {
+    return this.auditService.verifyEntryIntegrity(id, organizationId);
+  }
 }
