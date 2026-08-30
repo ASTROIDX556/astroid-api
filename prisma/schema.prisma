@@ -423,6 +423,7 @@ model Transaction {
   @@index([organizationId, createdAt])
   @@index([walletId, status])
   @@index([agentId, status])
+  @@index([agentId, createdAt])
   @@map("transactions")
 }
 

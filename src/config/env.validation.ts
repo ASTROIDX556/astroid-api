@@ -85,6 +85,15 @@ export const throttleEnvSchema = z.object({
   THROTTLE_TTL: z.coerce.number().int().positive().default(60),
 });
 
+export const metricsEnvSchema = z.object({
+  // Comma-separated CIDR ranges permitted to scrape /metrics. Defaults to
+  // loopback + RFC1918 private ranges so the endpoint is internal-only unless
+  // explicitly opened up (e.g. for a Prometheus server outside the VPC).
+  METRICS_ALLOWED_IPS: z
+    .string()
+    .default('127.0.0.1/32,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16'),
+});
+
 export const aiEnvSchema = z.object({
   AI_PROVIDER: z.string().default('nvidia'),
   AI_PROVIDER_KEY: z.string().min(1, 'AI_PROVIDER_KEY is required'),

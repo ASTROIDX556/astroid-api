@@ -82,3 +82,20 @@ export class VelocityLimitExceededException extends DomainException {
     super(ErrorCode.POLICY_VIOLATION, message, details);
   }
 }
+
+/**
+ * Thrown by a {@link CircuitBreaker} (see `src/common/circuit-breaker`) when
+ * it fails fast because its circuit is OPEN, instead of invoking a degraded
+ * downstream dependency (e.g. Horizon/Soroban RPC). Distinguishable from a
+ * genuine `STELLAR_ERROR` so callers can special-case "try again shortly"
+ * behaviour using `retryAfterMs`.
+ */
+export class CircuitOpenException extends DomainException {
+  constructor(integration: string, retryAfterMs: number) {
+    super(
+      ErrorCode.CIRCUIT_OPEN,
+      `Circuit breaker for '${integration}' is open; failing fast to protect the caller`,
+      { integration, state: 'OPEN', retryAfterMs },
+    );
+  }
+}
