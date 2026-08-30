@@ -34,6 +34,8 @@ import { WebhookModule } from './modules/webhooks/webhook.module';
 import { StellarModule } from './modules/stellar/stellar.module';
 import { AuditModule } from './modules/audit/audit.module';
 import { AiModule } from './modules/ai/ai.module';
+import { HealthModule } from './modules/health/health.module';
+import { AgentTraceInterceptor } from './common/interceptors/agent-trace.interceptor';
 
 /**
  * Root application module. Wires the global infrastructure (config, logging,
@@ -106,11 +108,13 @@ import { AiModule } from './modules/ai/ai.module';
     StellarModule,
     AuditModule,
     AiModule,
+    HealthModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: RolesGuard },
     { provide: APP_GUARD, useClass: AstroidThrottlerGuard },
+    { provide: APP_INTERCEPTOR, useClass: AgentTraceInterceptor },
     { provide: APP_INTERCEPTOR, useClass: ResponseInterceptor },
     { provide: APP_FILTER, useClass: AllExceptionsFilter },
   ],

@@ -723,3 +723,22 @@ model DomainEvent {
   @@index([occurredAt])
   @@map("domain_events")
 }
+
+// ---------------------------------------------------------------------------
+// Transactional Outbox Event
+// ---------------------------------------------------------------------------
+
+model OutboxEvent {
+  id          String    @id @default(uuid(7))
+  eventType   String
+  payload     Json
+  status      String    @default("PENDING") // PENDING, COMPLETED, FAILED
+  retryCount  Int       @default(0)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  processedAt DateTime?
+  error       String?
+
+  @@index([status, createdAt])
+  @@map("outbox_events")
+}

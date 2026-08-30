@@ -44,6 +44,28 @@ export class AuditRepository {
     return { items, total };
   }
 
+  async exportLogs(
+    where: Prisma.AuditLogWhereInput,
+    limit: number,
+    cursor?: string,
+  ) {
+    return this.prisma.auditLog.findMany({
+      where,
+      take: limit + 1,
+      ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
+      orderBy: { createdAt: 'desc' },
+      include: {
+        user: {
+          select: {
+            id: true,
+            email: true,
+            name: true,
+          },
+        },
+      },
+    });
+  }
+
   findById(organizationId: string, id: string) {
     return this.prisma.auditLog.findFirst({ where: { id, organizationId } });
   }
