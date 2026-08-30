@@ -4,6 +4,9 @@ import { Reflector } from '@nestjs/core';
 import { of, throwError } from 'rxjs';
 import { AuditInterceptor } from './audit.interceptor';
 import { AuditService } from '../../modules/audit/audit.service';
+import { AUDIT_ACTION_KEY } from '../decorators/audit-action.decorator';
+import { IS_SKIP_AUDIT_KEY } from '../decorators/skip-audit.decorator';
+import { TraceContext } from '../context/trace.context';
 
 function buildMockContext(overrides: {
   url?: string;
@@ -73,6 +76,7 @@ describe('AuditInterceptor', () => {
       }),
       ipAddress: '127.0.0.1',
       device: 'TestAgent/1.0',
+      requestId: null,
     });
   });
 
@@ -139,6 +143,36 @@ describe('AuditInterceptor', () => {
 
     expect(auditService.record).toHaveBeenCalledWith(
       expect.objectContaining({ ipAddress: '10.0.0.1' }),
+    );
+  });
+
+  it('should use the @AuditAction() name instead of METHOD /url when present', async () => {
+    vi.spyOn(reflector, 'getAllAndOverride').mockImplementation((key: unknown) => {
+      if (key === IS_SKIP_AUDIT_KEY) return false;
+      if (key === AUDIT_ACTION_KEY) return 'TRANSFER_FUNDS';
+      return undefined;
+    });
+
+    const ctx = buildMockContext();
+    const next = buildCallHandler();
+
+    await interceptor.intercept(ctx, next).toPromise();
+
+    expect(auditService.record).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'TRANSFER_FUNDS' }),
+    );
+  });
+
+  it('should capture the request id from TraceContext (AsyncLocalStorage)', async () => {
+    const ctx = buildMockContext();
+    const next = buildCallHandler();
+
+    await TraceContext.run({ traceId: 'req_trace-abc-123' }, () =>
+      interceptor.intercept(ctx, next).toPromise(),
+    );
+
+    expect(auditService.record).toHaveBeenCalledWith(
+      expect.objectContaining({ requestId: 'req_trace-abc-123' }),
     );
   });
 });
