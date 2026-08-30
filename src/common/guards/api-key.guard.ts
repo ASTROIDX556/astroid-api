@@ -7,11 +7,11 @@ import { ErrorCode } from '../constants/error-codes';
 import { UnauthorizedException } from '../exceptions/domain.exception';
 
 /**
- * Global authentication guard. Enforces a valid JWT or API key on every route unless the
- * handler (or its controller) is marked `@Public()`.
+ * Guard enforcing API Key authentication ('api-key' passport strategy).
+ * Bypassed when route or controller is marked `@Public()`.
  */
 @Injectable()
-export class JwtAuthGuard extends AuthGuard(['jwt', 'api-key']) {
+export class ApiKeyGuard extends AuthGuard('api-key') {
   constructor(private readonly reflector: Reflector) {
     super();
   }
@@ -29,7 +29,7 @@ export class JwtAuthGuard extends AuthGuard(['jwt', 'api-key']) {
 
   handleRequest<TUser>(err: unknown, user: TUser): TUser {
     if (err || !user) {
-      throw new UnauthorizedException('Invalid or missing access token or API key', ErrorCode.UNAUTHORIZED);
+      throw new UnauthorizedException('Invalid or missing API key', ErrorCode.UNAUTHORIZED);
     }
     return user;
   }

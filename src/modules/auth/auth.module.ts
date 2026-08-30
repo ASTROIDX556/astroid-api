@@ -5,13 +5,16 @@ import Redis from 'ioredis';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { JwtStrategy } from './jwt.strategy';
+import { ApiKeyStrategy } from './api-key.strategy';
+import { ApiKeyGuard } from '../../common/guards/api-key.guard';
+import { ScopesGuard } from '../../common/guards/scopes.guard';
 import { TokenBlacklistService } from './services/token-blacklist.service';
 import { PasskeyController } from './controllers/passkey.controller';
 import { PasskeyService } from './services/passkey.service';
 import { redisConfig } from '../../config/redis.config';
 
 /**
- * Authentication module. Registers the passport-jwt strategy and a bare
+ * Authentication module. Registers passport-jwt and api-key strategies and a bare
  * JwtModule (per-call secrets are supplied explicitly by AuthService so the
  * access and refresh tokens can use different signing keys). Also provides the
  * Redis client used by the token blacklist, which lets logout / credential
@@ -39,9 +42,20 @@ import { redisConfig } from '../../config/redis.config';
     },
     AuthService,
     JwtStrategy,
+    ApiKeyStrategy,
+    ApiKeyGuard,
+    ScopesGuard,
     PasskeyService,
     TokenBlacklistService,
   ],
-  exports: [AuthService, PasskeyService, TokenBlacklistService],
+  exports: [
+    AuthService,
+    JwtStrategy,
+    ApiKeyStrategy,
+    ApiKeyGuard,
+    ScopesGuard,
+    PasskeyService,
+    TokenBlacklistService,
+  ],
 })
 export class AuthModule {}
