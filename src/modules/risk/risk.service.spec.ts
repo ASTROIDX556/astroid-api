@@ -15,8 +15,8 @@ const lowRisk: RiskFactorsInput = {
   hourUtc: 12,
 };
 
-function createEventBus(): Pick<EventBusService, 'emit'> {
-  return { emit: vi.fn().mockResolvedValue(undefined) };
+function createEventBus() {
+  return { emit: vi.fn().mockResolvedValue(undefined) } as unknown as Pick<EventBusService, 'emit'> & { emit: ReturnType<typeof vi.fn> };
 }
 
 describe('RiskService', () => {
@@ -32,8 +32,9 @@ describe('RiskService', () => {
     expect(assessment.band).toBe(RiskBand.LOW);
     expect(assessment.factors.length).toBe(6);
 
-    expect(eventBus.emit).toHaveBeenCalledOnce();
-    const [eventName, payload] = eventBus.emit.mock.calls[0];
+    const emitMock = eventBus.emit as ReturnType<typeof vi.fn>;
+    expect(emitMock).toHaveBeenCalledOnce();
+    const [eventName, payload] = emitMock.mock.calls[0];
     expect(eventName).toBe('risk.evaluated');
     expect(payload.transactionId).toBe('tx-1');
     expect(payload.score).toBe(assessment.score);
@@ -48,7 +49,8 @@ describe('RiskService', () => {
 
     const assessment = service.assess(lowRisk);
     expect(assessment.band).toBe(RiskBand.LOW);
-    expect(eventBus.emit).not.toHaveBeenCalled();
+    const emitMock = eventBus.emit as ReturnType<typeof vi.fn>;
+    expect(emitMock).not.toHaveBeenCalled();
   });
 
   it('passes config overrides through to the engine', async () => {
