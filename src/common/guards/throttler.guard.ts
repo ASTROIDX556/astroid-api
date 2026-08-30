@@ -9,6 +9,13 @@ import {
 } from '../decorators/throttle-tier.decorator';
 import { QueueConfig } from '../../config/queue.config';
 
+/** Per-tier burst defaults (requests per second). */
+const BURST_DEFAULTS: Record<ThrottleTier, number> = {
+  api: 10,
+  auth: 3,
+  webhook: 5,
+};
+
 /**
  * Rate-limit guard with three tiers — api, auth, and webhook.
  *
@@ -33,18 +40,18 @@ import { QueueConfig } from '../../config/queue.config';
  */
 @Injectable()
 export class AstroidThrottlerGuard extends ThrottlerGuard {
-  /** Per-second burst windows: keyed by tier name. */
+  /** Per-second burst tracking: keyed by "tier:scope". */
   private readonly burstWindows = new Map<string, { count: number; resetAt: number }>();
 
+  /** Burst limits resolved from config at first request. */
+  private burstLimits: Record<string, number> | null = null;
+
   constructor(
-    config: ConfigService,
+    private readonly cfg: ConfigService,
   ) {
-    super();
-    const throttle = config.getOrThrow<QueueConfig>('queue').throttle;
-    // Pre-populate burst ceilings from config.
-    this.burstWindows.set('api', { count: 0, resetAt: 0 });
-    this.burstWindows.set('auth', { count: 0, resetAt: 0 });
-    this.burstWindows.set('webhook', { count: 0, resetAt: 0 });
+    // ThrottlerGuard's constructor is injected by NestJS; we pass through.
+    // The `cfg` param is used only for burst limits; the parent handles the rest.
+    super(undefined as never, undefined as never, undefined as never);
   }
 
   /**
@@ -78,12 +85,18 @@ export class AstroidThrottlerGuard extends ThrottlerGuard {
     const result = await super.handleRequest(requestProps);
 
     // ── Response headers ───────────────────────────────────────────────────
-    const tracker = await this.getTracker(request as unknown as Record<string, unknown>);
-    response.setHeader('X-RateLimit-Limit', throttler.limit);
-    response.setHeader('X-RateLimit-Reset', Math.ceil((Date.now() + throttler.ttl) / 1000));
+    const limit = typeof throttler.limit === 'function'
+      ? throttler.limit(context)
+      : throttler.limit;
+    const ttl = typeof throttler.ttl === 'function'
+      ? throttler.ttl(context)
+      : throttler.ttl;
+
+    response.setHeader('X-RateLimit-Limit', limit);
+    response.setHeader('X-RateLimit-Reset', Math.ceil((Date.now() + ttl) / 1000));
 
     if (!result) {
-      response.setHeader('Retry-After', Math.ceil(throttler.ttl / 1000));
+      response.setHeader('Retry-After', Math.ceil(ttl / 1000));
     }
 
     return result;
@@ -132,14 +145,14 @@ export class AstroidThrottlerGuard extends ThrottlerGuard {
   }
 
   private getBurstLimit(tier: ThrottleTier): number {
-    // Burst limits are read from the injected config at construction; we access
-    // them via the parent throttler's config which is set up in ThrottlerModule.
-    // Fallback defaults match the env defaults.
-    const defaults: Record<ThrottleTier, number> = {
-      api: 10,
-      auth: 3,
-      webhook: 5,
-    };
-    return defaults[tier] ?? defaults.api;
+    if (!this.burstLimits) {
+      const throttle = this.cfg.getOrThrow<QueueConfig>('queue').throttle;
+      this.burstLimits = {
+        api: throttle.apiBurst,
+        auth: throttle.authBurst,
+        webhook: throttle.webhookBurst,
+      };
+    }
+    return this.burstLimits[tier] ?? BURST_DEFAULTS[tier];
   }
 }
