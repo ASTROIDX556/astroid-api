@@ -1,23 +1,108 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
+import { STELLAR_CLIENT, StellarClient } from '../integrations/stellar';
+import { BalanceCacheService } from '../modules/wallets/services/balance-cache.service';
+import { EventBusService } from '../events/event-bus.service';
+import { DomainEventName } from '../events/event-names';
 import { Queues } from '../queues/queues.constants';
 
 export interface BalanceSyncJob {
   walletId: string;
   stellarAddress: string;
-  network: 'testnet' | 'public';
+  network: 'testnet' | 'public' | 'futurenet';
+  organizationId: string;
 }
 
 /**
- * Polls Stellar for balance changes and confirmation updates outside the request
- * path. Runs rely on the Stellar integration module to read Horizon/Soroban; the
- * worker is responsible only for enqueueing the cadence and propagating results.
+ * Background worker that polls Stellar for balance changes and updates the
+ * Redis cache. Emits domain events when balances cross critical thresholds.
+ *
+ * Runs rely on the Stellar integration module to read Horizon; the worker
+ * is responsible for caching, threshold detection, and event propagation.
  */
 @Injectable()
 export class BalanceWorker {
   private readonly logger = new Logger(BalanceWorker.name);
   readonly queue = Queues.StellarSync;
 
-  async process(job: { data: BalanceSyncJob }): Promise<void> {
-    this.logger.log(`sync ${job.data.stellarAddress} on ${job.data.network}`);
+  constructor(
+    @Inject(STELLAR_CLIENT) private readonly stellarClient: StellarClient,
+    private readonly cacheService: BalanceCacheService,
+    private readonly eventBus: EventBusService,
+  ) {}
+
+  async process(job: { data: BalanceSyncJob }): Promise<{
+    address: string;
+    balanceCount: number;
+    alerts: Array<{ asset: string; balance: string; threshold: number }>;
+  }> {
+    const { walletId, stellarAddress, network, organizationId } = job.data;
+
+    this.logger.log(
+      `Syncing balance for ${stellarAddress} on ${network} (wallet ${walletId})`,
+    );
+
+    try {
+      // Fetch live balances from Stellar
+      const balances = await this.stellarClient.getBalances(stellarAddress, network);
+
+      // Update cache
+      await this.cacheService.set(stellarAddress, network, balances);
+
+      // Check for low-balance thresholds
+      const alerts = this.cacheService.checkThresholds(balances);
+
+      // Emit balance updated event
+      await this.eventBus.emit(
+        DomainEventName.WalletBalanceUpdated,
+        {
+          walletId,
+          stellarAddress,
+          network,
+          balanceCount: balances.length,
+          balances: balances.map((b) => ({
+            asset: b.asset,
+            balance: b.balance,
+            assetType: b.assetType,
+          })),
+        },
+        {
+          organizationId,
+          aggregateType: 'wallet',
+          aggregateId: walletId,
+        },
+      );
+
+      // Emit low balance alerts if any thresholds are breached
+      if (alerts.length > 0) {
+        this.logger.warn(
+          `Low balance alerts for ${stellarAddress}: ${alerts.map((a) => `${a.asset}=${a.balance}`).join(', ')}`,
+        );
+
+        await this.eventBus.emit(
+          DomainEventName.BudgetWarning,
+          {
+            walletId,
+            stellarAddress,
+            alerts,
+          },
+          {
+            organizationId,
+            aggregateType: 'wallet',
+            aggregateId: walletId,
+          },
+        );
+      }
+
+      return {
+        address: stellarAddress,
+        balanceCount: balances.length,
+        alerts,
+      };
+    } catch (error) {
+      this.logger.error(
+        `Balance sync failed for ${stellarAddress}: ${(error as Error).message}`,
+      );
+      throw error;
+    }
   }
 }

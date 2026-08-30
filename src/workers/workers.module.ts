@@ -3,6 +3,7 @@ import { BalanceWorker } from './balance.worker';
 import { WebhookDeliveryWorker } from './webhook-delivery.worker';
 import { AnalyticsAggregationWorker } from './analytics-aggregation.worker';
 import { NotificationDeliveryWorker } from './notification-delivery.worker';
+import { WalletModule } from '../modules/wallets/wallet.module';
 
 /**
  * Background job processors.
@@ -13,6 +14,7 @@ import { NotificationDeliveryWorker } from './notification-delivery.worker';
  * are activated by the queue module once Redis is available.
  */
 @Module({
+  imports: [WalletModule],
   providers: [
     NotificationDeliveryWorker,
     WebhookDeliveryWorker,
