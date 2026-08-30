@@ -13,6 +13,7 @@ export interface CreateAuditLogData {
   newValue?: Prisma.InputJsonValue;
   ipAddress?: string | null;
   device?: string | null;
+  requestId?: string | null;
   previousHash?: string | null;
   hash?: string | null;
 }
@@ -34,6 +35,7 @@ export class AuditRepository {
         newValue: data.newValue,
         ipAddress: data.ipAddress ?? null,
         device: data.device ?? null,
+        requestId: data.requestId ?? null,
         previousHash: data.previousHash ?? null,
         hash: data.hash ?? null,
       },

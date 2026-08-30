@@ -12,6 +12,8 @@ import { Request, Response } from 'express';
 import { AuditService } from '../../modules/audit/audit.service';
 import { AuthenticatedUser } from '../interfaces/authenticated-user.interface';
 import { IS_SKIP_AUDIT_KEY } from '../decorators/skip-audit.decorator';
+import { AUDIT_ACTION_KEY } from '../decorators/audit-action.decorator';
+import { TraceContext } from '../context/trace.context';
 
 /**
  * Fields that must never appear in audit-logged request bodies.
@@ -50,6 +52,11 @@ const SENSITIVE_FIELDS = new Set([
  *   - Authenticated user / agent identity
  *   - HTTP method, URL, and sanitized request body
  *   - Response status code
+ *   - The request's trace/correlation id, read from the `TraceContext`
+ *     AsyncLocalStorage populated upstream by `AgentTraceInterceptor`
+ *
+ * The logged `action` defaults to `METHOD /url`, but a handler decorated
+ * with `@AuditAction('TRANSFER_FUNDS')` overrides it with a semantic name.
  *
  * Routes decorated with @SkipAudit() are excluded.
  */
@@ -72,6 +79,11 @@ export class AuditInterceptor implements NestInterceptor {
       return next.handle();
     }
 
+    const customAction = this.reflector.getAllAndOverride<string | undefined>(AUDIT_ACTION_KEY, [
+      context.getHandler(),
+      context.getClass(),
+    ]);
+
     const http = context.switchToHttp();
     const req = http.getRequest<Request & { user?: AuthenticatedUser }>();
     const res = http.getResponse<Response>();
@@ -81,6 +93,7 @@ export class AuditInterceptor implements NestInterceptor {
     const userAgent = (headers['user-agent'] as string) ?? null;
     const userId = req.user?.id ?? null;
     const organizationId = req.user?.organizationId ?? null;
+    const requestId = TraceContext.getTraceId() ?? null;
 
     const sanitizedBody = this.sanitize(body);
 
@@ -93,11 +106,13 @@ export class AuditInterceptor implements NestInterceptor {
           this.persistAuditLog({
             organizationId,
             userId,
+            action: customAction,
             method,
             url: originalUrl,
             statusCode: res.statusCode,
             ipAddress,
             userAgent,
+            requestId,
             body: sanitizedBody,
             durationMs,
           }).catch((err) => {
@@ -111,11 +126,13 @@ export class AuditInterceptor implements NestInterceptor {
           this.persistAuditLog({
             organizationId,
             userId,
+            action: customAction,
             method,
             url: originalUrl,
             statusCode: res.statusCode,
             ipAddress,
             userAgent,
+            requestId,
             body: sanitizedBody,
             durationMs,
           }).catch((err) => {
@@ -171,11 +188,13 @@ export class AuditInterceptor implements NestInterceptor {
   private async persistAuditLog(data: {
     organizationId: string | null;
     userId: string | null;
+    action: string | undefined;
     method: string;
     url: string;
     statusCode: number;
     ipAddress: string | null;
     userAgent: string | null;
+    requestId: string | null;
     body: unknown;
     durationMs: number;
   }): Promise<void> {
@@ -186,7 +205,7 @@ export class AuditInterceptor implements NestInterceptor {
     await this.auditService.record({
       organizationId: data.organizationId,
       userId: data.userId,
-      action: `${data.method} ${data.url}`,
+      action: data.action ?? `${data.method} ${data.url}`,
       entity: 'http',
       entityId: null,
       newValue: {
@@ -198,6 +217,7 @@ export class AuditInterceptor implements NestInterceptor {
       } as object,
       ipAddress: data.ipAddress,
       device: data.userAgent,
+      requestId: data.requestId,
     });
   }
 }

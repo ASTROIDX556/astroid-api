@@ -8,6 +8,7 @@ import { AppConfigModule } from './config';
 import { QueueConfig } from './config/queue.config';
 import { DatabaseModule } from './database/database.module';
 import { EventsModule } from './events/events.module';
+import { LocksModule } from './common/locks/locks.module';
 import { RequestIdMiddleware } from './middleware/request-id.middleware';
 import { REQUEST_ID_HEADER } from './common/constants/headers';
 
@@ -39,6 +40,7 @@ import { AiModule } from './modules/ai/ai.module';
 import { HealthModule } from './modules/health/health.module';
 import { MetricsModule } from './modules/metrics/metrics.module';
 import { RequestMetricsMiddleware } from './modules/metrics/metrics.middleware';
+import { DeadLetterModule } from './modules/dead-letter/dead-letter.module';
 import { AgentTraceInterceptor } from './common/interceptors/agent-trace.interceptor';
 
 /**
@@ -94,6 +96,7 @@ import { AgentTraceInterceptor } from './common/interceptors/agent-trace.interce
 
     DatabaseModule,
     EventsModule,
+    LocksModule,
 
     // Domain modules
     AuthModule,
@@ -115,6 +118,7 @@ import { AgentTraceInterceptor } from './common/interceptors/agent-trace.interce
     AiModule,
     HealthModule,
     MetricsModule,
+    DeadLetterModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: JwtAuthGuard },

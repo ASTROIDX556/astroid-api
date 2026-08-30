@@ -13,6 +13,10 @@ export const Queues = {
   Analytics: 'analytics',
   /** Long-running exports and scheduled reports. */
   Reports: 'reports',
+  /** Transactional outbox fan-out jobs. */
+  OutboxEvents: 'outbox-events',
+  /** Stellar fee-bump submission retries. */
+  StellarFeeBump: 'stellar-fee-bump',
 } as const;
 
 export type QueueName = (typeof Queues)[keyof typeof Queues];

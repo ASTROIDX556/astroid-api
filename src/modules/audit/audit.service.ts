@@ -50,6 +50,7 @@ export class AuditService {
 
     return this.repository.create({
       ...data,
+      requestId: data.requestId ?? null,
       previousHash: hashResult.previousHash,
       hash: hashResult.hash,
     });
