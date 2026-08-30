@@ -85,12 +85,10 @@ export class AstroidThrottlerGuard extends ThrottlerGuard {
     const result = await super.handleRequest(requestProps);
 
     // ── Response headers ───────────────────────────────────────────────────
-    const limit = typeof throttler.limit === 'function'
-      ? throttler.limit(context)
-      : throttler.limit;
-    const ttl = typeof throttler.ttl === 'function'
-      ? throttler.ttl(context)
-      : throttler.ttl;
+    // Resolvable<T> = T | (() => T | Promise<T>); resolve to a plain number.
+    const resolve = (v: unknown): number => typeof v === 'function' ? Number(v(context)) : Number(v);
+    const limit = resolve(throttler.limit);
+    const ttl = resolve(throttler.ttl);
 
     response.setHeader('X-RateLimit-Limit', limit);
     response.setHeader('X-RateLimit-Reset', Math.ceil((Date.now() + ttl) / 1000));
