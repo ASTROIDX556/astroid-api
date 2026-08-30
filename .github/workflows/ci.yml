@@ -22,6 +22,9 @@ jobs:
   migration-check:
     name: migration-check
     runs-on: ubuntu-latest
+    env:
+      # prisma validate/generate only parse the schema — no real connection needed.
+      DATABASE_URL: postgresql://user:pass@localhost:5432/migration_check
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
