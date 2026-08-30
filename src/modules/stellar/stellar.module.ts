@@ -4,8 +4,11 @@ import { StellarConfig } from '../../config/stellar.config';
 import {
   HorizonStellarClient,
   MockStellarClient,
+  MockSorobanClient,
   STELLAR_CLIENT,
+  SOROBAN_CLIENT,
   StellarClient,
+  SorobanClient,
 } from '../../integrations/stellar';
 import { StellarService } from './stellar.service';
 import { StellarTransactionService } from './services/stellar-transaction.service';
@@ -26,6 +29,12 @@ import { StellarController } from './stellar.controller';
       useFactory: (config: ConfigService): StellarClient => {
         const stellar = config.getOrThrow<StellarConfig>('stellar');
         return stellar.useMock ? new MockStellarClient() : new HorizonStellarClient(stellar);
+      },
+    },
+    {
+      provide: SOROBAN_CLIENT,
+      useFactory: (): SorobanClient => {
+        return new MockSorobanClient();
       },
     },
     StellarService,

@@ -8,11 +8,15 @@ import { PrismaService } from '../../../database/prisma.service';
 
 /**
  * BullMQ worker for processing webhook delivery jobs.
- * Implements exponential backoff retry logic (2000ms base, 5 attempts) with:
+ * Implements exponential backoff with randomized jitter retry logic (2000ms base, 5 attempts):
+ * - Jitter prevents thundering herd problems against subscriber endpoints
  * - Persistent delivery status tracking (PENDING, RETRYING, FAILED, DELIVERED)
  * - Non-transient error detection (400,401,403,404,422) via UnrecoverableError
  * - Non-blocking DB persistence after network I/O completes
  * - Fail-safe error handling that never crashes the master process
+ *
+ * Jitter is applied via a custom backoffStrategy configured on the BullMQ
+ * queue registration (see webhook.module.ts).
  */
 @Processor(Queues.Webhooks)
 export class WebhookWorker extends WorkerHost {
@@ -158,8 +162,11 @@ export class WebhookWorker extends WorkerHost {
       return;
     }
     try {
+      // Persist through the dedicated worker client so background writes are
+      // never aborted by the API-oriented query timeouts (issue #76).
+      const client = this.prisma.workerClient ?? this.prisma;
       // Use upsert by eventId+webhookId uniqueness if available, otherwise create
-      const prismaAny = this.prisma as unknown as Record<string, unknown>;
+      const prismaAny = client as unknown as Record<string, unknown>;
       const deliveryDelegate = (prismaAny['webhookDelivery'] as
         | {
             upsert?: (args: unknown) => Promise<unknown>;
