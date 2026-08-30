@@ -10,6 +10,7 @@ import {
 } from './transaction.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
+import { AuditAction } from '../../common/decorators/audit-action.decorator';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 import { AuthenticatedUser } from '../../common/interfaces/authenticated-user.interface';
 import { PaginationQuery, paginationQuerySchema } from '../../common/helpers/pagination';
@@ -30,6 +31,7 @@ export class TransactionController {
 
   @Post()
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.FINANCE, UserRole.DEVELOPER)
+  @AuditAction('TRANSFER_FUNDS')
   @ApiOperation({
     summary: 'Create a transaction (runs the full governance pipeline)',
     description:
@@ -60,6 +62,7 @@ export class TransactionController {
 
   @Post(':id/cancel')
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.FINANCE)
+  @AuditAction('TRANSFER_CANCELLED')
   @ApiOperation({ summary: 'Cancel a draft or pending transaction' })
   cancel(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
     return this.transactionService.cancel(user.organizationId, user.id, id);
