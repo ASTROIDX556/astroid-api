@@ -54,6 +54,11 @@ describe('AstroidThrottlerGuard', () => {
 
   beforeEach(() => {
     guard = createGuard();
+    // Default reflector to return 'api' tier for all routes
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (guard as any).reflector = {
+      getAllAndOverride: vi.fn().mockReturnValue('api'),
+    };
   });
 
   it('allows requests when the throttler name matches the route tier', async () => {
@@ -64,12 +69,17 @@ describe('AstroidThrottlerGuard', () => {
   });
 
   it('skips counting when throttler name does not match route tier', async () => {
+    // Reflects 'api' tier but throttler name is 'auth' → should skip
     const result = await callHandleRequest(guard, mockRequestProps('auth'));
     expect(result).toBe(true);
   });
 
-  it('defaults to api tier when no tier decorator is set', async () => {
+  it('defaults to api tier when reflector returns undefined', async () => {
     vi.spyOn(Object.getPrototypeOf(Object.getPrototypeOf(guard)), 'handleRequest').mockResolvedValue(true);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (guard as any).reflector = {
+      getAllAndOverride: vi.fn().mockReturnValue(undefined),
+    };
 
     const result = await callHandleRequest(guard, mockRequestProps('api'));
     expect(result).toBe(true);
@@ -96,6 +106,10 @@ describe('AstroidThrottlerGuard', () => {
   describe('burst limiting', () => {
     it('allows the first request in a burst window', async () => {
       vi.spyOn(Object.getPrototypeOf(Object.getPrototypeOf(guard)), 'handleRequest').mockResolvedValue(true);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (guard as any).reflector = {
+        getAllAndOverride: vi.fn().mockReturnValue('auth'),
+      };
 
       const result = await callHandleRequest(guard, mockRequestProps('auth'));
       expect(result).toBe(true);
@@ -103,6 +117,10 @@ describe('AstroidThrottlerGuard', () => {
 
     it('rejects requests exceeding the burst limit within 1 second', async () => {
       vi.spyOn(Object.getPrototypeOf(Object.getPrototypeOf(guard)), 'handleRequest').mockResolvedValue(true);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (guard as any).reflector = {
+        getAllAndOverride: vi.fn().mockReturnValue('auth'),
+      };
 
       // Auth burst limit is 3 — send 4 requests rapidly
       for (let i = 0; i < 3; i++) {
