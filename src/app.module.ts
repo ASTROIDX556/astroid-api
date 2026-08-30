@@ -8,6 +8,7 @@ import { AppConfigModule } from './config';
 import { QueueConfig } from './config/queue.config';
 import { DatabaseModule } from './database/database.module';
 import { EventsModule } from './events/events.module';
+import { LocksModule } from './common/locks/locks.module';
 import { RequestIdMiddleware } from './middleware/request-id.middleware';
 import { REQUEST_ID_HEADER } from './common/constants/headers';
 
@@ -95,6 +96,7 @@ import { AgentTraceInterceptor } from './common/interceptors/agent-trace.interce
 
     DatabaseModule,
     EventsModule,
+    LocksModule,
 
     // Domain modules
     AuthModule,

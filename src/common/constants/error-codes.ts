@@ -40,6 +40,7 @@ export enum ErrorCode {
 
   // Resilience
   CIRCUIT_OPEN = 'CIRCUIT_OPEN',
+  LOCK_ACQUISITION_FAILED = 'LOCK_ACQUISITION_FAILED',
 }
 
 /** HTTP status codes paired with the domain error codes above. */
@@ -72,4 +73,5 @@ export const ERROR_STATUS: Record<ErrorCode, number> = {
   [ErrorCode.INVALID_STELLAR_ADDRESS]: 400,
   [ErrorCode.INVALID_STELLAR_TRANSACTION]: 400,
   [ErrorCode.CIRCUIT_OPEN]: 503,
+  [ErrorCode.LOCK_ACQUISITION_FAILED]: 409,
 };

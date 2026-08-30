@@ -99,3 +99,20 @@ export class CircuitOpenException extends DomainException {
     );
   }
 }
+
+/**
+ * Thrown by a distributed lock (see `src/common/locks`) when the lock for a
+ * resource could not be acquired within the allowed attempts — i.e. another
+ * request/process is already mutating the same resource. Maps to a 409 so
+ * clients can treat concurrent state mutations as a transient conflict and
+ * retry (or surface a "please try again" message).
+ */
+export class LockNotAcquiredException extends DomainException {
+  constructor(resource: string, details?: unknown) {
+    super(
+      ErrorCode.LOCK_ACQUISITION_FAILED,
+      `Another request is currently modifying this resource: '${resource}'. Please retry shortly.`,
+      details,
+    );
+  }
+}
