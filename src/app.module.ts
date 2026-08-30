@@ -37,6 +37,7 @@ import { AuditModule } from './modules/audit/audit.module';
 import { AiModule } from './modules/ai/ai.module';
 import { HealthModule } from './modules/health/health.module';
 import { AgentTraceInterceptor } from './common/interceptors/agent-trace.interceptor';
+import { RequestContextInterceptor } from './common/interceptors/request-context.interceptor';
 
 /**
  * Root application module. Wires the global infrastructure (config, logging,
@@ -115,6 +116,7 @@ import { AgentTraceInterceptor } from './common/interceptors/agent-trace.interce
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: RolesGuard },
     { provide: APP_GUARD, useClass: AstroidThrottlerGuard },
+    { provide: APP_INTERCEPTOR, useClass: RequestContextInterceptor },
     { provide: APP_INTERCEPTOR, useClass: AgentTraceInterceptor },
     { provide: APP_INTERCEPTOR, useClass: ResponseInterceptor },
     { provide: APP_INTERCEPTOR, useClass: AuditInterceptor },
