@@ -25,6 +25,7 @@ export const policyConfigurationSchema = z
         endHour: z.number().int().min(1).max(24),
         days: z.array(z.number().int().min(0).max(6)).optional(),
       })
+      .strict()
       .optional(),
     requiresApproval: z.boolean().optional(),
     /** Any transaction at or above this amount forces an approval proposal. */
@@ -56,6 +57,7 @@ export const policyConfigurationSchemaStrict = z
         endHour: z.number().int().min(1).max(24),
         days: z.array(z.number().int().min(0).max(6)).optional(),
       })
+      .strict()
       .refine(
         (data) => !data.days || data.days.length > 0,
         { message: 'timeWindow.days must not be empty when provided' },
@@ -80,7 +82,7 @@ export const policyConfigurationSchemaStrict = z
       }
       return true;
     },
-    { message: 'limits.maxAmount must be greater than limits.minAmount when both are specified' },
+    { message: 'maxAmount must be greater than minAmount when both are specified' },
   )
   .refine(
     (data) => {

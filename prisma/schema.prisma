@@ -423,6 +423,7 @@ model Transaction {
   @@index([organizationId, createdAt])
   @@index([walletId, status])
   @@index([agentId, status])
+  @@index([agentId, createdAt])
   @@map("transactions")
 }
 
@@ -489,6 +490,11 @@ model AuditLog {
   newValue       Json?
   ipAddress      String?
   device         String?
+  // Correlates this entry with the originating request's trace id
+  // (AsyncLocalStorage-backed `TraceContext`, seeded from `x-request-id` /
+  // `x-correlation-id`). Not part of the hash chain — it's correlation
+  // metadata, not tamper-evident content.
+  requestId      String?
   previousHash   String?  // SHA-256 hash of the preceding audit log entry
   hash           String?  // SHA-256 hash of this entry (links to previous)
   createdAt      DateTime @default(now())
@@ -501,6 +507,7 @@ model AuditLog {
   @@index([entity, entityId])
   @@index([createdAt])
   @@index([organizationId, createdAt])
+  @@index([requestId])
   @@map("audit_logs")
 }
 

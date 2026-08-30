@@ -7,6 +7,7 @@ import { AuthService } from './auth.service';
 import { JwtStrategy } from './jwt.strategy';
 import { ApiKeyStrategy } from './api-key.strategy';
 import { ApiKeyGuard } from '../../common/guards/api-key.guard';
+import { ApiKeyAuthGuard } from '../../common/guards/api-key-auth.guard';
 import { ScopesGuard } from '../../common/guards/scopes.guard';
 import { TokenBlacklistService } from './services/token-blacklist.service';
 import { PasskeyController } from './controllers/passkey.controller';
@@ -44,6 +45,7 @@ import { redisConfig } from '../../config/redis.config';
     JwtStrategy,
     ApiKeyStrategy,
     ApiKeyGuard,
+    ApiKeyAuthGuard,
     ScopesGuard,
     PasskeyService,
     TokenBlacklistService,
@@ -53,6 +55,7 @@ import { redisConfig } from '../../config/redis.config';
     JwtStrategy,
     ApiKeyStrategy,
     ApiKeyGuard,
+    ApiKeyAuthGuard,
     ScopesGuard,
     PasskeyService,
     TokenBlacklistService,
