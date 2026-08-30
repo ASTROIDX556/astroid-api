@@ -2,6 +2,7 @@ import { ArgumentMetadata, Injectable, PipeTransform } from '@nestjs/common';
 import { stellarMemoSchema, StellarMemo } from './stellar-memo.schema';
 import { sanitizeMemo } from './stellar-memo.sanitizer';
 import { ValidationException } from '../exceptions/domain.exception';
+import { formatZodError } from './zod-error';
 
 /**
  * NestJS validation and sanitization pipe for Stellar transaction memos.
@@ -30,11 +31,7 @@ export class StellarMemoPipe implements PipeTransform<unknown, StellarMemo | und
     // Validate with Zod schema first
     const parseResult = stellarMemoSchema.safeParse(value);
     if (!parseResult.success) {
-      const details = parseResult.error.issues.map((issue) => ({
-        path: issue.path.join('.'),
-        message: issue.message,
-      }));
-      throw new ValidationException('Invalid memo', details);
+      throw new ValidationException('Invalid memo', formatZodError(parseResult.error));
     }
 
     // Sanitize/normalize the validated value

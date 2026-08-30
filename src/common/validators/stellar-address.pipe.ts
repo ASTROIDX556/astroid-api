@@ -2,6 +2,7 @@ import { ArgumentMetadata, Injectable, PipeTransform } from '@nestjs/common';
 import { ZodType } from 'zod';
 import { stellarAddressSchema } from './stellar-address.schema';
 import { ValidationException } from '../exceptions/domain.exception';
+import { formatZodError } from './zod-error';
 
 /**
  * NestJS validation pipe for a single Stellar address.
@@ -27,11 +28,7 @@ export class StellarAddressPipe implements PipeTransform<unknown, string> {
 
     const parsed = this.schema.safeParse(value);
     if (!parsed.success) {
-      const details = parsed.error.issues.map((issue) => ({
-        path: issue.path.join('.'),
-        message: issue.message,
-      }));
-      throw new ValidationException('Invalid Stellar address', details);
+      throw new ValidationException('Invalid Stellar address', formatZodError(parsed.error));
     }
     return parsed.data;
   }
