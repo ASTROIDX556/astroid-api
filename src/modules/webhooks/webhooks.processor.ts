@@ -128,7 +128,10 @@ export class WebhooksProcessor extends WorkerHost {
   }): Promise<void> {
     if (!this.prisma) return;
     try {
-      const prismaAny = this.prisma as unknown as Record<string, unknown>;
+      // Persist through the dedicated worker client so background writes are
+      // never aborted by the API-oriented query timeouts (issue #76).
+      const client = this.prisma.workerClient ?? this.prisma;
+      const prismaAny = client as unknown as Record<string, unknown>;
       const delegate = prismaAny['webhookDelivery'] as
         | { upsert?: (args: unknown) => Promise<unknown> }
         | undefined;

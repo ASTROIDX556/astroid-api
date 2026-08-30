@@ -19,6 +19,23 @@ export const appEnvSchema = z.object({
 
 export const databaseEnvSchema = z.object({
   DATABASE_URL: z.string().min(1, 'DATABASE_URL is required'),
+  // Connection pool sizing — applied as Prisma `connection_limit` URL params.
+  DATABASE_CONNECTION_LIMIT: z.coerce.number().int().positive().default(10),
+  // Worker pool stays small: background jobs must never starve API traffic.
+  DATABASE_WORKER_CONNECTION_LIMIT: z.coerce.number().int().positive().default(3),
+  // How long a query waits for a free connection before failing fast (ms).
+  // 0 waits indefinitely (Prisma `pool_timeout` semantics).
+  DATABASE_POOL_TIMEOUT_MS: z.coerce.number().int().nonnegative().default(5000),
+  // Client-side guard: fails the promise fast when a query exceeds this (ms).
+  // 0 disables the client-side race (server-side statement_timeout still applies).
+  DATABASE_QUERY_TIMEOUT_MS: z.coerce.number().int().nonnegative().default(5000),
+  // Server-side `statement_timeout` (ms) — Postgres aborts the runaway query so
+  // the pooled connection is actually released. 0 disables the guard.
+  DATABASE_STATEMENT_TIMEOUT_MS: z.coerce.number().int().nonnegative().default(10000),
+  // Extended client-side timeout for the dedicated worker pool (ms). Long-running
+  // worker transactions (rollups, outbox drains) must not be killed by the API
+  // guard; 0 disables the worker guard entirely.
+  DATABASE_WORKER_QUERY_TIMEOUT_MS: z.coerce.number().int().nonnegative().default(60000),
 });
 
 export const redisEnvSchema = z.object({
