@@ -22,6 +22,7 @@ import {
 } from './agent.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
+import { UseAgentLock } from '../../common/locks/agent-lock.decorator';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 import { AuthenticatedUser } from '../../common/interfaces/authenticated-user.interface';
 import { PaginationQuery, paginationQuerySchema } from '../../common/helpers/pagination';
@@ -93,6 +94,8 @@ export class AgentController {
   @ApiResponse({ status: 401, description: 'Not authenticated' })
   @ApiResponse({ status: 403, description: 'Insufficient permissions' })
   @ApiResponse({ status: 404, description: 'Agent not found' })
+  @UseAgentLock()
+  @ApiOperation({ summary: 'Update an agent' })
   update(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id') id: string,
@@ -112,6 +115,8 @@ export class AgentController {
   @ApiResponse({ status: 401, description: 'Not authenticated' })
   @ApiResponse({ status: 403, description: 'Insufficient permissions' })
   @ApiResponse({ status: 404, description: 'Agent not found' })
+  @UseAgentLock()
+  @ApiOperation({ summary: 'Pause an agent' })
   pause(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
     return this.agentService.setStatus(user.organizationId, user.id, id, AgentStatus.PAUSED);
   }
@@ -127,6 +132,8 @@ export class AgentController {
   @ApiResponse({ status: 401, description: 'Not authenticated' })
   @ApiResponse({ status: 403, description: 'Insufficient permissions' })
   @ApiResponse({ status: 404, description: 'Agent not found' })
+  @UseAgentLock()
+  @ApiOperation({ summary: 'Reactivate an agent' })
   resume(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
     return this.agentService.setStatus(user.organizationId, user.id, id, AgentStatus.ACTIVE);
   }
@@ -143,6 +150,8 @@ export class AgentController {
   @ApiResponse({ status: 401, description: 'Not authenticated' })
   @ApiResponse({ status: 403, description: 'Insufficient permissions (requires OWNER or ADMIN)' })
   @ApiResponse({ status: 404, description: 'Agent not found' })
+  @UseAgentLock()
+  @ApiOperation({ summary: 'Suspend an agent' })
   suspend(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
     return this.agentService.setStatus(user.organizationId, user.id, id, AgentStatus.SUSPENDED);
   }
@@ -161,6 +170,8 @@ export class AgentController {
   @ApiResponse({ status: 401, description: 'Not authenticated' })
   @ApiResponse({ status: 403, description: 'Insufficient permissions' })
   @ApiResponse({ status: 404, description: 'Agent or wallet not found' })
+  @UseAgentLock()
+  @ApiOperation({ summary: 'Assign a primary wallet to an agent' })
   assignWallet(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id') id: string,
@@ -181,6 +192,8 @@ export class AgentController {
   @ApiResponse({ status: 401, description: 'Not authenticated' })
   @ApiResponse({ status: 403, description: 'Insufficient permissions (requires OWNER or ADMIN)' })
   @ApiResponse({ status: 404, description: 'Agent not found' })
+  @UseAgentLock()
+  @ApiOperation({ summary: 'Archive (soft delete) an agent' })
   remove(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
     return this.agentService.remove(user.organizationId, user.id, id);
   }
