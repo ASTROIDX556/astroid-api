@@ -423,6 +423,7 @@ model Transaction {
   @@index([organizationId, createdAt])
   @@index([walletId, status])
   @@index([agentId, status])
+  @@index([agentId, createdAt])
   @@map("transactions")
 }
 
@@ -489,6 +490,8 @@ model AuditLog {
   newValue       Json?
   ipAddress      String?
   device         String?
+  previousHash   String?  // SHA-256 hash of the preceding audit log entry
+  hash           String?  // SHA-256 hash of this entry (links to previous)
   createdAt      DateTime @default(now())
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
