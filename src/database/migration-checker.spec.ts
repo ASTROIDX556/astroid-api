@@ -89,7 +89,7 @@ describe('MigrationChecker', () => {
         ]),
       };
 
-      const result = await getAppliedMigrations(mockPrisma as any);
+      const result = await getAppliedMigrations(mockPrisma as unknown as import('@prisma/client').PrismaClient);
 
       expect(result.size).toBe(2);
       expect(result.get('20260830_01_init')).toEqual({
@@ -118,7 +118,7 @@ describe('MigrationChecker', () => {
         ]),
       };
 
-      const result = await getAppliedMigrations(mockPrisma as any);
+      const result = await getAppliedMigrations(mockPrisma as unknown as import('@prisma/client').PrismaClient);
 
       expect(result.size).toBe(2);
       expect(result.get('20260830_01_init')?.finished).toBe(true);
@@ -135,7 +135,7 @@ describe('MigrationChecker', () => {
         ),
       };
 
-      const result = await getAppliedMigrations(mockPrisma as any);
+      const result = await getAppliedMigrations(mockPrisma as unknown as import('@prisma/client').PrismaClient);
 
       expect(result.size).toBe(0);
     });
@@ -145,7 +145,7 @@ describe('MigrationChecker', () => {
         $queryRawUnsafe: vi.fn().mockResolvedValue([]),
       };
 
-      const result = await getAppliedMigrations(mockPrisma as any);
+      const result = await getAppliedMigrations(mockPrisma as unknown as import('@prisma/client').PrismaClient);
 
       expect(result.size).toBe(0);
     });
@@ -174,7 +174,7 @@ describe('MigrationChecker', () => {
         ]),
       };
 
-      const result = await checkMigrationStatus(mockPrisma as any, '/fake/migrations');
+      const result = await checkMigrationStatus(mockPrisma as unknown as import('@prisma/client').PrismaClient, '/fake/migrations');
 
       expect(result.upToDate).toBe(true);
       expect(result.pending).toEqual([]);
@@ -199,7 +199,7 @@ describe('MigrationChecker', () => {
         ]),
       };
 
-      const result = await checkMigrationStatus(mockPrisma as any, '/fake/migrations');
+      const result = await checkMigrationStatus(mockPrisma as unknown as import('@prisma/client').PrismaClient, '/fake/migrations');
 
       expect(result.upToDate).toBe(false);
       expect(result.pending).toHaveLength(1);
@@ -230,7 +230,7 @@ describe('MigrationChecker', () => {
         ]),
       };
 
-      const result = await checkMigrationStatus(mockPrisma as any, '/fake/migrations');
+      const result = await checkMigrationStatus(mockPrisma as unknown as import('@prisma/client').PrismaClient, '/fake/migrations');
 
       expect(result.upToDate).toBe(false);
       expect(result.failed).toHaveLength(1);
@@ -247,7 +247,7 @@ describe('MigrationChecker', () => {
         $queryRawUnsafe: vi.fn().mockResolvedValue([]),
       };
 
-      const result = await checkMigrationStatus(mockPrisma as any, '/fake/migrations');
+      const result = await checkMigrationStatus(mockPrisma as unknown as import('@prisma/client').PrismaClient, '/fake/migrations');
 
       expect(result.upToDate).toBe(true);
       expect(result.pending).toEqual([]);
@@ -261,7 +261,7 @@ describe('MigrationChecker', () => {
         $queryRawUnsafe: vi.fn().mockResolvedValue([]),
       };
 
-      const result = await checkMigrationStatus(mockPrisma as any, '/nonexistent/migrations');
+      const result = await checkMigrationStatus(mockPrisma as unknown as import('@prisma/client').PrismaClient, '/nonexistent/migrations');
 
       expect(result.upToDate).toBe(true);
       expect(result.pending).toEqual([]);
@@ -291,7 +291,7 @@ describe('MigrationChecker', () => {
         ]),
       };
 
-      const result = await checkMigrationStatus(mockPrisma as any, '/fake/migrations');
+      const result = await checkMigrationStatus(mockPrisma as unknown as import('@prisma/client').PrismaClient, '/fake/migrations');
 
       expect(result.upToDate).toBe(false);
       expect(result.failed).toHaveLength(1);
