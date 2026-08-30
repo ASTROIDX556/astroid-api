@@ -1,0 +1,64 @@
+import { describe, expect, it, vi } from 'vitest';
+import { RiskBand } from '@prisma/client';
+import { RiskService } from './risk.service';
+import { RiskEngine } from './risk.engine';
+import { RiskFactorsInput } from './risk.types';
+
+const lowRisk: RiskFactorsInput = {
+  amount: 20,
+  asset: 'USDC',
+  knownRecipient: true,
+  recentTransactionCount: 1,
+  walletAgeDays: 365,
+  policyViolations: 0,
+  hourUtc: 12,
+};
+
+function createEventBus() {
+  return { emit: vi.fn().mockResolvedValue(undefined) };
+}
+
+describe('RiskService', () => {
+  it('emits a RiskEvaluated event with full factor breakdown', async () => {
+    const eventBus = createEventBus();
+    const service = new RiskService(new RiskEngine(), eventBus as any);
+
+    const assessment = await service.evaluate('org-1', lowRisk, {
+      transactionId: 'tx-1',
+      actorId: 'agent-1',
+    });
+
+    expect(assessment.band).toBe(RiskBand.LOW);
+    expect(assessment.factors.length).toBe(6);
+
+    expect(eventBus.emit).toHaveBeenCalledOnce();
+    const [eventName, payload] = eventBus.emit.mock.calls[0];
+    expect(eventName).toBe('risk.evaluated');
+    expect(payload.transactionId).toBe('tx-1');
+    expect(payload.score).toBe(assessment.score);
+    expect(payload.band).toBe(RiskBand.LOW);
+    expect(payload.factors).toEqual(assessment.factors);
+    expect(payload.canAutoExecute).toBe(true);
+  });
+
+  it('assess() returns a result without emitting events', async () => {
+    const eventBus = createEventBus();
+    const service = new RiskService(new RiskEngine(), eventBus as any);
+
+    const assessment = service.assess(lowRisk);
+    expect(assessment.band).toBe(RiskBand.LOW);
+    expect(eventBus.emit).not.toHaveBeenCalled();
+  });
+
+  it('passes config overrides through to the engine', async () => {
+    const eventBus = createEventBus();
+    const service = new RiskService(new RiskEngine(), eventBus as any);
+
+    const assessment = service.assess(
+      { ...lowRisk, amount: 100 },
+      { amountSaturation: 100 },
+    );
+    const amountFactor = assessment.factors.find((f) => f.factor === 'amount');
+    expect(amountFactor!.contribution).toBe(30);
+  });
+});
