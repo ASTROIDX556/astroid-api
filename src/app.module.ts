@@ -13,6 +13,7 @@ import { REQUEST_ID_HEADER } from './common/constants/headers';
 
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
+import { ScopesGuard } from './common/guards/scopes.guard';
 import { AstroidThrottlerGuard } from './common/guards/throttler.guard';
 import { ResponseInterceptor } from './common/interceptors/response.interceptor';
 import { AuditInterceptor } from './common/interceptors/audit.interceptor';
@@ -45,6 +46,7 @@ import { AgentTraceInterceptor } from './common/interceptors/agent-trace.interce
  * platform's contract on every request:
  *   - JwtAuthGuard      : authentication on all routes except @Public()
  *   - RolesGuard        : RBAC on routes decorated with @Roles()
+ *   - ScopesGuard       : Fine-grained permission scopes for API keys & agents
  *   - ThrottlerGuard    : per-organization / per-IP rate limiting
  *   - ResponseInterceptor: wraps every result in the success envelope
  *   - AllExceptionsFilter: converts every error into the error envelope
@@ -114,6 +116,7 @@ import { AgentTraceInterceptor } from './common/interceptors/agent-trace.interce
   providers: [
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: RolesGuard },
+    { provide: APP_GUARD, useClass: ScopesGuard },
     { provide: APP_GUARD, useClass: AstroidThrottlerGuard },
     { provide: APP_INTERCEPTOR, useClass: AgentTraceInterceptor },
     { provide: APP_INTERCEPTOR, useClass: ResponseInterceptor },
