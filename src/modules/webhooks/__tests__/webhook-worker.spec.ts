@@ -205,7 +205,7 @@ describe('WebhookWorker - process', () => {
         text: async () => '{}',
         headers: new Map([['content-type', 'application/json']]),
       } as Response);
-    } as any);
+    }
 
     const job = {
       data: jobData,

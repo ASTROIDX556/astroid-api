@@ -1,5 +1,5 @@
-import { describe, expect, it, vi } from 'vitest';
-import { hmacSign } from '../crypto.util';
+import { describe, expect, it } from 'vitest';
+import { hmacSign } from '../../utils/crypto.util';
 
 describe('crypto.util - hmacSign', () => {
   it('generates HMAC-SHA256 signature for a given secret and payload', () => {
