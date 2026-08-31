@@ -33,6 +33,7 @@ import { AuditAction } from '../../common/decorators/audit-action.decorator';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 import { AuthenticatedUser } from '../../common/interfaces/authenticated-user.interface';
 import { PaginationQuery, paginationQuerySchema } from '../../common/helpers/pagination';
+import { ApiEnvelope } from '../../common/decorators/api-envelope.decorator';
 
 @ApiTags('wallets')
 @ApiBearerAuth('access-token')
@@ -51,6 +52,7 @@ export class WalletController {
   @ApiQuery({ name: 'limit', required: false, type: Number, description: 'Items per page (default: 20)' })
   @ApiQuery({ name: 'status', required: false, enum: ['ACTIVE', 'FROZEN', 'ARCHIVED'], description: 'Filter by wallet status' })
   @ApiQuery({ name: 'network', required: false, enum: ['TESTNET', 'PUBLIC'], description: 'Filter by Stellar network' })
+  @ApiEnvelope(CreateWalletDto as never, { isArray: true })
   @ApiResponse({ status: 200, description: 'Paginated list of wallets' })
   @ApiResponse({ status: 401, description: 'Not authenticated' })
   list(
@@ -70,6 +72,7 @@ export class WalletController {
       'When importing, only the public address is recorded for balance tracking.',
   })
   @ApiBody({ type: CreateWalletDto })
+  @ApiEnvelope(CreateWalletDto as never)
   @ApiResponse({ status: 201, description: 'Wallet created successfully (secret key included on generation)' })
   @ApiResponse({ status: 400, description: 'Validation error' })
   @ApiResponse({ status: 401, description: 'Not authenticated' })
@@ -87,6 +90,7 @@ export class WalletController {
     description: 'Returns full details of a single wallet by ID.',
   })
   @ApiParam({ name: 'id', description: 'Wallet UUID', example: '018f0a1b-...' })
+  @ApiEnvelope(CreateWalletDto as never)
   @ApiResponse({ status: 200, description: 'Wallet details' })
   @ApiResponse({ status: 401, description: 'Not authenticated' })
   @ApiResponse({ status: 404, description: 'Wallet not found' })

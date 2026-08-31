@@ -85,6 +85,13 @@ export const throttleEnvSchema = z.object({
   THROTTLE_TTL: z.coerce.number().int().positive().default(60),
 });
 
+export const rateLimitEnvSchema = z.object({
+  // Sliding-window size, in seconds, for the Redis-backed rate limiter guard.
+  RATE_LIMIT_WINDOW_SECONDS: z.coerce.number().int().positive().default(60),
+  // Max requests allowed per client within the sliding window.
+  RATE_LIMIT_MAX_REQUESTS: z.coerce.number().int().positive().default(120),
+});
+
 export const metricsEnvSchema = z.object({
   // Comma-separated CIDR ranges permitted to scrape /metrics. Defaults to
   // loopback + RFC1918 private ranges so the endpoint is internal-only unless

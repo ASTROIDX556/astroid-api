@@ -9,6 +9,7 @@ import { queueConfig } from './queue.config';
 import { aiConfig } from './ai.config';
 import { metricsConfig } from './metrics.config';
 import { encryptionConfig } from './encryption.config';
+import { rateLimitConfig } from './rate-limit.config';
 
 export * from './app.config';
 export * from './database.config';
@@ -20,6 +21,7 @@ export * from './queue.config';
 export * from './ai.config';
 export * from './metrics.config';
 export * from './encryption.config';
+export * from './rate-limit.config';
 
 /**
  * Global configuration module. Every slice is registered via `registerAs` and
@@ -40,5 +42,6 @@ export const AppConfigModule = ConfigModule.forRoot({
     aiConfig,
     metricsConfig,
     encryptionConfig,
+    rateLimitConfig,
   ],
 });
