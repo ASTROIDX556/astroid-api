@@ -22,4 +22,4 @@ export * from './guards/scopes.guard';
 export * from './guards/roles.guard';
 export * from './guards/throttler.guard';
 export * from './interceptors/horizon-circuit-breaker.interceptor';
-
+export * from './encryption';
