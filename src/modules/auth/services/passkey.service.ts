@@ -617,7 +617,7 @@ export class PasskeyService {
       where: { credentialId },
     });
 
-    this.logger.log(`Passkey revoked for user ${userId}: credential ${credentialId}`);
+    this.logger.log(`Passkey revoked for user ${credential.userId}: credential ${credential.id}`);
 
   }
 }
@@ -626,10 +626,6 @@ export class PasskeyService {
 
 function bufferToBase64url(buffer: Uint8Array): string {
   return Buffer.from(buffer).toString('base64url');
-}
-
-function base64urlToBuffer(base64url: string): Uint8Array {
-  return new Uint8Array(Buffer.from(base64url, 'base64url'));
 }
 
 /**
