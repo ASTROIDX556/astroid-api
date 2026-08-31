@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
 import {
   ApiOperation,
   ApiTags,
@@ -26,6 +26,10 @@ import { UseTransactionLock } from '../../common/locks/transaction-lock.decorato
 import { AuthenticatedUser } from '../../common/interfaces/authenticated-user.interface';
 import { PaginationQuery, paginationQuerySchema } from '../../common/helpers/pagination';
 import { ApiEnvelope } from '../../common/decorators/api-envelope.decorator';
+import {
+  SlidingWindowThrottlerGuard,
+  SlidingWindowLimit,
+} from '../../common/guards/sliding-window-throttler.guard';
 
 @ApiTags('transactions')
 @ApiBearerAuth('access-token')
@@ -56,6 +60,8 @@ export class TransactionController {
 
   @Post()
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.FINANCE, UserRole.DEVELOPER)
+  @UseGuards(SlidingWindowThrottlerGuard)
+  @SlidingWindowLimit(30, 60)
   @UseWalletLock()
   @UseTransactionLock({ attempts: 3, retryDelayMs: 50 })
   @AuditAction('TRANSFER_FUNDS')
@@ -80,6 +86,8 @@ export class TransactionController {
   }
 
   @Post('simulate')
+  @UseGuards(SlidingWindowThrottlerGuard)
+  @SlidingWindowLimit(60, 60)
   @ApiOperation({
     summary: 'Dry-run the governance pipeline without moving funds',
     description:
