@@ -1,5 +1,5 @@
 import { NestFactory } from '@nestjs/core';
-import { ValidationPipe } from '@nestjs/common';
+import { RequestMethod, ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { Logger as PinoLogger } from 'nestjs-pino';
@@ -64,7 +64,11 @@ async function bootstrap() {
 
   // API prefix (e.g. api/v1). Versioning is expressed via this stable prefix
   // rather than Nest URI versioning to avoid a duplicated version segment.
-  app.setGlobalPrefix(appConfig.apiPrefix);
+  // `/metrics` is excluded so it stays at a fixed, unversioned path for
+  // Prometheus scrape configs.
+  app.setGlobalPrefix(appConfig.apiPrefix, {
+    exclude: [{ path: 'metrics', method: RequestMethod.GET }],
+  });
 
   // OpenAPI / Swagger documentation
   if (appConfig.nodeEnv !== 'production') {

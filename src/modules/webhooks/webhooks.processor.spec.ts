@@ -65,11 +65,16 @@ describe('WebhooksProcessor', () => {
       expect(options.headers['user-agent']).toBe('Astroid-Webhook-Bot/1.0');
       expect(options.headers['x-astroid-event']).toBe('transaction.completed');
       expect(options.headers['x-astroid-event-id']).toBe(EVENT_ID);
+      // New required headers per spec: X-Astroid-Delivery and timestamp
+      expect(options.headers['x-astroid-delivery']).toBe(EVENT_ID);
+      expect(options.headers['x-astroid-timestamp']).toBeDefined();
+      expect(options.headers['x-astroid-timestamp']).toMatch(/^\d+$/);
 
-      // Verify HMAC-SHA256 signature
+      // Verify HMAC-SHA256 signature = HMAC(secret, timestamp + body)
       const body = options.body;
+      const timestamp = options.headers['x-astroid-timestamp'];
       const expectedSignature = createHmac('sha256', WEBHOOK_SECRET)
-        .update(body)
+        .update(`${timestamp}${body}`)
         .digest('hex');
       expect(options.headers['x-astroid-signature']).toBe(expectedSignature);
     });
