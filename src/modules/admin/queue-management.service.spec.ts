@@ -1,6 +1,16 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import type { Mock } from 'vitest';
 import { NotFoundException } from '@nestjs/common';
 import { QueueManagementService } from './queue-management.service';
+import { DomainEventName } from '../../events/event-names';
+
+function buildMockPrisma() {
+  return {
+    domainEvent: {
+      create: vi.fn().mockResolvedValue({ id: 'evt-1' }),
+    },
+  };
+}
 
 vi.mock('../../config/redis.config', () => ({
   redisConfig: () => ({ host: 'localhost', port: 6379, password: '', db: 0 }),
@@ -52,10 +62,12 @@ function buildMockQueue() {
 describe('QueueManagementService', () => {
   let service: QueueManagementService;
   let mockQueue: ReturnType<typeof buildMockQueue>;
+  let prismaMock: ReturnType<typeof buildMockPrisma>;
 
   beforeEach(() => {
     vi.clearAllMocks();
-    service = new QueueManagementService();
+    prismaMock = buildMockPrisma();
+    service = new QueueManagementService(prismaMock as unknown as never);
     mockQueue = buildMockQueue();
     vi.spyOn(service as never, 'getOrCreateQueue').mockReturnValue(mockQueue as never);
   });
@@ -240,6 +252,51 @@ describe('QueueManagementService', () => {
 
       expect(result.queues.length).toBeGreaterThan(0);
       expect(typeof result.retriedCount).toBe('number');
+    });
+
+    it('emits a batch audit event when jobs are retried', async () => {
+      mockQueue.getFailed.mockResolvedValue([
+        buildFailedJob({ id: 'job-1' }),
+        buildFailedJob({ id: 'job-2' }),
+      ]);
+
+      await service.batchRetry({ queue: 'webhooks', limit: 1000 });
+
+      const createMock = prismaMock.domainEvent.create as Mock;
+      expect(createMock).toHaveBeenCalledTimes(1);
+      const { data } = createMock.mock.calls[0][0];
+      expect(data.name).toBe(DomainEventName.JobRequeued);
+      expect(data.aggregateType).toBe('ADMIN_QUEUE_MANAGEMENT');
+      expect(data.payload).toEqual(
+        expect.objectContaining({
+          operation: 'batch_retry',
+          retriedCount: 2,
+          retriedJobIds: ['job-1', 'job-2'],
+        }),
+      );
+    });
+
+    it('does not emit audit event when no jobs are retried', async () => {
+      mockQueue.getFailed.mockResolvedValue([
+        buildFailedJob({ failedReason: 'SMTP timeout' }),
+      ]);
+
+      await service.batchRetry({
+        queue: 'webhooks',
+        reasonContains: 'nonexistent',
+        limit: 1000,
+      });
+
+      expect(prismaMock.domainEvent.create).not.toHaveBeenCalled();
+    });
+
+    it('continues retry even when audit event persistence fails', async () => {
+      mockQueue.getFailed.mockResolvedValue([buildFailedJob({ id: 'job-1' })]);
+      prismaMock.domainEvent.create.mockRejectedValue(new Error('db down'));
+
+      const result = await service.batchRetry({ queue: 'webhooks', limit: 1000 });
+
+      expect(result.retriedCount).toBe(1);
     });
   });
 
