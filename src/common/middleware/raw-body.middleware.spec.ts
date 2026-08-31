@@ -1,18 +1,26 @@
 import { describe, expect, it, vi } from 'vitest';
+import type { Request, Response } from 'express';
 import { RawBodyMiddleware } from './raw-body.middleware';
 
-function buildRequest(method = 'POST', body?: unknown) {
+interface MockRequest extends Pick<Request, 'method' | 'body'> {
+  rawBody?: Buffer;
+  on: ReturnType<typeof vi.fn>;
+  _emit: (event: string, ...args: unknown[]) => void;
+}
+
+function buildRequest(method = 'POST', body?: unknown): MockRequest {
   const listeners: Record<string, (...args: unknown[]) => void> = {};
-  return {
+  const req: MockRequest = {
     method,
     body,
-    rawBody: undefined as Buffer | undefined,
+    rawBody: undefined,
     on: vi.fn((event: string, cb: (...args: unknown[]) => void) => {
       listeners[event] = cb;
       return { on: vi.fn() };
     }),
     _emit: (event: string, ...args: unknown[]) => listeners[event]?.(...args),
   };
+  return req;
 }
 
 describe('RawBodyMiddleware', () => {
@@ -21,7 +29,7 @@ describe('RawBodyMiddleware', () => {
     const req = buildRequest('GET');
     const next = vi.fn();
 
-    middleware.use(req as any, {} as any, next);
+    middleware.use(req as unknown as Request, {} as Response, next);
 
     expect(next).toHaveBeenCalled();
     expect(req.rawBody).toBeUndefined();
@@ -32,7 +40,7 @@ describe('RawBodyMiddleware', () => {
     const req = buildRequest('POST');
     const next = vi.fn();
 
-    middleware.use(req as any, {} as any, next);
+    middleware.use(req as unknown as Request, {} as Response, next);
     expect(next).toHaveBeenCalled();
 
     // Verify 'data' and 'end' listeners were registered
@@ -45,7 +53,7 @@ describe('RawBodyMiddleware', () => {
     const req = buildRequest('POST', { event: 'test' });
     const next = vi.fn();
 
-    middleware.use(req as any, {} as any, next);
+    middleware.use(req as unknown as Request, {} as Response, next);
 
     expect(next).toHaveBeenCalled();
     expect(req.rawBody).toBeDefined();
@@ -57,7 +65,7 @@ describe('RawBodyMiddleware', () => {
     const req = buildRequest('POST', '{"event":"test"}');
     const next = vi.fn();
 
-    middleware.use(req as any, {} as any, next);
+    middleware.use(req as unknown as Request, {} as Response, next);
 
     expect(next).toHaveBeenCalled();
     expect(req.rawBody).toBeDefined();
@@ -69,7 +77,7 @@ describe('RawBodyMiddleware', () => {
     const req = buildRequest('PUT', { update: true });
     const next = vi.fn();
 
-    middleware.use(req as any, {} as any, next);
+    middleware.use(req as unknown as Request, {} as Response, next);
 
     expect(next).toHaveBeenCalled();
     expect(req.rawBody).toBeDefined();
@@ -80,7 +88,7 @@ describe('RawBodyMiddleware', () => {
     const req = buildRequest('PATCH', { patch: true });
     const next = vi.fn();
 
-    middleware.use(req as any, {} as any, next);
+    middleware.use(req as unknown as Request, {} as Response, next);
 
     expect(next).toHaveBeenCalled();
     expect(req.rawBody).toBeDefined();
