@@ -8,30 +8,54 @@ import {
   Post,
   Query,
 } from '@nestjs/common';
-import { ApiOperation, ApiTags } from '@nestjs/swagger';
+import {
+  ApiOperation,
+  ApiTags,
+  ApiBearerAuth,
+  ApiResponse,
+  ApiParam,
+  ApiBody,
+  ApiQuery,
+} from '@nestjs/swagger';
 import { UserRole } from '@prisma/client';
 import { BudgetService } from './budget.service';
+import { UseBudgetLock } from '../../common/locks/budget-lock.decorator';
 import {
   allocateBudgetSchema,
   AllocateBudgetInput,
+  AllocateBudgetDto,
   createBudgetSchema,
   CreateBudgetInput,
+  CreateBudgetDto,
   updateBudgetSchema,
   UpdateBudgetInput,
 } from './budget.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
+import { AuditAction } from '../../common/decorators/audit-action.decorator';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 import { AuthenticatedUser } from '../../common/interfaces/authenticated-user.interface';
 import { PaginationQuery, paginationQuerySchema } from '../../common/helpers/pagination';
 
 @ApiTags('budgets')
+@ApiBearerAuth('access-token')
 @Controller('budgets')
 export class BudgetController {
   constructor(private readonly budgetService: BudgetService) {}
 
   @Get()
-  @ApiOperation({ summary: 'List budgets' })
+  @ApiOperation({
+    summary: 'List budgets',
+    description:
+      'Returns a paginated list of budgets for the current organization. ' +
+      'Supports filtering by period and status.',
+  })
+  @ApiQuery({ name: 'page', required: false, type: Number, description: 'Page number (default: 1)' })
+  @ApiQuery({ name: 'limit', required: false, type: Number, description: 'Items per page (default: 20)' })
+  @ApiQuery({ name: 'period', required: false, enum: ['DAILY', 'WEEKLY', 'MONTHLY', 'QUARTERLY', 'YEARLY'], description: 'Filter by budget period' })
+  @ApiQuery({ name: 'enabled', required: false, type: Boolean, description: 'Filter by enabled status' })
+  @ApiResponse({ status: 200, description: 'Paginated list of budgets' })
+  @ApiResponse({ status: 401, description: 'Not authenticated' })
   list(
     @CurrentUser('organizationId') organizationId: string,
     @Query(new ZodValidationPipe(paginationQuerySchema)) query: PaginationQuery,
@@ -41,7 +65,17 @@ export class BudgetController {
 
   @Post()
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.FINANCE)
-  @ApiOperation({ summary: 'Create a budget' })
+  @AuditAction('BUDGET_CREATED')
+  @ApiOperation({
+    summary: 'Create a budget',
+    description:
+      'Creates a new budget with spending limits. Budgets can be hierarchical with parent-child relationships.',
+  })
+  @ApiBody({ type: CreateBudgetDto })
+  @ApiResponse({ status: 201, description: 'Budget created successfully' })
+  @ApiResponse({ status: 400, description: 'Validation error' })
+  @ApiResponse({ status: 401, description: 'Not authenticated' })
+  @ApiResponse({ status: 403, description: 'Insufficient permissions (requires OWNER, ADMIN, or FINANCE)' })
   create(
     @CurrentUser() user: AuthenticatedUser,
     @Body(new ZodValidationPipe(createBudgetSchema)) body: CreateBudgetInput,
@@ -50,14 +84,34 @@ export class BudgetController {
   }
 
   @Get(':id')
-  @ApiOperation({ summary: 'Get a budget with remaining balance and children' })
+  @ApiOperation({
+    summary: 'Get a budget with remaining balance and children',
+    description:
+      'Returns full details of a budget including its remaining balance, spending history, and child budgets.',
+  })
+  @ApiParam({ name: 'id', description: 'Budget UUID', example: '018f0a1b-...' })
+  @ApiResponse({ status: 200, description: 'Budget details with balance and children' })
+  @ApiResponse({ status: 401, description: 'Not authenticated' })
+  @ApiResponse({ status: 404, description: 'Budget not found' })
   findOne(@CurrentUser('organizationId') organizationId: string, @Param('id') id: string) {
     return this.budgetService.getDetail(organizationId, id);
   }
 
   @Patch(':id')
+  @UseBudgetLock()
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.FINANCE)
-  @ApiOperation({ summary: 'Update a budget' })
+  @AuditAction('BUDGET_UPDATED')
+  @ApiOperation({
+    summary: 'Update a budget',
+    description: 'Partial update of budget fields (name, limit, period, rollover, enabled).',
+  })
+  @ApiParam({ name: 'id', description: 'Budget UUID', example: '018f0a1b-...' })
+  @ApiBody({ type: CreateBudgetDto })
+  @ApiResponse({ status: 200, description: 'Budget updated successfully' })
+  @ApiResponse({ status: 400, description: 'Validation error' })
+  @ApiResponse({ status: 401, description: 'Not authenticated' })
+  @ApiResponse({ status: 403, description: 'Insufficient permissions' })
+  @ApiResponse({ status: 404, description: 'Budget not found' })
   update(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id') id: string,
@@ -67,8 +121,22 @@ export class BudgetController {
   }
 
   @Post(':id/allocate')
+  @UseBudgetLock()
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.FINANCE)
-  @ApiOperation({ summary: 'Allocate funds from the parent budget to this child' })
+  @AuditAction('BUDGET_ALLOCATED')
+  @ApiOperation({
+    summary: 'Allocate funds from the parent budget to this child',
+    description:
+      'Transfers funds from a parent budget to a child budget. The parent must have sufficient remaining balance.',
+  })
+  @ApiParam({ name: 'id', description: 'Child budget UUID', example: '018f0a1b-...' })
+  @ApiBody({ type: AllocateBudgetDto })
+  @ApiResponse({ status: 200, description: 'Funds allocated successfully' })
+  @ApiResponse({ status: 400, description: 'Validation error or insufficient parent balance' })
+  @ApiResponse({ status: 401, description: 'Not authenticated' })
+  @ApiResponse({ status: 403, description: 'Insufficient permissions' })
+  @ApiResponse({ status: 404, description: 'Budget not found' })
+  @ApiResponse({ status: 409, description: 'Parent budget has insufficient balance' })
   allocate(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id') id: string,
@@ -78,8 +146,20 @@ export class BudgetController {
   }
 
   @Delete(':id')
+  @UseBudgetLock()
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.FINANCE)
-  @ApiOperation({ summary: 'Delete (soft) a budget' })
+  @AuditAction('BUDGET_DELETED')
+  @ApiOperation({
+    summary: 'Delete (soft) a budget',
+    description:
+      'Soft-deletes the budget. The budget record is retained for audit purposes but is excluded from active queries. ' +
+      'Child budgets are also soft-deleted.',
+  })
+  @ApiParam({ name: 'id', description: 'Budget UUID', example: '018f0a1b-...' })
+  @ApiResponse({ status: 200, description: 'Budget deleted successfully' })
+  @ApiResponse({ status: 401, description: 'Not authenticated' })
+  @ApiResponse({ status: 403, description: 'Insufficient permissions' })
+  @ApiResponse({ status: 404, description: 'Budget not found' })
   remove(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
     return this.budgetService.remove(user.organizationId, user.id, id);
   }

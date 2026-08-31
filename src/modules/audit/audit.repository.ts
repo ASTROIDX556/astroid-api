@@ -13,6 +13,9 @@ export interface CreateAuditLogData {
   newValue?: Prisma.InputJsonValue;
   ipAddress?: string | null;
   device?: string | null;
+  requestId?: string | null;
+  previousHash?: string | null;
+  hash?: string | null;
 }
 
 /** Persistence for the append-only audit log. Writes and reads only — no updates. */
@@ -32,6 +35,9 @@ export class AuditRepository {
         newValue: data.newValue,
         ipAddress: data.ipAddress ?? null,
         device: data.device ?? null,
+        requestId: data.requestId ?? null,
+        previousHash: data.previousHash ?? null,
+        hash: data.hash ?? null,
       },
     });
   }
@@ -42,6 +48,28 @@ export class AuditRepository {
       this.prisma.auditLog.count({ where }),
     ]);
     return { items, total };
+  }
+
+  async exportLogs(
+    where: Prisma.AuditLogWhereInput,
+    limit: number,
+    cursor?: string,
+  ) {
+    return this.prisma.auditLog.findMany({
+      where,
+      take: limit + 1,
+      ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
+      orderBy: { createdAt: 'desc' },
+      include: {
+        user: {
+          select: {
+            id: true,
+            email: true,
+            name: true,
+          },
+        },
+      },
+    });
   }
 
   findById(organizationId: string, id: string) {

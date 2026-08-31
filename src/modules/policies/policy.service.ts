@@ -11,6 +11,7 @@ import {
   policyConfigurationSchemaStrict,
 } from './policy.types';
 import { NotFoundException, VelocityLimitExceededException, ValidationException } from '../../common/exceptions/domain.exception';
+import { formatZodError } from '../../common/validators/zod-error';
 import {
   buildPaginationMeta,
   PaginationQuery,
@@ -42,10 +43,7 @@ export class PolicyService {
     if (!validationResult.success) {
       throw new ValidationException(
         'Invalid policy configuration',
-        validationResult.error.errors.map((err) => ({
-          path: err.path.join('.'),
-          message: err.message,
-        })),
+        formatZodError(validationResult.error),
       );
     }
 
@@ -100,10 +98,7 @@ export class PolicyService {
       if (!validationResult.success) {
         throw new ValidationException(
           'Invalid policy configuration',
-          validationResult.error.errors.map((err) => ({
-            path: err.path.join('.'),
-            message: err.message,
-          })),
+          formatZodError(validationResult.error),
         );
       }
       data.configuration = validationResult.data as Prisma.InputJsonValue;
