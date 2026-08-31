@@ -8,6 +8,8 @@ import {
 import { Queue, Job } from 'bullmq';
 import { redisConfig } from '../../config/redis.config';
 import { Queues } from '../../queues/queues.constants';
+import { PrismaService } from '../../database/prisma.service';
+import { DomainEventName } from '../../events/event-names';
 import {
   DlqJobDetails,
   ListDlqJobsQuery,
@@ -20,6 +22,8 @@ export class DlqService implements OnModuleDestroy {
   private readonly logger = new Logger(DlqService.name);
   private readonly queueHandles: Map<string, Queue> = new Map();
   private readonly knownQueueNames: Set<string> = new Set(Object.values(Queues));
+
+  constructor(private readonly prisma: PrismaService) {}
 
   /**
    * Returns all known queue names (both standard and dynamically accessed).
@@ -164,6 +168,13 @@ export class DlqService implements OnModuleDestroy {
     await job.retry();
     this.logger.log(`Job '${jobId}' in queue '${queueName}' retried by admin.`);
 
+    await this.emitAuditEvent(DomainEventName.JobRequeued, {
+      queue: queueName,
+      jobId,
+      jobName: job.name,
+      retriedAt: new Date().toISOString(),
+    });
+
     return {
       jobId,
       queue: queueName,
@@ -197,6 +208,15 @@ export class DlqService implements OnModuleDestroy {
     }
 
     this.logger.log(`Retried ${retriedCount} failed jobs across queues: ${processedQueues.join(', ')}`);
+
+    if (retriedCount > 0) {
+      await this.emitAuditEvent(DomainEventName.JobRequeued, {
+        operation: 'batch_retry_all',
+        retriedCount,
+        queues: processedQueues,
+        retriedAt: new Date().toISOString(),
+      });
+    }
 
     return {
       retriedCount,
@@ -325,6 +345,28 @@ export class DlqService implements OnModuleDestroy {
       finishedOn: job.finishedOn,
       returnvalue: job.returnvalue,
     };
+  }
+
+  /**
+   * Emits an audit event to the append-only domain_event ledger.
+   * Best-effort — persistence failures are logged but never surface to the caller.
+   */
+  private async emitAuditEvent(
+    eventName: string,
+    payload: Record<string, unknown>,
+  ): Promise<void> {
+    try {
+      await this.prisma.domainEvent.create({
+        data: {
+          name: eventName,
+          aggregateType: 'ADMIN_DLQ',
+          payload: payload as Record<string, never>,
+          occurredAt: new Date(),
+        },
+      });
+    } catch (err) {
+      this.logger.warn(`Failed to emit audit event '${eventName}': ${(err as Error).message}`);
+    }
   }
 
   async onModuleDestroy(): Promise<void> {
