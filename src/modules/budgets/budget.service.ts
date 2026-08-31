@@ -15,6 +15,7 @@ import {
 import { Paginated } from '../../common/interfaces/api-response.interface';
 import { EventBusService } from '../../events/event-bus.service';
 import { DomainEventName } from '../../events/event-names';
+import { RedisLock } from '../../common/locks/redis-lock.util';
 
 const SORTABLE = ['createdAt', 'name', 'limitAmount', 'spent', 'period'];
 const Decimal = Prisma.Decimal;
@@ -36,6 +37,7 @@ export class BudgetService {
   constructor(
     private readonly repository: BudgetRepository,
     private readonly eventBus: EventBusService,
+    private readonly redisLock: RedisLock,
   ) {}
 
   async create(organizationId: string, actorId: string, input: CreateBudgetInput): Promise<Budget> {
@@ -120,27 +122,35 @@ export class BudgetService {
     childId: string,
     input: AllocateBudgetInput,
   ) {
+    // Acquire a distributed lock keyed on the parent budget to serialize
+    // concurrent allocations from the same parent, preventing double-spend.
     const child = await this.getOrThrow(organizationId, childId);
     if (!child.parentBudgetId) {
       throw new ConflictException('Only a child budget can receive an allocation');
     }
     const parent = await this.getOrThrow(organizationId, child.parentBudgetId);
+    const lockKey = `budget:${parent.id}`;
     const amount = new Decimal(input.amount);
-    if (amount.greaterThan(remaining(parent))) {
-      throw new BudgetExceededException('Allocation exceeds the parent budget remaining balance', {
-        parentRemaining: remaining(parent).toFixed(7),
-        requested: amount.toFixed(7),
+
+    return this.redisLock.withLock(lockKey, async () => {
+      // Re-read the parent inside the lock to get a fresh snapshot.
+      const freshParent = await this.getOrThrow(organizationId, parent.id);
+      if (amount.greaterThan(remaining(freshParent))) {
+        throw new BudgetExceededException('Allocation exceeds the parent budget remaining balance', {
+          parentRemaining: remaining(freshParent).toFixed(7),
+          requested: amount.toFixed(7),
+        });
+      }
+      const updated = await this.repository.update(childId, {
+        limitAmount: new Decimal(child.limitAmount).plus(amount),
       });
-    }
-    const updated = await this.repository.update(childId, {
-      limitAmount: new Decimal(child.limitAmount).plus(amount),
+      await this.eventBus.emit(
+        DomainEventName.BudgetAllocated,
+        { budgetId: childId, parentBudgetId: freshParent.id, amount: input.amount },
+        { organizationId, actorId, aggregateType: 'budget', aggregateId: childId },
+      );
+      return updated;
     });
-    await this.eventBus.emit(
-      DomainEventName.BudgetAllocated,
-      { budgetId: childId, parentBudgetId: parent.id, amount: input.amount },
-      { organizationId, actorId, aggregateType: 'budget', aggregateId: childId },
-    );
-    return updated;
   }
 
   /**
@@ -149,43 +159,53 @@ export class BudgetService {
    * mutate state — call {@link consume} after the payment succeeds.
    */
   async assertWithinBudget(organizationId: string, budgetId: string, amount: number) {
-    const budget = await this.getOrThrow(organizationId, budgetId);
-    const spendAfter = new Decimal(budget.spent).plus(amount);
-    if (spendAfter.greaterThan(budget.limitAmount)) {
-      await this.eventBus.emit(
-        DomainEventName.BudgetExceeded,
-        { budgetId, limit: budget.limitAmount.toFixed(7), attempted: spendAfter.toFixed(7) },
-        { organizationId, aggregateType: 'budget', aggregateId: budgetId },
-      );
-      throw new BudgetExceededException('Transaction would exceed the budget limit', {
-        budgetId,
-        limit: budget.limitAmount.toFixed(7),
-        spent: budget.spent.toFixed(7),
-        attempted: amount,
-      });
-    }
-    return budget;
+    // Lock the budget for the duration of the check-and-consume cycle so
+    // concurrent callers see a consistent view of the remaining headroom.
+    const lockKey = `budget:check:${budgetId}`;
+    return this.redisLock.withLock(lockKey, async () => {
+      const budget = await this.getOrThrow(organizationId, budgetId);
+      const spendAfter = new Decimal(budget.spent).plus(amount);
+      if (spendAfter.greaterThan(budget.limitAmount)) {
+        await this.eventBus.emit(
+          DomainEventName.BudgetExceeded,
+          { budgetId, limit: budget.limitAmount.toFixed(7), attempted: spendAfter.toFixed(7) },
+          { organizationId, aggregateType: 'budget', aggregateId: budgetId },
+        );
+        throw new BudgetExceededException('Transaction would exceed the budget limit', {
+          budgetId,
+          limit: budget.limitAmount.toFixed(7),
+          spent: budget.spent.toFixed(7),
+          attempted: amount,
+        });
+      }
+      return budget;
+    });
   }
 
   /** Records realised spend after a payment completes; emits warnings near cap. */
   async consume(organizationId: string, budgetId: string, amount: number) {
-    const budget = await this.repository.incrementSpent(budgetId, new Decimal(amount));
-    const utilisation = new Decimal(budget.spent).dividedBy(
-      budget.limitAmount.isZero() ? new Decimal(1) : budget.limitAmount,
-    );
-    await this.eventBus.emit(
-      DomainEventName.BudgetConsumed,
-      { budgetId, amount, spent: budget.spent.toFixed(7) },
-      { organizationId, aggregateType: 'budget', aggregateId: budgetId },
-    );
-    if (utilisation.greaterThanOrEqualTo(0.8)) {
+    // Serialize spend increments on the same budget to prevent concurrent
+    // agents from overshooting the limit together.
+    const lockKey = `budget:consume:${budgetId}`;
+    return this.redisLock.withLock(lockKey, async () => {
+      const budget = await this.repository.incrementSpent(budgetId, new Decimal(amount));
+      const utilisation = new Decimal(budget.spent).dividedBy(
+        budget.limitAmount.isZero() ? new Decimal(1) : budget.limitAmount,
+      );
       await this.eventBus.emit(
-        DomainEventName.BudgetWarning,
-        { budgetId, utilisation: utilisation.toFixed(4) },
+        DomainEventName.BudgetConsumed,
+        { budgetId, amount, spent: budget.spent.toFixed(7) },
         { organizationId, aggregateType: 'budget', aggregateId: budgetId },
       );
-    }
-    return budget;
+      if (utilisation.greaterThanOrEqualTo(0.8)) {
+        await this.eventBus.emit(
+          DomainEventName.BudgetWarning,
+          { budgetId, utilisation: utilisation.toFixed(4) },
+          { organizationId, aggregateType: 'budget', aggregateId: budgetId },
+        );
+      }
+      return budget;
+    });
   }
 
   async remove(organizationId: string, actorId: string, id: string) {

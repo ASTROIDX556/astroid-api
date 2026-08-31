@@ -6,13 +6,15 @@ import { RedisConfig } from '../../config/redis.config';
 import { REDIS_CLIENT } from './locks.constants';
 import { RedisLock } from './redis-lock.util';
 import { AgentLockInterceptor } from './agent-lock.interceptor';
+import { BudgetLockInterceptor } from './budget-lock.interceptor';
 
 /**
  * Global distributed-locking infrastructure.
  *
  * Provides a single shared ioredis client and the {@link RedisLock} service to
- * every module, and registers the {@link AgentLockInterceptor} that enforces
- * `@UseAgentLock()` on any decorated controller method.
+ * every module, and registers the {@link AgentLockInterceptor} and
+ * {@link BudgetLockInterceptor} that enforce `@UseAgentLock()` and
+ * `@UseBudgetLock()` on any decorated controller method.
  */
 @Global()
 @Module({
@@ -27,6 +29,7 @@ import { AgentLockInterceptor } from './agent-lock.interceptor';
     },
     RedisLock,
     { provide: APP_INTERCEPTOR, useClass: AgentLockInterceptor },
+    { provide: APP_INTERCEPTOR, useClass: BudgetLockInterceptor },
   ],
   exports: [REDIS_CLIENT, RedisLock],
 })
