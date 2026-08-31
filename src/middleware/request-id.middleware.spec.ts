@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { Request, Response } from 'express';
 import { RequestIdMiddleware } from './request-id.middleware';
-import { TraceContext, TraceContextData } from '../../common/context/trace.context';
+import { TraceContext } from '../common/context/trace.context';
 
 describe('RequestIdMiddleware', () => {
   const middleware = new RequestIdMiddleware();
