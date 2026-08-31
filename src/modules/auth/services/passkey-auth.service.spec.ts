@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { Mock } from 'vitest';
 import { ConfigService } from '@nestjs/config';
+import type { Redis } from 'ioredis';
 import { PasskeyService } from './passkey.service';
 import { PrismaService } from '../../../database/prisma.service';
 
@@ -19,32 +19,9 @@ vi.mock('@simplewebauthn/server', () => ({
 
 // ── Helpers ──
 
-interface MockTx {
-  passkeyChallenge: { deleteMany: Mock; create: Mock };
-  passkeyCredential: { create: Mock; update: Mock; findMany: Mock; findUnique: Mock };
-}
-
 function buildMockPrisma() {
-  const txMock: MockTx = {
-    passkeyChallenge: {
-      deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
-      create: vi.fn(),
-    },
-    passkeyCredential: {
-      create: vi.fn(),
-      update: vi.fn(),
-      findMany: vi.fn().mockResolvedValue([]),
-      findUnique: vi.fn(),
-    },
-  };
-
   return {
     user: { findUnique: vi.fn() },
-    passkeyChallenge: {
-      findFirst: vi.fn(),
-      create: vi.fn(),
-      deleteMany: vi.fn(),
-    },
     passkeyCredential: {
       findMany: vi.fn().mockResolvedValue([]),
       findUnique: vi.fn(),
@@ -52,10 +29,14 @@ function buildMockPrisma() {
       update: vi.fn(),
       delete: vi.fn(),
     },
-    $transaction: vi.fn(async (cb: (tx: MockTx) => Promise<MockTx>) => {
-      return cb(txMock);
-    }),
-    _txMock: txMock,
+  };
+}
+
+function buildMockRedis() {
+  return {
+    get: vi.fn(),
+    set: vi.fn(),
+    del: vi.fn(),
   };
 }
 
@@ -75,15 +56,18 @@ function buildMockConfig() {
 
 describe('PasskeyService - Authentication Flow', () => {
   let prisma: ReturnType<typeof buildMockPrisma>;
+  let redis: ReturnType<typeof buildMockRedis>;
   let config: ReturnType<typeof buildMockConfig>;
   let service: PasskeyService;
 
   beforeEach(() => {
     vi.clearAllMocks();
     prisma = buildMockPrisma();
+    redis = buildMockRedis();
     config = buildMockConfig();
     service = new PasskeyService(
       prisma as unknown as PrismaService,
+      redis as unknown as Redis,
       config as unknown as ConfigService,
     );
   });
@@ -111,12 +95,13 @@ describe('PasskeyService - Authentication Flow', () => {
 
       expect(result.challenge).toBe('reg-challenge-abc123');
       expect(result.rp.name).toBe('Astroid');
-      expect(prisma.passkeyChallenge.create).toHaveBeenCalledWith({
-        data: expect.objectContaining({
-          userId: 'user-1',
-          challenge: 'reg-challenge-abc123',
-        }),
-      });
+      // Challenge is stored in Redis with a TTL
+      expect(redis.set).toHaveBeenCalledWith(
+        'auth:passkey:challenge:reg-challenge-abc123',
+        JSON.stringify({ userId: 'user-1', purpose: 'registration' }),
+        'EX',
+        300,
+      );
     });
 
     it('should throw NotFoundException for unknown user', async () => {
@@ -150,7 +135,12 @@ describe('PasskeyService - Authentication Flow', () => {
 
       expect(result.challenge).toBe('auth-challenge-xyz789');
       expect(result.allowCredentials).toHaveLength(2);
-      expect(prisma.passkeyChallenge.create).toHaveBeenCalled();
+      expect(redis.set).toHaveBeenCalledWith(
+        'auth:passkey:challenge:auth-challenge-xyz789',
+        JSON.stringify({ userId: 'user-1', purpose: 'authentication' }),
+        'EX',
+        300,
+      );
     });
 
     it('should throw NotFoundException when no credentials exist', async () => {
@@ -164,12 +154,9 @@ describe('PasskeyService - Authentication Flow', () => {
 
   describe('verifyAuthentication', () => {
     it('should verify a valid authentication assertion', async () => {
-      prisma.passkeyChallenge.findFirst.mockResolvedValue({
-        id: 'ch-1',
-        userId: 'user-1',
-        challenge: 'auth-challenge-xyz789',
-        expiresAt: new Date(Date.now() + 300_000),
-      });
+      redis.get.mockResolvedValue(
+        JSON.stringify({ userId: 'user-1', purpose: 'authentication' }),
+      );
 
       prisma.passkeyCredential.findUnique.mockResolvedValue({
         id: 'pk-1',
@@ -208,10 +195,17 @@ describe('PasskeyService - Authentication Flow', () => {
           expectedRPID: 'localhost',
         }),
       );
+      // Challenge is consumed after successful verification
+      expect(redis.del).toHaveBeenCalledWith('auth:passkey:challenge:auth-challenge-xyz789');
+      // Counter is updated to prevent replay
+      expect(prisma.passkeyCredential.update).toHaveBeenCalledWith({
+        where: { credentialId: 'cred-1' },
+        data: { counter: 6 },
+      });
     });
 
     it('should throw ValidationException when no challenge exists', async () => {
-      prisma.passkeyChallenge.findFirst.mockResolvedValue(null);
+      redis.get.mockResolvedValue(null);
 
       await expect(
         service.verifyAuthentication({
@@ -232,12 +226,9 @@ describe('PasskeyService - Authentication Flow', () => {
     });
 
     it('should throw NotFoundException when credential does not exist', async () => {
-      prisma.passkeyChallenge.findFirst.mockResolvedValue({
-        id: 'ch-1',
-        userId: 'user-1',
-        challenge: 'auth-challenge-xyz789',
-        expiresAt: new Date(Date.now() + 300_000),
-      });
+      redis.get.mockResolvedValue(
+        JSON.stringify({ userId: 'user-1', purpose: 'authentication' }),
+      );
 
       prisma.passkeyCredential.findUnique.mockResolvedValue(null);
 
@@ -259,13 +250,41 @@ describe('PasskeyService - Authentication Flow', () => {
       ).rejects.toThrow('Passkey credential');
     });
 
-    it('should throw UnauthorizedException when verification fails', async () => {
-      prisma.passkeyChallenge.findFirst.mockResolvedValue({
-        id: 'ch-1',
-        userId: 'user-1',
-        challenge: 'auth-challenge-xyz789',
-        expiresAt: new Date(Date.now() + 300_000),
+    it('should throw NotFoundException when credential belongs to another user', async () => {
+      redis.get.mockResolvedValue(
+        JSON.stringify({ userId: 'user-1', purpose: 'authentication' }),
+      );
+
+      prisma.passkeyCredential.findUnique.mockResolvedValue({
+        id: 'pk-1',
+        userId: 'user-2',
+        credentialId: 'cred-1',
+        publicKey: 'pQEDJg',
+        counter: 5,
       });
+
+      await expect(
+        service.verifyAuthentication({
+          expectedChallenge: 'auth-challenge-xyz789',
+          credential: {
+            id: 'cred-1',
+            rawId: 'cred-1',
+            response: {
+              authenticatorData: 'mock-auth-data',
+              clientDataJSON: 'mock-client-data',
+              signature: 'mock-signature',
+            },
+            type: 'public-key' as const,
+          },
+          credentialId: 'cred-1',
+        }),
+      ).rejects.toThrow('Passkey credential');
+    });
+
+    it('should throw UnauthorizedException when verification fails', async () => {
+      redis.get.mockResolvedValue(
+        JSON.stringify({ userId: 'user-1', purpose: 'authentication' }),
+      );
 
       prisma.passkeyCredential.findUnique.mockResolvedValue({
         id: 'pk-1',
