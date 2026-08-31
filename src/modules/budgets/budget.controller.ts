@@ -19,6 +19,7 @@ import {
 } from '@nestjs/swagger';
 import { UserRole } from '@prisma/client';
 import { BudgetService } from './budget.service';
+import { UseBudgetLock } from '../../common/locks/budget-lock.decorator';
 import {
   allocateBudgetSchema,
   AllocateBudgetInput,
@@ -95,6 +96,7 @@ export class BudgetController {
   }
 
   @Patch(':id')
+  @UseBudgetLock()
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.FINANCE)
   @ApiOperation({
     summary: 'Update a budget',
@@ -116,6 +118,7 @@ export class BudgetController {
   }
 
   @Post(':id/allocate')
+  @UseBudgetLock()
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.FINANCE)
   @ApiOperation({
     summary: 'Allocate funds from the parent budget to this child',
@@ -139,6 +142,7 @@ export class BudgetController {
   }
 
   @Delete(':id')
+  @UseBudgetLock()
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.FINANCE)
   @ApiOperation({
     summary: 'Delete (soft) a budget',
