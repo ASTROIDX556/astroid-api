@@ -8,7 +8,7 @@ import {
 import { Reflector } from '@nestjs/core';
 import { from, lastValueFrom, Observable, throwError } from 'rxjs';
 import { Request } from 'express';
-import { RedisLock, DEFAULT_LOCK_TTL_MS } from './redis-lock.util';
+import { RedisLock } from './redis-lock.util';
 import { TRANSACTION_LOCK_KEY, TransactionLockOptions } from './transaction-lock.decorator';
 
 /** Default TTL for transaction-level locks (longer than agent/budget locks). */
