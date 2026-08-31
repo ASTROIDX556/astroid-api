@@ -3,16 +3,20 @@ import { MetricsController } from './metrics.controller';
 import { MetricsService } from './metrics.service';
 import { MetricsAccessGuard } from './metrics-access.guard';
 import { RequestMetricsMiddleware } from './metrics.middleware';
+import { WorkerMetricsService } from './worker-metrics.service';
 
 /**
  * Prometheus metrics module: HTTP duration/counter collection
- * (`RequestMetricsMiddleware`) and the `/metrics` scrape endpoint.
- * `MetricsService` is exported so other modules (e.g. workers) could record
- * custom metrics against the same registry in the future.
+ * (`RequestMetricsMiddleware`), the `/metrics` scrape endpoint,
+ * and worker job latency/outcome tracking (`WorkerMetricsService`).
+ *
+ * Both `MetricsService` and `WorkerMetricsService` are exported so
+ * workers and other modules can record custom metrics against the
+ * shared Prometheus registry.
  */
 @Module({
   controllers: [MetricsController],
-  providers: [MetricsService, MetricsAccessGuard, RequestMetricsMiddleware],
-  exports: [MetricsService],
+  providers: [MetricsService, MetricsAccessGuard, RequestMetricsMiddleware, WorkerMetricsService],
+  exports: [MetricsService, WorkerMetricsService],
 })
 export class MetricsModule {}

@@ -20,6 +20,7 @@ import {
 } from './approval.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
+import { AuditAction } from '../../common/decorators/audit-action.decorator';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 import { AuthenticatedUser } from '../../common/interfaces/authenticated-user.interface';
 import { PaginationQuery, paginationQuerySchema } from '../../common/helpers/pagination';
@@ -65,6 +66,7 @@ export class ApprovalController {
 
   @Post(':id/decision')
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.FINANCE)
+  @AuditAction('PROPOSAL_DECIDED')
   @ApiOperation({
     summary: 'Approve or reject a proposal',
     description:
@@ -89,6 +91,7 @@ export class ApprovalController {
 
   @Post(':id/approve')
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.FINANCE)
+  @AuditAction('PROPOSAL_APPROVED')
   @ApiOperation({
     summary: 'Approve a proposal (PRD alias of POST /:id/decision)',
     description:
@@ -115,6 +118,7 @@ export class ApprovalController {
 
   @Post(':id/reject')
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.FINANCE)
+  @AuditAction('PROPOSAL_REJECTED')
   @ApiOperation({
     summary: 'Reject a proposal (PRD alias of POST /:id/decision)',
     description:

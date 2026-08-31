@@ -126,4 +126,43 @@ describe('ApiKeyAuthGuard', () => {
     await expect(guard.canActivate(context)).resolves.toBe(true);
     expect(apiKeyService.verify).toHaveBeenCalledWith(validKey);
   });
+
+  it('extracts API keys from Authorization Bearer scheme with ast_ prefix', async () => {
+    const astKey = 'ast_live_abcdef1234567890abcdef1234567890abcdef12';
+    vi.spyOn(reflector, 'getAllAndOverride').mockReturnValue(undefined);
+    apiKeyService.verify.mockResolvedValue({
+      id: 'key-ast-header',
+      organizationId: orgId,
+      name: 'Astroid Bearer Key',
+      prefix: 'ast_live_abcd',
+      hashedKey: sha256(astKey),
+      permissions: ['*'],
+      allowedIps: [],
+      revokedAt: null,
+      expiresAt: null,
+    });
+
+    const context = createMockContext({ authorization: `Bearer ${astKey}` });
+    await expect(guard.canActivate(context)).resolves.toBe(true);
+    expect(apiKeyService.verify).toHaveBeenCalledWith(astKey);
+  });
+
+  it('extracts API keys from Authorization Bearer scheme with ak_ prefix', async () => {
+    vi.spyOn(reflector, 'getAllAndOverride').mockReturnValue(undefined);
+    apiKeyService.verify.mockResolvedValue({
+      id: 'key-ak-bearer',
+      organizationId: orgId,
+      name: 'AK Bearer Key',
+      prefix: 'ak_live_abcdef',
+      hashedKey: sha256(validKey),
+      permissions: ['*'],
+      allowedIps: [],
+      revokedAt: null,
+      expiresAt: null,
+    });
+
+    const context = createMockContext({ authorization: `Bearer ${validKey}` });
+    await expect(guard.canActivate(context)).resolves.toBe(true);
+    expect(apiKeyService.verify).toHaveBeenCalledWith(validKey);
+  });
 });

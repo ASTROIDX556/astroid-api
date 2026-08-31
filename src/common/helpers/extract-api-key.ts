@@ -22,7 +22,7 @@ export function extractApiKeyFromRequest(req: Request): string | undefined {
     if (/^ApiKey\s+/i.test(authHeader)) {
       return authHeader.replace(/^ApiKey\s+/i, '').trim();
     }
-    if (/^Bearer\s+ak_/i.test(authHeader)) {
+    if (/^Bearer\s+(ak_|ast_|astroid_)/i.test(authHeader)) {
       return authHeader.replace(/^Bearer\s+/i, '').trim();
     }
   }

@@ -21,6 +21,8 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { AuditAction } from '../../common/decorators/audit-action.decorator';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
+import { UseWalletLock } from '../../common/locks/wallet-lock.decorator';
+import { UseTransactionLock } from '../../common/locks/transaction-lock.decorator';
 import { AuthenticatedUser } from '../../common/interfaces/authenticated-user.interface';
 import { PaginationQuery, paginationQuerySchema } from '../../common/helpers/pagination';
 
@@ -52,6 +54,8 @@ export class TransactionController {
 
   @Post()
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.FINANCE, UserRole.DEVELOPER)
+  @UseWalletLock()
+  @UseTransactionLock({ attempts: 3, retryDelayMs: 50 })
   @AuditAction('TRANSFER_FUNDS')
   @ApiOperation({
     summary: 'Create a transaction (runs the full governance pipeline)',

@@ -29,6 +29,7 @@ import {
 } from './wallet.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
+import { AuditAction } from '../../common/decorators/audit-action.decorator';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 import { AuthenticatedUser } from '../../common/interfaces/authenticated-user.interface';
 import { PaginationQuery, paginationQuerySchema } from '../../common/helpers/pagination';
@@ -61,6 +62,7 @@ export class WalletController {
 
   @Post()
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.FINANCE, UserRole.DEVELOPER)
+  @AuditAction('WALLET_CREATED')
   @ApiOperation({
     summary: 'Create a wallet (generate a keypair or import an address)',
     description:
@@ -110,6 +112,7 @@ export class WalletController {
 
   @Patch(':id')
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.FINANCE, UserRole.DEVELOPER)
+  @AuditAction('WALLET_UPDATED')
   @ApiOperation({
     summary: 'Update a wallet label or owning agent',
     description: 'Partial update of wallet metadata. Does not affect the Stellar keypair.',
@@ -131,6 +134,7 @@ export class WalletController {
 
   @Post(':id/freeze')
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.FINANCE)
+  @AuditAction('WALLET_FROZEN')
   @ApiOperation({
     summary: 'Freeze a wallet (block outgoing transactions)',
     description:
@@ -148,6 +152,7 @@ export class WalletController {
 
   @Post(':id/unfreeze')
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.FINANCE)
+  @AuditAction('WALLET_UNFROZEN')
   @ApiOperation({
     summary: 'Unfreeze a wallet',
     description: 'Restores a frozen wallet to ACTIVE status, allowing outgoing transactions again.',
@@ -164,6 +169,7 @@ export class WalletController {
 
   @Delete(':id')
   @Roles(UserRole.OWNER, UserRole.ADMIN)
+  @AuditAction('WALLET_ARCHIVED')
   @ApiOperation({
     summary: 'Archive (soft-delete) a wallet',
     description:
