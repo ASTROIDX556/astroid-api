@@ -11,3 +11,7 @@ export const RequireScopes = (...scopes: string[]) => SetMetadata(SCOPES_KEY, sc
 
 /** Alias for RequireScopes */
 export const Scopes = RequireScopes;
+
+/** Alias for RequireScopes (e.g., @RequiredScopes('transactions:write')) */
+export const RequiredScopes = RequireScopes;
+
