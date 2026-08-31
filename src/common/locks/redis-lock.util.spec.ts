@@ -112,6 +112,34 @@ describe('RedisLock', () => {
       await lock.withLock('agent-1', vi.fn().mockResolvedValue(undefined));
       expect(redis.set).toHaveBeenCalledWith('lock:agent-1', expect.any(String), 'PX', 5000, 'NX');
     });
+
+    it('passes through retry attempts and delay to acquire', async () => {
+      redis.set.mockResolvedValueOnce(null).mockResolvedValueOnce('OK');
+
+      const fn = vi.fn().mockResolvedValue('done');
+      const result = await lock.withLock('agent-1', fn, 5000, 2, 0);
+
+      expect(result).toBe('done');
+      expect(redis.set).toHaveBeenCalledTimes(2);
+    });
+
+    it('retries and eventually fails when lock remains held', async () => {
+      redis.set.mockResolvedValue(null);
+      const fn = vi.fn();
+
+      await expect(lock.withLock('agent-1', fn, 5000, 3, 0)).rejects.toBeInstanceOf(
+        LockNotAcquiredException,
+      );
+      expect(fn).not.toHaveBeenCalled();
+      expect(redis.set).toHaveBeenCalledTimes(3);
+    });
+
+    it('still releases the lock when handler throws with retry params', async () => {
+      const fn = vi.fn().mockRejectedValue(new Error('boom'));
+
+      await expect(lock.withLock('agent-1', fn, 5000, 2, 0)).rejects.toThrow('boom');
+      expect(redis.eval).toHaveBeenCalledTimes(1);
+    });
   });
 
   it('disconnects the shared client on module destroy', () => {
