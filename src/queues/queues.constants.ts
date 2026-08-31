@@ -17,6 +17,12 @@ export const Queues = {
   OutboxEvents: 'outbox-events',
   /** Stellar fee-bump submission retries. */
   StellarFeeBump: 'stellar-fee-bump',
+  /** Transaction execution pipeline. */
+  Transactions: 'transactions',
+  /** Asynchronous risk evaluation and scoring. */
+  RiskAnalysis: 'risk-analysis',
+  /** Dead-letter queue for terminal job failures across all workers. */
+  DeadLetter: 'dead-letter',
 } as const;
 
 export type QueueName = (typeof Queues)[keyof typeof Queues];

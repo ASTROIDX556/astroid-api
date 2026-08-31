@@ -120,6 +120,7 @@ import { AgentTraceInterceptor } from './common/interceptors/agent-trace.interce
     HealthModule,
     MetricsModule,
     DeadLetterModule,
+    AdminModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: JwtAuthGuard },
