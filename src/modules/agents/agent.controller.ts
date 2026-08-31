@@ -22,6 +22,7 @@ import {
 } from './agent.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
+import { AuditAction } from '../../common/decorators/audit-action.decorator';
 import { UseAgentLock } from '../../common/locks/agent-lock.decorator';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 import { AuthenticatedUser } from '../../common/interfaces/authenticated-user.interface';
@@ -51,6 +52,7 @@ export class AgentController {
 
   @Post()
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.DEVELOPER)
+  @AuditAction('AGENT_CREATED')
   @ApiOperation({
     summary: 'Register a new agent',
     description:
@@ -83,6 +85,7 @@ export class AgentController {
 
   @Patch(':id')
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.DEVELOPER)
+  @AuditAction('AGENT_UPDATED')
   @ApiOperation({
     summary: 'Update an agent',
     description: 'Partial update of agent fields (name, description, model, capabilities, etc.).',
@@ -106,6 +109,7 @@ export class AgentController {
 
   @Post(':id/pause')
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.DEVELOPER)
+  @AuditAction('AGENT_PAUSED')
   @ApiOperation({
     summary: 'Pause an agent',
     description: 'Temporarily pauses the agent. Paused agents cannot initiate transactions.',
@@ -123,6 +127,7 @@ export class AgentController {
 
   @Post(':id/resume')
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.DEVELOPER)
+  @AuditAction('AGENT_RESUMED')
   @ApiOperation({
     summary: 'Reactivate an agent',
     description: 'Resumes a paused agent back to ACTIVE status.',
@@ -140,6 +145,7 @@ export class AgentController {
 
   @Post(':id/suspend')
   @Roles(UserRole.OWNER, UserRole.ADMIN)
+  @AuditAction('AGENT_SUSPENDED')
   @ApiOperation({
     summary: 'Suspend an agent',
     description:
@@ -158,6 +164,7 @@ export class AgentController {
 
   @Post(':id/wallet')
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.DEVELOPER)
+  @AuditAction('AGENT_WALLET_ASSIGNED')
   @ApiOperation({
     summary: 'Assign a primary wallet to an agent',
     description:
@@ -182,6 +189,7 @@ export class AgentController {
 
   @Delete(':id')
   @Roles(UserRole.OWNER, UserRole.ADMIN)
+  @AuditAction('AGENT_ARCHIVED')
   @ApiOperation({
     summary: 'Archive (soft delete) an agent',
     description:

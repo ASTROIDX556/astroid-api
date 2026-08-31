@@ -23,6 +23,7 @@ import {
 } from './organization.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
+import { AuditAction } from '../../common/decorators/audit-action.decorator';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 import { AuthenticatedUser } from '../../common/interfaces/authenticated-user.interface';
 import { PaginationQuery, paginationQuerySchema } from '../../common/helpers/pagination';
@@ -47,6 +48,7 @@ export class OrganizationController {
 
   @Patch('current')
   @Roles(UserRole.OWNER, UserRole.ADMIN)
+  @AuditAction('ORGANIZATION_UPDATED')
   @ApiOperation({
     summary: 'Update the current organization',
     description: 'Partial update of organization fields (name, settings, etc.).',
@@ -81,6 +83,7 @@ export class OrganizationController {
 
   @Post('members')
   @Roles(UserRole.OWNER, UserRole.ADMIN)
+  @AuditAction('MEMBER_INVITED')
   @ApiOperation({
     summary: 'Invite a new member',
     description:
@@ -101,6 +104,7 @@ export class OrganizationController {
 
   @Patch('members/:id')
   @Roles(UserRole.OWNER, UserRole.ADMIN)
+  @AuditAction('MEMBER_UPDATED')
   @ApiOperation({
     summary: 'Update a member role or status',
     description:
@@ -123,6 +127,7 @@ export class OrganizationController {
 
   @Delete('members/:id')
   @Roles(UserRole.OWNER, UserRole.ADMIN)
+  @AuditAction('MEMBER_REMOVED')
   @ApiOperation({
     summary: 'Remove (soft) a member',
     description:
