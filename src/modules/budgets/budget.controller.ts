@@ -36,6 +36,7 @@ import { AuditAction } from '../../common/decorators/audit-action.decorator';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 import { AuthenticatedUser } from '../../common/interfaces/authenticated-user.interface';
 import { PaginationQuery, paginationQuerySchema } from '../../common/helpers/pagination';
+import { ApiEnvelope } from '../../common/decorators/api-envelope.decorator';
 
 @ApiTags('budgets')
 @ApiBearerAuth('access-token')
@@ -54,6 +55,7 @@ export class BudgetController {
   @ApiQuery({ name: 'limit', required: false, type: Number, description: 'Items per page (default: 20)' })
   @ApiQuery({ name: 'period', required: false, enum: ['DAILY', 'WEEKLY', 'MONTHLY', 'QUARTERLY', 'YEARLY'], description: 'Filter by budget period' })
   @ApiQuery({ name: 'enabled', required: false, type: Boolean, description: 'Filter by enabled status' })
+  @ApiEnvelope(CreateBudgetDto as never, { isArray: true })
   @ApiResponse({ status: 200, description: 'Paginated list of budgets' })
   @ApiResponse({ status: 401, description: 'Not authenticated' })
   list(
@@ -72,6 +74,7 @@ export class BudgetController {
       'Creates a new budget with spending limits. Budgets can be hierarchical with parent-child relationships.',
   })
   @ApiBody({ type: CreateBudgetDto })
+  @ApiEnvelope(CreateBudgetDto as never)
   @ApiResponse({ status: 201, description: 'Budget created successfully' })
   @ApiResponse({ status: 400, description: 'Validation error' })
   @ApiResponse({ status: 401, description: 'Not authenticated' })
@@ -90,6 +93,7 @@ export class BudgetController {
       'Returns full details of a budget including its remaining balance, spending history, and child budgets.',
   })
   @ApiParam({ name: 'id', description: 'Budget UUID', example: '018f0a1b-...' })
+  @ApiEnvelope(CreateBudgetDto as never)
   @ApiResponse({ status: 200, description: 'Budget details with balance and children' })
   @ApiResponse({ status: 401, description: 'Not authenticated' })
   @ApiResponse({ status: 404, description: 'Budget not found' })

@@ -25,6 +25,7 @@ import { UseWalletLock } from '../../common/locks/wallet-lock.decorator';
 import { UseTransactionLock } from '../../common/locks/transaction-lock.decorator';
 import { AuthenticatedUser } from '../../common/interfaces/authenticated-user.interface';
 import { PaginationQuery, paginationQuerySchema } from '../../common/helpers/pagination';
+import { ApiEnvelope } from '../../common/decorators/api-envelope.decorator';
 
 @ApiTags('transactions')
 @ApiBearerAuth('access-token')
@@ -43,6 +44,7 @@ export class TransactionController {
   @ApiQuery({ name: 'status', required: false, enum: ['DRAFT', 'PENDING', 'APPROVED', 'COMPLETED', 'FAILED', 'CANCELLED'], description: 'Filter by transaction status' })
   @ApiQuery({ name: 'agentId', required: false, type: String, description: 'Filter by agent UUID' })
   @ApiQuery({ name: 'walletId', required: false, type: String, description: 'Filter by wallet UUID' })
+  @ApiEnvelope(CreateTransactionDto as never, { isArray: true })
   @ApiResponse({ status: 200, description: 'Paginated list of transactions' })
   @ApiResponse({ status: 401, description: 'Not authenticated' })
   list(
@@ -64,6 +66,7 @@ export class TransactionController {
       'otherwise creates an approval proposal and returns requiresApproval=true.',
   })
   @ApiBody({ type: CreateTransactionDto })
+  @ApiEnvelope(CreateTransactionDto as never)
   @ApiResponse({ status: 201, description: 'Transaction created (may require approval)' })
   @ApiResponse({ status: 400, description: 'Validation error or policy violation' })
   @ApiResponse({ status: 401, description: 'Not authenticated' })
@@ -100,6 +103,7 @@ export class TransactionController {
     description: 'Returns full details of a single transaction by ID.',
   })
   @ApiParam({ name: 'id', description: 'Transaction UUID', example: '018f0a1b-...' })
+  @ApiEnvelope(CreateTransactionDto as never)
   @ApiResponse({ status: 200, description: 'Transaction details' })
   @ApiResponse({ status: 401, description: 'Not authenticated' })
   @ApiResponse({ status: 404, description: 'Transaction not found' })
