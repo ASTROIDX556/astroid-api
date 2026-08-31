@@ -1,8 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { Request, Response } from 'express';
-import { NextFunction } from 'express';
 import { RequestIdMiddleware } from './request-id.middleware';
-import { TraceContext } from '../context/trace.context';
+import { TraceContext, TraceContextData } from '../../common/context/trace.context';
 
 describe('RequestIdMiddleware', () => {
   const middleware = new RequestIdMiddleware();
@@ -21,9 +20,6 @@ describe('RequestIdMiddleware', () => {
 
     middleware.use(req as Request, res as Response, next);
 
-    const requestId = (res as Response).setHeader?.name
-      ? undefined
-      : '';
   });
 
   it('should reuse existing x-request-id header when present', () => {
