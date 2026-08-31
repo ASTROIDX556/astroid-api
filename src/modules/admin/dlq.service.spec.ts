@@ -1,14 +1,25 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import type { Mock } from 'vitest';
 import { NotFoundException, BadRequestException } from '@nestjs/common';
 import { DlqService } from './dlq.service';
 import { Queues } from '../../queues/queues.constants';
+import { DomainEventName } from '../../events/event-names';
+
+function buildMockPrisma() {
+  const domainEvent = {
+    create: vi.fn().mockResolvedValue({ id: 'evt-1' }),
+  };
+  return { domainEvent };
+}
 
 describe('DlqService', () => {
   let service: DlqService;
   let mockQueue: Record<string, ReturnType<typeof vi.fn>>;
   let mockJob: Record<string, ReturnType<typeof vi.fn> | unknown>;
+  let prismaMock: ReturnType<typeof buildMockPrisma>;
 
   beforeEach(() => {
+    prismaMock = buildMockPrisma();
     mockJob = {
       id: 'job-100',
       name: 'send-notification',
@@ -42,7 +53,7 @@ describe('DlqService', () => {
       close: vi.fn().mockResolvedValue(undefined),
     };
 
-    service = new DlqService();
+    service = new DlqService(prismaMock as unknown as never);
     // Override getOrCreateQueue to return our mock
     vi.spyOn(service, 'getOrCreateQueue').mockReturnValue(mockQueue as never);
   });
@@ -115,6 +126,31 @@ describe('DlqService', () => {
       expect((mockJob.retry as ReturnType<typeof vi.fn>)).toHaveBeenCalledOnce();
     });
 
+    it('emits an audit event for the requeue', async () => {
+      await service.retryJob(Queues.Notifications, 'job-100');
+
+      const createMock = prismaMock.domainEvent.create as Mock;
+      expect(createMock).toHaveBeenCalledTimes(1);
+      const { data } = createMock.mock.calls[0][0];
+      expect(data.name).toBe(DomainEventName.JobRequeued);
+      expect(data.aggregateType).toBe('ADMIN_DLQ');
+      expect(data.payload).toEqual(
+        expect.objectContaining({
+          queue: Queues.Notifications,
+          jobId: 'job-100',
+          jobName: 'send-notification',
+        }),
+      );
+    });
+
+    it('continues retry even when audit event persistence fails', async () => {
+      prismaMock.domainEvent.create.mockRejectedValue(new Error('db down'));
+
+      const result = await service.retryJob(Queues.Notifications, 'job-100');
+
+      expect(result.retried).toBe(true);
+    });
+
     it('throws NotFoundException if job is not found', async () => {
       mockQueue.getJob.mockResolvedValue(null);
 
@@ -139,6 +175,21 @@ describe('DlqService', () => {
       expect(result.retriedCount).toBe(1);
       expect(result.queues).toContain(Queues.Notifications);
       expect((mockJob.retry as ReturnType<typeof vi.fn>)).toHaveBeenCalled();
+    });
+
+    it('emits a batch audit event when jobs are retried', async () => {
+      await service.retryAllFailedJobs(Queues.Notifications);
+
+      const createMock = prismaMock.domainEvent.create as Mock;
+      expect(createMock).toHaveBeenCalledTimes(1);
+      const { data } = createMock.mock.calls[0][0];
+      expect(data.name).toBe(DomainEventName.JobRequeued);
+      expect(data.payload).toEqual(
+        expect.objectContaining({
+          operation: 'batch_retry_all',
+          retriedCount: 1,
+        }),
+      );
     });
   });
 
