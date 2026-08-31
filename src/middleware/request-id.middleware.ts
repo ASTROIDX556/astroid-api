@@ -1,7 +1,7 @@
 import { Injectable, NestMiddleware } from '@nestjs/common';
 import { NextFunction, Request, Response } from 'express';
 import { v7 as uuidv7 } from 'uuid';
-import { TraceContext, TraceContextData } from '../../common/context/trace.context';
+import { TraceContext, TraceContextData } from '../common/context/trace.context';
 import {
   CORRELATION_ID_HEADER,
   REQUEST_ID_HEADER,
