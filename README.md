@@ -18,6 +18,7 @@
 - **Stellar integration** — pluggable client with a fully-featured mock (`STELLAR_USE_MOCK=true`) so the whole API runs with zero on-chain dependencies in development.
 - **AI-powered** — Nvidia NIM integration (`meta/llama-3.1-70b-instruct`) for financial briefings, anomaly detection, and assistant capabilities.
 
+
 ## Architecture
 
 ```
