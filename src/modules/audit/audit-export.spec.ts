@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { AuditService } from './audit.service';
 import { AuditRepository } from './audit.repository';
+import { AuditHashService } from './audit-hash.service';
 
 describe('AuditService - Export Compliance', () => {
   const mockRepository = {
@@ -10,7 +11,17 @@ describe('AuditService - Export Compliance', () => {
     findById: vi.fn(),
   };
 
-  const auditService = new AuditService(mockRepository as unknown as AuditRepository);
+  const mockHashService = {
+    getLatestHash: vi.fn().mockResolvedValue(null),
+    computeEntryHash: vi.fn().mockReturnValue({ previousHash: null, hash: 'mock-hash' }),
+    verifyChainIntegrity: vi.fn(),
+    verifyEntryIntegrity: vi.fn(),
+  };
+
+  const auditService = new AuditService(
+    mockRepository as unknown as AuditRepository,
+    mockHashService as unknown as AuditHashService,
+  );
 
   it('should export audit logs in JSON format with pagination cursor', async () => {
     const mockLogs = [

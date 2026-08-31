@@ -1,6 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { ErrorCode } from '../../common/constants/error-codes';
 import { DomainException } from '../../common/exceptions/domain.exception';
+import { CircuitBreaker, isRpcFailure } from '../../common/circuit-breaker/circuit-breaker';
 import {
   BuildPaymentParams,
   StellarBalance,
@@ -13,13 +14,30 @@ import {
   STELLAR_CLIENT,
 } from '../../integrations/stellar';
 
+/** Consecutive failures before the Horizon circuit trips OPEN. */
+const HORIZON_FAILURE_THRESHOLD = 5;
+/** Time the Horizon circuit stays OPEN before a HALF_OPEN trial call. */
+const HORIZON_RESET_TIMEOUT_MS = 30_000;
+
 /**
  * Thin domain service over the injected {@link StellarClient}. Adds validation
  * and consistent error mapping. This is the module boundary the rest of the app
  * uses; it never imports the Stellar SDK directly.
+ *
+ * Every client call is routed through a {@link CircuitBreaker} so that
+ * Horizon/Soroban degradation fails fast (throwing a structured
+ * {@link CircuitOpenException}) instead of piling up slow, cascading
+ * timeouts across transaction submission and risk analysis workers.
  */
 @Injectable()
 export class StellarService {
+  private readonly breaker = new CircuitBreaker({
+    name: 'horizon',
+    failureThreshold: HORIZON_FAILURE_THRESHOLD,
+    resetTimeoutMs: HORIZON_RESET_TIMEOUT_MS,
+    isFailure: isRpcFailure,
+  });
+
   constructor(@Inject(STELLAR_CLIENT) private readonly client: StellarClient) {}
 
   generateKeypair(): StellarKeypair {
@@ -65,8 +83,11 @@ export class StellarService {
 
   private async wrap<T>(operation: () => Promise<T>): Promise<T> {
     try {
-      return await operation();
+      return await this.breaker.execute(operation);
     } catch (error) {
+      // CircuitOpenException extends DomainException, so an open circuit
+      // (thrown by the breaker itself, before `operation` ever runs)
+      // surfaces to callers unchanged and distinguishable via `error.code`.
       if (error instanceof DomainException) {
         throw error;
       }

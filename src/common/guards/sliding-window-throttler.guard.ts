@@ -8,10 +8,12 @@ import { Reflector } from '@nestjs/core';
 import { ConfigService } from '@nestjs/config';
 import { Redis } from 'ioredis';
 import { Request, Response } from 'express';
+import { createHash } from 'crypto';
 import { AuthenticatedUser } from '../interfaces/authenticated-user.interface';
 import { DomainException } from '../exceptions/domain.exception';
 import { ErrorCode } from '../constants/error-codes';
 import { THROTTLE_TIER_KEY, ThrottleTier } from '../decorators/throttle-tier.decorator';
+import { extractApiKeyFromRequest } from '../helpers/extract-api-key';
 
 export const SLIDING_WINDOW_LIMIT_KEY = 'astroid:slidingWindowLimit';
 export const SlidingWindowLimit = (limit: number, windowSeconds = 60) =>
@@ -28,8 +30,8 @@ export class SlidingWindowThrottlerGuard implements CanActivate {
     private readonly reflector: Reflector,
     config: ConfigService,
   ) {
-    this.defaultLimit = config.get<number>('queue.throttle.apiLimit', 60);
-    this.defaultWindowSeconds = config.get<number>('queue.throttle.ttl', 60);
+    this.defaultLimit = config.get<number>('rateLimit.maxRequests', 120);
+    this.defaultWindowSeconds = config.get<number>('rateLimit.windowSeconds', 60);
     const host = config.get<string>('redis.host', 'localhost');
     const port = config.get<number>('redis.port', 6379);
     const password = config.get<string>('redis.password', '');
@@ -79,12 +81,33 @@ export class SlidingWindowThrottlerGuard implements CanActivate {
   }
 
   private keyFor(request: Request & { user?: AuthenticatedUser }, context: ExecutionContext): string {
-    const user = request.user;
-    const scope = user?.organizationId ? `org:${user.organizationId}` : `ip:${request.ip ?? 'anonymous'}`;
+    const scope = this.clientScope(request);
     const tier = this.reflector.getAllAndOverride<ThrottleTier>(THROTTLE_TIER_KEY, [
       context.getHandler(),
       context.getClass(),
     ]) ?? 'api';
     return `rate-limit:${tier}:${scope}:${context.getClass().name}:${context.getHandler().name}`;
+  }
+
+  /**
+   * Identifies the client for rate-limit bucketing. Prefers the authenticated
+   * organization (set by the auth guards from the JWT/API key), then the raw
+   * `Authorization`/`X-API-Key` header value (hashed, never stored raw), and
+   * finally falls back to the client IP for fully unauthenticated routes.
+   */
+  private clientScope(request: Request & { user?: AuthenticatedUser }): string {
+    const organizationId = request.user?.organizationId;
+    if (organizationId) {
+      return `org:${organizationId}`;
+    }
+
+    const apiKey = extractApiKeyFromRequest(request);
+    if (apiKey) {
+      return `key:${createHash('sha256').update(apiKey).digest('hex')}`;
+    }
+
+    const forwarded = request.headers?.['x-forwarded-for'];
+    const ip = (Array.isArray(forwarded) ? forwarded[0] : forwarded) ?? request.ip ?? 'anonymous';
+    return `ip:${ip}`;
   }
 }

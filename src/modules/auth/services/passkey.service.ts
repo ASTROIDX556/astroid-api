@@ -6,12 +6,16 @@ import {
   generateAuthenticationOptions,
   verifyAuthenticationResponse,
 } from '@simplewebauthn/server';
+
 import type {
   RegistrationResponseJSON,
   AuthenticationResponseJSON,
   PublicKeyCredentialCreationOptionsJSON,
   PublicKeyCredentialRequestOptionsJSON,
 } from '@simplewebauthn/server';
+
+import type { RegistrationResponseJSON, AuthenticationResponseJSON } from '@simplewebauthn/server';
+
 import { PrismaService } from '../../../database/prisma.service';
 import { AuthConfig } from '../../../config/auth.config';
 import {
@@ -33,6 +37,7 @@ export interface PasskeyRegistrationResult {
   counter: number;
 }
 
+
 export interface PasskeyAuthenticationResult {
   credentialId: string;
   userId: string;
@@ -48,6 +53,44 @@ export interface PasskeyAuthenticationResult {
  *
  * Challenges are stored in the database with a short TTL to prevent replay
  * attacks. Cryptographic verification is delegated to `@simplewebauthn/server`.
+
+export interface PasskeyRegistrationOptions {
+  challenge: string;
+  rp: { name: string; id: string };
+  user: { id: string; name: string; displayName: string };
+  pubKeyCredParams: Array<{ alg: number; type: string }>;
+  timeout: number;
+  attestation: string;
+  authenticatorSelection: Record<string, unknown>;
+}
+
+export interface PasskeyAuthenticationOptions {
+  challenge: string;
+  rpId: string;
+  timeout: number;
+  allowCredentials: Array<{ id: string; type: string; transports?: string[] }>;
+  userVerification: string;
+}
+
+export interface PasskeyAuthenticationResult {
+  verified: boolean;
+  userId?: string;
+}
+
+/**
+ * Handles WebAuthn passkey registration and authentication flows.
+ *
+ * Registration:
+ *   1. generateRegistrationOptions — creates a challenge for the authenticator
+ *   2. verifyRegistrationResponse — cryptographically verifies the attestation
+ *
+ * Authentication:
+ *   1. generateAuthenticationOptions — creates a challenge for the authenticator
+ *   2. verifyAuthenticationResponse — cryptographically verifies the assertion
+ *
+ * Uses `@simplewebauthn/server` for all cryptographic operations. Challenges are
+ * stored temporarily in the database and invalidated after use to prevent replay.
+
  */
 @Injectable()
 export class PasskeyService {
@@ -115,6 +158,72 @@ export class PasskeyService {
 
     this.logger.debug(`Generated registration options for user ${userId}`);
     return options;
+  }
+
+  /**
+   * Generates WebAuthn registration options (challenge) for a user.
+   *
+   * Steps:
+   * 1. Confirm the user exists.
+   * 2. Fetch existing credentials to exclude from new registration.
+   * 3. Generate options with @simplewebauthn/server.
+   * 4. Store the challenge for later verification.
+   *
+   * @throws NotFoundException if the user does not exist
+   */
+  async generateRegistrationOptions(
+    userId: string,
+  ): Promise<PasskeyRegistrationOptions> {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) {
+      throw new NotFoundException('User', userId);
+    }
+
+    // Fetch existing credentials to exclude from new registration
+    const existingCredentials = await this.prisma.passkeyCredential.findMany({
+      where: { userId },
+      select: { credentialId: true },
+    });
+
+    const options = await generateRegistrationOptions({
+      rpName: this.auth.passkey.rpName,
+      rpID: this.auth.passkey.rpId,
+      userID: Buffer.from(userId),
+      userName: user.email,
+      userDisplayName: user.name,
+      attestationType: 'none',
+      excludeCredentials: existingCredentials.map((cred) => ({
+        id: cred.credentialId,
+        type: 'public-key' as const,
+      })),
+      authenticatorSelection: {
+        residentKey: 'preferred',
+        userVerification: 'preferred',
+      },
+    });
+
+    // Store the challenge for later verification (expires in 5 minutes)
+    await this.prisma.passkeyChallenge.create({
+      data: {
+        userId,
+        challenge: options.challenge,
+        expiresAt: new Date(Date.now() + 5 * 60 * 1000),
+      },
+    });
+
+    this.logger.log(
+      `Registration options generated for user ${userId}: challenge ${options.challenge.substring(0, 16)}...`,
+    );
+
+    return {
+      challenge: options.challenge,
+      rp: options.rp as { name: string; id: string },
+      user: options.user as { id: string; name: string; displayName: string },
+      pubKeyCredParams: options.pubKeyCredParams as Array<{ alg: number; type: string }>,
+      timeout: options.timeout ?? 60000,
+      attestation: options.attestation ?? 'none',
+      authenticatorSelection: options.authenticatorSelection as Record<string, unknown>,
+    };
   }
 
   /**
@@ -193,6 +302,7 @@ export class PasskeyService {
     };
   }
 
+
   // ── Authentication ─────────────────────────────────────────────────────
 
   /**
@@ -216,22 +326,44 @@ export class PasskeyService {
 
     const credentials = await this.prisma.passkeyCredential.findMany({
       where: { userId: user.id },
+
+  /**
+   * Generates WebAuthn authentication options (challenge) for a user's passkey.
+   *
+   * Steps:
+   * 1. Fetch the user's stored credentials.
+   * 2. Generate options with @simplewebauthn/server.
+   * 3. Store the challenge for later verification.
+   *
+   * @throws NotFoundException if the user has no registered credentials
+   */
+  async generateAuthenticationOptions(
+    userId: string,
+  ): Promise<PasskeyAuthenticationOptions> {
+    const credentials = await this.prisma.passkeyCredential.findMany({
+      where: { userId },
       select: { credentialId: true },
     });
 
     if (credentials.length === 0) {
+
       throw new ValidationException(
         'No passkeys registered for this account. Please register a passkey first.',
       );
+
+      throw new NotFoundException('Passkey credentials', userId);
+
     }
 
     const options = await generateAuthenticationOptions({
       rpID: this.auth.passkey.rpId,
       allowCredentials: credentials.map((cred) => ({
         id: cred.credentialId,
+        type: 'public-key' as const,
       })),
       userVerification: 'preferred',
     });
+
 
     // Store the challenge and clean up any previous ones atomically
     await this.prisma.$transaction([
@@ -280,6 +412,54 @@ export class PasskeyService {
     const challengeRecord = await this.prisma.passkeyChallenge.findFirst({
       where: {
         userId: storedCredential.userId,
+
+    // Store the challenge for later verification (expires in 5 minutes)
+    await this.prisma.passkeyChallenge.create({
+      data: {
+        userId,
+        challenge: options.challenge,
+        expiresAt: new Date(Date.now() + 5 * 60 * 1000),
+      },
+    });
+
+    this.logger.log(
+      `Authentication options generated for user ${userId}: challenge ${options.challenge.substring(0, 16)}...`,
+    );
+
+    return {
+      challenge: options.challenge,
+      rpId: this.auth.passkey.rpId,
+      timeout: options.timeout ?? 60000,
+      allowCredentials: (options.allowCredentials ?? []).map((cred) => ({
+        id: cred.id,
+        type: 'public-key' as const,
+        transports: cred.transports as string[] | undefined,
+      })),
+      userVerification: options.userVerification ?? 'preferred',
+    };
+  }
+
+  /**
+   * Verifies a WebAuthn authentication assertion and returns the authenticated user.
+   *
+   * Steps:
+   * 1. Fetch the stored challenge and the credential being used.
+   * 2. Delegate to @simplewebauthn/server for cryptographic verification.
+   * 3. Update the credential counter to prevent replay attacks.
+   * 4. Invalidate the challenge.
+   *
+   * @throws ValidationException if the challenge was not previously stored
+   * @throws UnauthorizedException if cryptographic verification fails
+   * @throws NotFoundException if the credential does not exist
+   */
+  async verifyAuthentication(
+    input: VerifyPasskeyAuthenticationInput,
+  ): Promise<PasskeyAuthenticationResult> {
+    // 1. Fetch the stored challenge
+    const challengeRecord = await this.prisma.passkeyChallenge.findFirst({
+      where: {
+        challenge: input.expectedChallenge,
+
         expiresAt: { gt: new Date() },
       },
     });
@@ -290,6 +470,19 @@ export class PasskeyService {
       );
     }
 
+
+    // 2. Fetch the credential being used
+    const credentialRecord = await this.prisma.passkeyCredential.findUnique({
+      where: { credentialId: input.credentialId },
+    });
+
+    if (!credentialRecord) {
+      throw new NotFoundException('Passkey credential', input.credentialId);
+    }
+
+    // 3. Cryptographic verification via @simplewebauthn/server
+    const credential = input.credential as AuthenticationResponseJSON;
+
     const verification = await verifyAuthenticationResponse({
       response: credential,
       expectedChallenge: challengeRecord.challenge,
@@ -299,6 +492,11 @@ export class PasskeyService {
         id: storedCredential.credentialId,
         publicKey: base64urlToBuffer(storedCredential.publicKey),
         counter: storedCredential.counter,
+
+        id: credentialRecord.credentialId,
+        publicKey: base64urlToBuffer(credentialRecord.publicKey),
+        counter: credentialRecord.counter,
+
       },
     });
 
@@ -307,7 +505,6 @@ export class PasskeyService {
         'Passkey authentication verification failed — invalid assertion response.',
       );
     }
-
     const { authenticationInfo } = verification;
 
     // Invalidate challenge and update the credential counter atomically
@@ -340,6 +537,33 @@ export class PasskeyService {
 
   /**
    * Lists all passkeys registered for a user.
+    // 4. Atomic: update counter + invalidate challenge
+    await this.prisma.$transaction(async (tx) => {
+      // Update the credential counter to prevent replay
+      await tx.passkeyCredential.update({
+        where: { credentialId: input.credentialId },
+        data: { counter: verification.authenticationInfo.newCounter },
+      });
+
+      // Invalidate the challenge
+      await tx.passkeyChallenge.deleteMany({
+        where: { userId: challengeRecord.userId },
+      });
+    });
+
+    this.logger.log(
+      `Passkey authenticated for user ${challengeRecord.userId}: credential ${input.credentialId}`,
+    );
+
+    return {
+      verified: true,
+      userId: challengeRecord.userId,
+    };
+  }
+
+  /**
+   * Lists all registered passkey credentials for a user.
+
    */
   async listCredentials(userId: string) {
     return this.prisma.passkeyCredential.findMany({
@@ -349,6 +573,8 @@ export class PasskeyService {
         credentialId: true,
         deviceName: true,
         userAgent: true,
+        counter: true,
+
         createdAt: true,
       },
       orderBy: { createdAt: 'desc' },
@@ -367,6 +593,16 @@ export class PasskeyService {
     });
 
     if (!credential) {
+
+   * Deletes a passkey credential (revokes access).
+   */
+  async revokeCredential(userId: string, credentialId: string): Promise<void> {
+    const credential = await this.prisma.passkeyCredential.findUnique({
+      where: { credentialId },
+    });
+
+    if (!credential || credential.userId !== userId) {
+
       throw new NotFoundException('Passkey credential', credentialId);
     }
 
@@ -377,6 +613,12 @@ export class PasskeyService {
     this.logger.log(
       `Passkey credential ${credentialId} removed for user ${userId}`,
     );
+
+      where: { credentialId },
+    });
+
+    this.logger.log(`Passkey revoked for user ${userId}: credential ${credentialId}`);
+
   }
 }
 
@@ -388,4 +630,11 @@ function bufferToBase64url(buffer: Uint8Array): string {
 
 function base64urlToBuffer(base64url: string): Uint8Array {
   return new Uint8Array(Buffer.from(base64url, 'base64url'));
+}
+
+/**
+ * Converts a base64url string back to a Uint8Array for cryptographic operations.
+ */
+function base64urlToBuffer(str: string): Uint8Array {
+  return new Uint8Array(Buffer.from(str, 'base64url'));
 }

@@ -5,9 +5,9 @@ import { SlidingWindowThrottlerGuard } from './sliding-window-throttler.guard';
 const exec = vi.fn();
 const chain = { zremrangebyscore: vi.fn().mockReturnThis(), zcard: vi.fn().mockReturnThis(), zadd: vi.fn().mockReturnThis(), expire: vi.fn().mockReturnThis(), exec };
 
-function makeContext(user?: Record<string, string>, ip = '127.0.0.1') {
+function makeContext(user?: Record<string, string>, ip = '127.0.0.1', headers: Record<string, string> = {}) {
   const response = { setHeader: vi.fn() };
-  const request = { user, ip };
+  const request = { user, ip, headers };
   const handler = vi.fn();
   const context = {
     getHandler: () => handler,
@@ -19,7 +19,7 @@ function makeContext(user?: Record<string, string>, ip = '127.0.0.1') {
 
 function makeGuard(redis: Record<string, unknown>, limit = 2) {
   const reflector = { getAllAndOverride: vi.fn().mockReturnValue(undefined) };
-  const config = { get: vi.fn((key: string, fallback: unknown) => key === 'queue.throttle.apiLimit' ? limit : fallback) };
+  const config = { get: vi.fn((key: string, fallback: unknown) => key === 'rateLimit.maxRequests' ? limit : fallback) };
   const guard = new SlidingWindowThrottlerGuard(reflector as never, config as never);
   Object.assign(guard, { redis });
   return guard;
@@ -57,6 +57,16 @@ describe('SlidingWindowThrottlerGuard', () => {
     await guard.canActivate(authenticated.context as never);
     await guard.canActivate(anonymous.context as never);
     expect(chain.zadd.mock.calls[0][1]).toBeGreaterThan(0);
+    expect(redis.multi).toHaveBeenCalledTimes(2);
+  });
+
+  it('falls back to a hashed API key scope when unauthenticated but keyed', async () => {
+    const redis = { multi: vi.fn(() => chain) };
+    const withApiKey = makeContext(undefined, '192.0.2.1', { 'x-api-key': 'ast_secret-key' });
+    const anonymous = makeContext(undefined, '192.0.2.1');
+    const guard = makeGuard(redis);
+    await guard.canActivate(withApiKey.context as never);
+    await guard.canActivate(anonymous.context as never);
     expect(redis.multi).toHaveBeenCalledTimes(2);
   });
 
