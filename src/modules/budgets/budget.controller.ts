@@ -32,6 +32,7 @@ import {
 } from './budget.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
+import { AuditAction } from '../../common/decorators/audit-action.decorator';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 import { AuthenticatedUser } from '../../common/interfaces/authenticated-user.interface';
 import { PaginationQuery, paginationQuerySchema } from '../../common/helpers/pagination';
@@ -64,6 +65,7 @@ export class BudgetController {
 
   @Post()
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.FINANCE)
+  @AuditAction('BUDGET_CREATED')
   @ApiOperation({
     summary: 'Create a budget',
     description:
@@ -98,6 +100,7 @@ export class BudgetController {
   @Patch(':id')
   @UseBudgetLock()
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.FINANCE)
+  @AuditAction('BUDGET_UPDATED')
   @ApiOperation({
     summary: 'Update a budget',
     description: 'Partial update of budget fields (name, limit, period, rollover, enabled).',
@@ -120,6 +123,7 @@ export class BudgetController {
   @Post(':id/allocate')
   @UseBudgetLock()
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.FINANCE)
+  @AuditAction('BUDGET_ALLOCATED')
   @ApiOperation({
     summary: 'Allocate funds from the parent budget to this child',
     description:
@@ -144,6 +148,7 @@ export class BudgetController {
   @Delete(':id')
   @UseBudgetLock()
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.FINANCE)
+  @AuditAction('BUDGET_DELETED')
   @ApiOperation({
     summary: 'Delete (soft) a budget',
     description:
