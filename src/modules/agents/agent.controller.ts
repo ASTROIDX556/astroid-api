@@ -27,6 +27,7 @@ import { UseAgentLock } from '../../common/locks/agent-lock.decorator';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 import { AuthenticatedUser } from '../../common/interfaces/authenticated-user.interface';
 import { PaginationQuery, paginationQuerySchema } from '../../common/helpers/pagination';
+import { ApiEnvelope } from '../../common/decorators/api-envelope.decorator';
 
 @ApiTags('agents')
 @ApiBearerAuth('access-token')
@@ -41,6 +42,7 @@ export class AgentController {
   })
   @ApiQuery({ name: 'page', required: false, type: Number, description: 'Page number (default: 1)' })
   @ApiQuery({ name: 'limit', required: false, type: Number, description: 'Items per page (default: 20)' })
+  @ApiEnvelope(CreateAgentDto as never, { isArray: true })
   @ApiResponse({ status: 200, description: 'Paginated list of agents' })
   @ApiResponse({ status: 401, description: 'Not authenticated' })
   list(
@@ -59,6 +61,7 @@ export class AgentController {
       'Creates a new agent under the current organization. The agent starts in ACTIVE status.',
   })
   @ApiBody({ type: CreateAgentDto })
+  @ApiEnvelope(CreateAgentDto as never)
   @ApiResponse({ status: 201, description: 'Agent created successfully' })
   @ApiResponse({ status: 400, description: 'Validation error' })
   @ApiResponse({ status: 401, description: 'Not authenticated' })
@@ -76,6 +79,7 @@ export class AgentController {
     description: 'Returns full details of a single agent by ID.',
   })
   @ApiParam({ name: 'id', description: 'Agent UUID', example: '018f0a1b-...' })
+  @ApiEnvelope(CreateAgentDto as never)
   @ApiResponse({ status: 200, description: 'Agent details' })
   @ApiResponse({ status: 401, description: 'Not authenticated' })
   @ApiResponse({ status: 404, description: 'Agent not found' })

@@ -29,6 +29,7 @@ import {
   PaginationQuery,
   paginationQuerySchema,
 } from '../../common/helpers/pagination';
+import { ApiEnvelope } from '../../common/decorators/api-envelope.decorator';
 
 @ApiTags('policies')
 @ApiBearerAuth('access-token')
@@ -47,6 +48,7 @@ export class PolicyController {
   @ApiQuery({ name: 'limit', required: false, type: Number, description: 'Items per page (default: 20)' })
   @ApiQuery({ name: 'type', required: false, enum: ['SPENDING_LIMIT', 'APPROVAL_REQUIRED', 'ALLOWLIST', 'TIME_WINDOW'], description: 'Filter by policy type' })
   @ApiQuery({ name: 'enabled', required: false, type: Boolean, description: 'Filter by enabled status' })
+  @ApiEnvelope(CreatePolicyDto as never, { isArray: true })
   @ApiResponse({ status: 200, description: 'Paginated list of policies' })
   @ApiResponse({ status: 401, description: 'Not authenticated' })
   list(
@@ -65,6 +67,7 @@ export class PolicyController {
       'Creates a new governance policy. Policies evaluate transaction intents and enforce spending rules.',
   })
   @ApiBody({ type: CreatePolicyDto })
+  @ApiEnvelope(CreatePolicyDto as never)
   @ApiResponse({ status: 201, description: 'Policy created successfully' })
   @ApiResponse({ status: 400, description: 'Validation error' })
   @ApiResponse({ status: 401, description: 'Not authenticated' })
@@ -100,6 +103,7 @@ export class PolicyController {
     description: 'Returns full details of a single policy by ID.',
   })
   @ApiParam({ name: 'id', description: 'Policy UUID', example: '018f0a1b-...' })
+  @ApiEnvelope(CreatePolicyDto as never)
   @ApiResponse({ status: 200, description: 'Policy details' })
   @ApiResponse({ status: 401, description: 'Not authenticated' })
   @ApiResponse({ status: 404, description: 'Policy not found' })
