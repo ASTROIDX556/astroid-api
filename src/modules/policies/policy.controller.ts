@@ -1,12 +1,22 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
-import { ApiOperation, ApiTags } from '@nestjs/swagger';
+import {
+  ApiOperation,
+  ApiTags,
+  ApiBearerAuth,
+  ApiResponse,
+  ApiParam,
+  ApiBody,
+  ApiQuery,
+} from '@nestjs/swagger';
 import { UserRole } from '@prisma/client';
 import { PolicyService } from './policy.service';
 import {
   createPolicySchema,
   CreatePolicyInput,
+  CreatePolicyDto,
   simulatePolicySchema,
   SimulatePolicyInput,
+  SimulatePolicyDto,
   updatePolicySchema,
   UpdatePolicyInput,
 } from './policy.dto';
@@ -21,12 +31,24 @@ import {
 } from '../../common/helpers/pagination';
 
 @ApiTags('policies')
+@ApiBearerAuth('access-token')
 @Controller('policies')
 export class PolicyController {
   constructor(private readonly policyService: PolicyService) {}
 
   @Get()
-  @ApiOperation({ summary: 'List policies' })
+  @ApiOperation({
+    summary: 'List policies',
+    description:
+      'Returns a paginated list of policies for the current organization. ' +
+      'Supports filtering by type, status, and agent.',
+  })
+  @ApiQuery({ name: 'page', required: false, type: Number, description: 'Page number (default: 1)' })
+  @ApiQuery({ name: 'limit', required: false, type: Number, description: 'Items per page (default: 20)' })
+  @ApiQuery({ name: 'type', required: false, enum: ['SPENDING_LIMIT', 'APPROVAL_REQUIRED', 'ALLOWLIST', 'TIME_WINDOW'], description: 'Filter by policy type' })
+  @ApiQuery({ name: 'enabled', required: false, type: Boolean, description: 'Filter by enabled status' })
+  @ApiResponse({ status: 200, description: 'Paginated list of policies' })
+  @ApiResponse({ status: 401, description: 'Not authenticated' })
   list(
     @CurrentUser('organizationId') organizationId: string,
     @Query(new ZodValidationPipe(paginationQuerySchema)) query: PaginationQuery,
@@ -37,7 +59,16 @@ export class PolicyController {
   @Post()
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.FINANCE)
   @AuditAction('POLICY_CREATED')
-  @ApiOperation({ summary: 'Create a policy' })
+  @ApiOperation({
+    summary: 'Create a policy',
+    description:
+      'Creates a new governance policy. Policies evaluate transaction intents and enforce spending rules.',
+  })
+  @ApiBody({ type: CreatePolicyDto })
+  @ApiResponse({ status: 201, description: 'Policy created successfully' })
+  @ApiResponse({ status: 400, description: 'Validation error' })
+  @ApiResponse({ status: 401, description: 'Not authenticated' })
+  @ApiResponse({ status: 403, description: 'Insufficient permissions (requires OWNER, ADMIN, or FINANCE)' })
   create(
     @CurrentUser() user: AuthenticatedUser,
     @Body(new ZodValidationPipe(createPolicySchema)) body: CreatePolicyInput,
@@ -46,7 +77,16 @@ export class PolicyController {
   }
 
   @Post('simulate')
-  @ApiOperation({ summary: 'Simulate a transaction intent against active policies' })
+  @ApiOperation({
+    summary: 'Simulate a transaction intent against active policies',
+    description:
+      'Dry-runs a hypothetical transaction through the policy engine without creating any records. ' +
+      'Returns which policies would match and their enforcement actions.',
+  })
+  @ApiBody({ type: SimulatePolicyDto })
+  @ApiResponse({ status: 200, description: 'Simulation results with matching policies' })
+  @ApiResponse({ status: 400, description: 'Validation error' })
+  @ApiResponse({ status: 401, description: 'Not authenticated' })
   simulate(
     @CurrentUser('organizationId') organizationId: string,
     @Body(new ZodValidationPipe(simulatePolicySchema)) body: SimulatePolicyInput,
@@ -55,7 +95,14 @@ export class PolicyController {
   }
 
   @Get(':id')
-  @ApiOperation({ summary: 'Get a policy' })
+  @ApiOperation({
+    summary: 'Get a policy',
+    description: 'Returns full details of a single policy by ID.',
+  })
+  @ApiParam({ name: 'id', description: 'Policy UUID', example: '018f0a1b-...' })
+  @ApiResponse({ status: 200, description: 'Policy details' })
+  @ApiResponse({ status: 401, description: 'Not authenticated' })
+  @ApiResponse({ status: 404, description: 'Policy not found' })
   findOne(@CurrentUser('organizationId') organizationId: string, @Param('id') id: string) {
     return this.policyService.getOrThrow(organizationId, id);
   }
@@ -63,7 +110,18 @@ export class PolicyController {
   @Patch(':id')
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.FINANCE)
   @AuditAction('POLICY_UPDATED')
-  @ApiOperation({ summary: 'Update a policy' })
+  @ApiOperation({
+    summary: 'Update a policy',
+    description:
+      'Partial update of policy fields (name, type, configuration, priority, enabled).',
+  })
+  @ApiParam({ name: 'id', description: 'Policy UUID', example: '018f0a1b-...' })
+  @ApiBody({ type: CreatePolicyDto })
+  @ApiResponse({ status: 200, description: 'Policy updated successfully' })
+  @ApiResponse({ status: 400, description: 'Validation error' })
+  @ApiResponse({ status: 401, description: 'Not authenticated' })
+  @ApiResponse({ status: 403, description: 'Insufficient permissions' })
+  @ApiResponse({ status: 404, description: 'Policy not found' })
   update(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id') id: string,
@@ -75,7 +133,16 @@ export class PolicyController {
   @Delete(':id')
   @Roles(UserRole.OWNER, UserRole.ADMIN)
   @AuditAction('POLICY_DELETED')
-  @ApiOperation({ summary: 'Delete (soft) a policy' })
+  @ApiOperation({
+    summary: 'Delete (soft) a policy',
+    description:
+      'Soft-deletes the policy. The policy record is retained for audit purposes but is excluded from active queries.',
+  })
+  @ApiParam({ name: 'id', description: 'Policy UUID', example: '018f0a1b-...' })
+  @ApiResponse({ status: 200, description: 'Policy deleted successfully' })
+  @ApiResponse({ status: 401, description: 'Not authenticated' })
+  @ApiResponse({ status: 403, description: 'Insufficient permissions (requires OWNER or ADMIN)' })
+  @ApiResponse({ status: 404, description: 'Policy not found' })
   remove(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
     return this.policyService.remove(user.organizationId, user.id, id);
   }
