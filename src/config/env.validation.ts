@@ -101,6 +101,28 @@ export const aiEnvSchema = z.object({
   AI_MODEL: z.string().default('meta/llama-3.1-70b-instruct'),
 });
 
+export const encryptionEnvSchema = z.object({
+  ENCRYPTION_KEY: z
+    .string()
+    .default('0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef')
+    .refine(
+      (key) => {
+        if (!key) return false;
+        if (/^[0-9a-fA-F]{64}$/.test(key)) return true;
+        if (Buffer.byteLength(key, 'utf8') === 32) return true;
+        try {
+          const buf = Buffer.from(key, 'base64');
+          if (buf.length === 32) return true;
+        } catch {
+          return false;
+        }
+        return false;
+      },
+      { message: 'ENCRYPTION_KEY must be a 32-byte (256-bit) key (64 hex characters or 32 bytes)' },
+    ),
+  ENCRYPTION_ALGORITHM: z.string().default('aes-256-gcm'),
+});
+
 /**
  * Validates a slice of the environment against a schema, throwing a readable
  * error that lists every failing variable. Returns the schema's OUTPUT type

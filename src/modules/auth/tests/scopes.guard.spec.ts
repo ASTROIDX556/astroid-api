@@ -3,11 +3,50 @@ import { ExecutionContext } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { UserRole } from '@prisma/client';
 import { matchScope, ScopesGuard } from '../../../common/guards/scopes.guard';
-import { SCOPES_KEY } from '../../../common/decorators/scopes.decorator';
+import {
+  SCOPES_KEY,
+  RequireScopes,
+  RequiredScopes,
+  Scopes,
+} from '../../../common/decorators/scopes.decorator';
 import { IS_PUBLIC_KEY } from '../../../common/decorators/public.decorator';
 import { ForbiddenException, UnauthorizedException } from '../../../common/exceptions/domain.exception';
 
 describe('ScopesGuard & matchScope', () => {
+  describe('@RequiredScopes and @RequireScopes decorator', () => {
+    it('sets metadata properly using @RequiredScopes and @RequireScopes', () => {
+      class TestController {
+        @RequiredScopes('transactions:write', 'wallets:read')
+        createTransaction() {}
+
+        @RequireScopes('wallets:write')
+        updateWallet() {}
+
+        @Scopes('policies:read')
+        getPolicy() {}
+      }
+
+      const reflector = new Reflector();
+      const instance = new TestController();
+
+      const scopesFromRequired = reflector.get<string[]>(
+        SCOPES_KEY,
+        instance.createTransaction,
+      );
+      const scopesFromRequire = reflector.get<string[]>(
+        SCOPES_KEY,
+        instance.updateWallet,
+      );
+      const scopesFromScopes = reflector.get<string[]>(
+        SCOPES_KEY,
+        instance.getPolicy,
+      );
+
+      expect(scopesFromRequired).toEqual(['transactions:write', 'wallets:read']);
+      expect(scopesFromRequire).toEqual(['wallets:write']);
+      expect(scopesFromScopes).toEqual(['policies:read']);
+    });
+  });
   describe('matchScope helper', () => {
     it('matches exact scope', () => {
       expect(matchScope('transactions:write', 'transactions:write')).toBe(true);
