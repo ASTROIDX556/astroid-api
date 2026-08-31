@@ -94,3 +94,7 @@ jobs:
           PGPASSWORD=postgres createdb -h localhost -p 5432 -U postgres astroid_shadow
       - name: Verify database migrations
         run: npm run db:verify
+      - name: Verify seed script
+        run: npm run prisma:seed
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/astroid?schema=public
