@@ -7,7 +7,7 @@ describe('RequestIdMiddleware', () => {
   const middleware = new RequestIdMiddleware();
 
   it('should generate a request ID when x-request-id header is absent', () => {
-    const req = {} as Request;
+    const req = { headers: {} } as Request;
     const res = {
       setHeader: (key: string, value: string) => {
         if (key === 'x-request-id') {
@@ -75,7 +75,7 @@ describe('RequestIdMiddleware', () => {
     middleware.use(req as Request, res as Response, next);
 
     const storedTrace = TraceContext.get();
-    expect(storedTrace?.traceId).toBeDefined();
+    expect(storedTrace).toBeDefined();
     expect(typeof storedTrace.traceId).toBe('string');
   });
 
