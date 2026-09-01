@@ -6,6 +6,9 @@ export class ApiEnvelopeDto {
   @ApiProperty({ example: true })
   success!: boolean;
 
+  @ApiProperty({ description: 'The response payload — shape varies by endpoint' })
+  data!: unknown;
+
   @ApiProperty({ example: {} })
   meta!: Record<string, unknown>;
 

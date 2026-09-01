@@ -16,6 +16,7 @@ import { WalletService, toNetworkName } from '../wallets/wallet.service';
 import { PolicyService } from '../policies/policy.service';
 import { RiskService } from '../risk/risk.service';
 import { BudgetService } from '../budgets/budget.service';
+import { SpendingLimitGuardService } from '../budgets/services/spending-limit-guard.service';
 import { StellarService } from '../stellar/stellar.service';
 import { AgentService } from '../agents/agent.service';
 import { TransactionIntent } from '../policies/policy.types';
@@ -65,6 +66,7 @@ export class TransactionService {
     private readonly policies: PolicyService,
     private readonly risk: RiskService,
     private readonly budgets: BudgetService,
+    private readonly spendingGuard: SpendingLimitGuardService,
     private readonly stellar: StellarService,
     private readonly eventBus: EventBusService,
     private readonly prisma: PrismaService,
@@ -72,6 +74,7 @@ export class TransactionService {
 
   async create(organizationId: string, actorId: string, input: CreateTransactionInput) {
     const amount = Number(input.amount);
+    const memoValue = input.memoType && input.memoValue ? input.memoValue : input.memo;
     const { wallet } = await this.preflight(organizationId, input);
 
     // 2.5. Velocity limit check for agent spending
@@ -97,12 +100,19 @@ export class TransactionService {
       { actorId },
     );
 
-    // 5. Budget headroom (no mutation yet).
-    if (input.budgetId) {
-      await this.budgets.assertWithinBudget(organizationId, input.budgetId, amount);
-    }
-
     const requiresApproval = policyResult.requiresApproval || !assessment.canAutoExecute;
+
+    // 5. Budget check — atomically guard+consume for auto-executable txns,
+    //    or check-only for approval-required txns (consume deferred to execute).
+    let budgetConsumed = false;
+    if (input.budgetId) {
+      if (requiresApproval) {
+        await this.budgets.assertWithinBudget(organizationId, input.budgetId, amount);
+      } else {
+        await this.spendingGuard.guardAndConsume(organizationId, input.budgetId, amount);
+        budgetConsumed = true;
+      }
+    }
 
     // 6. Persist the transaction row.
     const transaction = await this.repository.create({
@@ -117,7 +127,7 @@ export class TransactionService {
       amount: new Decimal(input.amount),
       senderAddress: wallet.stellarAddress,
       recipientAddress: input.recipientAddress,
-      memo: input.memo,
+      memo: memoValue,
       purpose: input.purpose,
       status: TransactionStatus.DRAFT,
       riskScore: assessment.score,
@@ -143,7 +153,7 @@ export class TransactionService {
       };
     }
 
-    const executed = await this.execute(organizationId, transaction.id, actorId);
+    const executed = await this.execute(organizationId, transaction.id, actorId, budgetConsumed);
     return { transaction: executed, requiresApproval: false, risk: assessment };
   }
 
@@ -152,7 +162,7 @@ export class TransactionService {
    * auto-executable transactions and by the approvals module once a proposal has
    * gathered the required approvals.
    */
-  async execute(organizationId: string, transactionId: string, actorId?: string): Promise<Transaction> {
+  async execute(organizationId: string, transactionId: string, actorId?: string, budgetConsumed = false): Promise<Transaction> {
     const tx = await this.getOrThrow(organizationId, transactionId);
     if (
       tx.status === TransactionStatus.COMPLETED ||
@@ -171,6 +181,7 @@ export class TransactionService {
       { organizationId, actorId, aggregateType: 'transaction', aggregateId: tx.id },
     );
 
+    let fundsMoved = false;
     try {
       const result = await this.stellar.submitPayment({
         sourceAddress: wallet.stellarAddress,
@@ -180,6 +191,7 @@ export class TransactionService {
         memo: tx.memo ?? undefined,
         network: toNetworkName(wallet.network),
       });
+      fundsMoved = result.successful;
 
       const completed = await this.repository.update(tx.id, {
         status: result.successful ? TransactionStatus.COMPLETED : TransactionStatus.FAILED,
@@ -187,7 +199,7 @@ export class TransactionService {
         confirmationCount: result.ledger ? 1 : 0,
       });
 
-      if (result.successful && tx.budgetId) {
+      if (result.successful && tx.budgetId && !budgetConsumed) {
         await this.budgets.consume(organizationId, tx.budgetId, Number(tx.amount));
       }
 
@@ -204,6 +216,12 @@ export class TransactionService {
         `Transaction ${tx.id} failed to submit: ${(error as Error).message}`,
       );
       await this.repository.update(tx.id, { status: TransactionStatus.FAILED });
+      if (tx.budgetId && !fundsMoved) {
+        // Funds never moved — return the reserved headroom to the budget.
+        await this.budgets
+          .release(organizationId, tx.budgetId, Number(tx.amount))
+          .catch(() => undefined);
+      }
       await this.eventBus.emit(
         DomainEventName.TransactionFailed,
         { transactionId: tx.id, reason: (error as Error).message },
@@ -268,6 +286,12 @@ export class TransactionService {
       throw new ConflictException('Only draft or pending transactions can be cancelled');
     }
     const cancelled = await this.repository.update(id, { status: TransactionStatus.CANCELLED });
+    if (tx.budgetId) {
+      // A draft/pending transaction never moved funds — release the reservation.
+      await this.budgets
+        .release(organizationId, tx.budgetId, Number(tx.amount))
+        .catch(() => undefined);
+    }
     await this.eventBus.emit(
       DomainEventName.TransactionCancelled,
       { transactionId: id },
@@ -286,8 +310,8 @@ export class TransactionService {
     const wallet = await this.wallets.getOrThrow(organizationId, input.walletId);
     this.assertWalletSpendable(wallet);
 
-    // Validate Stellar address and memo format using the new validator
-    TransactionsValidator.validateTransactionInput(input.recipientAddress, input.memo);
+    const memoValue = input.memoType && input.memoValue ? input.memoValue : input.memo;
+    TransactionsValidator.validateTransactionInput(input.recipientAddress, memoValue);
 
     let agent: Agent | undefined;
     if (input.agentId) {

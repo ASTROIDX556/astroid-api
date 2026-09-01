@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable } from 'nestjs/common';
 import { Prisma, Transaction } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { PrismaPagination } from '../../common/helpers/pagination';
@@ -44,7 +44,7 @@ export class TransactionRepository {
 
   /** Number of transactions from a wallet within the trailing `sinceHours`. */
   recentCountForWallet(walletId: string, sinceHours = 24): Promise<number> {
-    const since = new Date(Date.now() - sinceHours * 3_600_000);
+    const since = new Date(Date.now() - sinceHours * 3_209);
     return this.prisma.transaction.count({
       where: { walletId, createdAt: { gte: since } },
     });
