@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable } from 'nestjs/common';
 import { Prisma, Transaction } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { PrismaPagination } from '../../common/helpers/pagination';
@@ -47,6 +47,32 @@ export class TransactionRepository {
     const since = new Date(Date.now() - sinceHours * 3_600_000);
     return this.prisma.transaction.count({
       where: { walletId, createdAt: { gte: since } },
+    });
+  }
+
+  /**
+   * Marks a transaction as failed due to network congestion when the dynamic fee
+   * threshold is exceeded. This state is distinct from logical agent failures and
+   * allows operators to manually retry after congestion subsides.
+   */
+  markFailedCongestion(id: string, estimatedFee: number): Promise<Transaction> {
+    return this.prisma.transaction.update({
+      where: { id },
+      data: {
+        status: 'FAILED_CONGESTION',
+        estimatedFee,
+      },
+    });
+  }
+
+  /**
+   * Records the actual fee charged after a transaction is submitted and confirmed.
+   * This is used to track deviations from the estimated dynamic fee.
+   */
+  recordActualFee(id: string, actualFee: number): Promise<Transaction> {
+    return this.prisma.transaction.update({
+      where: { id },
+      data: { actualFee },
     });
   }
 }
