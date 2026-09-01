@@ -79,21 +79,24 @@ function createStore(initial: { id: string; spent: number; limitAmount: number }
 
 type Store = ReturnType<typeof createStore>;
 
-function buildService(store: Store, withLock: RedisLock['withLock']) {      const repository = {
-        findById: store.findById,
-        findChildren: async () => [],
-        incrementSpent: store.incrementSpent,
-        decrementSpent: store.decrementSpent,
-      } as unknown as BudgetRepository;
+function buildService(store: Store, withLock: RedisLock['withLock']) {
+  const repository = {
+    findById: store.findById,
+    findChildren: async () => [],
+    incrementSpent: store.incrementSpent,
+    decrementSpent: store.decrementSpent,
+  } as unknown as BudgetRepository;
 
   const eventBus = { emit: vi.fn().mockResolvedValue(undefined) } as unknown as EventBusService;
 
+  const redisLockMock = { withLock } as unknown as RedisLock;
+
   const reservation = new BudgetReservationService(
     repository,
-    { withLock } as unknown as RedisLock,
+    redisLockMock,
   );
 
-  return { service: new BudgetService(repository, eventBus, reservation), eventBus };
+  return { service: new BudgetService(repository, eventBus, reservation, redisLockMock), eventBus };
 }
 
 describe('budget consumption — integration (real service + reservation + repository)', () => {

@@ -3,7 +3,8 @@ import { Budget, Prisma } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { PrismaPagination } from '../../common/helpers/pagination';
 
-/** Persistence for Budget rows, including atomic spend increments. */
+type BudgetQueryClient = Pick<PrismaService, 'budget'> | Prisma.TransactionClient;
+
 @Injectable()
 export class BudgetRepository {
   constructor(private readonly prisma: PrismaService) {}
@@ -55,6 +56,12 @@ export class BudgetRepository {
     return this.prisma.budget.update({
       where: { id },
       data: { deletedAt: new Date(), enabled: false },
+    });
+  }
+
+  findEnabledByAgentId(agentId: string, client: BudgetQueryClient = this.prisma): Promise<Budget[]> {
+    return client.budget.findMany({
+      where: { agentId, enabled: true, deletedAt: null },
     });
   }
 }

@@ -16,6 +16,7 @@ import {
 import { Paginated } from '../../common/interfaces/api-response.interface';
 import { EventBusService } from '../../events/event-bus.service';
 import { DomainEventName } from '../../events/event-names';
+import { RedisLock } from '../../common/locks/redis-lock.util';
 
 const SORTABLE = ['createdAt', 'name', 'limitAmount', 'spent', 'period'];
 const Decimal = Prisma.Decimal;
@@ -41,6 +42,7 @@ export class BudgetService {
     private readonly repository: BudgetRepository,
     private readonly eventBus: EventBusService,
     private readonly reservation: BudgetReservationService,
+    private readonly redisLock: RedisLock,
   ) {}
 
   async create(organizationId: string, actorId: string, input: CreateBudgetInput): Promise<Budget> {
@@ -125,27 +127,35 @@ export class BudgetService {
     childId: string,
     input: AllocateBudgetInput,
   ) {
+    // Acquire a distributed lock keyed on the parent budget to serialize
+    // concurrent allocations from the same parent, preventing double-spend.
     const child = await this.getOrThrow(organizationId, childId);
     if (!child.parentBudgetId) {
       throw new ConflictException('Only a child budget can receive an allocation');
     }
     const parent = await this.getOrThrow(organizationId, child.parentBudgetId);
+    const lockKey = `budget:${parent.id}`;
     const amount = new Decimal(input.amount);
-    if (amount.greaterThan(remaining(parent))) {
-      throw new BudgetExceededException('Allocation exceeds the parent budget remaining balance', {
-        parentRemaining: remaining(parent).toFixed(7),
-        requested: amount.toFixed(7),
+
+    return this.redisLock.withLock(lockKey, async () => {
+      // Re-read the parent inside the lock to get a fresh snapshot.
+      const freshParent = await this.getOrThrow(organizationId, parent.id);
+      if (amount.greaterThan(remaining(freshParent))) {
+        throw new BudgetExceededException('Allocation exceeds the parent budget remaining balance', {
+          parentRemaining: remaining(freshParent).toFixed(7),
+          requested: amount.toFixed(7),
+        });
+      }
+      const updated = await this.repository.update(childId, {
+        limitAmount: new Decimal(child.limitAmount).plus(amount),
       });
-    }
-    const updated = await this.repository.update(childId, {
-      limitAmount: new Decimal(child.limitAmount).plus(amount),
+      await this.eventBus.emit(
+        DomainEventName.BudgetAllocated,
+        { budgetId: childId, parentBudgetId: freshParent.id, amount: input.amount },
+        { organizationId, actorId, aggregateType: 'budget', aggregateId: childId },
+      );
+      return updated;
     });
-    await this.eventBus.emit(
-      DomainEventName.BudgetAllocated,
-      { budgetId: childId, parentBudgetId: parent.id, amount: input.amount },
-      { organizationId, actorId, aggregateType: 'budget', aggregateId: childId },
-    );
-    return updated;
   }
 
   /**
@@ -218,3 +228,4 @@ export class BudgetService {
     return { id, deleted: true };
   }
 }
+

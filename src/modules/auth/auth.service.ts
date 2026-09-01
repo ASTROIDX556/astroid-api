@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { User, UserRole, UserStatus } from '@prisma/client';
@@ -19,6 +19,7 @@ import { sha256, generateToken } from '../../utils/crypto.util';
 import { EventBusService } from '../../events/event-bus.service';
 import { DomainEventName } from '../../events/event-names';
 import { LoginInput, RegisterInput } from './auth.dto';
+import { TokenBlacklistService } from './services/token-blacklist.service';
 
 export interface TokenPair {
   accessToken: string;
@@ -54,12 +55,14 @@ interface SessionContext {
  */
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
   private readonly auth: AuthConfig;
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly jwt: JwtService,
     private readonly eventBus: EventBusService,
+    private readonly tokenBlacklist: TokenBlacklistService,
     config: ConfigService,
   ) {
     this.auth = config.getOrThrow<AuthConfig>('auth');
@@ -156,6 +159,14 @@ export class AuthService {
     });
 
     const presentedHash = sha256(refreshToken);
+
+    // Reject refresh tokens blacklisted on logout / credential rotation, even
+    // if the DB session was not technically revoked (idempotent logout).
+    const blacklisted = await this.isRefreshBlacklisted(payload.sessionId);
+    if (blacklisted) {
+      throw new UnauthorizedException('Session is no longer valid', ErrorCode.SESSION_REVOKED);
+    }
+
     if (
       !session ||
       session.revokedAt ||
@@ -178,11 +189,20 @@ export class AuthService {
     });
   }
 
-  /** Revokes the session behind a refresh token (idempotent). */
+  /**
+   * Revokes the session behind an access token (idempotent). Marks the DB
+   * session as revoked and blacklists the session's access/refresh tokens in
+   * Redis so in-flight JWTs are rejected before they naturally expire.
+   */
   async logout(sessionId: string): Promise<{ success: true }> {
     await this.prisma.session
       .update({ where: { id: sessionId }, data: { revokedAt: new Date() } })
       .catch(() => undefined);
+    await this.tokenBlacklist.revokeSession(
+      sessionId,
+      this.auth.accessTtl,
+      this.auth.refreshTtl,
+    );
     return { success: true };
   }
 
@@ -198,6 +218,18 @@ export class AuthService {
   }
 
   // ── internals ──────────────────────────────────────────────────────────
+
+  /** Checks the refresh blacklist, failing open if Redis is unreachable. */
+  private async isRefreshBlacklisted(sessionId: string): Promise<boolean> {
+    try {
+      return await this.tokenBlacklist.isRefreshTokenRevoked(sessionId);
+    } catch (error: unknown) {
+      this.logger.warn(
+        `Refresh blacklist check failed, allowing attempt: ${(error as Error).message}`,
+      );
+      return false;
+    }
+  }
 
   private async issueTokens(user: User, context: SessionContext): Promise<TokenPair> {
     // Create the session first so the refresh token can embed its id.

@@ -57,3 +57,40 @@ jobs:
           cache: npm
       - run: npm ci --include=dev
       - run: npm run typecheck
+
+  migrations:
+    name: migrations
+    runs-on: ubuntu-latest
+    needs: build
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: astroid
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d astroid"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/astroid?schema=public
+      SHADOW_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/astroid_shadow?schema=public
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci --include=dev
+      # The shadow database is an empty scratch PostgreSQL database that Prisma
+      # uses to rebuild the schema purely from the committed migrations.
+      - name: Create shadow database
+        run: |
+          sudo apt-get update && sudo apt-get install -y postgresql-client
+          PGPASSWORD=postgres createdb -h localhost -p 5432 -U postgres astroid_shadow
+      - name: Verify database migrations
+        run: npm run db:verify

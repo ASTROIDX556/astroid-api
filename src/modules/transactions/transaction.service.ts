@@ -72,6 +72,7 @@ export class TransactionService {
 
   async create(organizationId: string, actorId: string, input: CreateTransactionInput) {
     const amount = Number(input.amount);
+    const memoValue = input.memoType && input.memoValue ? input.memoValue : input.memo;
     const { wallet } = await this.preflight(organizationId, input);
 
     // 2.5. Velocity limit check for agent spending
@@ -121,7 +122,7 @@ export class TransactionService {
         amount: new Decimal(input.amount),
         senderAddress: wallet.stellarAddress,
         recipientAddress: input.recipientAddress,
-        memo: input.memo,
+        memo: memoValue,
         purpose: input.purpose,
         status: TransactionStatus.DRAFT,
         riskScore: assessment.score,
@@ -314,8 +315,8 @@ export class TransactionService {
     const wallet = await this.wallets.getOrThrow(organizationId, input.walletId);
     this.assertWalletSpendable(wallet);
 
-    // Validate Stellar address and memo format using the new validator
-    TransactionsValidator.validateTransactionInput(input.recipientAddress, input.memo);
+    const memoValue = input.memoType && input.memoValue ? input.memoValue : input.memo;
+    TransactionsValidator.validateTransactionInput(input.recipientAddress, memoValue);
 
     let agent: Agent | undefined;
     if (input.agentId) {
