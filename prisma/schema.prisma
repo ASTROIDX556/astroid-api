@@ -83,7 +83,6 @@ enum StellarNetwork {
 
 enum PolicyType {
   MAX_AMOUNT
-  MAX_BASE_FEE
   MIN_AMOUNT
   ALLOWED_ASSETS
   BLOCKED_ASSETS
@@ -402,7 +401,7 @@ model Transaction {
   stellarHash       String?
   confirmationCount Int               @default(0)
   gasEstimate       Decimal?          @db.Decimal(30, 7)
-  actualFee         Decimal?          @db.Decimal(30, 7)
+  actualFeePaid     Decimal?          @db.Decimal(30, 7)
   metadata          Json              @default("{}")
   createdAt         DateTime          @default(now())
   updatedAt         DateTime          @updatedAt
