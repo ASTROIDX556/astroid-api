@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { Horizon, Server } from '@stellar/stellar-sdk';
 import { Policy, Prisma } from '@prisma/client';
 import { PolicyRepository } from './policy.repository';
 import { PolicyEngine } from './policy.engine';
@@ -279,13 +280,33 @@ export class PolicyService {
   }
 
   /**
+   * Retrieves the current Stellar base fee from Horizon's `/fee_stats`
+   * endpoint. Used as the dynamic network cost when checking fee spike limits.
+   */
+  async getCurrentBaseFee(): Promise<number> {
+    const horizonUrl =
+      process.env.STELLAR_HORIZON_URL ?? 'https://horizon.stellar.org';
+    const server = new Server(horizonUrl);
+    const feeStats: Horizon.FeeStatsResponse = await server.feeStats();
+    const currentBaseFee = Number(feeStats.last_ledger_base_fee);
+    if (!Number.isFinite(currentBaseFee)) {
+      throw new ValidationException(
+        'Invalid fee stats response from Horizon',
+        { lastLedgerBaseFee: feeStats.last_ledger_base_fee },
+      );
+    }
+    return currentBaseFee;
+  }
+
+  /**
    * Checks whether the current Stellar base fee exceeds the agent's configured
    * safety limit. Throws DynamicFeeExceededException when network congestion
    * pushes fees over the active spending policy or environment fallback.
    */
-  async checkBaseFeeLimit(agentId: string, baseFee: number): Promise<void> {
+  async checkBaseFeeLimit(agentId: string, baseFee?: number): Promise<void> {
     const maxBaseFee = await this.getMaxAcceptableBaseFee(agentId);
-    if (baseFee > maxBaseFee) {
+    const currentBaseFee = baseFee ?? (await this.getCurrentBaseFee());
+    if (currentBaseFee > maxBaseFee) {
       const policies = await this.repository.findActiveForEvaluationByAgent(agentId);
       const fallbackPolicy = policies.find((policy) => {
         const config = policy.configuration as PolicyConfiguration & {
@@ -302,8 +323,8 @@ export class PolicyService {
         (envMode === 'FAIL' || envMode === 'FAILED_CONGESTION' ? envMode : 'FAILED_CONGESTION');
 
       throw new DynamicFeeExceededException(
-        `Stellar base fee ${baseFee} exceeds configured safety limit ${maxBaseFee}`,
-        { baseFee, maxBaseFee, agentId, fallbackMode },
+        `Stellar base fee ${currentBaseFee} exceeds configured safety limit ${maxBaseFee}`,
+        { baseFee: currentBaseFee, maxBaseFee, agentId, fallbackMode },
       );
     }
   }
