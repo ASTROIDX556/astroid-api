@@ -81,7 +81,7 @@ export class StellarTxService {
       } catch (error: unknown) {
         const horizonError = error as HorizonError;
         const isTxBadSeq =
-          horizonError?.response?.data?.extras?.result_codes?.transaction? === 'tx_bad_seq';
+          horizonError?.response?.data?.extras?.result_codes?.transaction === 'tx_bad_seq';
 
         if (isTxBadSeq) {
           this.logger.warn(`tx_bad_seq encountered for ${publicKey}. Recovering sequence (attempt ${attempts}/${maxAttempts}):`);
