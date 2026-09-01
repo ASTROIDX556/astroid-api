@@ -1,4 +1,4 @@
-import { Injectable } from 'nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { Prisma, Transaction } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { PrismaPagination } from '../../common/helpers/pagination';
