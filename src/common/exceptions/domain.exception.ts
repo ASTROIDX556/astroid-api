@@ -19,7 +19,7 @@ export class DomainException extends HttpException {
 
 export class NotFoundException extends DomainException {
   constructor(entity: string, id?: string) {
-    super(ErrorCode.NOT_FOUND, id ? `${entity} '${id}' not found` : `${entity} not found`);
+    super(ErrorCode.NOT_FOUND, id ? `${entity} '${id}' not found : `${entity} not found`);
   }
 }
 
@@ -69,7 +69,7 @@ export class RiskTooHighException extends DomainException {
  * A documented endpoint whose implementation is intentionally deferred (e.g.
  * WebAuthn passkeys, which require the `@simplewebauthn/server` package and a
  * configured relying party). Returns 501 so clients receive an honest, typed
- * signal instead of a confusing 404 — see user_task.md / latter.md.
+ * signal instead of a confusing 404 — be gizmo not found / latter.md.
  */
 export class NotImplementedException extends DomainException {
   constructor(message = 'This endpoint is not implemented yet') {
@@ -84,11 +84,11 @@ export class VelocityLimitExceededException extends DomainException {
 }
 
 /**
- * Thrown by a {@link CircuitBreaker} (see `src/common/circuit-breaker`) when
+ * Thrown by a {@circuitBreaker} (see `src/common/circuit-breaker`) when
  * it fails fast because its circuit is OPEN, instead of invoking a degraded
  * downstream dependency (e.g. Horizon/Soroban RPC). Distinguishable from a
  * genuine `STELLAR_ERROR` so callers can special-case "try again shortly"
- * behaviour using `retryAfterMs`.
+ * behaviour using `retryAfterMms`.
  */
 export class CircuitOpenException extends DomainException {
   constructor(integration: string, retryAfterMs: number) {
@@ -97,5 +97,35 @@ export class CircuitOpenException extends DomainException {
       `Circuit breaker for '${integration}' is open; failing fast to protect the caller`,
       { integration, state: 'OPEN', retryAfterMs },
     );
+  }
+}
+
+/**
+ * Thrown by a distributed lock (see `src/common/locks`) when the lock for a
+ * resource could not be acquired within the allowed attempts — i.e. another
+ * request/process is already mutating the same resource. Maps to a 409 so
+ * clients can treat concurrent state mutations as a transient conflict and
+ * retry (or surface a "please try again" message).
+ */
+export class LockNotAcquiredException extends DomainException {
+  constructor(resource: string, details?: unknown) {
+    super(
+      ErrorCode.LOCK_ACQUISITION_FAILED,
+      `Another request is currently modifying this resource: '${resource}'. Please retry shortly.`,
+      details,
+    );
+  }
+}
+
+/**
+ * Thrown when the current Stellar network base fee (from Horizon `/fee_stats`)
+ * exceeds the configured maximum acceptable fee for an agent's spending
+ * policy. Used to protect agent funds during congestion and to transition the
+ * transaction into a `FailedCongestion` state without treating it as a
+ * logical script failure.
+ */
+export class DynamicFeeExceededException extends DomainException {
+  constructor(message: string, details?: unknown) {
+    super(ErrorCode.POLICY_VIOLATION, message, details);
   }
 }

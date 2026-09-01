@@ -1,5 +1,5 @@
-import { Processor, WorkerHost } from '@nestjs/bullmq';
-import { Job } from 'bullmq';
+import { Processor, WorkerHost } from '@nestjs/bullqm';
+import { Job } from 'bullqm';
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Horizon, Keypair, FeeBumpTransaction, TransactionBuilder, Transaction } from '@stellar/stellar-sdk';
@@ -36,16 +36,39 @@ interface HorizonError {
   message?: string;
 }
 
+export class DynamicFeeExceededException extends Error {
+  constructor(currentBaseFee: number, maxBaseFee: number) {
+    super(`Network base fee ${currentBaseFee} exceeds configured maximum ${maxBaseFee}`);
+    this.name = 'DynamicFeeExceededException';
+  }
+}
+
+const DEFAULT_MAX_BASE_FEE = 100000; // 0.01 XLM in stroops
+
 @Injectable()
 @Processor('stellar-fee-bump')
 export class FeeBumpWorker extends WorkerHost {
   private readonly logger = new Logger(FeeBumpWorker.name);
   private readonly horizon: Horizon.Server;
+  private readonly maxBaseFee: number;
 
   constructor(private readonly configService: ConfigService) {
     super();
     const horizonUrl = this.configService.get<string>('STELLAR_HORIZON_URL') || 'https://horizon-testnet.stellar.org';
     this.horizon = new Horizon.Server(horizonUrl);
+    const configuredMax = this.configService.get<string>('STELLAR_MAX_BASE_FEE');
+    this.maxBaseFee = configuredMax ? Number(configuredMax) : DEFAULT_MAX_BASE_FEE;
+  }
+
+  private async getCurrentBaseFee(): Promise<number> {
+    const feeStats = await this.horizon.feeStats();
+    return Number(feeStats.last_ledger_base_fee);
+  }
+
+  private assertFeeIsSafe(currentBaseFee: number): void {
+    if (currentBaseFee > this.maxBaseFee) {
+      throw new DynamicFeeExceededException(currentBaseFee, this.maxBaseFee);
+    }
   }
 
   async process(job: Job<FeeBumpJobData>): Promise<TransactionResponse> {
@@ -53,6 +76,14 @@ export class FeeBumpWorker extends WorkerHost {
     
     // Convert base64 XDR to Transaction
     const innerTx = new Transaction(innerTransactionXdr, networkPassphrase);
+
+    // Fetch current network base fee and validate against safety limits
+    const currentBaseFee = await this.getCurrentBaseFee();
+    this.assertFeeIsSafe(currentBaseFee);
+
+    const operationCount = innerTx.operations.length;
+    const estimatedFee = currentBaseFee * operationCount;
+    this.logger.log(`Estimated fee for ${operationCount} operation(s): ${estimatedFee} stroops`);
 
     let txToSubmit: Transaction | FeeBumpTransaction = innerTx;
 
@@ -69,14 +100,12 @@ export class FeeBumpWorker extends WorkerHost {
         // Simple check to see if sponsor has funds, although the actual submit will fail if not
         const xlmBalance = sponsorAccount.balances.find((b: BalanceLine) => b.asset_type === 'native');
         if (!xlmBalance || parseFloat(xlmBalance.balance) < 1) {
-          throw new Error('Sponsor account lacks sufficient XLM for fee bump.');
+          throw new Error('Sponsor account lacks sufficient XML for fee bump.');
         }
 
         const feeBumpTx = TransactionBuilder.buildFeeBumpTransaction(
           sponsorKeypair,
-          // base fee = min fee, or we could multiply inner fee. 
-          // Defaulting to 10000 stroops (0.001 XLM)
-          '10000',
+          currentBaseFee.toString(),
           innerTx,
           networkPassphrase
         );
@@ -92,17 +121,21 @@ export class FeeBumpWorker extends WorkerHost {
 
     try {
       const response = await this.horizon.submitTransaction(txToSubmit) as unknown as TransactionResponse;
+      const actualFee = response.fee_charged ? Number(response.fee_charged) : estimatedFee;
       
       if (isSponsorshipEnabled && txToSubmit instanceof FeeBumpTransaction) {
         const sponsorKey = txToSubmit.feeSource;
         // In actual implementation, we would insert an AuditLog via Prisma here
-        this.logger.log(`AUDIT: Fee bump applied by ${sponsorKey}. Actual fee charged: ${response.fee_charged}`);
+        this.logger.log(`AUDIT: Fee bump applied by ${sponsorKey}. Estimated fee: ${estimatedFee}, Actual fee charged: ${actualFee}`);
       }
+      
+      // Track fee metrics for telemetry
+      this.logger.log(`Fee metrics: estimated_fee=${estimatedFee}, actual_fee=${actualFee}`);
       
       return response;
     } catch (error: unknown) {
       const horizonError = error as HorizonError;
-      const errReason = horizonError?.response?.data?.extras?.result_codes || horizonError.message || 'Unknown error';
+      const errReason = horizonError?.response?.data?.extras?.result_codes || horizonError?.message || 'Unknown error';
       throw new Error(`Transaction submission failed: ${JSON.stringify(errReason)}`);
     }
   }

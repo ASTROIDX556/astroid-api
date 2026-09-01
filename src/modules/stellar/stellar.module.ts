@@ -9,15 +9,21 @@ import {
   SOROBAN_CLIENT,
   StellarClient,
   SorobanClient,
+  HorizonCircuitBreakerService,
 } from '../../integrations/stellar';
 import { StellarService } from './stellar.service';
 import { StellarTransactionService } from './services/stellar-transaction.service';
 import { StellarController } from './stellar.controller';
+import { SorobanEventParserService } from './services/soroban-event-parser.service';
 
 /**
  * Global Stellar module. Selects the mock or Horizon-backed client based on
  * `stellar.useMock`, then exposes the higher-level {@link StellarService} to
  * every other module (wallets, transactions).
+ *
+ * The {@link HorizonCircuitBreakerService} is also provided here so it can be
+ * injected by interceptors or other modules that need circuit-breaker health
+ * checks or fallback configuration.
  */
 @Global()
 @Module({
@@ -37,9 +43,24 @@ import { StellarController } from './stellar.controller';
         return new MockSorobanClient();
       },
     },
+    {
+      provide: HorizonCircuitBreakerService,
+      inject: [ConfigService],
+      useFactory: (config: ConfigService): HorizonCircuitBreakerService => {
+        return new HorizonCircuitBreakerService(config);
+      },
+    },
     StellarService,
     StellarTransactionService,
+    SorobanEventParserService,
   ],
-  exports: [StellarService, StellarTransactionService],
+  
+  exports: [
+    StellarService,
+    StellarTransactionService,
+    SorobanEventParserService,
+    HorizonCircuitBreakerService,
+  ],
 })
 export class StellarModule {}
+
