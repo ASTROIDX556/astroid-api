@@ -139,6 +139,35 @@ export class AuthService {
   }
 
   /**
+   * Authenticates a user after a verified WebAuthn passkey ceremony and issues
+   * a fresh token pair. The caller (PasskeyService) is responsible for the
+   * cryptographic assertion verification; this method resolves the user and
+   * mints the session tokens.
+   *
+   * @throws UnauthorizedException if the user is not active or does not exist
+   */
+  async loginWithPasskey(
+    userId: string,
+    context: SessionContext = {},
+  ): Promise<AuthResult> {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) {
+      throw new UnauthorizedException('User no longer exists', ErrorCode.UNAUTHORIZED);
+    }
+    if (user.status !== UserStatus.ACTIVE) {
+      throw new UnauthorizedException('This account is not active', ErrorCode.UNAUTHORIZED);
+    }
+
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: { lastLogin: new Date() },
+    });
+
+    const tokens = await this.issueTokens(user, context);
+    return { user: this.toPublicUser(user), tokens };
+  }
+
+  /**
    * Rotates a refresh token: verifies the presented token against its stored
    * hash, revokes the old session, and issues a new pair. Reuse of a revoked or
    * expired token is rejected.

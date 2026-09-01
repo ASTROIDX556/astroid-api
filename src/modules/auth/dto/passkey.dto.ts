@@ -3,10 +3,6 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 // ── Zod schemas (runtime validation) ──
 
-/**
- * Raw credential response payload as serialized by @simplewebauthn/browser.
- * Matches the `RegistrationResponseJSON` shape from the SimpleWebAuthn spec.
- */
 const authenticatorAttachmentSchema = z.enum(['platform', 'cross-platform']);
 
 const credentialResponseSchema = z.object({
@@ -21,16 +17,53 @@ const credentialResponseSchema = z.object({
   clientExtensionResults: z.record(z.unknown()).optional(),
 });
 
+const assertionResponseSchema = z.object({
+  id: z.string().min(1),
+  rawId: z.string().min(1),
+  response: z.object({
+    clientDataJSON: z.string().min(1),
+    authenticatorData: z.string().min(1),
+    signature: z.string().min(1),
+    userHandle: z.string().optional(),
+  }),
+  authenticatorAttachment: authenticatorAttachmentSchema.optional(),
+  type: z.literal('public-key'),
+  clientExtensionResults: z.record(z.unknown()).optional(),
+});
+
+// ── Registration schemas ──
+
 export const verifyPasskeyRegistrationSchema = z.object({
-  /** The original base64url challenge that was sent to generateRegistrationOptions. */
   expectedChallenge: z.string().min(1),
-  /** The credential response from the client after the authenticator ceremony. */
   credential: credentialResponseSchema,
-  /** Human-readable device name for the credential record. */
   deviceName: z.string().max(120).optional(),
 });
 
-export type VerifyPasskeyRegistrationInput = z.infer<typeof verifyPasskeyRegistrationSchema>;
+export type VerifyPasskeyRegistrationInput = z.infer<
+  typeof verifyPasskeyRegistrationSchema
+>;
+
+// ── Authentication schemas ──
+
+export const generateAuthenticationOptionsSchema = z.object({
+  email: z.string().email(),
+});
+
+export type GenerateAuthenticationOptionsInput = z.infer<
+  typeof generateAuthenticationOptionsSchema
+>;
+
+export const verifyPasskeyAuthenticationSchema = z.object({
+  expectedChallenge: z.string().min(1),
+  credential: assertionResponseSchema,
+});
+
+export type VerifyPasskeyAuthenticationInput = z.infer<
+  typeof verifyPasskeyAuthenticationSchema
+>;
+
+
+// ── Swagger DTOs (documentation only — validation is done by Zod pipe) ──
 
 // ── Authentication schemas ──
 
@@ -64,6 +97,7 @@ export type VerifyPasskeyAuthenticationInput = z.infer<typeof verifyPasskeyAuthe
 
 // ── Swagger DTO (documentation only — validation is done by Zod pipe) ──
 
+
 class CredentialResponseDto {
   @ApiProperty({ description: 'Base64url credential ID' })
   id!: string;
@@ -75,6 +109,31 @@ class CredentialResponseDto {
   response!: {
     attestationObject: string;
     clientDataJSON: string;
+  };
+
+  @ApiPropertyOptional({ enum: ['platform', 'cross-platform'] })
+  authenticatorAttachment?: 'platform' | 'cross-platform';
+
+  @ApiProperty({ enum: ['public-key'] })
+  type!: 'public-key';
+
+  @ApiPropertyOptional({ description: 'WebAuthn client extension results' })
+  clientExtensionResults?: Record<string, unknown>;
+}
+
+class AssertionResponseDto {
+  @ApiProperty({ description: 'Base64url credential ID' })
+  id!: string;
+
+  @ApiProperty({ description: 'Base64url-encoded raw credential ID' })
+  rawId!: string;
+
+  @ApiProperty({ description: 'Authenticator assertion payloads' })
+  response!: {
+    clientDataJSON: string;
+    authenticatorData: string;
+    signature: string;
+    userHandle?: string;
   };
 
   @ApiPropertyOptional({ enum: ['platform', 'cross-platform'] })
@@ -112,7 +171,12 @@ export class PasskeyCredentialDto {
   counter!: number;
 }
 
-class AuthenticationResponseDto {
+
+export class GenerateAuthenticationOptionsDto {
+  @ApiProperty({ description: 'Email address of the user authenticating' })
+  email!: string;
+
+export class AuthenticationResponseDto {
   @ApiProperty({ description: 'Base64url credential ID' })
   id!: string;
 
@@ -132,6 +196,7 @@ class AuthenticationResponseDto {
 
   @ApiPropertyOptional({ description: 'WebAuthn client extension results' })
   clientExtensionResults?: Record<string, unknown>;
+
 }
 
 export class VerifyPasskeyAuthenticationDto {
@@ -142,6 +207,52 @@ export class VerifyPasskeyAuthenticationDto {
   expectedChallenge!: string;
 
   @ApiProperty({ description: 'Assertion response from @simplewebauthn/browser' })
+
+  credential!: AssertionResponseDto;
+}
+
+export class PasskeyRegistrationOptionsDto {
+  @ApiProperty({ description: 'Relying party information' })
+  rp!: { name: string; id: string };
+
+  @ApiProperty({ description: 'User information for the credential' })
+  user!: { id: string; name: string; displayName: string };
+
+  @ApiProperty({ description: 'Base64url-encoded challenge' })
+  challenge!: string;
+
+  @ApiProperty({ description: 'Preferred public key credential parameters' })
+  pubKeyCredParams!: Array<{ alg: number; type: string }>;
+
+  @ApiPropertyOptional({ description: 'Timeout in milliseconds' })
+  timeout?: number;
+
+  @ApiPropertyOptional({ description: 'Credentials to exclude' })
+  excludeCredentials?: Array<{ id: string; type: string }>;
+
+  @ApiPropertyOptional({ description: 'Authenticator selection criteria' })
+  authenticatorSelection?: Record<string, unknown>;
+
+  @ApiPropertyOptional({ enum: ['none', 'direct', 'enterprise'] })
+  attestation?: string;
+}
+
+export class PasskeyAuthenticationOptionsDto {
+  @ApiProperty({ description: 'Base64url-encoded challenge' })
+  challenge!: string;
+
+  @ApiPropertyOptional({ description: 'Timeout in milliseconds' })
+  timeout?: number;
+
+  @ApiPropertyOptional({ description: 'RP ID' })
+  rpId?: string;
+
+  @ApiPropertyOptional({ description: 'Allowed credentials' })
+  allowCredentials?: Array<{ id: string; type: string }>;
+
+  @ApiPropertyOptional({ enum: ['required', 'preferred', 'discouraged'] })
+  userVerification?: string;
+
   credential!: AuthenticationResponseDto;
 
   @ApiProperty({ description: 'Credential ID of the passkey being used' })
@@ -194,4 +305,5 @@ export class PasskeyAuthenticationResultDto {
 
   @ApiProperty({ description: 'User ID if authentication succeeded' })
   userId?: string;
+
 }
