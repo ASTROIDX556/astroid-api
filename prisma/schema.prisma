@@ -330,7 +330,6 @@ model Policy {
   overrideLimit Decimal?    @db.Decimal(30, 7)
   overrideUntil DateTime?
   originalLimit Decimal?    @db.Decimal(30, 7)
-  maxBaseFee    Decimal?    @db.Decimal(30, 7)
 
   organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   agent        Agent?        @relation(fields: [agentId], references: [id])
