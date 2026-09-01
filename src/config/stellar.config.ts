@@ -1,4 +1,4 @@
-import { registerAs } from 'nestjs/config';
+import { registerAs } from '@nestjs/config';
 import { stellarEnvSchema, validateEnv } from './env.validation';
 
 export type StellarConfig = {
