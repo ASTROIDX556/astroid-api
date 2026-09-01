@@ -83,6 +83,7 @@ enum StellarNetwork {
 
 enum PolicyType {
   MAX_AMOUNT
+  MAX_BASE_FEE
   MIN_AMOUNT
   ALLOWED_ASSETS
   BLOCKED_ASSETS
