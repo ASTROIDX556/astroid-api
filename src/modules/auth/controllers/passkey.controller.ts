@@ -29,9 +29,6 @@ import {
   GenerateAuthenticationOptionsInput,
   verifyPasskeyAuthenticationSchema,
   VerifyPasskeyAuthenticationInput,
-
-  verifyPasskeyAuthenticationSchema,
-  VerifyPasskeyAuthenticationInput,
   VerifyPasskeyRegistrationDto,
 
   PasskeyCredentialDto,
