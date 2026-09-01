@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
 import {
   ApiOperation,
   ApiTags,
@@ -28,6 +28,11 @@ import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 import { AuthenticatedUser } from '../../common/interfaces/authenticated-user.interface';
 import { PaginationQuery, paginationQuerySchema } from '../../common/helpers/pagination';
 import { ApiEnvelope } from '../../common/decorators/api-envelope.decorator';
+import {
+  SlidingWindowThrottlerGuard,
+  SlidingWindowLimit,
+} from '../../common/guards/sliding-window-throttler.guard';
+import { AgentRateLimiterGuard } from './guards/agent-rate-limiter.guard';
 
 @ApiTags('agents')
 @ApiBearerAuth('access-token')
@@ -54,6 +59,8 @@ export class AgentController {
 
   @Post()
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.DEVELOPER)
+  @UseGuards(SlidingWindowThrottlerGuard)
+  @SlidingWindowLimit(30, 60)
   @AuditAction('AGENT_CREATED')
   @ApiOperation({
     summary: 'Register a new agent',
@@ -209,4 +216,13 @@ export class AgentController {
   remove(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
     return this.agentService.remove(user.organizationId, user.id, id);
   }
+  @Post(':id/execute')
+  @UseGuards(AgentRateLimiterGuard)
+  @ApiOperation({ summary: 'Trigger an execution for the agent' })
+  @ApiResponse({ status: 200, description: 'Execution triggered' })
+  @ApiResponse({ status: 429, description: 'Rate limit exceeded' })
+  async execute(@CurrentUser('organizationId') _organizationId: string, @Param('id') _id: string) {
+    return { success: true, message: 'Execution triggered' };
+  }
 }
+

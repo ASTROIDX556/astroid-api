@@ -74,7 +74,7 @@ describe('WebhooksProcessor', () => {
       const body = options.body;
       const timestamp = options.headers['x-astroid-timestamp'];
       const expectedSignature = createHmac('sha256', WEBHOOK_SECRET)
-        .update(`${timestamp}${body}`)
+        .update(`${timestamp}.${body}`)
         .digest('hex');
       expect(options.headers['x-astroid-signature']).toBe(expectedSignature);
     });

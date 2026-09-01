@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { Mock } from 'vitest';
 import { ConfigService } from '@nestjs/config';
+import type { Redis } from 'ioredis';
 import { PasskeyService } from './passkey.service';
 import { PrismaService } from '../../../database/prisma.service';
 
@@ -13,32 +13,22 @@ vi.mock('@simplewebauthn/server', () => ({
 
 // ── Helpers ──
 
-interface MockTx {
-  passkeyChallenge: { deleteMany: Mock };
-  passkeyCredential: { create: Mock };
-}
-
 function buildMockPrisma() {
-  const txMock: MockTx = {
-    passkeyChallenge: { deleteMany: vi.fn().mockResolvedValue({ count: 1 }) },
-    passkeyCredential: { create: vi.fn() },
-  };
-
   return {
     user: {
       findUnique: vi.fn(),
     },
-    passkeyChallenge: {
-      findFirst: vi.fn(),
-      deleteMany: vi.fn(),
-    },
     passkeyCredential: {
       create: vi.fn(),
     },
-    $transaction: vi.fn(async (cb: (tx: MockTx) => Promise<MockTx>) => {
-      return cb(txMock);
-    }),
-    _txMock: txMock,
+  };
+}
+
+function buildMockRedis() {
+  return {
+    get: vi.fn(),
+    set: vi.fn(),
+    del: vi.fn(),
   };
 }
 
@@ -68,18 +58,29 @@ const VALID_INPUT = {
   deviceName: 'YubiKey 5',
 };
 
+const STORED_CHALLENGE = JSON.stringify({
+  userId: 'user-1',
+  purpose: 'registration',
+});
+
 // ── Tests ──
 
 describe('PasskeyService', () => {
   let prisma: ReturnType<typeof buildMockPrisma>;
+  let redis: ReturnType<typeof buildMockRedis>;
   let config: ReturnType<typeof buildMockConfig>;
   let service: PasskeyService;
 
   beforeEach(() => {
     vi.clearAllMocks();
     prisma = buildMockPrisma();
+    redis = buildMockRedis();
     config = buildMockConfig();
-    service = new PasskeyService(prisma as unknown as PrismaService, config as unknown as ConfigService);
+    service = new PasskeyService(
+      prisma as unknown as PrismaService,
+      redis as unknown as Redis,
+      config as unknown as ConfigService,
+    );
   });
 
   describe('verifyRegistration', () => {
@@ -89,12 +90,7 @@ describe('PasskeyService', () => {
         id: 'user-1',
         email: 'test@example.com',
       });
-      prisma.passkeyChallenge.findFirst.mockResolvedValue({
-        id: 'ch-1',
-        userId: 'user-1',
-        challenge: 'test-challenge-abc123',
-        expiresAt: new Date(Date.now() + 300_000),
-      });
+      redis.get.mockResolvedValue(STORED_CHALLENGE);
 
       // Mock successful verification
       mockVerifyRegistrationResponse.mockResolvedValue({
@@ -117,7 +113,7 @@ describe('PasskeyService', () => {
         },
       });
 
-      prisma._txMock.passkeyCredential.create.mockResolvedValue({
+      prisma.passkeyCredential.create.mockResolvedValue({
         id: 'pk-1',
         userId: 'user-1',
         credentialId: 'cred-id-123',
@@ -140,11 +136,11 @@ describe('PasskeyService', () => {
         }),
       );
 
-      // Verify challenge was invalidated
-      expect(prisma._txMock.passkeyChallenge.deleteMany).toHaveBeenCalled();
+      // Verify challenge was consumed (one-time use)
+      expect(redis.del).toHaveBeenCalledWith('auth:passkey:challenge:test-challenge-abc123');
 
       // Verify credential was persisted
-      expect(prisma._txMock.passkeyCredential.create).toHaveBeenCalledWith({
+      expect(prisma.passkeyCredential.create).toHaveBeenCalledWith({
         data: {
           userId: 'user-1',
           credentialId: 'cred-id-123',
@@ -176,11 +172,25 @@ describe('PasskeyService', () => {
         id: 'user-1',
         email: 'test@example.com',
       });
-      prisma.passkeyChallenge.findFirst.mockResolvedValue(null);
+      redis.get.mockResolvedValue(null);
 
       await expect(
         service.verifyRegistration('user-1', VALID_INPUT),
       ).rejects.toThrow('No active registration challenge');
+    });
+
+    it('should throw UnauthorizedException when the challenge belongs to another user', async () => {
+      prisma.user.findUnique.mockResolvedValue({
+        id: 'user-1',
+        email: 'test@example.com',
+      });
+      redis.get.mockResolvedValue(
+        JSON.stringify({ userId: 'user-2', purpose: 'registration' }),
+      );
+
+      await expect(
+        service.verifyRegistration('user-1', VALID_INPUT),
+      ).rejects.toThrow('verification failed');
     });
 
     it('should throw UnauthorizedException when verification fails', async () => {
@@ -188,12 +198,7 @@ describe('PasskeyService', () => {
         id: 'user-1',
         email: 'test@example.com',
       });
-      prisma.passkeyChallenge.findFirst.mockResolvedValue({
-        id: 'ch-1',
-        userId: 'user-1',
-        challenge: 'test-challenge-abc123',
-        expiresAt: new Date(Date.now() + 300_000),
-      });
+      redis.get.mockResolvedValue(STORED_CHALLENGE);
 
       // Mock failed verification (wrong challenge, bad signature, etc.)
       mockVerifyRegistrationResponse.mockResolvedValue({
@@ -211,12 +216,7 @@ describe('PasskeyService', () => {
         id: 'user-1',
         email: 'test@example.com',
       });
-      prisma.passkeyChallenge.findFirst.mockResolvedValue({
-        id: 'ch-1',
-        userId: 'user-1',
-        challenge: 'test-challenge-abc123',
-        expiresAt: new Date(Date.now() + 300_000),
-      });
+      redis.get.mockResolvedValue(STORED_CHALLENGE);
 
       mockVerifyRegistrationResponse.mockResolvedValue({
         verified: true,
@@ -237,7 +237,7 @@ describe('PasskeyService', () => {
         },
       });
 
-      prisma._txMock.passkeyCredential.create.mockResolvedValue({
+      prisma.passkeyCredential.create.mockResolvedValue({
         id: 'pk-2',
         userId: 'user-1',
         credentialId: 'cred-id-456',
@@ -248,12 +248,13 @@ describe('PasskeyService', () => {
         createdAt: new Date(),
       });
 
-      await service.verifyRegistration('user-1', {
-        ...VALID_INPUT,
-        deviceName: undefined,
-      }, 'Chrome/120');
+      await service.verifyRegistration(
+        'user-1',
+        { ...VALID_INPUT, expectedChallenge: 'test-challenge-abc123', deviceName: undefined },
+        'Chrome/120',
+      );
 
-      expect(prisma._txMock.passkeyCredential.create).toHaveBeenCalledWith({
+      expect(prisma.passkeyCredential.create).toHaveBeenCalledWith({
         data: expect.objectContaining({
           userAgent: 'Chrome/120',
           deviceName: null,

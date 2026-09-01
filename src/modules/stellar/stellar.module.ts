@@ -14,6 +14,7 @@ import {
 import { StellarService } from './stellar.service';
 import { StellarTransactionService } from './services/stellar-transaction.service';
 import { StellarController } from './stellar.controller';
+import { SorobanEventParserService } from './services/soroban-event-parser.service';
 
 /**
  * Global Stellar module. Selects the mock or Horizon-backed client based on
@@ -51,7 +52,15 @@ import { StellarController } from './stellar.controller';
     },
     StellarService,
     StellarTransactionService,
+    SorobanEventParserService,
   ],
-  exports: [StellarService, StellarTransactionService, HorizonCircuitBreakerService],
+  
+  exports: [
+    StellarService,
+    StellarTransactionService,
+    SorobanEventParserService,
+    HorizonCircuitBreakerService,
+  ],
 })
 export class StellarModule {}
+

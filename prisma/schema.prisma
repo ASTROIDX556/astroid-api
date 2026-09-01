@@ -118,6 +118,7 @@ enum TransactionStatus {
   EXPIRED
   CANCELLED
   FAILED
+  FAILED_CONGESTION
 }
 
 enum RiskBand {
@@ -232,8 +233,7 @@ model User {
   notifications Notification[]
   auditLogs     AuditLog[]
   apiKeys       ApiKey[]
-  credentials         PasskeyCredential[]
-  passkeyChallenges   PasskeyChallenge[]
+  credentials   PasskeyCredential[]
 
   @@index([organizationId])
   @@index([status])
@@ -329,6 +329,7 @@ model Policy {
   overrideLimit Decimal?    @db.Decimal(30, 7)
   overrideUntil DateTime?
   originalLimit Decimal?    @db.Decimal(30, 7)
+  maxBaseFeeStroops Int?
 
   organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   agent        Agent?        @relation(fields: [agentId], references: [id])
@@ -400,6 +401,9 @@ model Transaction {
   stellarHash       String?
   confirmationCount Int               @default(0)
   gasEstimate       Decimal?          @db.Decimal(30, 7)
+  actualFeePaid     Decimal?          @db.Decimal(30, 7)
+  maxBaseFeeStroops Int?
+  feeStats          Json?
   metadata          Json              @default("{}")
   createdAt         DateTime          @default(now())
   updatedAt         DateTime          @updatedAt
@@ -692,24 +696,6 @@ model PasskeyCredential {
 }
 
 // ---------------------------------------------------------------------------
-// Passkey challenge  (temporary storage for WebAuthn registration ceremonies)
-// ---------------------------------------------------------------------------
-
-model PasskeyChallenge {
-  id        String   @id @default(uuid(7))
-  userId    String
-  challenge String
-  expiresAt DateTime
-  createdAt DateTime @default(now())
-
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@index([userId])
-  @@index([expiresAt])
-  @@map("passkey_challenges")
-}
-
-// ---------------------------------------------------------------------------
 // Domain Event  (append-only event-sourcing / immutable event ledger)
 // ---------------------------------------------------------------------------
 
@@ -750,4 +736,18 @@ model OutboxEvent {
 
   @@index([status, createdAt])
   @@map("outbox_events")
+}
+
+model CleanupJobLog {
+  id             String   @id @default(uuid(7))
+  organizationId String?
+  jobName        String
+  recordsDeleted Int
+  durationMs     Int
+  status         String
+  error          String?
+  createdAt      DateTime @default(now())
+
+  @@index([jobName, createdAt])
+  @@map("cleanup_job_logs")
 }

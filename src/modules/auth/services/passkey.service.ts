@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import Redis from 'ioredis';
 import {
   generateRegistrationOptions,
   verifyRegistrationResponse,
@@ -48,6 +49,20 @@ export interface PasskeyAuthenticationResult {
   userId?: string;
 }
 
+/** How long a WebAuthn challenge stays valid before it must be re-issued. */
+const CHALLENGE_TTL_SECONDS = 5 * 60;
+
+/** Payload stored in Redis under each pending WebAuthn challenge. */
+interface StoredChallenge {
+  userId: string;
+  purpose: 'registration' | 'authentication';
+}
+
+/** Redis key under which a pending WebAuthn challenge is stored. */
+function challengeKey(challenge: string): string {
+  return `auth:passkey:challenge:${challenge}`;
+}
+
 /**
  * Handles WebAuthn passkey registration and authentication flows.
  *
@@ -60,7 +75,8 @@ export interface PasskeyAuthenticationResult {
  *   2. verifyAuthenticationResponse — cryptographically verifies the assertion
  *
  * Uses `@simplewebauthn/server` for all cryptographic operations. Challenges are
- * stored temporarily in the database and invalidated after use to prevent replay.
+ * stored temporarily in Redis with a short TTL and consumed after use to
+ * prevent replay.
  */
 @Injectable()
 export class PasskeyService {
@@ -69,6 +85,7 @@ export class PasskeyService {
 
   constructor(
     private readonly prisma: PrismaService,
+    private readonly redis: Redis,
     config: ConfigService,
   ) {
     this.auth = config.getOrThrow<AuthConfig>('auth');
@@ -117,13 +134,7 @@ export class PasskeyService {
     });
 
     // Store the challenge for later verification (expires in 5 minutes)
-    await this.prisma.passkeyChallenge.create({
-      data: {
-        userId,
-        challenge: options.challenge,
-        expiresAt: new Date(Date.now() + 5 * 60 * 1000),
-      },
-    });
+    await this.storeChallenge(options.challenge, { userId, purpose: 'registration' });
 
     this.logger.log(
       `Registration options generated for user ${userId}: challenge ${options.challenge.substring(0, 16)}...`,
@@ -147,8 +158,8 @@ export class PasskeyService {
    * 1. Confirm the user exists in the database.
    * 2. Delegate to @simplewebauthn/server for cryptographic verification of the
    *    attestation (checks challenge match, origin, RP ID, signature, etc.).
-   * 3. Within a transaction, invalidate the stored challenge and persist the
-   *    credential — both succeed or both fail.
+   * 3. Consume the Redis challenge (one-time use) and persist the verified
+   *    credential.
    *
    * @throws NotFoundException  if the user does not exist
    * @throws ValidationException if the challenge was not previously stored
@@ -166,13 +177,15 @@ export class PasskeyService {
     }
 
     // 2. Fetch the stored challenge
-    const challengeRecord = await this.prisma.passkeyChallenge.findFirst({
-      where: { userId, expiresAt: { gt: new Date() } },
-    });
-
-    if (!challengeRecord) {
+    const stored = await this.getStoredChallenge(input.expectedChallenge, 'registration');
+    if (!stored) {
       throw new ValidationException(
         'No active registration challenge found. Please request a new one.',
+      );
+    }
+    if (stored.userId !== userId) {
+      throw new UnauthorizedException(
+        'Passkey registration verification failed — invalid credential response.',
       );
     }
 
@@ -180,7 +193,7 @@ export class PasskeyService {
     const credential = input.credential as RegistrationResponseJSON;
     const verification = await verifyRegistrationResponse({
       response: credential,
-      expectedChallenge: challengeRecord.challenge,
+      expectedChallenge: input.expectedChallenge,
       expectedOrigin: this.auth.passkey.origin,
       expectedRPID: this.auth.passkey.rpId,
     });
@@ -197,24 +210,17 @@ export class PasskeyService {
     // Convert the Uint8Array public key to a base64url string for storage.
     const publicKey = bufferToBase64url(webauthnCredential.publicKey);
 
-    // 4. Atomic: invalidate challenge + persist credential
-    const saved = await this.prisma.$transaction(async (tx) => {
-      // Invalidate the challenge to prevent replay
-      await tx.passkeyChallenge.deleteMany({
-        where: { userId },
-      });
-
-      // Persist the verified credential
-      return tx.passkeyCredential.create({
-        data: {
-          userId,
-          credentialId: webauthnCredential.id,
-          publicKey,
-          counter,
-          deviceName: input.deviceName ?? null,
-          userAgent: userAgent ?? null,
-        },
-      });
+    // 4. Consume the challenge (one-time use) and persist the verified credential
+    await this.redis.del(challengeKey(input.expectedChallenge));
+    const saved = await this.prisma.passkeyCredential.create({
+      data: {
+        userId,
+        credentialId: webauthnCredential.id,
+        publicKey,
+        counter,
+        deviceName: input.deviceName ?? null,
+        userAgent: userAgent ?? null,
+      },
     });
 
     this.logger.log(
@@ -260,13 +266,7 @@ export class PasskeyService {
     });
 
     // Store the challenge for later verification (expires in 5 minutes)
-    await this.prisma.passkeyChallenge.create({
-      data: {
-        userId,
-        challenge: options.challenge,
-        expiresAt: new Date(Date.now() + 5 * 60 * 1000),
-      },
-    });
+    await this.storeChallenge(options.challenge, { userId, purpose: 'authentication' });
 
     this.logger.log(
       `Authentication options generated for user ${userId}: challenge ${options.challenge.substring(0, 16)}...`,
@@ -291,8 +291,8 @@ export class PasskeyService {
    * Steps:
    * 1. Fetch the stored challenge and the credential being used.
    * 2. Delegate to @simplewebauthn/server for cryptographic verification.
-   * 3. Update the credential counter to prevent replay attacks.
-   * 4. Invalidate the challenge.
+   * 3. Consume the challenge (one-time use) and update the credential counter
+   *    to prevent replay attacks.
    *
    * @throws ValidationException if the challenge was not previously stored
    * @throws UnauthorizedException if cryptographic verification fails
@@ -302,14 +302,8 @@ export class PasskeyService {
     input: VerifyPasskeyAuthenticationInput,
   ): Promise<PasskeyAuthenticationResult> {
     // 1. Fetch the stored challenge
-    const challengeRecord = await this.prisma.passkeyChallenge.findFirst({
-      where: {
-        challenge: input.expectedChallenge,
-        expiresAt: { gt: new Date() },
-      },
-    });
-
-    if (!challengeRecord) {
+    const stored = await this.getStoredChallenge(input.expectedChallenge, 'authentication');
+    if (!stored) {
       throw new ValidationException(
         'No active authentication challenge found. Please request a new one.',
       );
@@ -323,12 +317,15 @@ export class PasskeyService {
     if (!credentialRecord) {
       throw new NotFoundException('Passkey credential', input.credentialId);
     }
+    if (credentialRecord.userId !== stored.userId) {
+      throw new NotFoundException('Passkey credential', input.credentialId);
+    }
 
     // 3. Cryptographic verification via @simplewebauthn/server
     const credential = input.credential as AuthenticationResponseJSON;
     const verification = await verifyAuthenticationResponse({
       response: credential,
-      expectedChallenge: challengeRecord.challenge,
+      expectedChallenge: input.expectedChallenge,
       expectedOrigin: this.auth.passkey.origin,
       expectedRPID: this.auth.passkey.rpId,
       credential: {
@@ -344,27 +341,20 @@ export class PasskeyService {
       );
     }
 
-    // 4. Atomic: update counter + invalidate challenge
-    await this.prisma.$transaction(async (tx) => {
-      // Update the credential counter to prevent replay
-      await tx.passkeyCredential.update({
-        where: { credentialId: input.credentialId },
-        data: { counter: verification.authenticationInfo.newCounter },
-      });
-
-      // Invalidate the challenge
-      await tx.passkeyChallenge.deleteMany({
-        where: { userId: challengeRecord.userId },
-      });
+    // 4. Consume the challenge (one-time use) and update the counter for replay protection
+    await this.redis.del(challengeKey(input.expectedChallenge));
+    await this.prisma.passkeyCredential.update({
+      where: { credentialId: input.credentialId },
+      data: { counter: verification.authenticationInfo.newCounter },
     });
 
     this.logger.log(
-      `Passkey authenticated for user ${challengeRecord.userId}: credential ${input.credentialId}`,
+      `Passkey authenticated for user ${stored.userId}: credential ${input.credentialId}`,
     );
 
     return {
       verified: true,
-      userId: challengeRecord.userId,
+      userId: stored.userId,
     };
   }
 
@@ -403,6 +393,41 @@ export class PasskeyService {
     });
 
     this.logger.log(`Passkey revoked for user ${userId}: credential ${credentialId}`);
+  }
+
+  // ── challenge storage ────────────────────────────────────────────────
+
+  /** Stores a pending WebAuthn challenge in Redis with a short TTL. */
+  private async storeChallenge(
+    challenge: string,
+    stored: StoredChallenge,
+  ): Promise<void> {
+    await this.redis.set(
+      challengeKey(challenge),
+      JSON.stringify(stored),
+      'EX',
+      CHALLENGE_TTL_SECONDS,
+    );
+  }
+
+  /**
+   * Reads back a pending WebAuthn challenge, returning null when it is missing,
+   * malformed, or was issued for a different ceremony purpose.
+   */
+  private async getStoredChallenge(
+    challenge: string,
+    purpose: StoredChallenge['purpose'],
+  ): Promise<StoredChallenge | null> {
+    const raw = await this.redis.get(challengeKey(challenge));
+    if (!raw) {
+      return null;
+    }
+    try {
+      const parsed = JSON.parse(raw) as StoredChallenge;
+      return parsed.purpose === purpose ? parsed : null;
+    } catch {
+      return null;
+    }
   }
 }
 
