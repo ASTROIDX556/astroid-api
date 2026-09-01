@@ -118,6 +118,7 @@ enum TransactionStatus {
   EXPIRED
   CANCELLED
   FAILED
+  FAILED_CONGESTION
 }
 
 enum RiskBand {
@@ -400,6 +401,7 @@ model Transaction {
   stellarHash       String?
   confirmationCount Int               @default(0)
   gasEstimate       Decimal?          @db.Decimal(30, 7)
+  actualFee         Decimal?          @db.Decimal(30, 7)
   metadata          Json              @default("{}")
   createdAt         DateTime          @default(now())
   updatedAt         DateTime          @updatedAt
