@@ -38,6 +38,7 @@ export const DomainEventName = {
   BudgetUpdated: 'budget.updated',
   BudgetAllocated: 'budget.allocated',
   BudgetConsumed: 'budget.consumed',
+  BudgetReleased: 'budget.released',
   BudgetExceeded: 'budget.exceeded',
   BudgetWarning: 'budget.warning',
 
