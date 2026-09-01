@@ -1,14 +1,7 @@
-import { INestApplication, Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { INestApplication, Injectable, Logger, OnModuleDestroy, OnModuleInit, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaClient } from '@prisma/client';
-import { DatabaseConfig } from '../config/database.config';
-import { buildDatasourceUrl } from './datasource-url';
-import { createQueryTimeoutExtension } from './query-timeout.extension';
-import {
-  checkMigrationStatus,
-  getDefaultMigrationsDir,
-  MigrationCheckResult,
-} from './migration-checker';
+import { createSlowQueryMiddleware } from './slow-query.logger';
 
 /**
  * The single Prisma client for the application. Manages connection lifecycle
@@ -31,25 +24,7 @@ import {
 export class PrismaService extends PrismaClient implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(PrismaService.name);
 
-  /**
-   * Dedicated client for background workers. It uses its own (smaller) pool
-   * sized by `DATABASE_WORKER_CONNECTION_LIMIT`, carries no server-side
-   * `statement_timeout`, and enforces the much longer
-   * `DATABASE_WORKER_QUERY_TIMEOUT_MS` guard. Workers that run long
-   * transactions (rollups, outbox drains, webhook persistence) should use this
-   * client so their work is never aborted by API request timeouts.
-   */
-  readonly workerClient: PrismaClient;
-
-  constructor(configService: ConfigService) {
-    const database = configService.getOrThrow<DatabaseConfig>('database');
-
-    const url = buildDatasourceUrl(database.url, {
-      connectionLimit: database.connectionLimit,
-      poolTimeoutMs: database.poolTimeoutMs,
-      statementTimeoutMs: database.statementTimeoutMs,
-    });
-
+  constructor(@Optional() private readonly configService?: ConfigService) {
     super({
       datasources: { db: { url } },
       log: [
@@ -58,41 +33,16 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
       ],
     });
 
-    // Inject the timeout-guard extension into this (API) client. `$extends`
-    // returns a new client; copying its delegates onto `this` keeps the
-    // PrismaService identity every repository already depends on. The cast is
-    // required because the generated `$extends` return type is a dynamic
-    // extension type rather than a full `PrismaClient`.
-    Object.assign(
-      this,
-      this.$extends(
-        createQueryTimeoutExtension({
-          queryTimeoutMs: database.queryTimeoutMs,
-          poolTimeoutMs: database.poolTimeoutMs,
-        }),
-      ) as unknown as PrismaClient,
-    );
+    const thresholdMs = this.configService?.get<number>('database.slowQueryThresholdMs') ?? 250;
+    const enabled = this.configService?.get<boolean>('database.enableSlowQueryLogging') ?? true;
 
-    // Dedicated worker pool: smaller, extended timeout, no statement_timeout.
-    const workerUrl = buildDatasourceUrl(database.url, {
-      connectionLimit: database.workerConnectionLimit,
-      poolTimeoutMs: database.poolTimeoutMs,
-      statementTimeoutMs: 0,
-    });
-    // Same cast rationale as above: the generated `$extends` return type is a
-    // dynamic extension type, not a full `PrismaClient`.
-    this.workerClient = new PrismaClient({
-      datasources: { db: { url: workerUrl } },
-      log: [
-        { level: 'warn', emit: 'event' },
-        { level: 'error', emit: 'event' },
-      ],
-    }).$extends(
-      createQueryTimeoutExtension({
-        queryTimeoutMs: database.workerQueryTimeoutMs,
-        poolTimeoutMs: database.poolTimeoutMs,
+    this.$use(
+      createSlowQueryMiddleware({
+        thresholdMs,
+        enabled,
+        logger: this.logger,
       }),
-    ) as unknown as PrismaClient;
+    );
   }
 
   async onModuleInit(): Promise<void> {
