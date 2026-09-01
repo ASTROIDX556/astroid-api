@@ -25,17 +25,20 @@ import { UseWalletLock } from '../../common/locks/wallet-lock.decorator';
 import { UseTransactionLock } from '../../common/locks/transaction-lock.decorator';
 import { AuthenticatedUser } from '../../common/interfaces/authenticated-user.interface';
 import { PaginationQuery, paginationQuerySchema } from '../../common/helpers/pagination';
-import { ApiEnvelope } from '../../common/decorators/api-envelope.decorator';
+import { StellarSimulationService } from './services/stellar-simulation.service';
 import {
-  SlidingWindowThrottlerGuard,
-  SlidingWindowLimit,
-} from '../../common/guards/sliding-window-throttler.guard';
+  StellarSimulationRequest,
+  stellarSimulationRequestSchema,
+} from './services/stellar-simulation.dto';
 
 @ApiTags('transactions')
 @ApiBearerAuth('access-token')
 @Controller('transactions')
 export class TransactionController {
-  constructor(private readonly transactionService: TransactionService) {}
+  constructor(
+    private readonly transactionService: TransactionService,
+    private readonly simulationService: StellarSimulationService,
+  ) {}
 
   @Get()
   @ApiOperation({
@@ -103,6 +106,29 @@ export class TransactionController {
     @Body(new ZodValidationPipe(simulateTransactionSchema)) body: SimulateTransactionInput,
   ) {
     return this.transactionService.simulate(organizationId, body);
+  }
+
+  @Post('preflight')
+  @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.FINANCE, UserRole.DEVELOPER)
+  @AuditAction('TRANSACTION_PREFLIGHT')
+  @ApiOperation({
+    summary: 'Run an on-chain pre-flight simulation',
+    description:
+      'Evaluates a Stellar/Soroban transaction before submission: recovers the ' +
+      'estimated resource fee, execution cost, ledger footprint and events, checks ' +
+      'fee bounds and source-account health, and returns a structured validation ' +
+      'report with a success probability. Protects agents from submitting failing ' +
+      'transactions that would waste fees.',
+  })
+  @ApiBody({ schema: { type: 'object' } })
+  @ApiResponse({ status: 200, description: 'Structured pre-flight validation report' })
+  @ApiResponse({ status: 400, description: 'Invalid XDR or transaction parameters' })
+  @ApiResponse({ status: 401, description: 'Not authenticated' })
+  @ApiResponse({ status: 403, description: 'Insufficient permissions' })
+  preflight(
+    @Body(new ZodValidationPipe(stellarSimulationRequestSchema)) body: StellarSimulationRequest,
+  ) {
+    return this.simulationService.preflight(body);
   }
 
   @Get(':id')
