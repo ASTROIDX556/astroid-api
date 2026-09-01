@@ -6,6 +6,7 @@ import { BudgetReservationService } from './services/budget-reservation.service'
 import { PolicyEvaluatorService } from './services/policy-evaluator.service';
 import { RedisLock } from '../../common/locks/redis-lock.util';
 import { RollingWindowBudgetService } from './services/rolling-window-budget.service';
+import { SpendingLimitGuardService } from './services/spending-limit-guard.service';
 
 /**
  * Budget module. Exports the service so the transactions pipeline can enforce
@@ -20,14 +21,7 @@ import { RollingWindowBudgetService } from './services/rolling-window-budget.ser
  */
 @Module({
   controllers: [BudgetController],
-  providers: [
-    BudgetService,
-    BudgetRepository,
-    BudgetReservationService,
-    RedisLock,
-    PolicyEvaluatorService,
-    RollingWindowBudgetService,
-  ],
-  exports: [BudgetService, PolicyEvaluatorService, RollingWindowBudgetService],
+  providers: [BudgetService, BudgetRepository, PolicyEvaluatorService, RollingWindowBudgetService, SpendingLimitGuardService],
+  exports: [BudgetService, PolicyEvaluatorService, RollingWindowBudgetService, SpendingLimitGuardService],
 })
 export class BudgetModule {}

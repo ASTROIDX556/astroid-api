@@ -16,6 +16,7 @@ import { WalletService, toNetworkName } from '../wallets/wallet.service';
 import { PolicyService } from '../policies/policy.service';
 import { RiskService } from '../risk/risk.service';
 import { BudgetService } from '../budgets/budget.service';
+import { SpendingLimitGuardService } from '../budgets/services/spending-limit-guard.service';
 import { StellarService } from '../stellar/stellar.service';
 import { AgentService } from '../agents/agent.service';
 import { TransactionIntent } from '../policies/policy.types';
@@ -65,6 +66,7 @@ export class TransactionService {
     private readonly policies: PolicyService,
     private readonly risk: RiskService,
     private readonly budgets: BudgetService,
+    private readonly spendingGuard: SpendingLimitGuardService,
     private readonly stellar: StellarService,
     private readonly eventBus: EventBusService,
     private readonly prisma: PrismaService,
@@ -98,46 +100,41 @@ export class TransactionService {
       { actorId },
     );
 
-    // 5. Reserve the budget headroom (authoritative — persisted atomically under
-    //    a lock, so concurrent agent requests cannot overspend a single budget).
-    if (input.budgetId) {
-      await this.budgets.reserve(organizationId, input.budgetId, amount);
-    }
-
     const requiresApproval = policyResult.requiresApproval || !assessment.canAutoExecute;
 
-    // 6. Persist the transaction row. If persistence fails, return the reserved
-    //    headroom so the budget is not silently eaten.
-    let transaction: Transaction;
-    try {
-      transaction = await this.repository.create({
-        organization: { connect: { id: organizationId } },
-        wallet: { connect: { id: wallet.id } },
-        ...(input.agentId ? { agent: { connect: { id: input.agentId } } } : {}),
-        ...(policyResult.matchedPolicyId
-          ? { policy: { connect: { id: policyResult.matchedPolicyId } } }
-          : {}),
-        ...(input.budgetId ? { budget: { connect: { id: input.budgetId } } } : {}),
-        asset: input.asset,
-        amount: new Decimal(input.amount),
-        senderAddress: wallet.stellarAddress,
-        recipientAddress: input.recipientAddress,
-        memo: memoValue,
-        purpose: input.purpose,
-        status: TransactionStatus.DRAFT,
-        riskScore: assessment.score,
-        riskBand: assessment.band,
-        requiresApproval,
-        metadata: input.metadata as Prisma.InputJsonValue,
-      });
-    } catch (error) {
-      if (input.budgetId) {
-        await this.budgets
-          .release(organizationId, input.budgetId, amount)
-          .catch(() => undefined);
+    // 5. Budget check — atomically guard+consume for auto-executable txns,
+    //    or check-only for approval-required txns (consume deferred to execute).
+    let budgetConsumed = false;
+    if (input.budgetId) {
+      if (requiresApproval) {
+        await this.budgets.assertWithinBudget(organizationId, input.budgetId, amount);
+      } else {
+        await this.spendingGuard.guardAndConsume(organizationId, input.budgetId, amount);
+        budgetConsumed = true;
       }
-      throw error;
     }
+
+    // 6. Persist the transaction row.
+    const transaction = await this.repository.create({
+      organization: { connect: { id: organizationId } },
+      wallet: { connect: { id: wallet.id } },
+      ...(input.agentId ? { agent: { connect: { id: input.agentId } } } : {}),
+      ...(policyResult.matchedPolicyId
+        ? { policy: { connect: { id: policyResult.matchedPolicyId } } }
+        : {}),
+      ...(input.budgetId ? { budget: { connect: { id: input.budgetId } } } : {}),
+      asset: input.asset,
+      amount: new Decimal(input.amount),
+      senderAddress: wallet.stellarAddress,
+      recipientAddress: input.recipientAddress,
+      memo: memoValue,
+      purpose: input.purpose,
+      status: TransactionStatus.DRAFT,
+      riskScore: assessment.score,
+      riskBand: assessment.band,
+      requiresApproval,
+      metadata: input.metadata as Prisma.InputJsonValue,
+    });
     await this.eventBus.emit(
       DomainEventName.TransactionCreated,
       { transactionId: transaction.id, amount: input.amount, riskBand: assessment.band },
@@ -156,7 +153,7 @@ export class TransactionService {
       };
     }
 
-    const executed = await this.execute(organizationId, transaction.id, actorId);
+    const executed = await this.execute(organizationId, transaction.id, actorId, budgetConsumed);
     return { transaction: executed, requiresApproval: false, risk: assessment };
   }
 
@@ -165,7 +162,7 @@ export class TransactionService {
    * auto-executable transactions and by the approvals module once a proposal has
    * gathered the required approvals.
    */
-  async execute(organizationId: string, transactionId: string, actorId?: string): Promise<Transaction> {
+  async execute(organizationId: string, transactionId: string, actorId?: string, budgetConsumed = false): Promise<Transaction> {
     const tx = await this.getOrThrow(organizationId, transactionId);
     if (
       tx.status === TransactionStatus.COMPLETED ||
@@ -202,9 +199,7 @@ export class TransactionService {
         confirmationCount: result.ledger ? 1 : 0,
       });
 
-      if (result.successful && tx.budgetId) {
-        // Settles the reservation booked at creation — spend was already
-        // reserved, so this only records the event and warns near the cap.
+      if (result.successful && tx.budgetId && !budgetConsumed) {
         await this.budgets.consume(organizationId, tx.budgetId, Number(tx.amount));
       }
 
