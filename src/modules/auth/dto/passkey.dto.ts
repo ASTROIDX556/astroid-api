@@ -176,7 +176,7 @@ export class GenerateAuthenticationOptionsDto {
   @ApiProperty({ description: 'Email address of the user authenticating' })
   email!: string;
 
-class AuthenticationResponseDto {
+export class AuthenticationResponseDto {
   @ApiProperty({ description: 'Base64url credential ID' })
   id!: string;
 

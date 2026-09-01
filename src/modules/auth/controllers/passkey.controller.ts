@@ -1,6 +1,4 @@
 
-import { Body, Controller, Get, Post, Req, Delete, Param } from '@nestjs/common';
-import { ApiOperation, ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import type {
   PublicKeyCredentialCreationOptionsJSON,
   PublicKeyCredentialRequestOptionsJSON,

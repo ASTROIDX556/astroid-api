@@ -14,8 +14,6 @@ import type {
   PublicKeyCredentialRequestOptionsJSON,
 } from '@simplewebauthn/server';
 
-import type { RegistrationResponseJSON, AuthenticationResponseJSON } from '@simplewebauthn/server';
-
 import { PrismaService } from '../../../database/prisma.service';
 import { AuthConfig } from '../../../config/auth.config';
 import {
@@ -326,22 +324,6 @@ export class PasskeyService {
 
     const credentials = await this.prisma.passkeyCredential.findMany({
       where: { userId: user.id },
-
-  /**
-   * Generates WebAuthn authentication options (challenge) for a user's passkey.
-   *
-   * Steps:
-   * 1. Fetch the user's stored credentials.
-   * 2. Generate options with @simplewebauthn/server.
-   * 3. Store the challenge for later verification.
-   *
-   * @throws NotFoundException if the user has no registered credentials
-   */
-  async generateAuthenticationOptions(
-    userId: string,
-  ): Promise<PasskeyAuthenticationOptions> {
-    const credentials = await this.prisma.passkeyCredential.findMany({
-      where: { userId },
       select: { credentialId: true },
     });
 
@@ -350,9 +332,6 @@ export class PasskeyService {
       throw new ValidationException(
         'No passkeys registered for this account. Please register a passkey first.',
       );
-
-      throw new NotFoundException('Passkey credentials', userId);
-
     }
 
     const options = await generateAuthenticationOptions({
@@ -384,7 +363,6 @@ export class PasskeyService {
   }
 
   /**
-   * Verifies a WebAuthn authentication response (assertion) and updates the
    * credential's signature counter for replay protection.
    *
    * Returns the authenticated user's ID so the caller can issue session tokens.
@@ -533,37 +511,8 @@ export class PasskeyService {
     };
   }
 
-  // ── Credential management ──────────────────────────────────────────────
-
-  /**
-   * Lists all passkeys registered for a user.
-    // 4. Atomic: update counter + invalidate challenge
-    await this.prisma.$transaction(async (tx) => {
-      // Update the credential counter to prevent replay
-      await tx.passkeyCredential.update({
-        where: { credentialId: input.credentialId },
-        data: { counter: verification.authenticationInfo.newCounter },
-      });
-
-      // Invalidate the challenge
-      await tx.passkeyChallenge.deleteMany({
-        where: { userId: challengeRecord.userId },
-      });
-    });
-
-    this.logger.log(
-      `Passkey authenticated for user ${challengeRecord.userId}: credential ${input.credentialId}`,
-    );
-
-    return {
-      verified: true,
-      userId: challengeRecord.userId,
-    };
-  }
-
-  /**
+/**
    * Lists all registered passkey credentials for a user.
-
    */
   async listCredentials(userId: string) {
     return this.prisma.passkeyCredential.findMany({
@@ -587,14 +536,26 @@ export class PasskeyService {
    *
    * @throws NotFoundException if the credential does not exist
    */
-  async removeCredential(userId: string, credentialId: string) {
+async removeCredential(userId: string, credentialId: string) {
     const credential = await this.prisma.passkeyCredential.findFirst({
       where: { id: credentialId, userId },
     });
 
     if (!credential) {
+      throw new NotFoundException('Passkey credential', credentialId);
+    }
 
-   * Deletes a passkey credential (revokes access).
+    await this.prisma.passkeyCredential.delete({
+      where: { id: credentialId },
+    });
+
+    this.logger.log(
+      `Passkey credential ${credentialId} removed for user ${userId}`,
+    );
+  }
+
+  /**
+   * Revokes (deletes) a specific passkey credential.
    */
   async revokeCredential(userId: string, credentialId: string): Promise<void> {
     const credential = await this.prisma.passkeyCredential.findUnique({
@@ -610,17 +571,8 @@ export class PasskeyService {
       where: { id: credentialId },
     });
 
-    this.logger.log(
-      `Passkey credential ${credentialId} removed for user ${userId}`,
-    );
-
-      where: { credentialId },
-    });
-
     this.logger.log(`Passkey revoked for user ${credential.userId}: credential ${credential.id}`);
-
   }
-}
 
 // ── Helpers ──
 
