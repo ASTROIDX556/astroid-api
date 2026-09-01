@@ -18,3 +18,26 @@ export const Queues = {
 } as const;
 
 export type QueueName = (typeof Queues)[keyof typeof Queues];
+
+/** Standard payload stored when a job is dead-lettered. */
+export interface DlqJobData {
+  /** Original queue the job originated from. */
+  originalQueue: string;
+  /** Original BullMQ job ID. */
+  originalJobId?: string;
+  /** Original job name. */
+  originalJobName?: string;
+  /** Payload of the original failed job. */
+  payload: unknown;
+  /** Terminal failure reason or error message. */
+  failedReason?: string;
+  /** Stack trace if available. */
+  stacktrace?: string[];
+  /** Total retry attempts made before dead-lettering. */
+  attemptsMade: number;
+  /** ISO timestamp when job was dead-lettered. */
+  failedAt: string;
+  /** Additional metadata (organizationId, transactionId, etc.). */
+  metadata?: Record<string, unknown>;
+}
+

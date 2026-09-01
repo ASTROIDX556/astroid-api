@@ -77,14 +77,21 @@ export class ApiKeyService {
    * nor expired, and updates lastUsedAt. Returns the owning key or null.
    */
   async verify(rawKey: string) {
-    const key = await this.repository.findByHash(sha256(rawKey));
+    if (!rawKey || typeof rawKey !== 'string' || rawKey.trim().length === 0) {
+      return null;
+    }
+    const key = await this.repository.findByHash(sha256(rawKey.trim()));
     if (!key || key.revokedAt) {
       return null;
     }
     if (key.expiresAt && key.expiresAt.getTime() < Date.now()) {
       return null;
     }
-    await this.repository.touchLastUsed(key.id);
+    try {
+      await this.repository.touchLastUsed(key.id);
+    } catch {
+      // Gracefully continue even if updating lastUsedAt encounters an error
+    }
     return key;
   }
 }

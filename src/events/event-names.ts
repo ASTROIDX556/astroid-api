@@ -38,6 +38,7 @@ export const DomainEventName = {
   BudgetUpdated: 'budget.updated',
   BudgetAllocated: 'budget.allocated',
   BudgetConsumed: 'budget.consumed',
+  BudgetReleased: 'budget.released',
   BudgetExceeded: 'budget.exceeded',
   BudgetWarning: 'budget.warning',
   BudgetPeriodReset: 'budget.period_reset',
@@ -64,6 +65,11 @@ export const DomainEventName = {
   // Notification / audit
   NotificationCreated: 'notification.created',
   AuditRecorded: 'audit.recorded',
+
+  // Dead letter queue / background job lifecycle
+  JobFailed: 'dead_letter.job_failed',
+  JobRequeued: 'dead_letter.job_requeued',
+  JobPurged: 'dead_letter.job_purged',
 } as const;
 
 export type DomainEventNameType = (typeof DomainEventName)[keyof typeof DomainEventName];

@@ -7,6 +7,8 @@ import { WebhookJobData } from '../types/webhook-job.types';
 /**
  * Service for queuing webhook delivery jobs with BullMQ.
  * Handles retry logic and dead-letter queueing through the queue configuration.
+ * Uses exponential backoff with randomized jitter (via worker-level backoffStrategy)
+ * to prevent thundering herd problems.
  */
 @Injectable()
 export class WebhookDeliveryService {
@@ -20,6 +22,9 @@ export class WebhookDeliveryService {
   /**
    * Queues a webhook delivery job with exponential backoff retry policy.
    * The job will be processed by the webhook worker with automatic retries.
+   * Uses 2000ms base delay for exponential backoff.
+   * Randomized jitter is applied by the worker-level backoffStrategy.
+   * Maximum 5 attempts total.
    */
   async queueDelivery(data: WebhookJobData): Promise<void> {
     try {
@@ -27,7 +32,7 @@ export class WebhookDeliveryService {
         attempts: 5,
         backoff: {
           type: 'exponential',
-          delay: 1000,
+          delay: 2000,
         },
         removeOnComplete: { count: 1000 },
         removeOnFail: { age: 24 * 3600 },

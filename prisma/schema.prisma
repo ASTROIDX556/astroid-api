@@ -118,6 +118,7 @@ enum TransactionStatus {
   EXPIRED
   CANCELLED
   FAILED
+  FAILED_CONGESTION
 }
 
 enum RiskBand {
@@ -197,7 +198,8 @@ model Organization {
   transactions  Transaction[]
   auditLogs     AuditLog[]
   apiKeys       ApiKey[]
-  webhooks      Webhook[]
+  webhooks           Webhook[]
+  webhookDeliveries  WebhookDelivery[]
   notifications Notification[]
   memoryRecords MemoryRecord[]
   domainEvents  DomainEvent[]
@@ -231,8 +233,7 @@ model User {
   notifications Notification[]
   auditLogs     AuditLog[]
   apiKeys       ApiKey[]
-  credentials         PasskeyCredential[]
-  passkeyChallenges   PasskeyChallenge[]
+  credentials   PasskeyCredential[]
 
   @@index([organizationId])
   @@index([status])
@@ -328,6 +329,7 @@ model Policy {
   overrideLimit Decimal?    @db.Decimal(30, 7)
   overrideUntil DateTime?
   originalLimit Decimal?    @db.Decimal(30, 7)
+  maxBaseFeeStroops Int?
 
   organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   agent        Agent?        @relation(fields: [agentId], references: [id])
@@ -399,6 +401,9 @@ model Transaction {
   stellarHash       String?
   confirmationCount Int               @default(0)
   gasEstimate       Decimal?          @db.Decimal(30, 7)
+  actualFeePaid     Decimal?          @db.Decimal(30, 7)
+  maxBaseFeeStroops Int?
+  feeStats          Json?
   metadata          Json              @default("{}")
   createdAt         DateTime          @default(now())
   updatedAt         DateTime          @updatedAt
@@ -422,6 +427,7 @@ model Transaction {
   @@index([organizationId, createdAt])
   @@index([walletId, status])
   @@index([agentId, status])
+  @@index([agentId, createdAt])
   @@map("transactions")
 }
 
@@ -488,6 +494,13 @@ model AuditLog {
   newValue       Json?
   ipAddress      String?
   device         String?
+  // Correlates this entry with the originating request's trace id
+  // (AsyncLocalStorage-backed `TraceContext`, seeded from `x-request-id` /
+  // `x-correlation-id`). Not part of the hash chain — it's correlation
+  // metadata, not tamper-evident content.
+  requestId      String?
+  previousHash   String?  // SHA-256 hash of the preceding audit log entry
+  hash           String?  // SHA-256 hash of this entry (links to previous)
   createdAt      DateTime @default(now())
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
@@ -498,6 +511,7 @@ model AuditLog {
   @@index([entity, entityId])
   @@index([createdAt])
   @@index([organizationId, createdAt])
+  @@index([requestId])
   @@map("audit_logs")
 }
 
@@ -553,6 +567,13 @@ model ApiKey {
   @@map("api_keys")
 }
 
+enum WebhookDeliveryStatus {
+  PENDING
+  RETRYING
+  FAILED
+  DELIVERED
+}
+
 // ---------------------------------------------------------------------------
 // 13. Webhook  (HMAC secret; dot.case event subscriptions)
 // ---------------------------------------------------------------------------
@@ -567,11 +588,37 @@ model Webhook {
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
-  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  organization Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  deliveries   WebhookDelivery[]
 
   @@index([organizationId])
   @@index([enabled])
   @@map("webhooks")
+}
+
+model WebhookDelivery {
+  id             String                 @id @default(uuid(7))
+  webhookId      String
+  organizationId String
+  eventName      String
+  eventId        String
+  payload        Json                   @default("{}")
+  status         WebhookDeliveryStatus  @default(PENDING)
+  attempts       Int                    @default(0)
+  lastError      String?
+  responseStatus Int?
+  createdAt      DateTime               @default(now())
+  updatedAt      DateTime               @updatedAt
+
+  webhook      Webhook      @relation(fields: [webhookId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([webhookId])
+  @@index([organizationId])
+  @@index([status])
+  @@index([eventId])
+  @@index([createdAt])
+  @@map("webhook_deliveries")
 }
 
 // ---------------------------------------------------------------------------
@@ -649,24 +696,6 @@ model PasskeyCredential {
 }
 
 // ---------------------------------------------------------------------------
-// Passkey challenge  (temporary storage for WebAuthn registration ceremonies)
-// ---------------------------------------------------------------------------
-
-model PasskeyChallenge {
-  id        String   @id @default(uuid(7))
-  userId    String
-  challenge String
-  expiresAt DateTime
-  createdAt DateTime @default(now())
-
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@index([userId])
-  @@index([expiresAt])
-  @@map("passkey_challenges")
-}
-
-// ---------------------------------------------------------------------------
 // Domain Event  (append-only event-sourcing / immutable event ledger)
 // ---------------------------------------------------------------------------
 
@@ -688,4 +717,37 @@ model DomainEvent {
   @@index([aggregateType, aggregateId])
   @@index([occurredAt])
   @@map("domain_events")
+}
+
+// ---------------------------------------------------------------------------
+// Transactional Outbox Event
+// ---------------------------------------------------------------------------
+
+model OutboxEvent {
+  id          String    @id @default(uuid(7))
+  eventType   String
+  payload     Json
+  status      String    @default("PENDING") // PENDING, COMPLETED, FAILED
+  retryCount  Int       @default(0)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  processedAt DateTime?
+  error       String?
+
+  @@index([status, createdAt])
+  @@map("outbox_events")
+}
+
+model CleanupJobLog {
+  id             String   @id @default(uuid(7))
+  organizationId String?
+  jobName        String
+  recordsDeleted Int
+  durationMs     Int
+  status         String
+  error          String?
+  createdAt      DateTime @default(now())
+
+  @@index([jobName, createdAt])
+  @@map("cleanup_job_logs")
 }
