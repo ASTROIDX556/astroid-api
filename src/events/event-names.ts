@@ -6,6 +6,7 @@ export const DomainEventName = {
   // Organization / user
   OrganizationRegistered: 'organization.registered',
   OrganizationUpdated: 'organization.updated',
+  OrganizationKeyRotated: 'organization.key_rotated',
   UserInvited: 'user.invited',
   UserUpdated: 'user.updated',
   UserRemoved: 'user.removed',

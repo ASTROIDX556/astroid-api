@@ -116,4 +116,20 @@ export class OrganizationRepository {
       where: { organizationId, role: 'OWNER', deletedAt: null },
     });
   }
+
+  /** Active (non-revoked) API keys for an organization. */
+  findActiveApiKeys(organizationId: string) {
+    return this.prisma.apiKey.findMany({
+      where: { organizationId, revokedAt: null },
+      orderBy: { createdAt: 'asc' },
+    });
+  }
+
+  createApiKey(data: Prisma.ApiKeyUncheckedCreateInput) {
+    return this.prisma.apiKey.create({ data });
+  }
+
+  revokeApiKey(id: string) {
+    return this.prisma.apiKey.update({ where: { id }, data: { revokedAt: new Date() } });
+  }
 }
