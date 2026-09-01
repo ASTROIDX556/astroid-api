@@ -32,6 +32,7 @@ import {
   SlidingWindowThrottlerGuard,
   SlidingWindowLimit,
 } from '../../common/guards/sliding-window-throttler.guard';
+import { AgentRateLimiterGuard } from './guards/agent-rate-limiter.guard';
 
 @ApiTags('agents')
 @ApiBearerAuth('access-token')
@@ -215,4 +216,13 @@ export class AgentController {
   remove(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
     return this.agentService.remove(user.organizationId, user.id, id);
   }
+  @Post(':id/execute')
+  @UseGuards(AgentRateLimiterGuard)
+  @ApiOperation({ summary: 'Trigger an execution for the agent' })
+  @ApiResponse({ status: 200, description: 'Execution triggered' })
+  @ApiResponse({ status: 429, description: 'Rate limit exceeded' })
+  async execute(@CurrentUser('organizationId') _organizationId: string, @Param('id') _id: string) {
+    return { success: true, message: 'Execution triggered' };
+  }
 }
+

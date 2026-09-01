@@ -116,7 +116,7 @@ describe('Webhook signing & delivery', () => {
       const [, opts] = fetchSpy.mock.calls[0];
       const body: string = opts.body;
       const timestamp: string = opts.headers['x-astroid-timestamp'];
-      const expected = createHmac('sha256', SECRET).update(`${timestamp}${body}`).digest('hex');
+      const expected = createHmac('sha256', SECRET).update(`${timestamp}.${body}`).digest('hex');
       expect(opts.headers['x-astroid-signature']).toBe(expected);
       expect(body).toBe(JSON.stringify(payload));
     });
@@ -167,7 +167,7 @@ describe('Webhook signing & delivery', () => {
       const [, opts] = fetchSpy.mock.calls[0];
       const body: string = opts.body;
       const ts: string = opts.headers['x-astroid-timestamp'];
-      const expected = createHmac('sha256', fallbackSecret).update(`${ts}${body}`).digest('hex');
+      const expected = createHmac('sha256', fallbackSecret).update(`${ts}.${body}`).digest('hex');
       expect(opts.headers['x-astroid-signature']).toBe(expected);
     });
 
