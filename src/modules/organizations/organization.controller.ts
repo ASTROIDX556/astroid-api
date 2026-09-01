@@ -13,7 +13,8 @@ import { OrganizationService } from './organization.service';
 import {
   inviteMemberSchema,
   InviteMemberInput,
-  InviteMemberDto,
+  rotateKeysSchema,
+  RotateKeysInput,
   updateMemberSchema,
   UpdateMemberInput,
   UpdateMemberDto,
@@ -140,5 +141,21 @@ export class OrganizationController {
   @ApiResponse({ status: 404, description: 'Member not found' })
   removeMember(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
     return this.organizationService.removeMember(user.organizationId, user.id, id);
+  }
+
+  @Post('keys/rotate')
+  @Roles(UserRole.OWNER)
+  @ApiOperation({
+    summary: 'Rotate the organization admin API key',
+    description:
+      'Revokes every active admin key and issues a fresh one. The new key is returned ' +
+      'exactly once — only its SHA-256 hash is stored, so an old key can never be recovered. ' +
+      'Organization owners only.',
+  })
+  rotateKeys(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body(new ZodValidationPipe(rotateKeysSchema)) body: RotateKeysInput,
+  ) {
+    return this.organizationService.rotateKeys(user.organizationId, user.id, body);
   }
 }

@@ -181,6 +181,7 @@ export class TransactionService {
       { organizationId, actorId, aggregateType: 'transaction', aggregateId: tx.id },
     );
 
+    let fundsMoved = false;
     try {
       const result = await this.stellar.submitPayment({
         sourceAddress: wallet.stellarAddress,
@@ -190,6 +191,7 @@ export class TransactionService {
         memo: tx.memo ?? undefined,
         network: toNetworkName(wallet.network),
       });
+      fundsMoved = result.successful;
 
       const completed = await this.repository.update(tx.id, {
         status: result.successful ? TransactionStatus.COMPLETED : TransactionStatus.FAILED,
@@ -214,6 +216,12 @@ export class TransactionService {
         `Transaction ${tx.id} failed to submit: ${(error as Error).message}`,
       );
       await this.repository.update(tx.id, { status: TransactionStatus.FAILED });
+      if (tx.budgetId && !fundsMoved) {
+        // Funds never moved — return the reserved headroom to the budget.
+        await this.budgets
+          .release(organizationId, tx.budgetId, Number(tx.amount))
+          .catch(() => undefined);
+      }
       await this.eventBus.emit(
         DomainEventName.TransactionFailed,
         { transactionId: tx.id, reason: (error as Error).message },
@@ -278,6 +286,12 @@ export class TransactionService {
       throw new ConflictException('Only draft or pending transactions can be cancelled');
     }
     const cancelled = await this.repository.update(id, { status: TransactionStatus.CANCELLED });
+    if (tx.budgetId) {
+      // A draft/pending transaction never moved funds — release the reservation.
+      await this.budgets
+        .release(organizationId, tx.budgetId, Number(tx.amount))
+        .catch(() => undefined);
+    }
     await this.eventBus.emit(
       DomainEventName.TransactionCancelled,
       { transactionId: id },
