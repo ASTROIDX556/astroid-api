@@ -83,10 +83,12 @@ import { AuditLogInterceptor } from './common/interceptors/audit-log.interceptor
             : { target: 'pino-pretty', options: { singleLine: true } },
       },
     }),
-    // Two rate-limit tiers, both driven by THROTTLE_* env vars. Every route is
-    // subject to both named throttlers, but AstroidThrottlerGuard enforces only
-    // the one matching the route's @ThrottleTierDecorator tier ('api' default,
-    // 'auth' for the sensitive auth endpoints).
+    // Three rate-limit tiers, all driven by THROTTLE_* env vars. Every route is
+    // subject to all named throttlers, but AstroidThrottlerGuard enforces only
+    // the one matching the route's @ThrottleTierDecorator tier:
+    //   'api'     (default) — general API traffic
+    //   'auth'              — sensitive auth endpoints (login, register, passkey)
+    //   'webhook'           — webhook delivery callbacks
     ThrottlerModule.forRootAsync({
       inject: [ConfigService],
       useFactory: (config: ConfigService) => {
@@ -95,6 +97,7 @@ import { AuditLogInterceptor } from './common/interceptors/audit-log.interceptor
         return [
           { name: 'api', ttl, limit: throttle.apiLimit },
           { name: 'auth', ttl, limit: throttle.authLimit },
+          { name: 'webhook', ttl, limit: throttle.webhookLimit },
         ];
       },
     }),
