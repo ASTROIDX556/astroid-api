@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { StellarNetwork, WalletType } from '@prisma/client';
+import { stellarAddressSchema } from '../../common/validators/stellar-address.schema';
 
 /**
  * Create a wallet. Two modes:
@@ -15,7 +16,7 @@ export const createWalletSchema = z
     network: z.nativeEnum(StellarNetwork).default(StellarNetwork.TESTNET),
     agentId: z.string().uuid().optional(),
     /** When provided, the wallet is imported (address-only) rather than generated. */
-    stellarAddress: z.string().min(1).optional(),
+    stellarAddress: stellarAddressSchema.optional(),
   })
   .strict();
 export type CreateWalletInput = z.infer<typeof createWalletSchema>;

@@ -8,11 +8,14 @@ import { AppConfigModule } from './config';
 import { QueueConfig } from './config/queue.config';
 import { DatabaseModule } from './database/database.module';
 import { EventsModule } from './events/events.module';
+import { LocksModule } from './common/locks/locks.module';
+import { EncryptionModule } from './common/encryption/encryption.module';
 import { RequestIdMiddleware } from './middleware/request-id.middleware';
 import { REQUEST_ID_HEADER } from './common/constants/headers';
 
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
+import { ScopesGuard } from './common/guards/scopes.guard';
 import { AstroidThrottlerGuard } from './common/guards/throttler.guard';
 import { ResponseInterceptor } from './common/interceptors/response.interceptor';
 import { AuditInterceptor } from './common/interceptors/audit.interceptor';
@@ -36,8 +39,13 @@ import { StellarModule } from './modules/stellar/stellar.module';
 import { AuditModule } from './modules/audit/audit.module';
 import { AiModule } from './modules/ai/ai.module';
 import { HealthModule } from './modules/health/health.module';
+import { MetricsModule } from './modules/metrics/metrics.module';
+import { AdminModule } from './modules/admin/admin.module';
+import { RequestMetricsMiddleware } from './modules/metrics/metrics.middleware';
+import { DeadLetterModule } from './modules/dead-letter/dead-letter.module';
 import { AgentTraceInterceptor } from './common/interceptors/agent-trace.interceptor';
 import { RequestContextInterceptor } from './common/interceptors/request-context.interceptor';
+import { AuditLogInterceptor } from './common/interceptors/audit-log.interceptor';
 
 /**
  * Root application module. Wires the global infrastructure (config, logging,
@@ -46,8 +54,10 @@ import { RequestContextInterceptor } from './common/interceptors/request-context
  * platform's contract on every request:
  *   - JwtAuthGuard      : authentication on all routes except @Public()
  *   - RolesGuard        : RBAC on routes decorated with @Roles()
+ *   - ScopesGuard       : Fine-grained permission scopes for API keys & agents
  *   - ThrottlerGuard    : per-organization / per-IP rate limiting
  *   - ResponseInterceptor: wraps every result in the success envelope
+ *   - AuditLogInterceptor: persists masked mutation requests to the audit trail
  *   - AllExceptionsFilter: converts every error into the error envelope
  */
 @Module({
@@ -91,6 +101,8 @@ import { RequestContextInterceptor } from './common/interceptors/request-context
 
     DatabaseModule,
     EventsModule,
+    LocksModule,
+    EncryptionModule,
 
     // Domain modules
     AuthModule,
@@ -111,13 +123,18 @@ import { RequestContextInterceptor } from './common/interceptors/request-context
     AuditModule,
     AiModule,
     HealthModule,
+    MetricsModule,
+    DeadLetterModule,
+    AdminModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: RolesGuard },
+    { provide: APP_GUARD, useClass: ScopesGuard },
     { provide: APP_GUARD, useClass: AstroidThrottlerGuard },
     { provide: APP_INTERCEPTOR, useClass: RequestContextInterceptor },
     { provide: APP_INTERCEPTOR, useClass: AgentTraceInterceptor },
+    { provide: APP_INTERCEPTOR, useClass: AuditLogInterceptor },
     { provide: APP_INTERCEPTOR, useClass: ResponseInterceptor },
     { provide: APP_INTERCEPTOR, useClass: AuditInterceptor },
     { provide: APP_FILTER, useClass: AllExceptionsFilter },
@@ -126,5 +143,6 @@ import { RequestContextInterceptor } from './common/interceptors/request-context
 export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer): void {
     consumer.apply(RequestIdMiddleware).forRoutes('*');
+    consumer.apply(RequestMetricsMiddleware).forRoutes('*');
   }
 }

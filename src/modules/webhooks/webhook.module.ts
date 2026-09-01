@@ -10,6 +10,7 @@ import { WebhooksProcessor } from './webhooks.processor';
 import { Queues } from '../../queues/queues.constants';
 import { redisConfig } from '../../config/redis.config';
 import { webhookBackoffStrategy } from '../../utils/backoff.util';
+import { MetricsModule } from '../metrics/metrics.module';
 import type { RegisterQueueOptions } from '@nestjs/bullmq';
 
 /**
@@ -48,6 +49,7 @@ import type { RegisterQueueOptions } from '@nestjs/bullmq';
         backoffStrategy: webhookBackoffStrategy,
       } as RegisterQueueOptions['settings'],
     }),
+    MetricsModule,
   ],
   controllers: [WebhookController],
   providers: [

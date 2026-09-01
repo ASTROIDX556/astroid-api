@@ -19,10 +19,58 @@ jobs:
       - run: npm ci --include=dev
       - run: npm run build
 
+  migration-check:
+    name: migration-check
+    runs-on: ubuntu-latest
+    env:
+      # prisma validate/generate only parse the schema — no real connection needed.
+      DATABASE_URL: postgresql://user:pass@localhost:5432/migration_check
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci --include=dev
+      - name: Validate Prisma schema
+        run: npx prisma validate
+      - name: Generate Prisma client
+        run: npx prisma generate
+      - name: Verify migration files are well-formed
+        run: |
+          echo "Checking migration directories..."
+          MIGRATION_DIRS=$(find prisma/migrations -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)
+          echo "Found $MIGRATION_DIRS migration directory(ies)"
+          if [ "$MIGRATION_DIRS" -eq 0 ]; then
+            echo "Warning: No migration directories found"
+          fi
+          # Verify each migration directory contains a migration.sql file
+          for dir in prisma/migrations/*/; do
+            if [ -d "$dir" ] && [ ! -f "${dir}migration.sql" ]; then
+              echo "Error: Migration directory '$dir' is missing migration.sql"
+              exit 1
+            fi
+          done
+          echo "All migration files are well-formed"
+      - name: Verify Prisma client generation matches schema
+        run: |
+          npx prisma generate
+          echo "Prisma client generated successfully from current schema"
+
   test:
     name: test
     runs-on: ubuntu-latest
     needs: build
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -57,3 +105,64 @@ jobs:
           cache: npm
       - run: npm ci --include=dev
       - run: npm run typecheck
+
+  openapi-validation:
+    name: OpenAPI Validation
+    runs-on: ubuntu-latest
+    needs: build
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci --include=dev
+      - name: Run OpenAPI validation test
+        run: npm test -- src/openapi.spec.ts
+
+  migrations:
+    name: migrations
+    runs-on: ubuntu-latest
+    needs: build
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: astroid
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d astroid"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/astroid?schema=public
+      SHADOW_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/astroid_shadow?schema=public
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci --include=dev
+      # The shadow database is an empty scratch PostgreSQL database that Prisma
+      # uses to rebuild the schema purely from the committed migrations.
+      - name: Create shadow database
+        run: |
+          sudo apt-get update && sudo apt-get install -y postgresql-client
+          PGPASSWORD=postgres createdb -h localhost -p 5432 -U postgres astroid_shadow
+      - name: Verify database migrations
+        run: npm run db:verify

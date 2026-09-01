@@ -4,11 +4,16 @@ import { Reflector } from '@nestjs/core';
 import { of, throwError } from 'rxjs';
 import { AuditInterceptor } from './audit.interceptor';
 import { AuditService } from '../../modules/audit/audit.service';
+import { AUDIT_ACTION_KEY } from '../decorators/audit-action.decorator';
+import { IS_SKIP_AUDIT_KEY } from '../decorators/skip-audit.decorator';
+import { TraceContext } from '../context/trace.context';
 
 function buildMockContext(overrides: {
   url?: string;
   method?: string;
   body?: Record<string, unknown>;
+  params?: Record<string, unknown>;
+  query?: Record<string, unknown>;
   user?: { id: string; organizationId: string } | null;
   statusCode?: number;
 } = {}) {
@@ -17,6 +22,8 @@ function buildMockContext(overrides: {
     originalUrl: overrides.url ?? '/v1/transactions',
     method: overrides.method ?? 'POST',
     body: overrides.body ?? { amount: 100, asset: 'XLM' },
+    params: overrides.params ?? {},
+    query: overrides.query ?? {},
     headers: { 'user-agent': 'TestAgent/1.0' },
     user: hasUser ? overrides.user : { id: 'user-1', organizationId: 'org-1' },
     socket: { remoteAddress: '127.0.0.1' },
@@ -73,6 +80,7 @@ describe('AuditInterceptor', () => {
       }),
       ipAddress: '127.0.0.1',
       device: 'TestAgent/1.0',
+      requestId: null,
     });
   });
 
@@ -140,5 +148,95 @@ describe('AuditInterceptor', () => {
     expect(auditService.record).toHaveBeenCalledWith(
       expect.objectContaining({ ipAddress: '10.0.0.1' }),
     );
+  });
+
+  it('should use the @AuditAction() name instead of METHOD /url when present', async () => {
+    vi.spyOn(reflector, 'getAllAndOverride').mockImplementation((key: unknown) => {
+      if (key === IS_SKIP_AUDIT_KEY) return false;
+      if (key === AUDIT_ACTION_KEY) return 'TRANSFER_FUNDS';
+      return undefined;
+    });
+
+    const ctx = buildMockContext();
+    const next = buildCallHandler();
+
+    await interceptor.intercept(ctx, next).toPromise();
+
+    expect(auditService.record).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'TRANSFER_FUNDS' }),
+    );
+  });
+
+  it('should capture the request id from TraceContext (AsyncLocalStorage)', async () => {
+    const ctx = buildMockContext();
+    const next = buildCallHandler();
+
+    await TraceContext.run({ traceId: 'req_trace-abc-123' }, () =>
+      interceptor.intercept(ctx, next).toPromise(),
+    );
+
+    expect(auditService.record).toHaveBeenCalledWith(
+      expect.objectContaining({ requestId: 'req_trace-abc-123' }),
+    );
+  });
+
+  it('should persist sanitized route params and query for structured metadata', async () => {
+    const ctx = buildMockContext({
+      url: '/v1/wallets/wal-123/freeze',
+      method: 'POST',
+      params: { id: 'wal-123' },
+      query: { dryRun: 'true' },
+    });
+    const next = buildCallHandler();
+
+    await interceptor.intercept(ctx, next).toPromise();
+
+    const call = auditService.record.mock.calls[0][0];
+    expect(call.newValue).toEqual(
+      expect.objectContaining({
+        params: { id: 'wal-123' },
+        query: { dryRun: 'true' },
+      }),
+    );
+  });
+
+  it('should scrub sensitive fields nested inside route params', async () => {
+    const ctx = buildMockContext({
+      url: '/v1/agents/agent-1/wallet',
+      method: 'POST',
+      params: { id: 'agent-1', secret: 'should-never-log' },
+    });
+    const next = buildCallHandler();
+
+    await interceptor.intercept(ctx, next).toPromise();
+
+    const call = auditService.record.mock.calls[0][0];
+    expect(call.newValue.params).toEqual({ id: 'agent-1', secret: '[REDACTED]' });
+  });
+
+  it('should strip authorization-like keys from the query string', async () => {
+    const ctx = buildMockContext({
+      url: '/v1/transactions?token=abc123',
+      method: 'POST',
+      query: { token: 'abc123', page: '2' },
+    });
+    const next = buildCallHandler();
+
+    await interceptor.intercept(ctx, next).toPromise();
+
+    const call = auditService.record.mock.calls[0][0];
+    expect(call.newValue.query).toEqual({ page: '2' });
+  });
+
+  it('should capture the agent identity from TraceContext as the actor', async () => {
+    const ctx = buildMockContext();
+    const next = buildCallHandler();
+
+    await TraceContext.run({ traceId: 'req_trace-abc-123', agentId: 'agent-88' }, () =>
+      interceptor.intercept(ctx, next).toPromise(),
+    );
+
+    const call = auditService.record.mock.calls[0][0];
+    expect(call.newValue.agentId).toBe('agent-88');
   });
 });

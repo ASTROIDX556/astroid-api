@@ -11,8 +11,14 @@ import {
   DomainException,
   RiskTooHighException,
 } from '../../../common/exceptions/domain.exception';
+import { CircuitBreaker, isRpcFailure } from '../../../common/circuit-breaker/circuit-breaker';
 import { EventBusService } from '../../../events/event-bus.service';
 import { DomainEventName } from '../../../events/event-names';
+
+/** Consecutive failures before the Soroban RPC circuit trips OPEN. */
+const SOROBAN_FAILURE_THRESHOLD = 5;
+/** Time the Soroban RPC circuit stays OPEN before a HALF_OPEN trial call. */
+const SOROBAN_RESET_TIMEOUT_MS = 30_000;
 
 export interface SimulationInput {
   /** The base64-encoded transaction envelope XDR. */
@@ -66,6 +72,12 @@ export interface SimulationOutput {
 @Injectable()
 export class SorobanSimulationService {
   private readonly logger = new Logger(SorobanSimulationService.name);
+  private readonly breaker = new CircuitBreaker({
+    name: 'soroban',
+    failureThreshold: SOROBAN_FAILURE_THRESHOLD,
+    resetTimeoutMs: SOROBAN_RESET_TIMEOUT_MS,
+    isFailure: isRpcFailure,
+  });
 
   constructor(
     @Inject(SOROBAN_CLIENT) private readonly sorobanClient: SorobanClient,
@@ -84,10 +96,19 @@ export class SorobanSimulationService {
 
     let result: SorobanSimulationResult;
     try {
-      result = await this.sorobanClient.simulateTransaction({
-        transactionXdr: input.transactionXdr,
-      });
+      result = await this.breaker.execute(() =>
+        this.sorobanClient.simulateTransaction({
+          transactionXdr: input.transactionXdr,
+        }),
+      );
     } catch (error) {
+      // A DomainException here is either the breaker's own
+      // CircuitOpenException (open circuit, fail fast) or a domain error
+      // raised elsewhere — surface it unchanged so callers can distinguish
+      // `CIRCUIT_OPEN` from a genuine `STELLAR_ERROR`.
+      if (error instanceof DomainException) {
+        throw error;
+      }
       this.logger.warn(
         `Soroban simulation failed: ${(error as Error).message}`,
       );
