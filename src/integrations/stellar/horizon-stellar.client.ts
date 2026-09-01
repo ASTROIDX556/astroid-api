@@ -47,6 +47,7 @@ declare module './stellar.interface' {
  * Transaction workers can catch this and mark the transaction as FAILED_CONGESTION.
  */
 export class DynamicFeeExceededException extends Error {
+  readonly code = 'FAILED_CONGESTION' as const;
   constructor(
     public readonly currentBaseFee: number,
     public readonly maxBaseFee: number,
@@ -226,11 +227,11 @@ export class HorizonStellarClient implements StellarClient {
     if (explicitMaxBaseFee !== undefined) {
       return explicitMaxBaseFee;
     }
-    const configMaxFee = (this.config as unknown { maxBaseFee?: number }).maxBaseFee;
+    const configMaxFee = (this.config as StellarConfig & { maxBaseFee?: number }).maxBaseFee;
     if (configMaxFee !== undefined) {
       return configMaxFee;
     }
-    const envMaxFee = Number(process.env.STELlAR_MAX_BASE_FEE);
+    const envMaxFee = Number(process.env.STELLAR_MAX_BASE_FEE);
     if (!Number.isNaN(envMaxFee)) {
       return envMaxFee;
     }
