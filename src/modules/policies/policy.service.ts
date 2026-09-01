@@ -1,6 +1,5 @@
 import { Injectable } from '@nestjs/common';
 import { Policy, Prisma } from '@prisma/client';
-import { Server, Horizon } from '@stellar/stellar-sdk';
 import { PolicyRepository } from './policy.repository';
 import { PolicyEngine } from './policy.engine';
 import { CreatePolicyInput, SimulatePolicyInput, UpdatePolicyInput } from './policy.dto';
@@ -11,7 +10,12 @@ import {
   TransactionIntent,
   policyConfigurationSchemaStrict,
 } from './policy.types';
-import { NotFoundException, VelocityLimitExceededException, ValidationException } from '../../common/exceptions/domain.exception';
+import {
+  DynamicFeeExceededException,
+  NotFoundException,
+  VelocityLimitExceededException,
+  ValidationException,
+} from '../../common/exceptions/domain.exception';
 import { formatZodError } from '../../common/validators/zod-error';
 import {
   buildPaginationMeta,
@@ -247,70 +251,61 @@ export class PolicyService {
   }
 
   /**
-   * Returns the fee protection configuration for an agent, including the
-   * maximum acceptable base fee and the action to take when the fee is
-   * exceeded. Falls back to environment defaults if no policy is configured.
+   * Resolves the maximum acceptable Stellar base fee for an agent from the
+   * active spending policy, falling back to the STELLAR_MAX_BASE_FEE
+   * environment default when no policy specifies a fee cap.
    */
-  async getFeeProtectionConfig(agentId: string): Promise<{ maxBaseFee: number; mode: 'FAIL' | 'FLAG' }> {
+  async getMaxAcceptableBaseFee(agentId: string): Promise<number> {
     const policies = await this.repository.findActiveForEvaluationByAgent(agentId);
-    const configs = policies
-      .map((policy) => policy.configuration as PolicyConfiguration & {
-        maxBaseFee?: number;
-        onCongestion?: 'FAIL' | 'FLAG';
-      })
-      .filter(
-        (config): config is PolicyConfiguration & { maxBaseFee: number; onCongestion?: 'FAIL' | 'FLAG' } =>
-          config.maxBaseFee !== undefined && config.maxBaseFee > 0,
-      );
+    const feePolicy = policies.find((policy) => {
+      const config = policy.configuration as PolicyConfiguration & { maxBaseFee?: number };
+      return config.maxBaseFee !== undefined && config.maxBaseFee > 0;
+    });
 
-    if (configs.length > 0) {
-      const maxBaseFee = Math.min(...configs.map((config) => config.maxBaseFee));
-      const mode = configs[0].onCongestion ?? 'FAIL';
-      return { maxBaseFee, mode };
+    const config = feePolicy?.configuration as
+      | (PolicyConfiguration & { maxBaseFee?: number })
+      | undefined;
+
+    if (config?.maxBaseFee !== undefined && config.maxBaseFee > 0) {
+      return config.maxBaseFee;
     }
 
-    const defaultMaxBaseFee = Number(process.env.STELLAR_MAX_BASE_FEE ?? 100000);
-    const defaultMode = process.env.STELLAR_FEE_SPIKE_MODE === 'FLAG' ? 'FLAG' : 'FAIL';
-    return {
-      maxBaseFee: Number.isFinite(defaultMaxBaseFee) && defaultMaxBaseFee > 0 ? defaultMaxBaseFee : 100000,
-      mode: defaultMode,
-    };
+    const envFee = Number(process.env.STELLAR_MAX_BASE_FEE);
+    if (Number.isFinite(envFee) && envFee > 0) {
+      return envFee;
+    }
+
+    return 100_000;
   }
 
   /**
-   * Fetches the current network base fee (in stroops) from Horizon's fee_stats
-   * endpoint. Uses the HORIZON_URL environment variable if set, otherwise the
-   * public Stellar network.
+   * Checks whether the current Stellar base fee exceeds the agent's configured
+   * safety limit. Throws DynamicFeeExceededException when network congestion
+   * pushes fees over the active spending policy or environment fallback.
    */
-  async fetchCurrentBaseFee(): Promise<number> {
-    const horizonUrl = process.env.HORIZON_URL ?? 'https://horizon.stellar.org';
-    const server = new Server(horizonUrl);
-    const feeStats: Horizon.FeeStatsResponse = await server.feeStats();
-    const baseFee = Number(feeStats.last_ledger_base_fee);
-    if (!Number.isFinite(baseFee) || baseFee <= 0) {
-      throw new ValidationException('Invalid network base fee returned from Horizon', {
-        horizonUrl,
-        lastLedgerBaseFee: feeStats.last_ledger_base_fee,
+  async checkBaseFeeLimit(agentId: string, baseFee: number): Promise<void> {
+    const maxBaseFee = await this.getMaxAcceptableBaseFee(agentId);
+    if (baseFee > maxBaseFee) {
+      const policies = await this.repository.findActiveForEvaluationByAgent(agentId);
+      const fallbackPolicy = policies.find((policy) => {
+        const config = policy.configuration as PolicyConfiguration & {
+          congestionFallbackMode?: 'FAIL' | 'FAILED_CONGESTION';
+        };
+        return config.congestionFallbackMode === 'FAIL' || config.congestionFallbackMode === 'FAILED_CONGESTION';
       });
+      const fallbackConfig = fallbackPolicy?.configuration as
+        | (PolicyConfiguration & { congestionFallbackMode?: 'FAIL' | 'FAILED_CONGESTION' })
+        | undefined;
+      const envMode = process.env.STELLAR_CONGESTION_FALLBACK_MODE;
+      const fallbackMode =
+        fallbackConfig?.congestionFallbackMode ??
+        (envMode === 'FAIL' || envMode === 'FAILED_CONGESTION' ? envMode : 'FAILED_CONGESTION');
+
+      throw new DynamicFeeExceededException(
+        `Stellar base fee ${baseFee} exceeds configured safety limit ${maxBaseFee}`,
+        { baseFee, maxBaseFee, agentId, fallbackMode },
+      );
     }
-    return baseFee;
-  }
-
-  /**
-   * Validates the current network base fee against the agent's configured
-   * maximum acceptable base fee. If the network fee is above the threshold,
-   * returns FAIL or FLAG according to the policy's congestion mode. This
-   * protects agent funds from rapidly rising transaction costs.
-   */
-  async evaluateFeeSpikeProtection(agentId: string): Promise<{ action: 'PROCEED' | 'FAIL' | 'FLAG' }> {
-    const config = await this.getFeeProtectionConfig(agentId);
-    const currentBaseFee = await this.fetchCurrentBaseFee();
-
-    if (currentBaseFee <= config.maxBaseFee) {
-      return { action: 'PROCEED' };
-    }
-
-    return config.mode === 'FAIL' ? { action: 'FAIL' } : { action: 'FLAG' };
   }
 }
 
