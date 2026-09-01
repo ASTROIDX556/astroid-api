@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
+
 import {
   Asset,
-  BASE_FEE,
   Horizon,
   Keypair,
   Memo,
@@ -9,6 +9,7 @@ import {
   Operation,
   TransactionBuilder,
 } from '@stellar/stellar-sdk';
+
 import { StellarConfig } from '../../config/stellar.config';
 import {
   BuildPaymentParams,
@@ -22,17 +23,47 @@ import {
 } from './stellar.interface';
 
 /**
+ * Thrown when the current network base fee exceeds the configured safety limit.
+ * The transaction worker should catch this and mark the transaction as
+ * FAILED_CONGESTION rather than retrying indefinitely.
+ */
+export class DynamicFeeExceededException extends Error {
+  constructor(
+    readonly currentBaseFee: number,
+    readonly maxBaseFee: number,
+  ) {
+    super(`Current base fee ${currentBaseFee} exceeds configured maximum ${maxBaseFee}`);
+    this.name = 'DynamicFeeExceededException';
+  }
+}
+
+type StellarConfigWithFeeProtection = StellarConfig & {
+  maxBaseFee?: number;
+  feeProtectionMode?: 'fail' | 'flag';
+};
+
+/**
  * Real Stellar client backed by Horizon. Activated when STELLAR_USE_MOCK=false.
  * Builds and submits genuine transactions against the configured network. All
- * network access is contained here — no other module imports the Stellar SDK.
+ * network access is contained here -- no other module imports the Stellar SDK.
  */
 @Injectable()
 export class HorizonStellarClient implements StellarClient {
   private readonly logger = new Logger(HorizonStellarClient.name);
   private readonly server: Horizon.Server;
+  private readonly maxBaseFee: number;
+  private readonly feeProtectionMode: 'fail' | 'flag';
 
   constructor(private readonly config: StellarConfig) {
+    const configWithFees = config as StellarConfigWithFeeProtection;
     this.server = new Horizon.Server(config.horizonUrl);
+    this.maxBaseFee =
+      configWithFees.maxBaseFee ??
+      Number(process.env.STELLAR_MAX_BASE_FEE ?? '10000');
+    this.feeProtectionMode =
+      configWithFees.feeProtectionMode ??
+      (process.env.STELLAR_FEE_PROTECTION_MODE as 'fail' | 'flag') ??
+      'fail';
   }
 
   generateKeypair(): StellarKeypair {
@@ -49,7 +80,7 @@ export class HorizonStellarClient implements StellarClient {
     }
   }
 
-  async getBalances(address: string, _network: StellarNetworkName): Promise<StellarBalance[]> {
+  async getBalances(address: string, _network: StellarNetworkName): Promise<StellarBalance[>~ {
     const account = await this.server.loadAccount(address);
     return account.balances.map((balance) => ({
       asset: balance.asset_type === 'native' ? 'XLM' : this.assetCode(balance),
@@ -65,7 +96,8 @@ export class HorizonStellarClient implements StellarClient {
 
   async buildPaymentXdr(params: BuildPaymentParams): Promise<string> {
     const source = await this.server.loadAccount(params.sourceAddress);
-    const tx = this.buildTransaction(source, params);
+    const fee = await this.getSafeBaseFee();
+    const tx = this.buildTransaction(source, params, fee);
     return tx.toXDR();
   }
 
@@ -75,7 +107,8 @@ export class HorizonStellarClient implements StellarClient {
     }
     const keypair = Keypair.fromSecret(params.sourceSecret);
     const source = await this.server.loadAccount(params.sourceAddress);
-    const tx = this.buildTransaction(source, params);
+    const fee = await this.getSafeBaseFee();
+    const tx = this.buildTransaction(source, params, fee);
     tx.sign(keypair);
     try {
       const result = await this.server.submitTransaction(tx);
@@ -107,13 +140,39 @@ export class HorizonStellarClient implements StellarClient {
     }
   }
 
+  /**
+   * Fetches the current fee statistics from Horizon.
+   */
+  async getFeeStats(): Promise<Horizon.FeeStatsResponse> {
+    return this.server.feeStats();
+  }
+
+  /**
+   * Returns the current network base fee (in stroops) and asserts it is within
+   * the configured safety limits. Throws DynamicFeeExceededException when the
+   * network is congested.
+   */
+  private async getSafeBaseFee(): Promise<number> {
+    const feeStats = await this.getFeeStats();
+    const baseFee = Number(feeStats.last_ledger_base_fee);
+    this.assertFeeAllowed(baseFee);
+    return baseFee;
+  }
+
+  private assertFeeAllowed(baseFee: number): void {
+    if (baseFee > this.maxBaseFee) {
+      throw new DynamicFeeExceededException(baseFee, this.maxBaseFee);
+    }
+  }
+
   private buildTransaction(
     source: Horizon.AccountResponse,
     params: BuildPaymentParams,
+    fee: number,
   ): ReturnType<TransactionBuilder['build']> {
     const asset = params.asset === 'XLM' ? Asset.native() : this.resolveAsset(params.asset);
     const builder = new TransactionBuilder(source, {
-      fee: BASE_FEE,
+      fee,
       networkPassphrase: this.passphrase(params.network),
     })
       .addOperation(
@@ -134,7 +193,7 @@ export class HorizonStellarClient implements StellarClient {
     // Expects "CODE:ISSUER" for non-native assets.
     const [code, issuer] = assetCode.split(':');
     if (!issuer) {
-      throw new Error(`Non-native asset '${assetCode}' must be formatted as CODE:ISSUER`);
+      throw new Error(`Non-native asset '${assetCode}' must be formatted as CODE:ISSUER);
     }
     return new Asset(code, issuer);
   }
