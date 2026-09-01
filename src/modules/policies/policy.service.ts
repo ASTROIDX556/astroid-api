@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { Policy, Prisma } from '@prisma/client';
+import { Server, Horizon } from '@stellar/stellar-sdk';
 import { PolicyRepository } from './policy.repository';
 import { PolicyEngine } from './policy.engine';
 import { CreatePolicyInput, SimulatePolicyInput, UpdatePolicyInput } from './policy.dto';
@@ -274,6 +275,42 @@ export class PolicyService {
       maxBaseFee: Number.isFinite(defaultMaxBaseFee) && defaultMaxBaseFee > 0 ? defaultMaxBaseFee : 100000,
       mode: defaultMode,
     };
+  }
+
+  /**
+   * Fetches the current network base fee (in stroops) from Horizon's fee_stats
+   * endpoint. Uses the HORIZON_URL environment variable if set, otherwise the
+   * public Stellar network.
+   */
+  async fetchCurrentBaseFee(): Promise<number> {
+    const horizonUrl = process.env.HORIZON_URL ?? 'https://horizon.stellar.org';
+    const server = new Server(horizonUrl);
+    const feeStats: Horizon.FeeStatsResponse = await server.feeStats();
+    const baseFee = Number(feeStats.last_ledger_base_fee);
+    if (!Number.isFinite(baseFee) || baseFee <= 0) {
+      throw new ValidationException('Invalid network base fee returned from Horizon', {
+        horizonUrl,
+        lastLedgerBaseFee: feeStats.last_ledger_base_fee,
+      });
+    }
+    return baseFee;
+  }
+
+  /**
+   * Validates the current network base fee against the agent's configured
+   * maximum acceptable base fee. If the network fee is above the threshold,
+   * returns FAIL or FLAG according to the policy's congestion mode. This
+   * protects agent funds from rapidly rising transaction costs.
+   */
+  async evaluateFeeSpikeProtection(agentId: string): Promise<{ action: 'PROCEED' | 'FAIL' | 'FLAG' }> {
+    const config = await this.getFeeProtectionConfig(agentId);
+    const currentBaseFee = await this.fetchCurrentBaseFee();
+
+    if (currentBaseFee <= config.maxBaseFee) {
+      return { action: 'PROCEED' };
+    }
+
+    return config.mode === 'FAIL' ? { action: 'FAIL' } : { action: 'FLAG' };
   }
 }
 
