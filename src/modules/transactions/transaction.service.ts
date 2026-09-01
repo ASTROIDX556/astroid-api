@@ -16,6 +16,7 @@ import { WalletService, toNetworkName } from '../wallets/wallet.service';
 import { PolicyService } from '../policies/policy.service';
 import { RiskService } from '../risk/risk.service';
 import { BudgetService } from '../budgets/budget.service';
+import { SpendingLimitGuardService } from '../budgets/services/spending-limit-guard.service';
 import { StellarService } from '../stellar/stellar.service';
 import { AgentService } from '../agents/agent.service';
 import { TransactionIntent } from '../policies/policy.types';
@@ -65,6 +66,7 @@ export class TransactionService {
     private readonly policies: PolicyService,
     private readonly risk: RiskService,
     private readonly budgets: BudgetService,
+    private readonly spendingGuard: SpendingLimitGuardService,
     private readonly stellar: StellarService,
     private readonly eventBus: EventBusService,
     private readonly prisma: PrismaService,
@@ -98,12 +100,19 @@ export class TransactionService {
       { actorId },
     );
 
-    // 5. Budget headroom (no mutation yet).
-    if (input.budgetId) {
-      await this.budgets.assertWithinBudget(organizationId, input.budgetId, amount);
-    }
-
     const requiresApproval = policyResult.requiresApproval || !assessment.canAutoExecute;
+
+    // 5. Budget check — atomically guard+consume for auto-executable txns,
+    //    or check-only for approval-required txns (consume deferred to execute).
+    let budgetConsumed = false;
+    if (input.budgetId) {
+      if (requiresApproval) {
+        await this.budgets.assertWithinBudget(organizationId, input.budgetId, amount);
+      } else {
+        await this.spendingGuard.guardAndConsume(organizationId, input.budgetId, amount);
+        budgetConsumed = true;
+      }
+    }
 
     // 6. Persist the transaction row.
     const transaction = await this.repository.create({
@@ -144,7 +153,7 @@ export class TransactionService {
       };
     }
 
-    const executed = await this.execute(organizationId, transaction.id, actorId);
+    const executed = await this.execute(organizationId, transaction.id, actorId, budgetConsumed);
     return { transaction: executed, requiresApproval: false, risk: assessment };
   }
 
@@ -153,7 +162,7 @@ export class TransactionService {
    * auto-executable transactions and by the approvals module once a proposal has
    * gathered the required approvals.
    */
-  async execute(organizationId: string, transactionId: string, actorId?: string): Promise<Transaction> {
+  async execute(organizationId: string, transactionId: string, actorId?: string, budgetConsumed = false): Promise<Transaction> {
     const tx = await this.getOrThrow(organizationId, transactionId);
     if (
       tx.status === TransactionStatus.COMPLETED ||
@@ -188,7 +197,7 @@ export class TransactionService {
         confirmationCount: result.ledger ? 1 : 0,
       });
 
-      if (result.successful && tx.budgetId) {
+      if (result.successful && tx.budgetId && !budgetConsumed) {
         await this.budgets.consume(organizationId, tx.budgetId, Number(tx.amount));
       }
 
