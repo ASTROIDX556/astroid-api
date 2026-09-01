@@ -20,6 +20,38 @@ export function hmacSign(secret: string, payload: string): string {
   return createHmac('sha256', secret).update(payload).digest('hex');
 }
 
+/**
+ * Generates a webhook HMAC-SHA256 signature per the Astroid spec.
+ * The signing payload is `timestamp + JSON-serialized body` (concatenated
+ * without delimiter) hashed with the tenant's webhook secret.
+ * A dot-delimited variant (`timestamp.body`) is also accepted by the
+ * verification guard; this helper uses the plain concatenation form to
+ * match the documented requirement.
+ */
+export function generateWebhookSignature(secret: string, timestamp: string, body: string): string {
+  return createHmac('sha256', secret).update(`${timestamp}${body}`).digest('hex');
+}
+
+/**
+ * Builds the standard set of webhook delivery headers.
+ * Includes X-Astroid-Signature, X-Astroid-Delivery, X-Astroid-Event and
+ * X-Astroid-Timestamp (plus X-Astroid-Event-Id for backward compatibility).
+ */
+export function buildWebhookHeaders(params: {
+  signature: string;
+  timestamp: string;
+  deliveryId: string;
+  eventName: string;
+}): Record<string, string> {
+  return {
+    'x-astroid-signature': params.signature,
+    'x-astroid-timestamp': params.timestamp,
+    'x-astroid-delivery': params.deliveryId,
+    'x-astroid-event': params.eventName,
+    'x-astroid-event-id': params.deliveryId,
+  };
+}
+
 /** Constant-time comparison of two signatures to prevent timing attacks. */
 export function safeEqual(a: string, b: string): boolean {
   const bufA = Buffer.from(a);

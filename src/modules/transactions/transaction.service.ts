@@ -72,6 +72,7 @@ export class TransactionService {
 
   async create(organizationId: string, actorId: string, input: CreateTransactionInput) {
     const amount = Number(input.amount);
+    const memoValue = input.memoType && input.memoValue ? input.memoValue : input.memo;
     const { wallet } = await this.preflight(organizationId, input);
 
     // 2.5. Velocity limit check for agent spending
@@ -97,34 +98,46 @@ export class TransactionService {
       { actorId },
     );
 
-    // 5. Budget headroom (no mutation yet).
+    // 5. Reserve the budget headroom (authoritative — persisted atomically under
+    //    a lock, so concurrent agent requests cannot overspend a single budget).
     if (input.budgetId) {
-      await this.budgets.assertWithinBudget(organizationId, input.budgetId, amount);
+      await this.budgets.reserve(organizationId, input.budgetId, amount);
     }
 
     const requiresApproval = policyResult.requiresApproval || !assessment.canAutoExecute;
 
-    // 6. Persist the transaction row.
-    const transaction = await this.repository.create({
-      organization: { connect: { id: organizationId } },
-      wallet: { connect: { id: wallet.id } },
-      ...(input.agentId ? { agent: { connect: { id: input.agentId } } } : {}),
-      ...(policyResult.matchedPolicyId
-        ? { policy: { connect: { id: policyResult.matchedPolicyId } } }
-        : {}),
-      ...(input.budgetId ? { budget: { connect: { id: input.budgetId } } } : {}),
-      asset: input.asset,
-      amount: new Decimal(input.amount),
-      senderAddress: wallet.stellarAddress,
-      recipientAddress: input.recipientAddress,
-      memo: input.memo,
-      purpose: input.purpose,
-      status: TransactionStatus.DRAFT,
-      riskScore: assessment.score,
-      riskBand: assessment.band,
-      requiresApproval,
-      metadata: input.metadata as Prisma.InputJsonValue,
-    });
+    // 6. Persist the transaction row. If persistence fails, return the reserved
+    //    headroom so the budget is not silently eaten.
+    let transaction: Transaction;
+    try {
+      transaction = await this.repository.create({
+        organization: { connect: { id: organizationId } },
+        wallet: { connect: { id: wallet.id } },
+        ...(input.agentId ? { agent: { connect: { id: input.agentId } } } : {}),
+        ...(policyResult.matchedPolicyId
+          ? { policy: { connect: { id: policyResult.matchedPolicyId } } }
+          : {}),
+        ...(input.budgetId ? { budget: { connect: { id: input.budgetId } } } : {}),
+        asset: input.asset,
+        amount: new Decimal(input.amount),
+        senderAddress: wallet.stellarAddress,
+        recipientAddress: input.recipientAddress,
+        memo: memoValue,
+        purpose: input.purpose,
+        status: TransactionStatus.DRAFT,
+        riskScore: assessment.score,
+        riskBand: assessment.band,
+        requiresApproval,
+        metadata: input.metadata as Prisma.InputJsonValue,
+      });
+    } catch (error) {
+      if (input.budgetId) {
+        await this.budgets
+          .release(organizationId, input.budgetId, amount)
+          .catch(() => undefined);
+      }
+      throw error;
+    }
     await this.eventBus.emit(
       DomainEventName.TransactionCreated,
       { transactionId: transaction.id, amount: input.amount, riskBand: assessment.band },
@@ -171,6 +184,7 @@ export class TransactionService {
       { organizationId, actorId, aggregateType: 'transaction', aggregateId: tx.id },
     );
 
+    let fundsMoved = false;
     try {
       const result = await this.stellar.submitPayment({
         sourceAddress: wallet.stellarAddress,
@@ -180,6 +194,7 @@ export class TransactionService {
         memo: tx.memo ?? undefined,
         network: toNetworkName(wallet.network),
       });
+      fundsMoved = result.successful;
 
       const completed = await this.repository.update(tx.id, {
         status: result.successful ? TransactionStatus.COMPLETED : TransactionStatus.FAILED,
@@ -188,6 +203,8 @@ export class TransactionService {
       });
 
       if (result.successful && tx.budgetId) {
+        // Settles the reservation booked at creation — spend was already
+        // reserved, so this only records the event and warns near the cap.
         await this.budgets.consume(organizationId, tx.budgetId, Number(tx.amount));
       }
 
@@ -204,6 +221,12 @@ export class TransactionService {
         `Transaction ${tx.id} failed to submit: ${(error as Error).message}`,
       );
       await this.repository.update(tx.id, { status: TransactionStatus.FAILED });
+      if (tx.budgetId && !fundsMoved) {
+        // Funds never moved — return the reserved headroom to the budget.
+        await this.budgets
+          .release(organizationId, tx.budgetId, Number(tx.amount))
+          .catch(() => undefined);
+      }
       await this.eventBus.emit(
         DomainEventName.TransactionFailed,
         { transactionId: tx.id, reason: (error as Error).message },
@@ -268,6 +291,12 @@ export class TransactionService {
       throw new ConflictException('Only draft or pending transactions can be cancelled');
     }
     const cancelled = await this.repository.update(id, { status: TransactionStatus.CANCELLED });
+    if (tx.budgetId) {
+      // A draft/pending transaction never moved funds — release the reservation.
+      await this.budgets
+        .release(organizationId, tx.budgetId, Number(tx.amount))
+        .catch(() => undefined);
+    }
     await this.eventBus.emit(
       DomainEventName.TransactionCancelled,
       { transactionId: id },
@@ -286,8 +315,8 @@ export class TransactionService {
     const wallet = await this.wallets.getOrThrow(organizationId, input.walletId);
     this.assertWalletSpendable(wallet);
 
-    // Validate Stellar address and memo format using the new validator
-    TransactionsValidator.validateTransactionInput(input.recipientAddress, input.memo);
+    const memoValue = input.memoType && input.memoValue ? input.memoValue : input.memo;
+    TransactionsValidator.validateTransactionInput(input.recipientAddress, memoValue);
 
     let agent: Agent | undefined;
     if (input.agentId) {

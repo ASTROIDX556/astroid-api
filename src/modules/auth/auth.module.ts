@@ -1,16 +1,25 @@
 import { Module } from '@nestjs/common';
 import { JwtModule } from '@nestjs/jwt';
 import { PassportModule } from '@nestjs/passport';
+import Redis from 'ioredis';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { JwtStrategy } from './jwt.strategy';
+import { ApiKeyStrategy } from './api-key.strategy';
+import { ApiKeyGuard } from '../../common/guards/api-key.guard';
+import { ApiKeyAuthGuard } from '../../common/guards/api-key-auth.guard';
+import { ScopesGuard } from '../../common/guards/scopes.guard';
+import { TokenBlacklistService } from './services/token-blacklist.service';
 import { PasskeyController } from './controllers/passkey.controller';
 import { PasskeyService } from './services/passkey.service';
+import { redisConfig } from '../../config/redis.config';
 
 /**
- * Authentication module. Registers the passport-jwt strategy and a bare
+ * Authentication module. Registers passport-jwt and api-key strategies and a bare
  * JwtModule (per-call secrets are supplied explicitly by AuthService so the
- * access and refresh tokens can use different signing keys).
+ * access and refresh tokens can use different signing keys). Also provides the
+ * Redis client used by the token blacklist, which lets logout / credential
+ * rotation invalidate in-flight JWTs before they naturally expire.
  */
 @Module({
   imports: [
@@ -18,7 +27,38 @@ import { PasskeyService } from './services/passkey.service';
     JwtModule.register({}),
   ],
   controllers: [AuthController, PasskeyController],
-  providers: [AuthService, JwtStrategy, PasskeyService],
-  exports: [AuthService, PasskeyService],
+  providers: [
+    {
+      provide: Redis,
+      useFactory: (): Redis => {
+        const config = redisConfig();
+        return new Redis({
+          host: config.host,
+          port: config.port,
+          password: config.password || undefined,
+          db: config.db,
+          lazyConnect: true,
+        });
+      },
+    },
+    AuthService,
+    JwtStrategy,
+    ApiKeyStrategy,
+    ApiKeyGuard,
+    ApiKeyAuthGuard,
+    ScopesGuard,
+    PasskeyService,
+    TokenBlacklistService,
+  ],
+  exports: [
+    AuthService,
+    JwtStrategy,
+    ApiKeyStrategy,
+    ApiKeyGuard,
+    ApiKeyAuthGuard,
+    ScopesGuard,
+    PasskeyService,
+    TokenBlacklistService,
+  ],
 })
 export class AuthModule {}

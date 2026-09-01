@@ -5,4 +5,6 @@ export const API_KEY_HEADER = 'x-api-key';
 export const WEBHOOK_SIGNATURE_HEADER = 'x-astroid-signature';
 export const WEBHOOK_TIMESTAMP_HEADER = 'x-astroid-timestamp';
 export const WEBHOOK_EVENT_ID_HEADER = 'x-astroid-event-id';
+export const WEBHOOK_DELIVERY_HEADER = 'x-astroid-delivery';
+export const WEBHOOK_EVENT_HEADER = 'x-astroid-event';
 export const IDEMPOTENCY_KEY_HEADER = 'idempotency-key';
