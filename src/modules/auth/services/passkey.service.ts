@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import Redis from 'ioredis';
 import {
   generateRegistrationOptions,
   verifyRegistrationResponse,
@@ -75,6 +76,20 @@ export interface PasskeyAuthenticationResult {
   userId?: string;
 }
 
+/** How long a WebAuthn challenge stays valid before it must be re-issued. */
+const CHALLENGE_TTL_SECONDS = 5 * 60;
+
+/** Payload stored in Redis under each pending WebAuthn challenge. */
+interface StoredChallenge {
+  userId: string;
+  purpose: 'registration' | 'authentication';
+}
+
+/** Redis key under which a pending WebAuthn challenge is stored. */
+function challengeKey(challenge: string): string {
+  return `auth:passkey:challenge:${challenge}`;
+}
+
 /**
  * Handles WebAuthn passkey registration and authentication flows.
  *
@@ -97,6 +112,7 @@ export class PasskeyService {
 
   constructor(
     private readonly prisma: PrismaService,
+    private readonly redis: Redis,
     config: ConfigService,
   ) {
     this.auth = config.getOrThrow<AuthConfig>('auth');
@@ -201,13 +217,7 @@ export class PasskeyService {
     });
 
     // Store the challenge for later verification (expires in 5 minutes)
-    await this.prisma.passkeyChallenge.create({
-      data: {
-        userId,
-        challenge: options.challenge,
-        expiresAt: new Date(Date.now() + 5 * 60 * 1000),
-      },
-    });
+    await this.storeChallenge(options.challenge, { userId, purpose: 'registration' });
 
     this.logger.log(
       `Registration options generated for user ${userId}: challenge ${options.challenge.substring(0, 16)}...`,
@@ -231,8 +241,8 @@ export class PasskeyService {
    * 1. Confirm the user exists in the database.
    * 2. Delegate to @simplewebauthn/server for cryptographic verification of the
    *    attestation (checks challenge match, origin, RP ID, signature, etc.).
-   * 3. Within a transaction, invalidate the stored challenge and persist the
-   *    credential — both succeed or both fail.
+   * 3. Consume the Redis challenge (one-time use) and persist the verified
+   *    credential.
    *
    * @throws NotFoundException  if the user does not exist
    * @throws ValidationException if the challenge was not previously stored
@@ -257,11 +267,16 @@ export class PasskeyService {
         'No active registration challenge found. Please request a new one.',
       );
     }
+    if (stored.userId !== userId) {
+      throw new UnauthorizedException(
+        'Passkey registration verification failed — invalid credential response.',
+      );
+    }
 
     const credential = input.credential as RegistrationResponseJSON;
     const verification = await verifyRegistrationResponse({
       response: credential,
-      expectedChallenge: challengeRecord.challenge,
+      expectedChallenge: input.expectedChallenge,
       expectedOrigin: this.auth.passkey.origin,
       expectedRPID: this.auth.passkey.rpId,
     });
@@ -392,13 +407,7 @@ export class PasskeyService {
         userId: storedCredential.userId,
 
     // Store the challenge for later verification (expires in 5 minutes)
-    await this.prisma.passkeyChallenge.create({
-      data: {
-        userId,
-        challenge: options.challenge,
-        expiresAt: new Date(Date.now() + 5 * 60 * 1000),
-      },
-    });
+    await this.storeChallenge(options.challenge, { userId, purpose: 'authentication' });
 
     this.logger.log(
       `Authentication options generated for user ${userId}: challenge ${options.challenge.substring(0, 16)}...`,
@@ -423,8 +432,8 @@ export class PasskeyService {
    * Steps:
    * 1. Fetch the stored challenge and the credential being used.
    * 2. Delegate to @simplewebauthn/server for cryptographic verification.
-   * 3. Update the credential counter to prevent replay attacks.
-   * 4. Invalidate the challenge.
+   * 3. Consume the challenge (one-time use) and update the credential counter
+   *    to prevent replay attacks.
    *
    * @throws ValidationException if the challenge was not previously stored
    * @throws UnauthorizedException if cryptographic verification fails
@@ -457,13 +466,16 @@ export class PasskeyService {
     if (!credentialRecord) {
       throw new NotFoundException('Passkey credential', input.credentialId);
     }
+    if (credentialRecord.userId !== stored.userId) {
+      throw new NotFoundException('Passkey credential', input.credentialId);
+    }
 
     // 3. Cryptographic verification via @simplewebauthn/server
     const credential = input.credential as AuthenticationResponseJSON;
 
     const verification = await verifyAuthenticationResponse({
       response: credential,
-      expectedChallenge: challengeRecord.challenge,
+      expectedChallenge: input.expectedChallenge,
       expectedOrigin: this.auth.passkey.origin,
       expectedRPID: this.auth.passkey.rpId,
       credential: {

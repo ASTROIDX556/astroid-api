@@ -13,16 +13,8 @@ export const Queues = {
   Analytics: 'analytics',
   /** Long-running exports and scheduled reports. */
   Reports: 'reports',
-  /** Transactional outbox fan-out jobs. */
-  OutboxEvents: 'outbox-events',
-  /** Stellar fee-bump submission retries. */
-  StellarFeeBump: 'stellar-fee-bump',
-  /** Transaction execution pipeline. */
-  Transactions: 'transactions',
-  /** Asynchronous risk evaluation and scoring. */
-  RiskAnalysis: 'risk-analysis',
-  /** Dead-letter queue for terminal job failures across all workers. */
-  DeadLetter: 'dead-letter',
+  /** Periodic budget period reset cron job. */
+  BudgetReset: 'budget-reset',
 } as const;
 
 export type QueueName = (typeof Queues)[keyof typeof Queues];
@@ -48,3 +40,4 @@ export interface DlqJobData {
   /** Additional metadata (organizationId, transactionId, etc.). */
   metadata?: Record<string, unknown>;
 }
+

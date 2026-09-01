@@ -16,6 +16,7 @@ import { WalletService, toNetworkName } from '../wallets/wallet.service';
 import { PolicyService } from '../policies/policy.service';
 import { RiskService } from '../risk/risk.service';
 import { BudgetService } from '../budgets/budget.service';
+import { SpendingLimitGuardService } from '../budgets/services/spending-limit-guard.service';
 import { StellarService } from '../stellar/stellar.service';
 import { AgentService } from '../agents/agent.service';
 import { TransactionIntent } from '../policies/policy.types';
@@ -35,6 +36,7 @@ import { Paginated } from '../../common/interfaces/api-response.interface';
 import { EventBusService } from '../../events/event-bus.service';
 import { DomainEventName } from '../../events/event-names';
 import { PrismaService } from '../../database/prisma.service';
+import { RedisLock } from '../../common/locks/redis-lock.util';
 
 const SORTABLE = ['createdAt', 'amount', 'status', 'riskScore'];
 const Decimal = Prisma.Decimal;
@@ -65,9 +67,11 @@ export class TransactionService {
     private readonly policies: PolicyService,
     private readonly risk: RiskService,
     private readonly budgets: BudgetService,
+    private readonly spendingGuard: SpendingLimitGuardService,
     private readonly stellar: StellarService,
     private readonly eventBus: EventBusService,
     private readonly prisma: PrismaService,
+    private readonly locks: RedisLock,
   ) {}
 
   async create(organizationId: string, actorId: string, input: CreateTransactionInput) {
@@ -98,12 +102,19 @@ export class TransactionService {
       { actorId },
     );
 
-    // 5. Budget headroom (no mutation yet).
-    if (input.budgetId) {
-      await this.budgets.assertWithinBudget(organizationId, input.budgetId, amount);
-    }
-
     const requiresApproval = policyResult.requiresApproval || !assessment.canAutoExecute;
+
+    // 5. Budget check — atomically guard+consume for auto-executable txns,
+    //    or check-only for approval-required txns (consume deferred to execute).
+    let budgetConsumed = false;
+    if (input.budgetId) {
+      if (requiresApproval) {
+        await this.budgets.assertWithinBudget(organizationId, input.budgetId, amount);
+      } else {
+        await this.spendingGuard.guardAndConsume(organizationId, input.budgetId, amount);
+        budgetConsumed = true;
+      }
+    }
 
     // 6. Persist the transaction row.
     const transaction = await this.repository.create({
@@ -144,7 +155,7 @@ export class TransactionService {
       };
     }
 
-    const executed = await this.execute(organizationId, transaction.id, actorId);
+    const executed = await this.execute(organizationId, transaction.id, actorId, budgetConsumed);
     return { transaction: executed, requiresApproval: false, risk: assessment };
   }
 
@@ -153,7 +164,7 @@ export class TransactionService {
    * auto-executable transactions and by the approvals module once a proposal has
    * gathered the required approvals.
    */
-  async execute(organizationId: string, transactionId: string, actorId?: string): Promise<Transaction> {
+  async execute(organizationId: string, transactionId: string, actorId?: string, budgetConsumed = false): Promise<Transaction> {
     const tx = await this.getOrThrow(organizationId, transactionId);
     if (
       tx.status === TransactionStatus.COMPLETED ||
@@ -172,45 +183,64 @@ export class TransactionService {
       { organizationId, actorId, aggregateType: 'transaction', aggregateId: tx.id },
     );
 
+    // Serialize on-chain submissions for the same wallet. Stellar accounts use a
+    // monotonically increasing sequence number; concurrent dispatches for the
+    // same account that both read the sequence before submitting race and
+    // produce `tx_bad_seq`. A per-account distributed lock (with retry/backoff)
+    // ensures only one dispatch submits for a wallet at a time across instances,
+    // complementing the controller-level `@UseTransactionLock()` and covering
+    // approval-triggered executions that bypass the HTTP layer.
+    const release = await this.locks.acquire(`stellar_account:${wallet.stellarAddress}`, {
+      ttl: 10_000,
+      retries: 5,
+      baseDelayMs: 100,
+      maxDelayMs: 1_000,
+      timeoutMs: 15_000,
+    });
+
     try {
-      const result = await this.stellar.submitPayment({
-        sourceAddress: wallet.stellarAddress,
-        destinationAddress: tx.recipientAddress,
-        asset: tx.asset,
-        amount: tx.amount.toFixed(7),
-        memo: tx.memo ?? undefined,
-        network: toNetworkName(wallet.network),
-      });
+      try {
+        const result = await this.stellar.submitPayment({
+          sourceAddress: wallet.stellarAddress,
+          destinationAddress: tx.recipientAddress,
+          asset: tx.asset,
+          amount: tx.amount.toFixed(7),
+          memo: tx.memo ?? undefined,
+          network: toNetworkName(wallet.network),
+        });
 
-      const completed = await this.repository.update(tx.id, {
-        status: result.successful ? TransactionStatus.COMPLETED : TransactionStatus.FAILED,
-        stellarHash: result.hash,
-        confirmationCount: result.ledger ? 1 : 0,
-      });
+        const completed = await this.repository.update(tx.id, {
+          status: result.successful ? TransactionStatus.COMPLETED : TransactionStatus.FAILED,
+          stellarHash: result.hash,
+          confirmationCount: result.ledger ? 1 : 0,
+        });
 
-      if (result.successful && tx.budgetId) {
-        await this.budgets.consume(organizationId, tx.budgetId, Number(tx.amount));
+        if (result.successful && tx.budgetId) {
+          await this.budgets.consume(organizationId, tx.budgetId, Number(tx.amount));
+        }
+
+        await this.eventBus.emit(
+          result.successful
+            ? DomainEventName.TransactionCompleted
+            : DomainEventName.TransactionFailed,
+          { transactionId: tx.id, stellarHash: result.hash },
+          { organizationId, actorId, aggregateType: 'transaction', aggregateId: tx.id },
+        );
+        return completed;
+      } catch (error) {
+        this.logger.warn(
+          `Transaction ${tx.id} failed to submit: ${(error as Error).message}`,
+        );
+        await this.repository.update(tx.id, { status: TransactionStatus.FAILED });
+        await this.eventBus.emit(
+          DomainEventName.TransactionFailed,
+          { transactionId: tx.id, reason: (error as Error).message },
+          { organizationId, actorId, aggregateType: 'transaction', aggregateId: tx.id },
+        );
+        throw error;
       }
-
-      await this.eventBus.emit(
-        result.successful
-          ? DomainEventName.TransactionCompleted
-          : DomainEventName.TransactionFailed,
-        { transactionId: tx.id, stellarHash: result.hash },
-        { organizationId, actorId, aggregateType: 'transaction', aggregateId: tx.id },
-      );
-      return completed;
-    } catch (error) {
-      this.logger.warn(
-        `Transaction ${tx.id} failed to submit: ${(error as Error).message}`,
-      );
-      await this.repository.update(tx.id, { status: TransactionStatus.FAILED });
-      await this.eventBus.emit(
-        DomainEventName.TransactionFailed,
-        { transactionId: tx.id, reason: (error as Error).message },
-        { organizationId, actorId, aggregateType: 'transaction', aggregateId: tx.id },
-      );
-      throw error;
+    } finally {
+      await release();
     }
   }
 
@@ -269,6 +299,12 @@ export class TransactionService {
       throw new ConflictException('Only draft or pending transactions can be cancelled');
     }
     const cancelled = await this.repository.update(id, { status: TransactionStatus.CANCELLED });
+    if (tx.budgetId) {
+      // A draft/pending transaction never moved funds — release the reservation.
+      await this.budgets
+        .release(organizationId, tx.budgetId, Number(tx.amount))
+        .catch(() => undefined);
+    }
     await this.eventBus.emit(
       DomainEventName.TransactionCancelled,
       { transactionId: id },
