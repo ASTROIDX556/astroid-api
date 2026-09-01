@@ -330,6 +330,7 @@ model Policy {
   overrideLimit Decimal?    @db.Decimal(30, 7)
   overrideUntil DateTime?
   originalLimit Decimal?    @db.Decimal(30, 7)
+  maxBaseFeeStroops Int?
 
   organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   agent        Agent?        @relation(fields: [agentId], references: [id])
@@ -402,6 +403,8 @@ model Transaction {
   confirmationCount Int               @default(0)
   gasEstimate       Decimal?          @db.Decimal(30, 7)
   actualFeePaid     Decimal?          @db.Decimal(30, 7)
+  maxBaseFeeStroops Int?
+  feeStats          Json?
   metadata          Json              @default("{}")
   createdAt         DateTime          @default(now())
   updatedAt         DateTime          @updatedAt
