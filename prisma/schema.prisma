@@ -751,3 +751,17 @@ model OutboxEvent {
   @@index([status, createdAt])
   @@map("outbox_events")
 }
+
+model CleanupJobLog {
+  id             String   @id @default(uuid(7))
+  organizationId String?
+  jobName        String
+  recordsDeleted Int
+  durationMs     Int
+  status         String
+  error          String?
+  createdAt      DateTime @default(now())
+
+  @@index([jobName, createdAt])
+  @@map("cleanup_job_logs")
+}

@@ -183,6 +183,26 @@ export class BudgetService {
   }
 
   /** Records realised spend after a payment completes; emits warnings near cap. */
+  /**
+   * Atomically reserves (deducts) budget by incrementing spent.
+   * Utilizes database row-level locking (SELECT FOR UPDATE) to prevent race conditions.
+   * @throws ConflictException if budget would be exceeded
+   */
+  async reserveBudget(organizationId: string, budgetId: string, amount: number) {
+    try {
+      return await this.repository.reserveBudget(organizationId, budgetId, new Decimal(amount));
+    } catch (error: unknown) {
+      const err = error as Error;
+      if (err.message && err.message.includes('NotFoundException')) {
+        throw new NotFoundException('Budget', budgetId);
+      }
+      if (err.message && err.message.includes('ConflictException')) {
+        throw new ConflictException('BudgetExceeded: Allocation exceeds the budget remaining balance');
+      }
+      throw error;
+    }
+  }
+
   async consume(organizationId: string, budgetId: string, amount: number) {
     // Serialize spend increments on the same budget to prevent concurrent
     // agents from overshooting the limit together.
@@ -223,3 +243,4 @@ export class BudgetService {
     return { id, deleted: true };
   }
 }
+
