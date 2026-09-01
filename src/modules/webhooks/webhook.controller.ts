@@ -29,12 +29,14 @@ import {
 } from './webhook.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
+import { ThrottleTierDecorator } from '../../common/decorators/throttle-tier.decorator';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 import { PaginationQuery, paginationQuerySchema } from '../../common/helpers/pagination';
 
 @ApiTags('webhooks')
 @ApiBearerAuth('access-token')
 @Controller('webhooks')
+@ThrottleTierDecorator('webhook')
 export class WebhookController {
   constructor(private readonly webhookService: WebhookService) {}
 
@@ -61,6 +63,7 @@ export class WebhookController {
 
   @Post()
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.DEVELOPER)
+  @AuditAction('WEBHOOK_CREATED')
   @ApiOperation({
     summary: 'Create a webhook',
     description:
@@ -101,6 +104,7 @@ export class WebhookController {
 
   @Patch(':id')
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.DEVELOPER)
+  @AuditAction('WEBHOOK_UPDATED')
   @ApiOperation({
     summary: 'Update a webhook',
     description: 'Partial update of webhook configuration (URL, events, enabled status).',
@@ -122,6 +126,7 @@ export class WebhookController {
 
   @Post(':id/rotate-secret')
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.DEVELOPER)
+  @AuditAction('WEBHOOK_SECRET_ROTATED')
   @ApiOperation({
     summary: 'Rotate the signing secret (returned once)',
     description:
@@ -143,6 +148,7 @@ export class WebhookController {
 
   @Delete(':id')
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.DEVELOPER)
+  @AuditAction('WEBHOOK_DELETED')
   @ApiOperation({
     summary: 'Delete a webhook',
     description:

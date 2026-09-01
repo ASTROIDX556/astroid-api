@@ -7,6 +7,9 @@ export type StellarConfig = {
   sorobanRpcUrl: string;
   registryContractId: string;
   useMock: boolean;
+  maxBaseFee: number;
+  feeStatsCacheTtlMs: number;
+  congestionFallbackMode: 'FAIL / 'FAILED_CONGESTION';
 };
 
 export const stellarConfig = registerAs('stellar', (): StellarConfig => {
@@ -17,5 +20,11 @@ export const stellarConfig = registerAs('stellar', (): StellarConfig => {
     sorobanRpcUrl: env.STELLAR_SOROBAN_RPC_URL,
     registryContractId: env.STELLAR_REGISTRY_CONTRACT_ID,
     useMock: env.STELLAR_USE_MOCK,
+    maxBaseFee: Number(process.env.STELLAR_MAX_BASE_FEE ?? 1000),
+    feeStatsCacheTtlMs: Number(process.env.STELLAR_FEE_STATS_CACHE_TTL_MS ?? 30000),
+    congestionFallbackMode:
+      process.env.STELLAR_CONGESTION_FALLBACK_MODE==='FAIL'
+        ? 'FAIL'
+        : 'FAILED_CONGESTION',
   };
 });

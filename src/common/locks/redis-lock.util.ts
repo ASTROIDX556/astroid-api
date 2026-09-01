@@ -92,8 +92,14 @@ export class RedisLock implements OnModuleDestroy {
    * @returns The result of {@link fn}.
    * @throws LockNotAcquiredException when the lock cannot be acquired.
    */
-  async withLock<T>(key: string, fn: () => Promise<T>, ttl: number = DEFAULT_LOCK_TTL_MS): Promise<T> {
-    const release = await this.acquire(key, ttl);
+  async withLock<T>(
+    key: string,
+    fn: () => Promise<T>,
+    ttl: number = DEFAULT_LOCK_TTL_MS,
+    attempts = 1,
+    retryDelayMs = 100,
+  ): Promise<T> {
+    const release = await this.acquire(key, ttl, attempts, retryDelayMs);
     try {
       return await fn();
     } finally {

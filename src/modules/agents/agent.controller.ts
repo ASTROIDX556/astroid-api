@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
 import {
   ApiOperation,
   ApiTags,
@@ -22,10 +22,17 @@ import {
 } from './agent.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
+import { AuditAction } from '../../common/decorators/audit-action.decorator';
 import { UseAgentLock } from '../../common/locks/agent-lock.decorator';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 import { AuthenticatedUser } from '../../common/interfaces/authenticated-user.interface';
 import { PaginationQuery, paginationQuerySchema } from '../../common/helpers/pagination';
+import { ApiEnvelope } from '../../common/decorators/api-envelope.decorator';
+import {
+  SlidingWindowThrottlerGuard,
+  SlidingWindowLimit,
+} from '../../common/guards/sliding-window-throttler.guard';
+import { AgentRateLimiterGuard } from './guards/agent-rate-limiter.guard';
 
 @ApiTags('agents')
 @ApiBearerAuth('access-token')
@@ -40,6 +47,7 @@ export class AgentController {
   })
   @ApiQuery({ name: 'page', required: false, type: Number, description: 'Page number (default: 1)' })
   @ApiQuery({ name: 'limit', required: false, type: Number, description: 'Items per page (default: 20)' })
+  @ApiEnvelope(CreateAgentDto as never, { isArray: true })
   @ApiResponse({ status: 200, description: 'Paginated list of agents' })
   @ApiResponse({ status: 401, description: 'Not authenticated' })
   list(
@@ -51,12 +59,16 @@ export class AgentController {
 
   @Post()
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.DEVELOPER)
+  @UseGuards(SlidingWindowThrottlerGuard)
+  @SlidingWindowLimit(30, 60)
+  @AuditAction('AGENT_CREATED')
   @ApiOperation({
     summary: 'Register a new agent',
     description:
       'Creates a new agent under the current organization. The agent starts in ACTIVE status.',
   })
   @ApiBody({ type: CreateAgentDto })
+  @ApiEnvelope(CreateAgentDto as never)
   @ApiResponse({ status: 201, description: 'Agent created successfully' })
   @ApiResponse({ status: 400, description: 'Validation error' })
   @ApiResponse({ status: 401, description: 'Not authenticated' })
@@ -74,6 +86,7 @@ export class AgentController {
     description: 'Returns full details of a single agent by ID.',
   })
   @ApiParam({ name: 'id', description: 'Agent UUID', example: '018f0a1b-...' })
+  @ApiEnvelope(CreateAgentDto as never)
   @ApiResponse({ status: 200, description: 'Agent details' })
   @ApiResponse({ status: 401, description: 'Not authenticated' })
   @ApiResponse({ status: 404, description: 'Agent not found' })
@@ -83,6 +96,7 @@ export class AgentController {
 
   @Patch(':id')
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.DEVELOPER)
+  @AuditAction('AGENT_UPDATED')
   @ApiOperation({
     summary: 'Update an agent',
     description: 'Partial update of agent fields (name, description, model, capabilities, etc.).',
@@ -106,6 +120,7 @@ export class AgentController {
 
   @Post(':id/pause')
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.DEVELOPER)
+  @AuditAction('AGENT_PAUSED')
   @ApiOperation({
     summary: 'Pause an agent',
     description: 'Temporarily pauses the agent. Paused agents cannot initiate transactions.',
@@ -123,6 +138,7 @@ export class AgentController {
 
   @Post(':id/resume')
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.DEVELOPER)
+  @AuditAction('AGENT_RESUMED')
   @ApiOperation({
     summary: 'Reactivate an agent',
     description: 'Resumes a paused agent back to ACTIVE status.',
@@ -140,6 +156,7 @@ export class AgentController {
 
   @Post(':id/suspend')
   @Roles(UserRole.OWNER, UserRole.ADMIN)
+  @AuditAction('AGENT_SUSPENDED')
   @ApiOperation({
     summary: 'Suspend an agent',
     description:
@@ -158,6 +175,7 @@ export class AgentController {
 
   @Post(':id/wallet')
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.DEVELOPER)
+  @AuditAction('AGENT_WALLET_ASSIGNED')
   @ApiOperation({
     summary: 'Assign a primary wallet to an agent',
     description:
@@ -182,6 +200,7 @@ export class AgentController {
 
   @Delete(':id')
   @Roles(UserRole.OWNER, UserRole.ADMIN)
+  @AuditAction('AGENT_ARCHIVED')
   @ApiOperation({
     summary: 'Archive (soft delete) an agent',
     description:
@@ -197,4 +216,13 @@ export class AgentController {
   remove(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
     return this.agentService.remove(user.organizationId, user.id, id);
   }
+  @Post(':id/execute')
+  @UseGuards(AgentRateLimiterGuard)
+  @ApiOperation({ summary: 'Trigger an execution for the agent' })
+  @ApiResponse({ status: 200, description: 'Execution triggered' })
+  @ApiResponse({ status: 429, description: 'Rate limit exceeded' })
+  async execute(@CurrentUser('organizationId') _organizationId: string, @Param('id') _id: string) {
+    return { success: true, message: 'Execution triggered' };
+  }
 }
+

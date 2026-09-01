@@ -29,9 +29,11 @@ import {
 } from './wallet.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
+import { AuditAction } from '../../common/decorators/audit-action.decorator';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 import { AuthenticatedUser } from '../../common/interfaces/authenticated-user.interface';
 import { PaginationQuery, paginationQuerySchema } from '../../common/helpers/pagination';
+import { ApiEnvelope } from '../../common/decorators/api-envelope.decorator';
 
 @ApiTags('wallets')
 @ApiBearerAuth('access-token')
@@ -50,6 +52,7 @@ export class WalletController {
   @ApiQuery({ name: 'limit', required: false, type: Number, description: 'Items per page (default: 20)' })
   @ApiQuery({ name: 'status', required: false, enum: ['ACTIVE', 'FROZEN', 'ARCHIVED'], description: 'Filter by wallet status' })
   @ApiQuery({ name: 'network', required: false, enum: ['TESTNET', 'PUBLIC'], description: 'Filter by Stellar network' })
+  @ApiEnvelope(CreateWalletDto as never, { isArray: true })
   @ApiResponse({ status: 200, description: 'Paginated list of wallets' })
   @ApiResponse({ status: 401, description: 'Not authenticated' })
   list(
@@ -61,6 +64,7 @@ export class WalletController {
 
   @Post()
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.FINANCE, UserRole.DEVELOPER)
+  @AuditAction('WALLET_CREATED')
   @ApiOperation({
     summary: 'Create a wallet (generate a keypair or import an address)',
     description:
@@ -68,6 +72,7 @@ export class WalletController {
       'When importing, only the public address is recorded for balance tracking.',
   })
   @ApiBody({ type: CreateWalletDto })
+  @ApiEnvelope(CreateWalletDto as never)
   @ApiResponse({ status: 201, description: 'Wallet created successfully (secret key included on generation)' })
   @ApiResponse({ status: 400, description: 'Validation error' })
   @ApiResponse({ status: 401, description: 'Not authenticated' })
@@ -85,6 +90,7 @@ export class WalletController {
     description: 'Returns full details of a single wallet by ID.',
   })
   @ApiParam({ name: 'id', description: 'Wallet UUID', example: '018f0a1b-...' })
+  @ApiEnvelope(CreateWalletDto as never)
   @ApiResponse({ status: 200, description: 'Wallet details' })
   @ApiResponse({ status: 401, description: 'Not authenticated' })
   @ApiResponse({ status: 404, description: 'Wallet not found' })
@@ -110,6 +116,7 @@ export class WalletController {
 
   @Patch(':id')
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.FINANCE, UserRole.DEVELOPER)
+  @AuditAction('WALLET_UPDATED')
   @ApiOperation({
     summary: 'Update a wallet label or owning agent',
     description: 'Partial update of wallet metadata. Does not affect the Stellar keypair.',
@@ -131,6 +138,7 @@ export class WalletController {
 
   @Post(':id/freeze')
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.FINANCE)
+  @AuditAction('WALLET_FROZEN')
   @ApiOperation({
     summary: 'Freeze a wallet (block outgoing transactions)',
     description:
@@ -148,6 +156,7 @@ export class WalletController {
 
   @Post(':id/unfreeze')
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.FINANCE)
+  @AuditAction('WALLET_UNFROZEN')
   @ApiOperation({
     summary: 'Unfreeze a wallet',
     description: 'Restores a frozen wallet to ACTIVE status, allowing outgoing transactions again.',
@@ -164,6 +173,7 @@ export class WalletController {
 
   @Delete(':id')
   @Roles(UserRole.OWNER, UserRole.ADMIN)
+  @AuditAction('WALLET_ARCHIVED')
   @ApiOperation({
     summary: 'Archive (soft-delete) a wallet',
     description:

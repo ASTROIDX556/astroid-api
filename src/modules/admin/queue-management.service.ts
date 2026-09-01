@@ -7,6 +7,8 @@ import {
 import { Queue, Job } from 'bullmq';
 import { redisConfig } from '../../config/redis.config';
 import { Queues } from '../../queues/queues.constants';
+import { PrismaService } from '../../database/prisma.service';
+import { DomainEventName } from '../../events/event-names';
 
 /**
  * Time-range filter for failed jobs. Jobs whose `finishedOn` timestamp falls
@@ -114,6 +116,8 @@ export interface FailedJobInspection {
 export class QueueManagementService implements OnModuleDestroy {
   private readonly logger = new Logger(QueueManagementService.name);
   private readonly queueHandles = new Map<string, Queue>();
+
+  constructor(private readonly prisma: PrismaService) {}
 
   /** Lazily creates or retrieves a BullMQ Queue handle by name. */
   private getOrCreateQueue(queueName: string): Queue {
@@ -305,6 +309,16 @@ export class QueueManagementService implements OnModuleDestroy {
       `Batch retry: ${result.retriedCount} retried, ${result.failedCount} failed, ${result.skippedCount} skipped`,
     );
 
+    if (result.retriedCount > 0) {
+      await this.emitAuditEvent(DomainEventName.JobRequeued, {
+        operation: 'batch_retry',
+        retriedCount: result.retriedCount,
+        retriedJobIds: result.retriedJobIds,
+        queues: result.queues,
+        retriedAt: new Date().toISOString(),
+      });
+    }
+
     return result;
   }
 
@@ -419,6 +433,32 @@ export class QueueManagementService implements OnModuleDestroy {
         }
       }),
     );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Audit Trail
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Emits an audit event to the append-only domain_event ledger.
+   * Best-effort — persistence failures are logged but never surface to the caller.
+   */
+  private async emitAuditEvent(
+    eventName: string,
+    payload: Record<string, unknown>,
+  ): Promise<void> {
+    try {
+      await this.prisma.domainEvent.create({
+        data: {
+          name: eventName,
+          aggregateType: 'ADMIN_QUEUE_MANAGEMENT',
+          payload: payload as Record<string, never>,
+          occurredAt: new Date(),
+        },
+      });
+    } catch (err) {
+      this.logger.warn(`Failed to emit audit event '${eventName}': ${(err as Error).message}`);
+    }
   }
 
   // ---------------------------------------------------------------------------

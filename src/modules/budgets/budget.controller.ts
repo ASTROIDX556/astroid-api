@@ -32,9 +32,11 @@ import {
 } from './budget.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
+import { AuditAction } from '../../common/decorators/audit-action.decorator';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 import { AuthenticatedUser } from '../../common/interfaces/authenticated-user.interface';
 import { PaginationQuery, paginationQuerySchema } from '../../common/helpers/pagination';
+import { ApiEnvelope } from '../../common/decorators/api-envelope.decorator';
 
 @ApiTags('budgets')
 @ApiBearerAuth('access-token')
@@ -53,6 +55,7 @@ export class BudgetController {
   @ApiQuery({ name: 'limit', required: false, type: Number, description: 'Items per page (default: 20)' })
   @ApiQuery({ name: 'period', required: false, enum: ['DAILY', 'WEEKLY', 'MONTHLY', 'QUARTERLY', 'YEARLY'], description: 'Filter by budget period' })
   @ApiQuery({ name: 'enabled', required: false, type: Boolean, description: 'Filter by enabled status' })
+  @ApiEnvelope(CreateBudgetDto as never, { isArray: true })
   @ApiResponse({ status: 200, description: 'Paginated list of budgets' })
   @ApiResponse({ status: 401, description: 'Not authenticated' })
   list(
@@ -64,12 +67,14 @@ export class BudgetController {
 
   @Post()
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.FINANCE)
+  @AuditAction('BUDGET_CREATED')
   @ApiOperation({
     summary: 'Create a budget',
     description:
       'Creates a new budget with spending limits. Budgets can be hierarchical with parent-child relationships.',
   })
   @ApiBody({ type: CreateBudgetDto })
+  @ApiEnvelope(CreateBudgetDto as never)
   @ApiResponse({ status: 201, description: 'Budget created successfully' })
   @ApiResponse({ status: 400, description: 'Validation error' })
   @ApiResponse({ status: 401, description: 'Not authenticated' })
@@ -88,6 +93,7 @@ export class BudgetController {
       'Returns full details of a budget including its remaining balance, spending history, and child budgets.',
   })
   @ApiParam({ name: 'id', description: 'Budget UUID', example: '018f0a1b-...' })
+  @ApiEnvelope(CreateBudgetDto as never)
   @ApiResponse({ status: 200, description: 'Budget details with balance and children' })
   @ApiResponse({ status: 401, description: 'Not authenticated' })
   @ApiResponse({ status: 404, description: 'Budget not found' })
@@ -98,6 +104,7 @@ export class BudgetController {
   @Patch(':id')
   @UseBudgetLock()
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.FINANCE)
+  @AuditAction('BUDGET_UPDATED')
   @ApiOperation({
     summary: 'Update a budget',
     description: 'Partial update of budget fields (name, limit, period, rollover, enabled).',
@@ -120,6 +127,7 @@ export class BudgetController {
   @Post(':id/allocate')
   @UseBudgetLock()
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.FINANCE)
+  @AuditAction('BUDGET_ALLOCATED')
   @ApiOperation({
     summary: 'Allocate funds from the parent budget to this child',
     description:
@@ -144,6 +152,7 @@ export class BudgetController {
   @Delete(':id')
   @UseBudgetLock()
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.FINANCE)
+  @AuditAction('BUDGET_DELETED')
   @ApiOperation({
     summary: 'Delete (soft) a budget',
     description:

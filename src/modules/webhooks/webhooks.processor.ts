@@ -4,7 +4,7 @@ import { Inject, Logger, Optional } from '@nestjs/common';
 import { Job, UnrecoverableError } from 'bullmq';
 import { Queues } from '../../queues/queues.constants';
 import { WebhookJobData, WebhookJobResult } from './types/webhook-job.types';
-import { generateWebhookSignature } from '../../utils/crypto.util';
+import { signWebhookPayload } from './utils/signing';
 import { PrismaService } from '../../database/prisma.service';
 import { WorkerMetricsService } from '../../modules/metrics/worker-metrics.service';
 
@@ -66,7 +66,7 @@ export class WebhooksProcessor extends WorkerHost {
         const body = JSON.stringify(payload);
         const timestamp = Math.floor(Date.now() / 1000).toString();
         const effectiveSecret = this.resolveSecret(secret);
-        const signature = generateWebhookSignature(effectiveSecret, timestamp, body);
+        const signature = signWebhookPayload(effectiveSecret, timestamp, body);
 
         const response = await fetch(url, {
           method: 'POST',
@@ -194,3 +194,4 @@ export class WebhooksProcessor extends WorkerHost {
     }
   }
 }
+

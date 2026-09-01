@@ -19,23 +19,11 @@ export const appEnvSchema = z.object({
 
 export const databaseEnvSchema = z.object({
   DATABASE_URL: z.string().min(1, 'DATABASE_URL is required'),
-  // Connection pool sizing — applied as Prisma `connection_limit` URL params.
-  DATABASE_CONNECTION_LIMIT: z.coerce.number().int().positive().default(10),
-  // Worker pool stays small: background jobs must never starve API traffic.
-  DATABASE_WORKER_CONNECTION_LIMIT: z.coerce.number().int().positive().default(3),
-  // How long a query waits for a free connection before failing fast (ms).
-  // 0 waits indefinitely (Prisma `pool_timeout` semantics).
-  DATABASE_POOL_TIMEOUT_MS: z.coerce.number().int().nonnegative().default(5000),
-  // Client-side guard: fails the promise fast when a query exceeds this (ms).
-  // 0 disables the client-side race (server-side statement_timeout still applies).
-  DATABASE_QUERY_TIMEOUT_MS: z.coerce.number().int().nonnegative().default(5000),
-  // Server-side `statement_timeout` (ms) — Postgres aborts the runaway query so
-  // the pooled connection is actually released. 0 disables the guard.
-  DATABASE_STATEMENT_TIMEOUT_MS: z.coerce.number().int().nonnegative().default(10000),
-  // Extended client-side timeout for the dedicated worker pool (ms). Long-running
-  // worker transactions (rollups, outbox drains) must not be killed by the API
-  // guard; 0 disables the worker guard entirely.
-  DATABASE_WORKER_QUERY_TIMEOUT_MS: z.coerce.number().int().nonnegative().default(60000),
+  SLOW_QUERY_THRESHOLD_MS: z.coerce.number().int().nonnegative().default(250),
+  ENABLE_SLOW_QUERY_LOGGING: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((value) => value === 'true'),
 });
 
 export const redisEnvSchema = z.object({
@@ -82,7 +70,19 @@ export const queueEnvSchema = z.object({
 export const throttleEnvSchema = z.object({
   THROTTLE_AUTH_LIMIT: z.coerce.number().int().positive().default(10),
   THROTTLE_API_LIMIT: z.coerce.number().int().positive().default(120),
+  THROTTLE_WEBHOOK_LIMIT: z.coerce.number().int().positive().default(30),
   THROTTLE_TTL: z.coerce.number().int().positive().default(60),
+  // Burst limits — short-term spike allowance per tier (requests per second).
+  THROTTLE_API_BURST: z.coerce.number().int().positive().default(10),
+  THROTTLE_AUTH_BURST: z.coerce.number().int().positive().default(3),
+  THROTTLE_WEBHOOK_BURST: z.coerce.number().int().positive().default(5),
+});
+
+export const rateLimitEnvSchema = z.object({
+  // Sliding-window size, in seconds, for the Redis-backed rate limiter guard.
+  RATE_LIMIT_WINDOW_SECONDS: z.coerce.number().int().positive().default(60),
+  // Max requests allowed per client within the sliding window.
+  RATE_LIMIT_MAX_REQUESTS: z.coerce.number().int().positive().default(120),
 });
 
 export const metricsEnvSchema = z.object({
@@ -99,6 +99,28 @@ export const aiEnvSchema = z.object({
   AI_PROVIDER_KEY: z.string().min(1, 'AI_PROVIDER_KEY is required'),
   AI_BASE_URL: z.string().default('https://integrate.api.nvidia.com/v1'),
   AI_MODEL: z.string().default('meta/llama-3.1-70b-instruct'),
+});
+
+export const encryptionEnvSchema = z.object({
+  ENCRYPTION_KEY: z
+    .string()
+    .default('0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef')
+    .refine(
+      (key) => {
+        if (!key) return false;
+        if (/^[0-9a-fA-F]{64}$/.test(key)) return true;
+        if (Buffer.byteLength(key, 'utf8') === 32) return true;
+        try {
+          const buf = Buffer.from(key, 'base64');
+          if (buf.length === 32) return true;
+        } catch {
+          return false;
+        }
+        return false;
+      },
+      { message: 'ENCRYPTION_KEY must be a 32-byte (256-bit) key (64 hex characters or 32 bytes)' },
+    ),
+  ENCRYPTION_ALGORITHM: z.string().default('aes-256-gcm'),
 });
 
 /**

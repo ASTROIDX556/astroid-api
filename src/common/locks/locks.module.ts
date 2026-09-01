@@ -7,6 +7,8 @@ import { REDIS_CLIENT } from './locks.constants';
 import { RedisLock } from './redis-lock.util';
 import { AgentLockInterceptor } from './agent-lock.interceptor';
 import { BudgetLockInterceptor } from './budget-lock.interceptor';
+import { WalletLockInterceptor } from './wallet-lock.interceptor';
+import { TransactionLockInterceptor } from './transaction-lock.interceptor';
 
 /**
  * Global distributed-locking infrastructure.
@@ -30,6 +32,8 @@ import { BudgetLockInterceptor } from './budget-lock.interceptor';
     RedisLock,
     { provide: APP_INTERCEPTOR, useClass: AgentLockInterceptor },
     { provide: APP_INTERCEPTOR, useClass: BudgetLockInterceptor },
+    { provide: APP_INTERCEPTOR, useClass: WalletLockInterceptor },
+    { provide: APP_INTERCEPTOR, useClass: TransactionLockInterceptor },
   ],
   exports: [REDIS_CLIENT, RedisLock],
 })
