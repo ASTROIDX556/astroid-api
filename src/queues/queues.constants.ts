@@ -23,6 +23,8 @@ export const Queues = {
   RiskAnalysis: 'risk-analysis',
   /** Dead-letter queue for terminal job failures across all workers. */
   DeadLetter: 'dead-letter',
+  /** Audit logs cleanup job. */
+  AuditCleanup: 'audit-cleanup',
 } as const;
 
 export type QueueName = (typeof Queues)[keyof typeof Queues];
@@ -48,3 +50,4 @@ export interface DlqJobData {
   /** Additional metadata (organizationId, transactionId, etc.). */
   metadata?: Record<string, unknown>;
 }
+
