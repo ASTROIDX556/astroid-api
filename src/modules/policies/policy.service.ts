@@ -244,6 +244,37 @@ export class PolicyService {
       );
     }
   }
+
+  /**
+   * Returns the fee protection configuration for an agent, including the
+   * maximum acceptable base fee and the action to take when the fee is
+   * exceeded. Falls back to environment defaults if no policy is configured.
+   */
+  async getFeeProtectionConfig(agentId: string): Promise<{ maxBaseFee: number; mode: 'FAIL' | 'FLAG' }> {
+    const policies = await this.repository.findActiveForEvaluationByAgent(agentId);
+    const configs = policies
+      .map((policy) => policy.configuration as PolicyConfiguration & {
+        maxBaseFee?: number;
+        onCongestion?: 'FAIL' | 'FLAG';
+      })
+      .filter(
+        (config): config is PolicyConfiguration & { maxBaseFee: number; onCongestion?: 'FAIL' | 'FLAG' } =>
+          config.maxBaseFee !== undefined && config.maxBaseFee > 0,
+      );
+
+    if (configs.length > 0) {
+      const maxBaseFee = Math.min(...configs.map((config) => config.maxBaseFee));
+      const mode = configs[0].onCongestion ?? 'FAIL';
+      return { maxBaseFee, mode };
+    }
+
+    const defaultMaxBaseFee = Number(process.env.STELLAR_MAX_BASE_FEE ?? 100000);
+    const defaultMode = process.env.STELLAR_FEE_SPIKE_MODE === 'FLAG' ? 'FLAG' : 'FAIL';
+    return {
+      maxBaseFee: Number.isFinite(defaultMaxBaseFee) && defaultMaxBaseFee > 0 ? defaultMaxBaseFee : 100000,
+      mode: defaultMode,
+    };
+  }
 }
 
 /** Projects a Prisma Policy into the engine's decoupled EvaluablePolicy shape. */
