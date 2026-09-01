@@ -4,6 +4,11 @@ import { PrismaClient } from '@prisma/client';
 import { DatabaseConfig } from '../config/database.config';
 import { buildDatasourceUrl } from './datasource-url';
 import { createQueryTimeoutExtension } from './query-timeout.extension';
+import {
+  checkMigrationStatus,
+  getDefaultMigrationsDir,
+  MigrationCheckResult,
+} from './migration-checker';
 
 /**
  * The single Prisma client for the application. Manages connection lifecycle
@@ -95,6 +100,9 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
       await this.$connect();
       await this.workerClient.$connect();
       this.logger.log('Prisma connected to the database');
+
+      // Validate migration status after successful connection.
+      await this.validateMigrations();
     } catch (error) {
       // Do not crash on boot when the DB is unavailable (e.g. typecheck/build,
       // or during local development before `docker compose up`). Log and go on.
@@ -103,6 +111,31 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
           'The API will retry lazily on first query.',
       );
     }
+  }
+
+  /**
+   * Validates that all Prisma migrations have been applied to the database.
+   * In production/strict mode, pending or failed migrations cause a critical
+   * error log. The application still starts (to avoid breaking CI/dev), but
+   * the error is clearly surfaced for operators.
+   */
+  async validateMigrations(): Promise<MigrationCheckResult> {
+    const migrationsDir = getDefaultMigrationsDir();
+    const result = await checkMigrationStatus(this, migrationsDir);
+
+    if (!result.upToDate) {
+      this.logger.error(
+        `Migration status check failed: ${result.message}`,
+        JSON.stringify({
+          pending: result.pending.map((m) => m.name),
+          failed: result.failed.map((m) => m.name),
+        }),
+      );
+    } else if (result.migrations.length > 0) {
+      this.logger.log(result.message);
+    }
+
+    return result;
   }
 
   async onModuleDestroy(): Promise<void> {
