@@ -1,18 +1,23 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
+import { ConfigService } from '@nestjs/config';
 import { Inject, Logger, Optional } from '@nestjs/common';
 import { Job, UnrecoverableError } from 'bullmq';
 import { Queues } from '../../../queues/queues.constants';
 import { WebhookJobData, WebhookJobResult } from '../types/webhook-job.types';
-import { hmacSign } from '../../../utils/crypto.util';
+import { generateWebhookSignature } from '../../../utils/crypto.util';
 import { PrismaService } from '../../../database/prisma.service';
 
 /**
  * BullMQ worker for processing webhook delivery jobs.
- * Implements exponential backoff retry logic (2000ms base, 5 attempts) with:
+ * Implements exponential backoff with randomized jitter retry logic (2000ms base, 5 attempts):
+ * - Jitter prevents thundering herd problems against subscriber endpoints
  * - Persistent delivery status tracking (PENDING, RETRYING, FAILED, DELIVERED)
  * - Non-transient error detection (400,401,403,404,422) via UnrecoverableError
  * - Non-blocking DB persistence after network I/O completes
  * - Fail-safe error handling that never crashes the master process
+ *
+ * Jitter is applied via a custom backoffStrategy configured on the BullMQ
+ * queue registration (see webhook.module.ts).
  */
 @Processor(Queues.Webhooks)
 export class WebhookWorker extends WorkerHost {
@@ -24,8 +29,21 @@ export class WebhookWorker extends WorkerHost {
    */
   private static readonly NON_TRANSIENT_STATUSES = new Set([400, 401, 403, 404, 422]);
 
-  constructor(@Optional() @Inject(PrismaService) private readonly prisma?: PrismaService) {
+  constructor(
+    @Optional() @Inject(PrismaService) private readonly prisma?: PrismaService,
+    @Optional() private readonly configService?: ConfigService,
+  ) {
     super();
+  }
+
+  private resolveSecret(jobSecret?: string): string {
+    if (jobSecret) return jobSecret;
+    const fallback =
+      this.configService?.get<string>('WEBHOOK_SECRET') ??
+      this.configService?.get<string>('STELLAR_WEBHOOK_SECRET') ??
+      this.configService?.get<string>('WEBHOOK_SIGNING_SECRET') ??
+      '';
+    return fallback;
   }
 
   async process(job: Job<WebhookJobData>): Promise<WebhookJobResult> {
@@ -40,15 +58,19 @@ export class WebhookWorker extends WorkerHost {
 
     try {
       const body = JSON.stringify(payload);
-      const signature = hmacSign(secret, body);
+      const timestamp = Math.floor(Date.now() / 1000).toString();
+      const effectiveSecret = this.resolveSecret(secret);
+      const signature = generateWebhookSignature(effectiveSecret, timestamp, body);
 
       const response = await fetch(url, {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
           'x-astroid-signature': signature,
-          'x-astroid-event-id': eventId,
+          'x-astroid-timestamp': timestamp,
+          'x-astroid-delivery': eventId,
           'x-astroid-event': eventName,
+          'x-astroid-event-id': eventId,
           'user-agent': 'Astroid-Webhook-Bot/1.0',
         },
         body,
@@ -158,8 +180,11 @@ export class WebhookWorker extends WorkerHost {
       return;
     }
     try {
+      // Persist through the dedicated worker client so background writes are
+      // never aborted by the API-oriented query timeouts (issue #76).
+      const client = this.prisma.workerClient ?? this.prisma;
       // Use upsert by eventId+webhookId uniqueness if available, otherwise create
-      const prismaAny = this.prisma as unknown as Record<string, unknown>;
+      const prismaAny = client as unknown as Record<string, unknown>;
       const deliveryDelegate = (prismaAny['webhookDelivery'] as
         | {
             upsert?: (args: unknown) => Promise<unknown>;
