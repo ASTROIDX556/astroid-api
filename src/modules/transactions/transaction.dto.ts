@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { stellarMemoTypeSchema } from '../../common/validators/stellar-memo.schema';
+import { stellarAddressSchema } from '../../common/validators/stellar-address.schema';
 
 const amountString = z
   .string()
@@ -14,7 +15,7 @@ export const createTransactionSchema = z
     budgetId: z.string().uuid().optional(),
     asset: z.string().min(1).max(24).default('XLM'),
     amount: amountString,
-    recipientAddress: z.string().min(1),
+    recipientAddress: stellarAddressSchema,
     memo: z.string().max(128).optional(),
     memoType: stellarMemoTypeSchema.optional(),
     memoValue: z.string().optional(),

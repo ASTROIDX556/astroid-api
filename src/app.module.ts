@@ -8,6 +8,8 @@ import { AppConfigModule } from './config';
 import { QueueConfig } from './config/queue.config';
 import { DatabaseModule } from './database/database.module';
 import { EventsModule } from './events/events.module';
+import { LocksModule } from './common/locks/locks.module';
+import { EncryptionModule } from './common/encryption/encryption.module';
 import { RequestIdMiddleware } from './middleware/request-id.middleware';
 import { REQUEST_ID_HEADER } from './common/constants/headers';
 
@@ -38,8 +40,11 @@ import { AuditModule } from './modules/audit/audit.module';
 import { AiModule } from './modules/ai/ai.module';
 import { HealthModule } from './modules/health/health.module';
 import { MetricsModule } from './modules/metrics/metrics.module';
+import { AdminModule } from './modules/admin/admin.module';
 import { RequestMetricsMiddleware } from './modules/metrics/metrics.middleware';
+import { DeadLetterModule } from './modules/dead-letter/dead-letter.module';
 import { AgentTraceInterceptor } from './common/interceptors/agent-trace.interceptor';
+import { AuditLogInterceptor } from './common/interceptors/audit-log.interceptor';
 
 /**
  * Root application module. Wires the global infrastructure (config, logging,
@@ -51,6 +56,7 @@ import { AgentTraceInterceptor } from './common/interceptors/agent-trace.interce
  *   - ScopesGuard       : Fine-grained permission scopes for API keys & agents
  *   - ThrottlerGuard    : per-organization / per-IP rate limiting
  *   - ResponseInterceptor: wraps every result in the success envelope
+ *   - AuditLogInterceptor: persists masked mutation requests to the audit trail
  *   - AllExceptionsFilter: converts every error into the error envelope
  */
 @Module({
@@ -94,6 +100,8 @@ import { AgentTraceInterceptor } from './common/interceptors/agent-trace.interce
 
     DatabaseModule,
     EventsModule,
+    LocksModule,
+    EncryptionModule,
 
     // Domain modules
     AuthModule,
@@ -115,6 +123,8 @@ import { AgentTraceInterceptor } from './common/interceptors/agent-trace.interce
     AiModule,
     HealthModule,
     MetricsModule,
+    DeadLetterModule,
+    AdminModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: JwtAuthGuard },
@@ -122,6 +132,7 @@ import { AgentTraceInterceptor } from './common/interceptors/agent-trace.interce
     { provide: APP_GUARD, useClass: ScopesGuard },
     { provide: APP_GUARD, useClass: AstroidThrottlerGuard },
     { provide: APP_INTERCEPTOR, useClass: AgentTraceInterceptor },
+    { provide: APP_INTERCEPTOR, useClass: AuditLogInterceptor },
     { provide: APP_INTERCEPTOR, useClass: ResponseInterceptor },
     { provide: APP_INTERCEPTOR, useClass: AuditInterceptor },
     { provide: APP_FILTER, useClass: AllExceptionsFilter },
