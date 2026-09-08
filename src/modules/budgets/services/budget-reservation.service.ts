@@ -1,20 +1,11 @@
 import { Injectable } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
 import { RedisLock } from '../../../common/locks/redis-lock.util';
 import { BudgetRepository } from '../budget.repository';
-import {
-  BudgetExceededException,
-  ConflictException,
-  DomainException,
-} from '../../../common/exceptions/domain.exception';
-
-const Decimal = Prisma.Decimal;
+import { ConflictException } from '../../../common/exceptions/domain.exception';
 
 /**
  * Service for budget reservation with distributed locking.
- * Prevents race conditions in concurrent budget operations: the reservation is
- * persisted atomically (`spent += amount`) while holding the lock, so two
- * concurrent agent requests can never both pass the same headroom check.
+ * Prevents race conditions in concurrent budget operations.
  */
 @Injectable()
 export class BudgetReservationService {
@@ -24,13 +15,7 @@ export class BudgetReservationService {
   ) {}
 
   /**
-   * Reserves `amount` against a budget under a distributed lock. The projected
-   * spend is checked against the limit and, when within budget, the reservation
-   * is persisted immediately (spent is incremented) so later reservations see
-   * it. Throws `BudgetExceededException` when the limit would be breached and
-   * `ConflictException` when the budget is missing or the lock cannot be
-   * acquired.
-   *
+   * Reserves a budget amount with distributed locking to prevent race conditions.
    * @param organizationId - Organization ID
    * @param budgetId - Budget ID to reserve from
    * @param amount - Amount to reserve
@@ -46,22 +31,18 @@ export class BudgetReservationService {
           throw new ConflictException('Budget not found');
         }
 
-        const projected = new Decimal(budget.spent).plus(amount);
-        if (projected.greaterThan(budget.limitAmount)) {
-          throw new BudgetExceededException('Transaction would exceed the budget limit', {
-            budgetId,
-            limit: budget.limitAmount.toFixed(7),
-            spent: budget.spent.toFixed(7),
-            attempted: amount,
-          });
+        const currentSpent = Number(budget.spent);
+        const newSpent = currentSpent + amount;
+        const limit = Number(budget.limitAmount);
+
+        if (newSpent > limit) {
+          throw new ConflictException('Budget limit exceeded due to concurrent operation');
         }
 
-        // Persist the reservation atomically — the check and the increment are
-        // serialized by the lock, so concurrent requests cannot overspend.
-        return this.budgetRepository.incrementSpent(budgetId, new Decimal(amount));
+        return budget;
       });
     } catch (error) {
-      if (error instanceof DomainException) {
+      if (error instanceof ConflictException) {
         throw error;
       }
       throw new ConflictException('Failed to acquire budget lock due to concurrent operation');

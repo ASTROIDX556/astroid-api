@@ -36,7 +36,6 @@ export class BudgetRepository {
     return this.prisma.budget.update({ where: { id }, data });
   }
 
-  /** Atomically increments `spent` by `amount` (positive) — used to persist a reservation. */
   incrementSpent(id: string, amount: Prisma.Decimal): Promise<Budget> {
     return this.prisma.budget.update({
       where: { id },
@@ -44,11 +43,25 @@ export class BudgetRepository {
     });
   }
 
-  /** Atomically decrements `spent` by `amount` (positive) — used to release a reservation. */
-  decrementSpent(id: string, amount: Prisma.Decimal): Promise<Budget> {
-    return this.prisma.budget.update({
-      where: { id },
-      data: { spent: { decrement: amount } },
+  async reserveBudget(organizationId: string, id: string, amount: Prisma.Decimal): Promise<Budget> {
+    return this.prisma.$transaction(async (tx) => {
+      const rows = await tx.$queryRaw<Budget[]>`SELECT * FROM "budgets" WHERE id = ${id} AND "organizationId" = ${organizationId} FOR UPDATE`;
+      if (!rows || rows.length === 0) {
+        throw new Error('NotFoundException');
+      }
+      
+      const budget = rows[0];
+      const spentAfter = new Prisma.Decimal(budget.spent).plus(amount);
+      const limit = new Prisma.Decimal(budget.limitAmount);
+      
+      if (spentAfter.greaterThan(limit)) {
+        throw new Error('ConflictException: BudgetExceeded');
+      }
+      
+      return tx.budget.update({
+        where: { id },
+        data: { spent: spentAfter },
+      });
     });
   }
 

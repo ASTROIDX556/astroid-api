@@ -13,8 +13,18 @@ export const Queues = {
   Analytics: 'analytics',
   /** Long-running exports and scheduled reports. */
   Reports: 'reports',
-  /** Periodic budget period reset cron job. */
-  BudgetReset: 'budget-reset',
+  /** Transactional outbox fan-out jobs. */
+  OutboxEvents: 'outbox-events',
+  /** Stellar fee-bump submission retries. */
+  StellarFeeBump: 'stellar-fee-bump',
+  /** Transaction execution pipeline. */
+  Transactions: 'transactions',
+  /** Asynchronous risk evaluation and scoring. */
+  RiskAnalysis: 'risk-analysis',
+  /** Dead-letter queue for terminal job failures across all workers. */
+  DeadLetter: 'dead-letter',
+  /** Audit logs cleanup job. */
+  AuditCleanup: 'audit-cleanup',
 } as const;
 
 export type QueueName = (typeof Queues)[keyof typeof Queues];
