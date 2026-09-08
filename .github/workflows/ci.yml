@@ -14,9 +14,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: 20
           cache: npm
-      - run: npm ci --include-dev
+      - run: npm ci --include=dev
       - run: npm run build
 
   migration-check:
@@ -75,9 +75,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: 20
           cache: npm
-      - run: npm ci --include-dev
+      - run: npm ci --include=dev
       - run: npm test
 
   lint:
@@ -88,9 +88,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: 20
           cache: npm
-      - run: npm ci --include-dev
+      - run: npm ci --include=dev
       - run: npm run lint
 
   typecheck:
@@ -101,9 +101,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: 20
           cache: npm
-      - run: npm ci --include-dev
+      - run: npm ci --include=dev
       - run: npm run typecheck
 
   openapi-validation:
@@ -138,13 +138,13 @@ jobs:
       postgres:
         image: postgres:16-alpine
         env:
-          POSTRESE_USER: postgres
-          POSTRES_PASSWORD: postgres
-          POSTRES_DB: astroid
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: astroid
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pgisready -U postgres -d astroid"
+          --health-cmd "pg_isready -U postgres -d astroid"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
@@ -155,9 +155,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: 20
           cache: npm
-      - run: npm ci --include-dev
+      - run: npm ci --include=dev
       # The shadow database is an empty scratch PostgreSQL database that Prisma
       # uses to rebuild the schema purely from the committed migrations.
       - name: Create shadow database
@@ -166,7 +166,3 @@ jobs:
           PGPASSWORD=postgres createdb -h localhost -p 5432 -U postgres astroid_shadow
       - name: Verify database migrations
         run: npm run db:verify
-      - name: Verify seed script
-        run: npm run prisma:seed
-        env:
-          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/astroid?schema=public

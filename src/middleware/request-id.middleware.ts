@@ -1,7 +1,6 @@
 import { Injectable, NestMiddleware } from '@nestjs/common';
 import { NextFunction, Request, Response } from 'express';
 import { v7 as uuidv7 } from 'uuid';
-import { TraceContext, TraceContextData } from '../common/context/trace.context';
 import {
   CORRELATION_ID_HEADER,
   REQUEST_ID_HEADER,
@@ -19,19 +18,10 @@ export class RequestIdMiddleware implements NestMiddleware {
     const requestId = existing && existing.length > 0 ? existing : `req_${uuidv7()}`;
     req.headers[REQUEST_ID_HEADER] = requestId;
 
-    const correlation =
-      req.headers[CORRELATION_ID_HEADER] as string | undefined;
-    const correlationId =
-      correlation && correlation.length > 0 ? correlation : requestId;
-    req.headers[CORRELATION_ID_HEADER] = correlationId;
+    const correlation = req.headers[CORRELATION_ID_HEADER] as string | undefined;
+    req.headers[CORRELATION_ID_HEADER] = correlation && correlation.length > 0 ? correlation : requestId;
 
-    const traceData: TraceContextData = {
-      traceId: correlationId,
-    };
-
-    TraceContext.run(traceData, () => {
-      res.setHeader(REQUEST_ID_HEADER, requestId);
-      next();
-    });
+    res.setHeader(REQUEST_ID_HEADER, requestId);
+    next();
   }
 }

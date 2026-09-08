@@ -18,15 +18,23 @@ import { databaseEnvSchema, validateEnv } from './env.validation';
  */
 export type DatabaseConfig = {
   url: string;
-  slowQueryThresholdMs: number;
-  enableSlowQueryLogging: boolean;
+  connectionLimit: number;
+  workerConnectionLimit: number;
+  poolTimeoutMs: number;
+  queryTimeoutMs: number;
+  statementTimeoutMs: number;
+  workerQueryTimeoutMs: number;
 };
 
 export const databaseConfig = registerAs('database', (): DatabaseConfig => {
   const env = validateEnv(databaseEnvSchema, process.env);
   return {
     url: env.DATABASE_URL,
-    slowQueryThresholdMs: env.SLOW_QUERY_THRESHOLD_MS,
-    enableSlowQueryLogging: env.ENABLE_SLOW_QUERY_LOGGING,
+    connectionLimit: env.DATABASE_CONNECTION_LIMIT,
+    workerConnectionLimit: env.DATABASE_WORKER_CONNECTION_LIMIT,
+    poolTimeoutMs: env.DATABASE_POOL_TIMEOUT_MS,
+    queryTimeoutMs: env.DATABASE_QUERY_TIMEOUT_MS,
+    statementTimeoutMs: env.DATABASE_STATEMENT_TIMEOUT_MS,
+    workerQueryTimeoutMs: env.DATABASE_WORKER_QUERY_TIMEOUT_MS,
   };
 });

@@ -6,7 +6,6 @@ export const DomainEventName = {
   // Organization / user
   OrganizationRegistered: 'organization.registered',
   OrganizationUpdated: 'organization.updated',
-  OrganizationKeyRotated: 'organization.key_rotated',
   UserInvited: 'user.invited',
   UserUpdated: 'user.updated',
   UserRemoved: 'user.removed',
@@ -39,10 +38,8 @@ export const DomainEventName = {
   BudgetUpdated: 'budget.updated',
   BudgetAllocated: 'budget.allocated',
   BudgetConsumed: 'budget.consumed',
-  BudgetReleased: 'budget.released',
   BudgetExceeded: 'budget.exceeded',
   BudgetWarning: 'budget.warning',
-  BudgetPeriodReset: 'budget.period_reset',
 
   // Proposal / approval
   ProposalCreated: 'proposal.created',

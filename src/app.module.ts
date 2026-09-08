@@ -18,7 +18,7 @@ import { RolesGuard } from './common/guards/roles.guard';
 import { ScopesGuard } from './common/guards/scopes.guard';
 import { AstroidThrottlerGuard } from './common/guards/throttler.guard';
 import { ResponseInterceptor } from './common/interceptors/response.interceptor';
-import { AuditLogInterceptor } from './common/interceptors/audit-log.interceptor';
+import { AuditInterceptor } from './common/interceptors/audit.interceptor';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 
 import { AuthModule } from './modules/auth/auth.module';
@@ -83,12 +83,10 @@ import { AuditLogInterceptor } from './common/interceptors/audit-log.interceptor
             : { target: 'pino-pretty', options: { singleLine: true } },
       },
     }),
-    // Three rate-limit tiers, all driven by THROTTLE_* env vars. Every route is
-    // subject to all named throttlers, but AstroidThrottlerGuard enforces only
-    // the one matching the route's @ThrottleTierDecorator tier:
-    //   'api'     (default) — general API traffic
-    //   'auth'              — sensitive auth endpoints (login, register, passkey)
-    //   'webhook'           — webhook delivery callbacks
+    // Two rate-limit tiers, both driven by THROTTLE_* env vars. Every route is
+    // subject to both named throttlers, but AstroidThrottlerGuard enforces only
+    // the one matching the route's @ThrottleTierDecorator tier ('api' default,
+    // 'auth' for the sensitive auth endpoints).
     ThrottlerModule.forRootAsync({
       inject: [ConfigService],
       useFactory: (config: ConfigService) => {
@@ -97,7 +95,6 @@ import { AuditLogInterceptor } from './common/interceptors/audit-log.interceptor
         return [
           { name: 'api', ttl, limit: throttle.apiLimit },
           { name: 'auth', ttl, limit: throttle.authLimit },
-          { name: 'webhook', ttl, limit: throttle.webhookLimit },
         ];
       },
     }),
@@ -135,6 +132,8 @@ import { AuditLogInterceptor } from './common/interceptors/audit-log.interceptor
     { provide: APP_GUARD, useClass: RolesGuard },
     { provide: APP_GUARD, useClass: ScopesGuard },
     { provide: APP_GUARD, useClass: AstroidThrottlerGuard },
+    { provide: APP_INTERCEPTOR, useClass: RequestContextInterceptor },
+    { provide: APP_INTERCEPTOR, useClass: AgentTraceInterceptor },
     { provide: APP_INTERCEPTOR, useClass: AuditLogInterceptor },
     { provide: APP_INTERCEPTOR, useClass: ResponseInterceptor },
     { provide: APP_INTERCEPTOR, useClass: AuditInterceptor },
