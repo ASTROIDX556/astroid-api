@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { ExecutionContext, ForbiddenException } from '@nestjs/common';
+import { ExecutionContext, UnauthorizedException, ForbiddenException } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { RbacGuard } from './rbac.guard';
 import { PermissionsGuard } from './permissions.guard';
@@ -26,55 +26,55 @@ describe('RbacGuard & PermissionsGuard', () => {
   };
 
   describe('RbacGuard', () => {
-    it('throws ForbiddenException when user is missing', () => {
+    it('throws UnauthorizedException when user is missing', async () => {
       vi.spyOn(reflector, 'getAllAndOverride').mockReturnValue(['ADMIN']);
       const context = createMockContext(undefined);
 
-      expect(() => rbacGuard.canActivate(context)).toThrow(ForbiddenException);
+      await expect(rbacGuard.canActivate(context)).rejects.toThrow(UnauthorizedException);
     });
 
-    it('throws ForbiddenException when user role does not match', () => {
+    it('throws ForbiddenException when user role does not match', async () => {
       vi.spyOn(reflector, 'getAllAndOverride').mockReturnValue(['ADMIN']);
       const context = createMockContext({ role: 'USER' });
 
-      expect(() => rbacGuard.canActivate(context)).toThrow(ForbiddenException);
+      await expect(rbacGuard.canActivate(context)).rejects.toThrow(ForbiddenException);
     });
 
-    it('allows access when user role matches', () => {
+    it('allows access when user role matches', async () => {
       vi.spyOn(reflector, 'getAllAndOverride').mockReturnValue(['ADMIN', 'OWNER']);
       const context = createMockContext({ role: 'ADMIN' });
 
-      expect(rbacGuard.canActivate(context)).toBe(true);
+      await expect(rbacGuard.canActivate(context)).resolves.toBe(true);
     });
 
-    it('allows access when no roles are required', () => {
+    it('allows access when no roles are required', async () => {
       vi.spyOn(reflector, 'getAllAndOverride').mockReturnValue(undefined);
       const context = createMockContext({ role: 'USER' });
 
-      expect(rbacGuard.canActivate(context)).toBe(true);
+      await expect(rbacGuard.canActivate(context)).resolves.toBe(true);
     });
   });
 
   describe('PermissionsGuard', () => {
-    it('throws ForbiddenException when user is missing', () => {
+    it('throws UnauthorizedException when user is missing', async () => {
       vi.spyOn(reflector, 'getAllAndOverride').mockReturnValue(['read:reports']);
       const context = createMockContext(undefined);
 
-      expect(() => permissionsGuard.canActivate(context)).toThrow(ForbiddenException);
+      await expect(permissionsGuard.canActivate(context)).rejects.toThrow(UnauthorizedException);
     });
 
-    it('throws ForbiddenException when user lacks permissions', () => {
+    it('throws ForbiddenException when user lacks permissions', async () => {
       vi.spyOn(reflector, 'getAllAndOverride').mockReturnValue(['write:reports']);
       const context = createMockContext({ permissions: ['read:reports'] });
 
-      expect(() => permissionsGuard.canActivate(context)).toThrow(ForbiddenException);
+      await expect(permissionsGuard.canActivate(context)).rejects.toThrow(ForbiddenException);
     });
 
-    it('allows access when user has required permissions', () => {
+    it('allows access when user has required permissions', async () => {
       vi.spyOn(reflector, 'getAllAndOverride').mockReturnValue(['read:reports']);
       const context = createMockContext({ permissions: ['read:reports', 'write:reports'] });
 
-      expect(permissionsGuard.canActivate(context)).toBe(true);
+      await expect(permissionsGuard.canActivate(context)).resolves.toBe(true);
     });
   });
 });
