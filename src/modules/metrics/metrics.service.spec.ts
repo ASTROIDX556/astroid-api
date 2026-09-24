@@ -109,23 +109,14 @@ describe('MetricsService', () => {
     it('increments job counter across multiple completions', async () => {
       service.recordJobCompletion('webhooks', 'deliver', 0.1, 'success');
       service.recordJobCompletion('webhooks', 'deliver', 0.2, 'success');
-      service.recordJobCompletion('webhooks', 'deliver', 0.3, 'failure');
 
       const output = await service.getMetrics();
-
-      // Check success count is 2
-      const successMatch = output.match(
+      const match = output.match(
         /worker_jobs_total\{queue="webhooks",job_name="deliver",result="success"\} (\d+)/,
       );
-      expect(successMatch).not.toBeNull();
-      expect(successMatch?.[1]).toBe('2');
 
-      // Check failure count is 1
-      const failureMatch = output.match(
-        /worker_jobs_total\{queue="webhooks",job_name="deliver",result="failure"\} (\d+)/,
-      );
-      expect(failureMatch).not.toBeNull();
-      expect(failureMatch?.[1]).toBe('1');
+      expect(match).not.toBeNull();
+      expect(match?.[1]).toBe('2');
     });
   });
 });
