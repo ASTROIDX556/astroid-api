@@ -70,4 +70,52 @@ describe('ZodValidationPipe', () => {
       expect(exception.getStatus()).toBe(422);
     }
   });
+
+  it('supports custom error messages and internationalization-ready overrides', () => {
+    const pipe = new ZodValidationPipe(
+      z.object({ email: z.string().email() }),
+      {
+        customMessages: {
+          email: 'Correo electrónico inválido',
+        },
+      },
+    );
+    try {
+      pipe.transform({ email: 'bad' }, metadata);
+      expect.fail('Should have thrown');
+    } catch (error) {
+      expect(error).toBeInstanceOf(ValidationException);
+      const details = (error as ValidationException).details as Array<{
+        path: string;
+        message: string;
+      }>;
+      expect(details).toEqual([
+        { path: 'email', message: 'Correo electrónico inválido' },
+      ]);
+    }
+  });
+
+  it('supports custom error mapping function for i18n', () => {
+    const pipe = new ZodValidationPipe(
+      z.object({ age: z.number().min(18) }),
+      {
+        errorMap: (err) =>
+          err.issues.map((i) => ({
+            path: i.path.join('.'),
+            message: `Localized: ${i.message}`,
+          })),
+      },
+    );
+    try {
+      pipe.transform({ age: 10 }, metadata);
+      expect.fail('Should have thrown');
+    } catch (error) {
+      expect(error).toBeInstanceOf(ValidationException);
+      const details = (error as ValidationException).details as Array<{
+        path: string;
+        message: string;
+      }>;
+      expect(details[0].message).toContain('Localized:');
+    }
+  });
 });
