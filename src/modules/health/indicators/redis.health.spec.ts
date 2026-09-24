@@ -58,6 +58,6 @@ describe('RedisHealthIndicator', () => {
     const report = await indicator.checkHealth();
 
     expect(report.status).toBe('down');
-    expect(report.error).toContain('Unexpected Redis ping response: NOPE');
+    expect(report.error).toContain('Unexpected ping response: NOPE');
   });
 });
