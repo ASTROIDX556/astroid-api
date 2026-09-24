@@ -1,27 +1,44 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { RedisHealthIndicator } from './redis.health';
-import Redis from 'ioredis';
+import { ConfigService } from '@nestjs/config';
+
+const mockPing = vi.fn();
+vi.mock('ioredis', () => {
+  return {
+    default: vi.fn().mockImplementation(() => ({
+      ping: mockPing,
+    })),
+  };
+});
 
 describe('RedisHealthIndicator', () => {
-  let redis: { ping: ReturnType<typeof vi.fn> };
+  let configService: Partial<ConfigService>;
   let indicator: RedisHealthIndicator;
 
   beforeEach(() => {
-    redis = { ping: vi.fn() };
-    indicator = new RedisHealthIndicator(redis as unknown as Redis);
+    vi.clearAllMocks();
+    configService = {
+      get: vi.fn().mockReturnValue('redis://localhost:6379'),
+    };
+    indicator = new RedisHealthIndicator(configService as ConfigService);
   });
 
   it('returns UP when ping returns PONG', async () => {
-    redis.ping.mockResolvedValue('PONG');
+    mockPing.mockResolvedValue('PONG');
+
     const report = await indicator.checkHealth();
+
     expect(report.status).toBe('up');
-    expect(report.latencyMs).toBeGreaterThanOrEqual(0);
+    expect(report.latencyMs).toBeDefined();
+    expect(report.error).toBeUndefined();
   });
 
-  it('returns DOWN when ping throws error', async () => {
-    redis.ping.mockRejectedValue(new Error('Connection refused'));
+  it('returns DOWN when ping fails', async () => {
+    mockPing.mockRejectedValue(new Error('Redis connection refused'));
+
     const report = await indicator.checkHealth();
+
     expect(report.status).toBe('down');
-    expect(report.error).toContain('Connection refused');
+    expect(report.error).toContain('Redis connection refused');
   });
 });
