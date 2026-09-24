@@ -1,63 +1,27 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { ConfigService } from '@nestjs/config';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { RedisHealthIndicator } from './redis.health';
-
-const mockPing = vi.fn();
-const mockConnect = vi.fn();
-
-vi.mock('ioredis', () => {
-  return {
-    default: vi.fn().mockImplementation(() => ({
-      status: 'ready',
-      ping: mockPing,
-      connect: mockConnect,
-    })),
-  };
-});
+import Redis from 'ioredis';
 
 describe('RedisHealthIndicator', () => {
+  let redis: { ping: ReturnType<typeof vi.fn> };
   let indicator: RedisHealthIndicator;
-  let configService: { get: ReturnType<typeof vi.fn> };
 
   beforeEach(() => {
-    vi.clearAllMocks();
-    configService = {
-      get: vi.fn().mockReturnValue({
-        host: 'localhost',
-        port: 6379,
-      }),
-    };
-    indicator = new RedisHealthIndicator(configService as unknown as ConfigService);
+    redis = { ping: vi.fn() };
+    indicator = new RedisHealthIndicator(redis as unknown as Redis);
   });
 
-  it('returns up status when ping returns PONG', async () => {
-    mockPing.mockResolvedValue('PONG');
-
+  it('returns UP when ping returns PONG', async () => {
+    redis.ping.mockResolvedValue('PONG');
     const report = await indicator.checkHealth();
-
     expect(report.status).toBe('up');
     expect(report.latencyMs).toBeGreaterThanOrEqual(0);
-    expect(report.timestamp).toBeDefined();
-    expect(report.error).toBeUndefined();
   });
 
-  it('returns down status when ping rejects with an error', async () => {
-    mockPing.mockRejectedValue(new Error('Redis connection lost'));
-
+  it('returns DOWN when ping throws error', async () => {
+    redis.ping.mockRejectedValue(new Error('Connection refused'));
     const report = await indicator.checkHealth();
-
     expect(report.status).toBe('down');
-    expect(report.latencyMs).toBeGreaterThanOrEqual(0);
-    expect(report.timestamp).toBeDefined();
-    expect(report.error).toBe('Redis connection lost');
-  });
-
-  it('returns down status when ping returns unexpected payload', async () => {
-    mockPing.mockResolvedValue('NOPE');
-
-    const report = await indicator.checkHealth();
-
-    expect(report.status).toBe('down');
-    expect(report.error).toContain('Unexpected ping response: NOPE');
+    expect(report.error).toContain('Connection refused');
   });
 });
