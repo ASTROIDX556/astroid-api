@@ -1,35 +1,34 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
-import { RedisConfig } from '../../../config/redis.config';
+import { redisConfig } from '../../../config/redis.config';
 
 export interface RedisHealthReport {
   status: 'up' | 'down';
-  latencyMs: number;
   timestamp: string;
+  latencyMs: number;
   error?: string;
 }
 
 @Injectable()
 export class RedisHealthIndicator {
   private readonly logger = new Logger(RedisHealthIndicator.name);
-  private readonly timeoutMs = 3000;
   private redisClient: Redis | null = null;
 
-  constructor(private readonly configService: ConfigService) {}
+  constructor(private readonly configService: ConfigService) {
+    void this.configService;
+  }
 
   private getClient(): Redis {
     if (!this.redisClient) {
-      const config = this.configService.get<RedisConfig>('redis');
+      const { host, port, password, db } = redisConfig();
       this.redisClient = new Redis({
-        host: config?.host ?? process.env.REDIS_HOST ?? 'localhost',
-        port: config?.port ?? Number(process.env.REDIS_PORT ?? 6379),
-        password: config?.password ?? process.env.REDIS_PASSWORD ?? undefined,
-        db: config?.db ?? Number(process.env.REDIS_DB ?? 0),
+        host,
+        port,
+        password: password || undefined,
+        db,
         lazyConnect: true,
         maxRetriesPerRequest: 1,
-        enableOfflineQueue: false,
-        connectTimeout: this.timeoutMs,
       });
     }
     return this.redisClient;
@@ -39,37 +38,36 @@ export class RedisHealthIndicator {
     const start = Date.now();
     try {
       const client = this.getClient();
-
       if (client.status === 'wait') {
         await client.connect();
       }
+      const pong = await client.ping();
+      const latencyMs = Date.now() - start;
 
-      const pingPromise = client.ping();
-      const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('Redis ping timed out')), this.timeoutMs),
-      );
-
-      const result = await Promise.race([pingPromise, timeoutPromise]);
-      if (result !== 'PONG') {
-        throw new Error(`Unexpected Redis ping response: ${String(result)}`);
+      if (pong === 'PONG') {
+        return {
+          status: 'up',
+          timestamp: new Date().toISOString(),
+          latencyMs,
+        };
       }
-
-      const latencyMs = Date.now() - start;
-      return {
-        status: 'up',
-        latencyMs,
-        timestamp: new Date().toISOString(),
-      };
-    } catch (err) {
-      const latencyMs = Date.now() - start;
-      const errorMessage = err instanceof Error ? err.message : String(err);
-      this.logger.error(`Redis health check failed: ${errorMessage}`);
 
       return {
         status: 'down',
-        latencyMs,
         timestamp: new Date().toISOString(),
-        error: errorMessage,
+        latencyMs,
+        error: `Unexpected ping response: ${pong}`,
+      };
+    } catch (error) {
+      const latencyMs = Date.now() - start;
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.error(`Redis health check failed: ${message}`);
+
+      return {
+        status: 'down',
+        timestamp: new Date().toISOString(),
+        latencyMs,
+        error: message,
       };
     }
   }
