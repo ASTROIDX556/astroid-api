@@ -1,78 +1,65 @@
-import { Controller, Get, HttpException, HttpStatus, UseGuards } from '@nestjs/common';
-import {
-  ApiOperation,
-  ApiTags,
-  ApiBearerAuth,
-  ApiResponse,
-} from '@nestjs/swagger';
-import { StellarHealthIndicator, StellarHealthReport } from './indicators/stellar.health';
-import {
-  DatabaseMigrationHealthIndicator,
-  MigrationHealthReport,
-} from './indicators/database-migration.health';
-import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
-import { RolesGuard } from '../../common/guards/roles.guard';
-import { Roles } from '../../common/decorators/roles.decorator';
-import { UserRole } from '@prisma/client';
+import { Controller, Get, Res, HttpStatus } from '@nestjs/common';
+import { ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
+import { Response } from 'express';
+import { DatabaseConnectionHealthIndicator } from './indicators/database-connection.health';
+import { RedisHealthIndicator } from './indicators/redis.health';
+import { StellarHealthIndicator } from './indicators/stellar.health';
+import { DatabaseMigrationHealthIndicator } from './indicators/database-migration.health';
 
-@ApiTags('health')
+@ApiTags('Health')
 @Controller('health')
 export class HealthController {
   constructor(
-    private readonly stellarHealthIndicator: StellarHealthIndicator,
-    private readonly databaseMigrationIndicator: DatabaseMigrationHealthIndicator,
+    private readonly dbIndicator: DatabaseConnectionHealthIndicator,
+    private readonly redisIndicator: RedisHealthIndicator,
+    private readonly stellarIndicator: StellarHealthIndicator,
+    private readonly migrationIndicator: DatabaseMigrationHealthIndicator,
   ) {}
 
-  @Get('stellar')
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.DEVELOPER, UserRole.AUDITOR)
-  @ApiBearerAuth('access-token')
-  @ApiOperation({
-    summary: 'Comprehensive health check and latency diagnostics for Stellar Horizon and Soroban RPC endpoints',
-    description:
-      'Returns detailed health information including response times, connectivity status, ' +
-      'and network version for Stellar Horizon and Soroban RPC endpoints.',
-  })
-  @ApiResponse({ status: 200, description: 'Stellar health report with latency metrics' })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
-  @ApiResponse({ status: 403, description: 'Insufficient permissions' })
-  @ApiResponse({ status: 503, description: 'Stellar endpoint unreachable or degraded' })
-  async checkStellarHealth(): Promise<StellarHealthReport> {
-    return this.stellarHealthIndicator.checkHealth();
+  @Get('liveness')
+  @ApiOperation({ summary: 'Application liveness check' })
+  @ApiResponse({ status: 200, description: 'Application is alive' })
+  getLiveness() {
+    return {
+      status: 'up',
+      timestamp: new Date().toISOString(),
+    };
   }
 
-  @Get('database')
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.DEVELOPER, UserRole.AUDITOR)
-  @ApiBearerAuth('access-token')
-  @ApiOperation({
-    summary: 'Database migration health check',
-    description:
-      'Verifies that all Prisma migrations are applied and the database schema is up to date. ' +
-      'Returns 503 when pending migrations are detected, which is critical for Kubernetes ' +
-      'liveness and readiness probes.',
-  })
-  @ApiResponse({ status: 200, description: 'All migrations applied, database schema is current' })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
-  @ApiResponse({ status: 403, description: 'Insufficient permissions' })
-  @ApiResponse({ status: 503, description: 'Pending migrations detected or database unreachable' })
-  async checkDatabaseMigrationHealth(): Promise<MigrationHealthReport> {
-    const report = await this.databaseMigrationIndicator.checkHealth();
+  @Get('readiness')
+  @ApiOperation({ summary: 'Application readiness check' })
+  @ApiResponse({ status: 200, description: 'Application is ready' })
+  @ApiResponse({ status: 503, description: 'Application is not ready' })
+  async getReadiness(@Res() res: Response) {
+    const [dbHealth, redisHealth, stellarHealth, migrationHealth] = await Promise.all([
+      this.dbIndicator.checkHealth(),
+      this.redisIndicator.checkHealth(),
+      this.stellarIndicator.checkHealth(),
+      this.migrationIndicator.checkHealth(),
+    ]);
 
-    if (report.status === 'down' || report.status === 'degraded') {
-      // Throw to return 503 — Kubernetes probes will mark the pod as unhealthy.
-      throw new HttpException(
-        {
-          statusCode: 503,
-          message: report.status === 'down'
-            ? 'Database unreachable during migration health check'
-            : `${report.pendingMigrations} pending migration(s) detected — run 'prisma migrate deploy'`,
-          report,
-        },
-        HttpStatus.SERVICE_UNAVAILABLE,
-      );
-    }
+    const services = {
+      database: dbHealth,
+      redis: redisHealth,
+      stellar: stellarHealth,
+      migrations: migrationHealth,
+    };
 
-    return report;
+    const isHealthy = Object.values(services).every((s) => s.status === 'up');
+    const statusCode = isHealthy ? HttpStatus.OK : HttpStatus.SERVICE_UNAVAILABLE;
+
+    return res.status(statusCode).json({
+      status: isHealthy ? 'up' : 'down',
+      timestamp: new Date().toISOString(),
+      services,
+    });
+  }
+
+  @Get()
+  @ApiOperation({ summary: 'Application health check' })
+  @ApiResponse({ status: 200, description: 'Application is healthy' })
+  @ApiResponse({ status: 503, description: 'Application is degraded or unhealthy' })
+  async check(@Res() res: Response) {
+    return this.getReadiness(res);
   }
 }
