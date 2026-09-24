@@ -37,19 +37,19 @@ describe('RbacGuard & PermissionsGuard', () => {
   };
 
   describe('RbacGuard', () => {
-    it('throws UnauthorizedException when user is missing', () => {
+    it('throws UnauthorizedException when user is missing', async () => {
       const context = createMockContext(undefined, ['ADMIN']);
-      expect(() => rbacGuard.canActivate(context)).toThrow(UnauthorizedException);
+      await expect(rbacGuard.canActivate(context)).rejects.toThrow(UnauthorizedException);
     });
 
-    it('throws ForbiddenException when user role does not match', () => {
+    it('throws ForbiddenException when user role does not match', async () => {
       const context = createMockContext({ role: 'USER' }, ['ADMIN']);
-      expect(() => rbacGuard.canActivate(context)).toThrow(ForbiddenException);
+      await expect(rbacGuard.canActivate(context)).rejects.toThrow(ForbiddenException);
     });
 
-    it('allows access when user role matches', () => {
+    it('allows access when user role matches', async () => {
       const context = createMockContext({ role: 'ADMIN', permissions: ['ADMIN', 'OWNER'] }, ['ADMIN'], ['ADMIN', 'OWNER']);
-      expect(rbacGuard.canActivate(context)).toBe(true);
+      await expect(rbacGuard.canActivate(context)).resolves.toBe(true);
     });
   });
 
