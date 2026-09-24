@@ -1,90 +1,69 @@
-import { Controller, Get, Res, HttpStatus } from '@nestjs/common';
+import { Controller, Get, HttpCode, HttpStatus, Res } from '@nestjs/common';
+import { ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { Response } from 'express';
-import { Public } from '../../common/decorators/public.decorator';
 import { DatabaseConnectionHealthIndicator } from './indicators/database-connection.health';
 import { RedisHealthIndicator } from './indicators/redis.health';
 import { StellarHealthIndicator } from './indicators/stellar.health';
 import { DatabaseMigrationHealthIndicator } from './indicators/database-migration.health';
 
+@ApiTags('Health')
 @Controller('health')
 export class HealthController {
   constructor(
-    private readonly dbConnectionHealth: DatabaseConnectionHealthIndicator,
+    private readonly dbHealth: DatabaseConnectionHealthIndicator,
     private readonly redisHealth: RedisHealthIndicator,
     private readonly stellarHealth: StellarHealthIndicator,
     private readonly migrationHealth: DatabaseMigrationHealthIndicator,
   ) {}
 
-  @Public()
-  @Get('liveness')
-  getLiveness() {
-    return {
-      status: 'up',
-      timestamp: new Date().toISOString(),
-    };
+  @Get()
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Check overall system health', description: 'Returns liveness status of the API and its dependencies' })
+  @ApiResponse({ status: 200, description: 'System is healthy' })
+  @ApiResponse({ status: 503, description: 'System is degraded or unhealthy' })
+  async check(@Res() res: Response) {
+    return this.getReadiness(res);
   }
 
-  @Public()
-  @Get(['', 'readiness'])
+  @Get('live')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Liveness probe', description: 'Basic liveness check for container orchestration' })
+  @ApiResponse({ status: 200, description: 'Application is alive' })
+  live() {
+    return this.getLiveness();
+  }
+
+  @Get('ready')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Readiness probe', description: 'Readiness check verifying database and Redis connectivity' })
+  @ApiResponse({ status: 200, description: 'Application is ready' })
+  @ApiResponse({ status: 503, description: 'Application is not ready' })
+  async ready(@Res() res: Response) {
+    return this.getReadiness(res);
+  }
+
+  getLiveness() {
+    return { status: 'up', timestamp: new Date().toISOString() };
+  }
+
   async getReadiness(@Res() res: Response) {
-    const [database, redis, stellar, migrations] = await Promise.all([
-      this.dbConnectionHealth.checkHealth(),
-      this.redisHealth.checkHealth(),
-      this.stellarHealth.checkHealth().catch((err: unknown) => ({
-        status: 'down' as const,
-        timestamp: new Date().toISOString(),
-        network: 'unknown',
-        horizon: {
-          status: 'down' as const,
-          latencyMs: 0,
-          url: '',
-          error: err instanceof Error ? err.message : String(err),
-        },
-        sorobanRpc: {
-          status: 'down' as const,
-          latencyMs: 0,
-          url: '',
-          error: err instanceof Error ? err.message : String(err),
-        },
-      })),
-      this.migrationHealth.isEnabled
-        ? await this.migrationHealth.checkHealth().catch((err: unknown) => ({
-            status: 'down' as const,
-            timestamp: new Date().toISOString(),
-            pendingMigrations: 0,
-            lastMigrationName: null,
-            lastMigrationApplied: null,
-            error: err instanceof Error ? err.message : String(err),
-          }))
-        : null,
-    ]);
+    const db = await this.dbHealth.checkHealth();
+    const redis = await this.redisHealth.checkHealth();
+    const stellar = await this.stellarHealth.checkHealth();
+    const migrations = await this.migrationHealth.checkHealth();
 
-    const isDatabaseDown = database.status === 'down';
-    const isRedisDown = redis.status === 'down';
-    const isStellarDown = stellar.status === 'down';
-    const isMigrationsDown = migrations?.status === 'down';
+    const isHealthy = db.status === 'up' && redis.status === 'up' && stellar.status === 'up' && migrations.status === 'up';
+    const status = isHealthy ? HttpStatus.OK : HttpStatus.SERVICE_UNAVAILABLE;
 
-    const isUnhealthy = isDatabaseDown || isRedisDown || isStellarDown || isMigrationsDown;
-    const isDegraded =
-      !isUnhealthy && (stellar.status === 'degraded' || migrations?.status === 'degraded');
-
-    const overallStatus = isUnhealthy ? 'down' : isDegraded ? 'degraded' : 'up';
-
-    const responsePayload = {
-      status: overallStatus,
+    return res.status(status).json({
+      status: isHealthy ? 'up' : 'down',
       timestamp: new Date().toISOString(),
       services: {
-        database,
+        database: db,
         redis,
         stellar,
-        ...(migrations ? { migrations } : {}),
+        migrations,
       },
-    };
-
-    if (isUnhealthy) {
-      return res.status(HttpStatus.SERVICE_UNAVAILABLE).json(responsePayload);
-    }
-
-    return res.status(HttpStatus.OK).json(responsePayload);
+    });
   }
 }
