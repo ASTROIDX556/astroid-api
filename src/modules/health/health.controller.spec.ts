@@ -1,30 +1,33 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Response } from 'express';
 import { HealthController } from './health.controller';
-import { DatabaseConnectionHealthIndicator } from './indicators/database-connection.health';
+import { PrismaHealthIndicator } from './indicators/prisma.health';
 import { RedisHealthIndicator } from './indicators/redis.health';
 import { StellarHealthIndicator } from './indicators/stellar.health';
 import { DatabaseMigrationHealthIndicator } from './indicators/database-migration.health';
 
 describe('HealthController', () => {
   let controller: HealthController;
-  let dbHealth: { checkHealth: ReturnType<typeof vi.fn> };
+  let dbHealth: { check: ReturnType<typeof vi.fn> };
   let redisHealth: { checkHealth: ReturnType<typeof vi.fn> };
   let stellarHealth: { checkHealth: ReturnType<typeof vi.fn> };
   let migrationHealth: { isEnabled: boolean; checkHealth: ReturnType<typeof vi.fn> };
   let res: Partial<Response>;
 
+  /** Builds the Terminus result map the Prisma indicator returns. */
+  const terminus = (overrides: Record<string, unknown> = {}) => ({
+    database: {
+      status: 'up',
+      latencyMs: 5,
+      timestamp: new Date().toISOString(),
+      ...overrides,
+    },
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
 
-    dbHealth = {
-      checkHealth: vi.fn().mockResolvedValue({
-        status: 'up',
-        latencyMs: 5,
-        timestamp: new Date().toISOString(),
-      }),
-    };
-
+    dbHealth = { check: vi.fn().mockResolvedValue(terminus()) };
     redisHealth = {
       checkHealth: vi.fn().mockResolvedValue({
         status: 'up',
@@ -32,7 +35,6 @@ describe('HealthController', () => {
         timestamp: new Date().toISOString(),
       }),
     };
-
     stellarHealth = {
       checkHealth: vi.fn().mockResolvedValue({
         status: 'up',
@@ -42,7 +44,6 @@ describe('HealthController', () => {
         sorobanRpc: { status: 'up', latencyMs: 40, url: 'https://soroban' },
       }),
     };
-
     migrationHealth = {
       isEnabled: true,
       checkHealth: vi.fn().mockResolvedValue({
@@ -60,7 +61,7 @@ describe('HealthController', () => {
     };
 
     controller = new HealthController(
-      dbHealth as unknown as DatabaseConnectionHealthIndicator,
+      dbHealth as unknown as PrismaHealthIndicator,
       redisHealth as unknown as RedisHealthIndicator,
       stellarHealth as unknown as StellarHealthIndicator,
       migrationHealth as unknown as DatabaseMigrationHealthIndicator,
@@ -81,7 +82,7 @@ describe('HealthController', () => {
       expect.objectContaining({
         status: 'up',
         services: expect.objectContaining({
-          database: expect.objectContaining({ status: 'up' }),
+          database: expect.objectContaining({ status: 'up', latencyMs: 5 }),
           redis: expect.objectContaining({ status: 'up' }),
           stellar: expect.objectContaining({ status: 'up' }),
           migrations: expect.objectContaining({ status: 'up' }),
@@ -90,13 +91,40 @@ describe('HealthController', () => {
     );
   });
 
+  it('asks the Prisma indicator for a result keyed by `database`', async () => {
+    await controller.getReadiness(res as Response);
+
+    expect(dbHealth.check).toHaveBeenCalledWith('database');
+  });
+
+  it('flattens the Terminus message into the flat `error` field', async () => {
+    dbHealth.check.mockResolvedValue(
+      terminus({ status: 'down', error: 'PrismaClientInitializationError', message: 'no route to host' }),
+    );
+
+    await controller.getReadiness(res as Response);
+
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        services: expect.objectContaining({
+          database: expect.objectContaining({
+            status: 'down',
+            error: 'no route to host',
+            latencyMs: 5,
+          }),
+        }),
+      }),
+    );
+  });
+
   it('returns 503 SERVICE UNAVAILABLE when database is down', async () => {
-    dbHealth.checkHealth.mockResolvedValue({
-      status: 'down',
-      latencyMs: 10,
-      timestamp: new Date().toISOString(),
-      error: 'PrismaClientInitializationError',
-    });
+    dbHealth.check.mockResolvedValue(
+      terminus({
+        status: 'down',
+        error: 'PrismaClientInitializationError',
+        message: 'PrismaClientInitializationError',
+      }),
+    );
 
     await controller.getReadiness(res as Response);
 
@@ -104,6 +132,21 @@ describe('HealthController', () => {
     expect(res.json).toHaveBeenCalledWith(
       expect.objectContaining({
         status: 'down',
+        services: expect.objectContaining({
+          database: expect.objectContaining({ status: 'down' }),
+        }),
+      }),
+    );
+  });
+
+  it('returns 503 SERVICE UNAVAILABLE when the database indicator returns no result', async () => {
+    dbHealth.check.mockResolvedValue({});
+
+    await controller.getReadiness(res as Response);
+
+    expect(res.status).toHaveBeenCalledWith(503);
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({
         services: expect.objectContaining({
           database: expect.objectContaining({ status: 'down' }),
         }),
@@ -130,5 +173,11 @@ describe('HealthController', () => {
         }),
       }),
     );
+  });
+
+  it('serves the same payload from the default health route', async () => {
+    await controller.check(res as Response);
+
+    expect(res.status).toHaveBeenCalledWith(200);
   });
 });
