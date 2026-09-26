@@ -1,22 +1,25 @@
 import { Module } from '@nestjs/common';
+import { TerminusModule } from '@nestjs/terminus';
 import { HealthController } from './health.controller';
-import { DatabaseConnectionHealthIndicator } from './indicators/database-connection.health';
+import { PrismaHealthIndicator } from './indicators/prisma.health';
 import { RedisHealthIndicator } from './indicators/redis.health';
 import { StellarHealthIndicator } from './indicators/stellar.health';
 import { DatabaseMigrationHealthIndicator } from './indicators/database-migration.health';
 import { DatabaseModule } from '../../database/database.module';
 
 @Module({
-  imports: [DatabaseModule],
+  // TerminusModule supplies `HealthCheckService` and the indicator base class
+  // used by PrismaHealthIndicator.
+  imports: [DatabaseModule, TerminusModule],
   controllers: [HealthController],
   providers: [
-    DatabaseConnectionHealthIndicator,
+    PrismaHealthIndicator,
     RedisHealthIndicator,
     StellarHealthIndicator,
     DatabaseMigrationHealthIndicator,
   ],
   exports: [
-    DatabaseConnectionHealthIndicator,
+    PrismaHealthIndicator,
     RedisHealthIndicator,
     StellarHealthIndicator,
     DatabaseMigrationHealthIndicator,

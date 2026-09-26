@@ -39,6 +39,65 @@ describe('ZodValidationPipe', () => {
     }
   });
 
+  it('rejects a payload that is missing required fields', () => {
+    const pipe = new ZodValidationPipe(
+      z.object({ name: z.string(), email: z.string().email() }),
+    );
+    try {
+      pipe.transform({}, metadata);
+      expect.fail('Should have thrown');
+    } catch (error) {
+      expect(error).toBeInstanceOf(ValidationException);
+      const details = (error as ValidationException).details as Array<{
+        path: string;
+        message: string;
+      }>;
+      expect(details).toEqual([
+        { path: 'name', message: 'Required' },
+        { path: 'email', message: 'Required' },
+      ]);
+    }
+  });
+
+  it('strips unexpected properties from the parsed output', () => {
+    const pipe = new ZodValidationPipe(z.object({ name: z.string() }));
+    const parsed = pipe.transform({ name: 'alice', isAdmin: true }, metadata);
+    expect(parsed).toEqual({ name: 'alice' });
+    expect(parsed).not.toHaveProperty('isAdmin');
+  });
+
+  it('rejects unexpected properties when the schema is strict', () => {
+    const pipe = new ZodValidationPipe(z.object({ name: z.string() }).strict());
+    try {
+      pipe.transform({ name: 'alice', isAdmin: true }, metadata);
+      expect.fail('Should have thrown');
+    } catch (error) {
+      expect(error).toBeInstanceOf(ValidationException);
+      const details = (error as ValidationException).details as Array<{
+        path: string;
+        message: string;
+      }>;
+      expect(details).toEqual([
+        { path: '', message: "Unrecognized key(s) in object: 'isAdmin'" },
+      ]);
+    }
+  });
+
+  it('rejects a malformed payload type before touching its fields', () => {
+    const pipe = new ZodValidationPipe(z.object({ name: z.string() }));
+    try {
+      pipe.transform('not-an-object', metadata);
+      expect.fail('Should have thrown');
+    } catch (error) {
+      expect(error).toBeInstanceOf(ValidationException);
+      const details = (error as ValidationException).details as Array<{
+        path: string;
+        message: string;
+      }>;
+      expect(details).toEqual([{ path: '', message: 'Expected object, received string' }]);
+    }
+  });
+
   it('uses the canonical detail shape for nested paths', () => {
     const pipe = new ZodValidationPipe(
       z.object({
