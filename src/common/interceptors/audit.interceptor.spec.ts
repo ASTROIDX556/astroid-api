@@ -139,7 +139,7 @@ describe('AuditInterceptor', () => {
     const ctx = buildMockContext();
     const req = (ctx.switchToHttp() as ReturnType<ExecutionContext['switchToHttp']>)[
       'getRequest'
-    ]() as any;
+    ]() as Record<string, unknown> & { headers: Record<string, string> };
     req.headers['x-forwarded-for'] = '10.0.0.1, 10.0.0.2';
 
     const next = buildCallHandler();
