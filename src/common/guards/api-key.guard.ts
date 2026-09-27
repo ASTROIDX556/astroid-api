@@ -7,6 +7,7 @@ import { SCOPES_KEY } from '../decorators/scopes.decorator';
 import { matchScope } from '../guards/scopes.guard';
 import { ErrorCode } from '../constants/error-codes';
 import { UnauthorizedException } from '../exceptions/domain.exception';
+import { AuthenticatedUser } from '../interfaces/authenticated-user.interface';
 
 /**
  * Guard enforcing API Key authentication ('api-key' passport strategy)
@@ -49,9 +50,10 @@ export class ApiKeyGuard extends AuthGuard('api-key') {
       return user;
     }
 
+    const principal = user as unknown as AuthenticatedUser;
     const grantedScopes = [
-      ...(user.scopes ?? []),
-      ...(user.permissions ?? []),
+      ...(principal.scopes ?? []),
+      ...(principal.permissions ?? []),
     ];
 
     const missingScopes = this._requiredScopes.filter(
@@ -67,5 +69,3 @@ export class ApiKeyGuard extends AuthGuard('api-key') {
     return user;
   }
 }
-
-export { ApiKeyGuard };
