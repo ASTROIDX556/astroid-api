@@ -1,7 +1,7 @@
 import { EventEmitter } from 'events';
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { ExecutionContext, Logger } from '@nestjs/common';
-import { of } from 'rxjs';
+import { Observable, of } from 'rxjs';
 
 import { AuditService } from '../../modules/audit/audit.service';
 import {
@@ -108,6 +108,7 @@ describe('AuditLogInterceptor', () => {
             path: '/api/v1/policies/pol-123',
             body: { name: 'Daily limit', configuration: { maxAmount: 100 } },
             statusCode: 201,
+            durationMs: expect.any(Number),
           },
         }),
       );
@@ -141,6 +142,46 @@ describe('AuditLogInterceptor', () => {
           newValue: expect.objectContaining({ agentId: 'agent-9', statusCode: 200 }),
         }),
       );
+    });
+
+    it('records the execution duration of the handler alongside the response status', async () => {
+      const record = vi.fn().mockResolvedValue(undefined);
+      const interceptor = makeInterceptor(record);
+
+      const request: MockRequest = {
+        method: 'POST',
+        path: '/api/v1/policies',
+        headers: { 'user-agent': 'test' },
+        params: {},
+        query: {},
+        body: { name: 'Daily limit' },
+        ip: '127.0.0.1',
+        user: { id: 'user-1', organizationId: 'org-1', email: 'a@b.com', role: 'ADMIN' },
+      };
+      const response = createMockResponse(201);
+      const context = createContext(request, response);
+
+      // Simulate a handler that takes a measurable amount of time.
+      const observable = interceptor.intercept(context, {
+        handle: () =>
+          new Observable((subscriber) => {
+            const timer = setTimeout(() => {
+              subscriber.next({ success: true });
+              subscriber.complete();
+            }, 25);
+            return () => clearTimeout(timer);
+          }),
+      });
+      await new Promise<void>((resolve, reject) => {
+        observable.subscribe({ next: () => resolve(), error: reject });
+      });
+      response.emit('finish');
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+      const { newValue } = record.mock.calls[0][0];
+      expect(newValue.durationMs).toBeGreaterThanOrEqual(20);
+      expect(newValue.durationMs).toBeLessThan(5_000);
+      expect(newValue.statusCode).toBe(201);
     });
   });
 
