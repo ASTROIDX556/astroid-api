@@ -14,7 +14,6 @@ import {
 import { StellarService } from './stellar.service';
 import { StellarTransactionService } from './services/stellar-transaction.service';
 import { StellarController } from './stellar.controller';
-import { SorobanValidationPipe } from '../../common/pipes/soroban-validation.pipe';
 
 /**
  * Global Stellar module. Selects the mock or Horizon-backed client based on
@@ -52,8 +51,7 @@ import { SorobanValidationPipe } from '../../common/pipes/soroban-validation.pip
     },
     StellarService,
     StellarTransactionService,
-    SorobanValidationPipe,
   ],
-  exports: [StellarService, StellarTransactionService, HorizonCircuitBreakerService, SorobanValidationPipe],
+  exports: [StellarService, StellarTransactionService, HorizonCircuitBreakerService],
 })
 export class StellarModule {}
