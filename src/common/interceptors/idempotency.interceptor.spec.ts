@@ -65,7 +65,7 @@ describe('IdempotencyInterceptor', () => {
     } as unknown as ExecutionContext;
 
     const callHandler: CallHandler = {
-      handle: () => of({ id: 'new-123' }),
+      handle: vi.fn().mockReturnValue(of({ id: 'new-123' })),
     };
 
     const result = await lastValueFrom(await interceptor.intercept(context, callHandler));
