@@ -66,6 +66,19 @@ export class HealthController {
     });
   }
 
+  @Get('database')
+  @ApiOperation({ summary: 'Database connectivity check' })
+  @ApiResponse({ status: 200, description: 'Database is reachable' })
+  @ApiResponse({ status: 503, description: 'Database is unreachable' })
+  async getDatabase(@Res() res: Response) {
+    const database = unwrap(await this.dbIndicator.check('database'), 'database');
+
+    const isUp = database.status === 'up';
+    const statusCode = isUp ? HttpStatus.OK : HttpStatus.SERVICE_UNAVAILABLE;
+
+    return res.status(statusCode).json(database);
+  }
+
   @Get()
   @ApiOperation({ summary: 'Application health check' })
   @ApiResponse({ status: 200, description: 'Application is healthy' })

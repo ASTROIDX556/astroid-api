@@ -3,12 +3,14 @@ import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { ConfigService } from '@nestjs/config';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { LoggerModule } from 'nestjs-pino';
+import { Redis } from 'ioredis';
 
 import { AppConfigModule } from './config';
-import { QueueConfig } from './config/queue.config';
+import { createThrottlerOptions, ThrottlerConfig } from './config/throttler.config';
 import { DatabaseModule } from './database/database.module';
 import { EventsModule } from './events/events.module';
 import { LocksModule } from './common/locks/locks.module';
+import { REDIS_CLIENT } from './common/locks/locks.constants';
 import { EncryptionModule } from './common/encryption/encryption.module';
 import { RequestIdMiddleware } from './middleware/request-id.middleware';
 import { REQUEST_ID_HEADER } from './common/constants/headers';
@@ -46,6 +48,7 @@ import { DeadLetterModule } from './modules/dead-letter/dead-letter.module';
 import { AgentTraceInterceptor } from './common/interceptors/agent-trace.interceptor';
 import { RequestContextInterceptor } from './common/interceptors/request-context.interceptor';
 import { AuditLogInterceptor } from './common/interceptors/audit-log.interceptor';
+import { RedisThrottlerStorage } from './common/throttler/redis-throttler.storage';
 
 /**
  * Root application module. Wires the global infrastructure (config, logging,
@@ -55,7 +58,7 @@ import { AuditLogInterceptor } from './common/interceptors/audit-log.interceptor
  *   - JwtAuthGuard      : authentication on all routes except @Public()
  *   - RolesGuard        : RBAC on routes decorated with @Roles()
  *   - ScopesGuard       : Fine-grained permission scopes for API keys & agents
- *   - ThrottlerGuard    : per-organization / per-IP rate limiting
+ *   - ThrottlerGuard    : per-organization / per-IP rate limiting, shared via Redis
  *   - ResponseInterceptor: wraps every result in the success envelope
  *   - AuditLogInterceptor: persists masked mutation requests to the audit trail
  *   - AllExceptionsFilter: converts every error into the error envelope
@@ -83,20 +86,20 @@ import { AuditLogInterceptor } from './common/interceptors/audit-log.interceptor
             : { target: 'pino-pretty', options: { singleLine: true } },
       },
     }),
-    // Two rate-limit tiers, both driven by THROTTLE_* env vars. Every route is
-    // subject to both named throttlers, but AstroidThrottlerGuard enforces only
-    // the one matching the route's @ThrottleTierDecorator tier ('api' default,
-    // 'auth' for the sensitive auth endpoints).
+    // Two rate-limit tiers, both driven by THROTTLE_* env vars (see
+    // config/throttler.config.ts). Every route is subject to both named
+    // throttlers, but AstroidThrottlerGuard enforces only the one matching the
+    // route's @ThrottleTierDecorator tier ('api' default, 'auth' for the
+    // sensitive auth endpoints). Counters live in Redis so every replica behind
+    // the load balancer enforces the same budget.
     ThrottlerModule.forRootAsync({
-      inject: [ConfigService],
-      useFactory: (config: ConfigService) => {
-        const { throttle } = config.getOrThrow<QueueConfig>('queue');
-        const ttl = throttle.ttl * 1000; // seconds → milliseconds
-        return [
-          { name: 'api', ttl, limit: throttle.apiLimit },
-          { name: 'auth', ttl, limit: throttle.authLimit },
-        ];
-      },
+      imports: [LocksModule],
+      inject: [ConfigService, REDIS_CLIENT],
+      useFactory: (config: ConfigService, redis: Redis) =>
+        createThrottlerOptions(
+          config.getOrThrow<ThrottlerConfig>('throttler'),
+          new RedisThrottlerStorage(redis),
+        ),
     }),
 
     DatabaseModule,
