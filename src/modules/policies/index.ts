@@ -4,3 +4,5 @@ export * from './policy.service';
 export * from './policy.module';
 export * from './policy-override-expired.event';
 export * from './services/policy-override-cleanup.service';
+export * from './guards/agent-policy.guard';
+export * from './decorators/agent-policy.decorator';

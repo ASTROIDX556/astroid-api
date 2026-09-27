@@ -22,6 +22,7 @@ import { AstroidThrottlerGuard } from './common/guards/throttler.guard';
 import { ResponseInterceptor } from './common/interceptors/response.interceptor';
 import { AuditInterceptor } from './common/interceptors/audit.interceptor';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
+import { AgentPolicyGuard } from './modules/policies/guards/agent-policy.guard';
 
 import { AuthModule } from './modules/auth/auth.module';
 import { OrganizationModule } from './modules/organizations/organization.module';
@@ -135,6 +136,7 @@ import { RedisThrottlerStorage } from './common/throttler/redis-throttler.storag
     { provide: APP_GUARD, useClass: RolesGuard },
     { provide: APP_GUARD, useClass: ScopesGuard },
     { provide: APP_GUARD, useClass: AstroidThrottlerGuard },
+    AgentPolicyGuard,
     { provide: APP_INTERCEPTOR, useClass: RequestContextInterceptor },
     { provide: APP_INTERCEPTOR, useClass: AgentTraceInterceptor },
     { provide: APP_INTERCEPTOR, useClass: AuditLogInterceptor },

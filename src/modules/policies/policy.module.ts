@@ -4,6 +4,7 @@ import { PolicyService } from './policy.service';
 import { PolicyRepository } from './policy.repository';
 import { PolicyEngine } from './policy.engine';
 import { PolicyOverrideCleanupService } from './services/policy-override-cleanup.service';
+import { AgentPolicyGuard } from './guards/agent-policy.guard';
 
 /**
  * Policy module. Exports the service + engine so the transactions module can
@@ -11,7 +12,7 @@ import { PolicyOverrideCleanupService } from './services/policy-override-cleanup
  */
 @Module({
   controllers: [PolicyController],
-  providers: [PolicyService, PolicyRepository, PolicyEngine, PolicyOverrideCleanupService],
-  exports: [PolicyService, PolicyEngine, PolicyOverrideCleanupService],
+  providers: [PolicyService, PolicyRepository, PolicyEngine, PolicyOverrideCleanupService, AgentPolicyGuard],
+  exports: [PolicyService, PolicyEngine, PolicyOverrideCleanupService, AgentPolicyGuard],
 })
 export class PolicyModule {}
