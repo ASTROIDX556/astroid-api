@@ -48,10 +48,13 @@ jobs:
         run: npm ci
 
       - name: Verify migrations and schema syntax
-        run: bash scripts/verify-migrations.sh
+        run: |
+          chmod +x scripts/verify-migrations.sh
+          bash scripts/verify-migrations.sh
         env:
           DATABASE_URL: postgresql://postgres:password@localhost:5432/astroid_test?schema=public
           SHADOW_DATABASE_URL: postgresql://postgres:password@localhost:5432/astroid_shadow?schema=public
+          CI: "true"
 
       - name: Run typecheck
         run: npm run typecheck
