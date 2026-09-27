@@ -28,9 +28,31 @@ import { WorkerMetricsService } from '../../modules/metrics/worker-metrics.servi
  * This processor mirrors workers/webhook.worker.ts and is registered as an
  * alias to satisfy the expected import path `src/modules/webhooks/webhooks.processor.ts`.
  */
+import { OnModuleDestroy } from '@nestjs/common';
+
 @Processor(Queues.Webhooks)
-export class WebhooksProcessor extends WorkerHost {
+export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
   private readonly logger = new Logger(WebhooksProcessor.name);
+
+  async onModuleDestroy(): Promise<void> {
+    if (this.worker) {
+      await this.worker.close();
+    }
+  }
+
+  async onApplicationBootstrap(): Promise<void> {
+    if (this.worker) {
+      this.worker.on('failed', (job, err) => {
+        this.logger.error(`Job ${job?.id} failed: ${err.message}`);
+      });
+      this.worker.on('error', (err) => {
+        this.logger.error(`Worker error: ${err.message}`);
+      });
+      this.worker.on('stalled', (jobId) => {
+        this.logger.warn(`Job ${jobId} stalled`);
+      });
+    }
+  }
   private static readonly NON_TRANSIENT_STATUSES = new Set([400, 401, 403, 404, 422]);
 
   constructor(

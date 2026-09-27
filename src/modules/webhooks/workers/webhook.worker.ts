@@ -19,9 +19,31 @@ import { PrismaService } from '../../../database/prisma.service';
  * Jitter is applied via a custom backoffStrategy configured on the BullMQ
  * queue registration (see webhook.module.ts).
  */
+import { OnModuleDestroy } from '@nestjs/common';
+
 @Processor(Queues.Webhooks)
-export class WebhookWorker extends WorkerHost {
+export class WebhookWorker extends WorkerHost implements OnModuleDestroy {
   private readonly logger = new Logger(WebhookWorker.name);
+
+  async onModuleDestroy(): Promise<void> {
+    if (this.worker) {
+      await this.worker.close();
+    }
+  }
+
+  async onApplicationBootstrap(): Promise<void> {
+    if (this.worker) {
+      this.worker.on('failed', (job, err) => {
+        this.logger.error(`Job ${job?.id} failed: ${err.message}`);
+      });
+      this.worker.on('error', (err) => {
+        this.logger.error(`Worker error: ${err.message}`);
+      });
+      this.worker.on('stalled', (jobId) => {
+        this.logger.warn(`Job ${jobId} stalled`);
+      });
+    }
+  }
 
   /**
    * HTTP status codes that indicate non-transient client errors.
