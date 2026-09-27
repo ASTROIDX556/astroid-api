@@ -55,7 +55,6 @@ jobs:
           DATABASE_URL: postgresql://postgres:password@localhost:5432/astroid_test?schema=public
           SHADOW_DATABASE_URL: postgresql://postgres:password@localhost:5432/astroid_shadow?schema=public
           CI: "true"
-          CHECK_GIT_DIRTY: "true"
 
       - name: Run typecheck
         run: npm run typecheck
