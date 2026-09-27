@@ -39,7 +39,7 @@ export class EventBusService {
     options: EmitOptions,
   ): Promise<void> {
     const envelope: DomainEventEnvelope<Record<string, unknown>> = {
-      name: name as DomainEventNameType,
+      name: name as unknown as DomainEventNameType,
       organizationId: options.organizationId,
       aggregateType: options.aggregateType,
       aggregateId: options.aggregateId,

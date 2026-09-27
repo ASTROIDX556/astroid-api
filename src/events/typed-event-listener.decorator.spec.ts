@@ -1,7 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { TypedOnEvent } from './typed-event-listener.decorator';
 import { OnEvent } from '@nestjs/event-emitter';
-import { DomainEventName } from './event-names';
 
 vi.mock('@nestjs/event-emitter', () => ({
   OnEvent: vi.fn(),
@@ -13,27 +12,27 @@ describe('TypedOnEvent decorator', () => {
   });
 
   it('should call OnEvent with the correct event name', () => {
-    TypedOnEvent(DomainEventName.WalletCreated);
-    expect(OnEvent).toHaveBeenCalledWith(DomainEventName.WalletCreated);
+    TypedOnEvent('wallet.created');
+    expect(OnEvent).toHaveBeenCalledWith('wallet.created');
   });
 
   it('should call OnEvent with agent registered event', () => {
-    TypedOnEvent(DomainEventName.AgentRegistered);
-    expect(OnEvent).toHaveBeenCalledWith(DomainEventName.AgentRegistered);
+    TypedOnEvent('agent.registered');
+    expect(OnEvent).toHaveBeenCalledWith('agent.registered');
   });
 
   it('should call OnEvent with policy evaluated event', () => {
-    TypedOnEvent(DomainEventName.PolicyEvaluated);
-    expect(OnEvent).toHaveBeenCalledWith(DomainEventName.PolicyEvaluated);
+    TypedOnEvent('policy.evaluated');
+    expect(OnEvent).toHaveBeenCalledWith('policy.evaluated');
   });
 
   it('should return a decorator function', () => {
-    const decorator = TypedOnEvent(DomainEventName.WalletCreated);
+    const decorator = TypedOnEvent('wallet.created');
     expect(typeof decorator).toBe('function');
   });
 
   it('should be usable as a method decorator', () => {
-    const decorator = TypedOnEvent(DomainEventName.WalletCreated);
+    const decorator = TypedOnEvent('wallet.created');
     const target = {};
     const propertyKey = 'handleWalletCreated';
     const descriptor = {
@@ -42,6 +41,6 @@ describe('TypedOnEvent decorator', () => {
 
     decorator(target, propertyKey, descriptor);
 
-    expect(OnEvent).toHaveBeenCalledWith(DomainEventName.WalletCreated);
+    expect(OnEvent).toHaveBeenCalledWith('wallet.created');
   });
 });

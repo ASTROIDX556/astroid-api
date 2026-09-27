@@ -1,7 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { TypedEventEmitter, DomainEventMap } from './typed-event-emitter.service';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { DomainEventName } from './event-names';
 
 describe('TypedEventEmitter', () => {
   let typedEmitter: TypedEventEmitter;
@@ -15,43 +14,43 @@ describe('TypedEventEmitter', () => {
   describe('emit', () => {
     it('emits typed event with correct payload', () => {
       const handler = vi.fn();
-      eventEmitter.on(DomainEventName.WalletCreated, handler);
+      eventEmitter.on('wallet.created', handler);
 
-      const payload: DomainEventMap[typeof DomainEventName.WalletCreated] = {
+      const payload: DomainEventMap['wallet.created'] = {
         walletId: 'wallet-123',
         stellarAddress: 'GABC...',
         walletType: 'standard',
       };
 
-      const result = typedEmitter.emit(DomainEventName.WalletCreated, payload);
+      const result = typedEmitter.emit('wallet.created', payload);
 
       expect(result).toBe(true);
       expect(handler).toHaveBeenCalledWith(payload);
     });
 
     it('returns false when no listeners are registered', () => {
-      const payload: DomainEventMap[typeof DomainEventName.WalletCreated] = {
+      const payload: DomainEventMap['wallet.created'] = {
         walletId: 'wallet-123',
         stellarAddress: 'GABC...',
         walletType: 'standard',
       };
 
-      const result = typedEmitter.emit(DomainEventName.WalletCreated, payload);
+      const result = typedEmitter.emit('wallet.created', payload);
 
       expect(result).toBe(false);
     });
 
     it('enforces type safety at compile time', () => {
-      const payload: DomainEventMap[typeof DomainEventName.AgentRegistered] = {
+      const payload: DomainEventMap['agent.registered'] = {
         agentId: 'agent-123',
         name: 'Test Agent',
         role: 'worker',
       };
 
       const handler = vi.fn();
-      eventEmitter.on(DomainEventName.AgentRegistered, handler);
+      eventEmitter.on('agent.registered', handler);
 
-      typedEmitter.emit(DomainEventName.AgentRegistered, payload);
+      typedEmitter.emit('agent.registered', payload);
 
       expect(handler).toHaveBeenCalledWith(payload);
     });
@@ -60,28 +59,28 @@ describe('TypedEventEmitter', () => {
   describe('on', () => {
     it('registers typed event listener', () => {
       const handler = vi.fn();
-      const payload: DomainEventMap[typeof DomainEventName.WalletCreated] = {
+      const payload: DomainEventMap['wallet.created'] = {
         walletId: 'wallet-123',
         stellarAddress: 'GABC...',
         walletType: 'standard',
       };
 
-      typedEmitter.on(DomainEventName.WalletCreated, handler);
-      eventEmitter.emit(DomainEventName.WalletCreated, payload);
+      typedEmitter.on('wallet.created', handler);
+      eventEmitter.emit('wallet.created', payload);
 
       expect(handler).toHaveBeenCalledWith(payload);
     });
 
     it('supports async handlers', async () => {
       const handler = vi.fn().mockResolvedValue(undefined);
-      const payload: DomainEventMap[typeof DomainEventName.WalletCreated] = {
+      const payload: DomainEventMap['wallet.created'] = {
         walletId: 'wallet-123',
         stellarAddress: 'GABC...',
         walletType: 'standard',
       };
 
-      typedEmitter.on(DomainEventName.WalletCreated, handler);
-      eventEmitter.emit(DomainEventName.WalletCreated, payload);
+      typedEmitter.on('wallet.created', handler);
+      eventEmitter.emit('wallet.created', payload);
 
       await expect(handler()).resolves.toBeUndefined();
       expect(handler).toHaveBeenCalledWith(payload);
@@ -91,15 +90,15 @@ describe('TypedEventEmitter', () => {
   describe('once', () => {
     it('registers one-time typed event listener', () => {
       const handler = vi.fn();
-      const payload: DomainEventMap[typeof DomainEventName.WalletCreated] = {
+      const payload: DomainEventMap['wallet.created'] = {
         walletId: 'wallet-123',
         stellarAddress: 'GABC...',
         walletType: 'standard',
       };
 
-      typedEmitter.once(DomainEventName.WalletCreated, handler);
-      eventEmitter.emit(DomainEventName.WalletCreated, payload);
-      eventEmitter.emit(DomainEventName.WalletCreated, payload);
+      typedEmitter.once('wallet.created', handler);
+      eventEmitter.emit('wallet.created', payload);
+      eventEmitter.emit('wallet.created', payload);
 
       expect(handler).toHaveBeenCalledTimes(1);
       expect(handler).toHaveBeenCalledWith(payload);
@@ -109,18 +108,18 @@ describe('TypedEventEmitter', () => {
   describe('off', () => {
     it('removes specific typed event listener', () => {
       const handler = vi.fn();
-      const payload: DomainEventMap[typeof DomainEventName.WalletCreated] = {
+      const payload: DomainEventMap['wallet.created'] = {
         walletId: 'wallet-123',
         stellarAddress: 'GABC...',
         walletType: 'standard',
       };
 
-      typedEmitter.on(DomainEventName.WalletCreated, handler);
-      eventEmitter.emit(DomainEventName.WalletCreated, payload);
+      typedEmitter.on('wallet.created', handler);
+      eventEmitter.emit('wallet.created', payload);
       expect(handler).toHaveBeenCalledTimes(1);
 
-      typedEmitter.off(DomainEventName.WalletCreated, handler);
-      eventEmitter.emit(DomainEventName.WalletCreated, payload);
+      typedEmitter.off('wallet.created', handler);
+      eventEmitter.emit('wallet.created', payload);
       expect(handler).toHaveBeenCalledTimes(1);
     });
   });
@@ -129,20 +128,20 @@ describe('TypedEventEmitter', () => {
     it('removes all listeners for specific event', () => {
       const handler1 = vi.fn();
       const handler2 = vi.fn();
-      const payload: DomainEventMap[typeof DomainEventName.WalletCreated] = {
+      const payload: DomainEventMap['wallet.created'] = {
         walletId: 'wallet-123',
         stellarAddress: 'GABC...',
         walletType: 'standard',
       };
 
-      typedEmitter.on(DomainEventName.WalletCreated, handler1);
-      typedEmitter.on(DomainEventName.WalletCreated, handler2);
-      eventEmitter.emit(DomainEventName.WalletCreated, payload);
+      typedEmitter.on('wallet.created', handler1);
+      typedEmitter.on('wallet.created', handler2);
+      eventEmitter.emit('wallet.created', payload);
       expect(handler1).toHaveBeenCalledTimes(1);
       expect(handler2).toHaveBeenCalledTimes(1);
 
-      typedEmitter.removeAllListeners(DomainEventName.WalletCreated);
-      eventEmitter.emit(DomainEventName.WalletCreated, payload);
+      typedEmitter.removeAllListeners('wallet.created');
+      eventEmitter.emit('wallet.created', payload);
       expect(handler1).toHaveBeenCalledTimes(1);
       expect(handler2).toHaveBeenCalledTimes(1);
     });
@@ -150,27 +149,27 @@ describe('TypedEventEmitter', () => {
     it('removes all listeners when no event specified', () => {
       const handler1 = vi.fn();
       const handler2 = vi.fn();
-      const payload1: DomainEventMap[typeof DomainEventName.WalletCreated] = {
+      const payload1: DomainEventMap['wallet.created'] = {
         walletId: 'wallet-123',
         stellarAddress: 'GABC...',
         walletType: 'standard',
       };
-      const payload2: DomainEventMap[typeof DomainEventName.AgentRegistered] = {
+      const payload2: DomainEventMap['agent.registered'] = {
         agentId: 'agent-123',
         name: 'Test Agent',
         role: 'worker',
       };
 
-      typedEmitter.on(DomainEventName.WalletCreated, handler1);
-      typedEmitter.on(DomainEventName.AgentRegistered, handler2);
-      eventEmitter.emit(DomainEventName.WalletCreated, payload1);
-      eventEmitter.emit(DomainEventName.AgentRegistered, payload2);
+      typedEmitter.on('wallet.created', handler1);
+      typedEmitter.on('agent.registered', handler2);
+      eventEmitter.emit('wallet.created', payload1);
+      eventEmitter.emit('agent.registered', payload2);
       expect(handler1).toHaveBeenCalledTimes(1);
       expect(handler2).toHaveBeenCalledTimes(1);
 
       typedEmitter.removeAllListeners();
-      eventEmitter.emit(DomainEventName.WalletCreated, payload1);
-      eventEmitter.emit(DomainEventName.AgentRegistered, payload2);
+      eventEmitter.emit('wallet.created', payload1);
+      eventEmitter.emit('agent.registered', payload2);
       expect(handler1).toHaveBeenCalledTimes(1);
       expect(handler2).toHaveBeenCalledTimes(1);
     });

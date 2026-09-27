@@ -6,7 +6,7 @@ import { DomainEventMap } from './typed-event-emitter.service';
  * Ensures compile-time type safety for event payload handlers.
  *
  * @example
- * @TypedOnEvent(DomainEventName.WalletCreated)
+ * @TypedOnEvent('wallet.created')
  * handleWalletCreated(payload: WalletCreatedPayload) {
  *   console.log('Wallet created:', payload.walletId);
  * }
@@ -14,5 +14,5 @@ import { DomainEventMap } from './typed-event-emitter.service';
 export function TypedOnEvent<K extends keyof DomainEventMap>(
   event: K,
 ): MethodDecorator {
-  return OnEvent(event as string);
+  return OnEvent(event);
 }

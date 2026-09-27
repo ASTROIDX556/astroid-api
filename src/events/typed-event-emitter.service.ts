@@ -1,28 +1,67 @@
 import { Injectable } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { DomainEventName } from './event-names';
-import {
-  WalletCreatedPayload,
-  AgentRegisteredPayload,
-  PolicyEvaluatedPayload,
-  BudgetExceededPayload,
-  ProposalApprovedPayload,
-  TransactionCompletedPayload,
-  RiskEvaluatedPayload,
-} from './domain-event.types';
+import * as PayloadTypes from './domain-event.types';
 
 /**
  * Type-safe mapping of event names to their payload types.
  * This ensures compile-time type safety when emitting and listening to events.
  */
 export interface DomainEventMap {
-  [DomainEventName.WalletCreated]: WalletCreatedPayload;
-  [DomainEventName.AgentRegistered]: AgentRegisteredPayload;
-  [DomainEventName.PolicyEvaluated]: PolicyEvaluatedPayload;
-  [DomainEventName.BudgetExceeded]: BudgetExceededPayload;
-  [DomainEventName.ProposalApproved]: ProposalApprovedPayload;
-  [DomainEventName.TransactionCompleted]: TransactionCompletedPayload;
-  [DomainEventName.RiskEvaluated]: RiskEvaluatedPayload;
+  // Organization / User
+  'organization.registered': PayloadTypes.OrganizationRegisteredPayload;
+  'organization.updated': PayloadTypes.OrganizationUpdatedPayload;
+  'user.invited': PayloadTypes.UserInvitedPayload;
+  'user.updated': PayloadTypes.UserUpdatedPayload;
+  'user.removed': PayloadTypes.UserRemovedPayload;
+
+  // Wallet
+  'wallet.created': PayloadTypes.WalletCreatedPayload;
+  'wallet.updated': PayloadTypes.WalletUpdatedPayload;
+  'wallet.imported': PayloadTypes.WalletImportedPayload;
+  'wallet.frozen': PayloadTypes.WalletFrozenPayload;
+  'wallet.archived': PayloadTypes.WalletArchivedPayload;
+  'wallet.balance_updated': PayloadTypes.WalletBalanceUpdatedPayload;
+
+  // Agent
+  'agent.registered': PayloadTypes.AgentRegisteredPayload;
+  'agent.updated': PayloadTypes.AgentUpdatedPayload;
+  'agent.suspended': PayloadTypes.AgentSuspendedPayload;
+  'agent.reactivated': PayloadTypes.AgentReactivatedPayload;
+  'agent.wallet_assigned': PayloadTypes.AgentWalletAssignedPayload;
+
+  // Policy
+  'policy.created': PayloadTypes.PolicyCreatedPayload;
+  'policy.updated': PayloadTypes.PolicyUpdatedPayload;
+  'policy.deleted': PayloadTypes.PolicyDeletedPayload;
+  'policy.evaluated': PayloadTypes.PolicyEvaluatedPayload;
+  'policy.violated': PayloadTypes.PolicyViolatedPayload;
+  'policy.override_expired': PayloadTypes.PolicyOverrideExpiredPayload;
+
+  // Budget
+  'budget.created': PayloadTypes.BudgetCreatedPayload;
+  'budget.updated': PayloadTypes.BudgetUpdatedPayload;
+  'budget.allocated': PayloadTypes.BudgetAllocatedPayload;
+  'budget.consumed': PayloadTypes.BudgetConsumedPayload;
+  'budget.exceeded': PayloadTypes.BudgetExceededPayload;
+  'budget.warning': PayloadTypes.BudgetWarningPayload;
+
+  // Proposal / Approval
+  'proposal.created': PayloadTypes.ProposalCreatedPayload;
+  'proposal.approved': PayloadTypes.ProposalApprovedPayload;
+  'proposal.rejected': PayloadTypes.ProposalRejectedPayload;
+  'proposal.expired': PayloadTypes.ProposalExpiredPayload;
+  'proposal.executed': PayloadTypes.ProposalExecutedPayload;
+
+  // Transaction
+  'transaction.created': PayloadTypes.TransactionCreatedPayload;
+  'transaction.submitted': PayloadTypes.TransactionSubmittedPayload;
+  'transaction.completed': PayloadTypes.TransactionCompletedPayload;
+  'transaction.failed': PayloadTypes.TransactionFailedPayload;
+  'transaction.cancelled': PayloadTypes.TransactionCancelledPayload;
+
+  // Risk
+  'risk.evaluated': PayloadTypes.RiskEvaluatedPayload;
+  'risk.alert': PayloadTypes.RiskAlertPayload;
 }
 
 /**
