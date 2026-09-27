@@ -80,6 +80,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  *   - HTTP method, route path and client IP
  *   - the request body with sensitive fields masked
  *   - the final response status code
+ *   - the time the handler took to complete, in milliseconds
  *
  * The audit write happens once the response has been fully sent (`finish`), so
  * the recorded status code is the real one — including error statuses set by
@@ -130,9 +131,19 @@ export class AuditLogInterceptor implements NestInterceptor {
       getClientIp(request.ip ?? '', request.headers['x-forwarded-for'] as string, trustProxy) ||
       undefined;
 
+    // Captured before the handler runs so the recorded duration covers the
+    // full execution time of the route.
+    const startedAt = Date.now();
+
     response.on('finish', () => {
       void this.persistAudit(
-        this.buildAuditData(request, context, { organizationId, userId, agentId, ipAddress }, response.statusCode),
+        this.buildAuditData(
+          request,
+          context,
+          { organizationId, userId, agentId, ipAddress },
+          response.statusCode,
+          Date.now() - startedAt,
+        ),
       );
     });
 
@@ -145,6 +156,7 @@ export class AuditLogInterceptor implements NestInterceptor {
     context: ExecutionContext,
     identity: { organizationId: string; userId: string | null; agentId?: string; ipAddress?: string },
     statusCode: number,
+    durationMs: number,
   ): CreateAuditLogData {
     const body = request.body;
     const maskedBody = body && typeof body === 'object' ? maskSensitiveData(body) : undefined;
@@ -156,6 +168,7 @@ export class AuditLogInterceptor implements NestInterceptor {
       // (the schema has no dedicated agent column).
       ...(identity.agentId ? { agentId: identity.agentId } : {}),
       statusCode,
+      durationMs,
     };
 
     return {

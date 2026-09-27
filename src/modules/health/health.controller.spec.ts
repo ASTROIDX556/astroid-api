@@ -74,6 +74,54 @@ describe('HealthController', () => {
     expect(response.timestamp).toBeDefined();
   });
 
+  describe('GET /health/database', () => {
+    it('returns 200 with status and latency when the database answers', async () => {
+      await controller.getDatabase(res as Response);
+
+      expect(dbHealth.check).toHaveBeenCalledWith('database');
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'up', latencyMs: 5, timestamp: expect.any(String) }),
+      );
+    });
+
+    it('returns 503 with the failure detail when the probe fails', async () => {
+      dbHealth.check.mockResolvedValue(
+        terminus({ status: 'down', error: 'PrismaClientInitializationError', message: 'timeout' }),
+      );
+
+      await controller.getDatabase(res as Response);
+
+      expect(res.status).toHaveBeenCalledWith(503);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'down', error: 'timeout' }),
+      );
+    });
+
+    it('returns 503 when the indicator produces no result at all', async () => {
+      dbHealth.check.mockResolvedValue({});
+
+      await controller.getDatabase(res as Response);
+
+      expect(res.status).toHaveBeenCalledWith(503);
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ status: 'down' }));
+    });
+
+    it('reports only the database, so a broken Redis cannot mask a DB outage', async () => {
+      dbHealth.check.mockResolvedValue(
+        terminus({ status: 'down', message: 'connection pool exhausted' }),
+      );
+      redisHealth.checkHealth.mockResolvedValue({ status: 'up', timestamp: 'now' });
+
+      await controller.getDatabase(res as Response);
+
+      expect(redisHealth.checkHealth).not.toHaveBeenCalled();
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'down', error: 'connection pool exhausted' }),
+      );
+    });
+  });
+
   it('returns 200 OK when all services are healthy', async () => {
     await controller.getReadiness(res as Response);
 
