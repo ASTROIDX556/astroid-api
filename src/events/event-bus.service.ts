@@ -1,8 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { EventEmitter2 } from '@nestjs/event-emitter';
 import { PrismaService } from '../database/prisma.service';
 import { DomainEventNameType } from './event-names';
 import { DomainEventEnvelope } from './domain-event.types';
+import { TypedEventEmitter, DomainEventMap } from './typed-event-emitter.service';
 
 export interface EmitOptions {
   organizationId?: string;
@@ -18,8 +18,8 @@ export interface EmitOptions {
  * Central publisher for domain events. Every emit:
  *   1. persists an immutable row to the append-only `domain_events` ledger
  *      (the event-sourcing / immutable event ledger enhancement), and
- *   2. broadcasts in-process via EventEmitter2 so audit, notifications,
- *      analytics and webhook subscribers can react independently.
+ *   2. broadcasts in-process via TypedEventEmitter for type-safe event dispatch
+ *      so audit, notifications, analytics and webhook subscribers can react independently.
  *
  * A failure in a subscriber must never roll back the originating operation, so
  * broadcasting is fire-and-forget and ledger writes are best-effort logged.
@@ -29,23 +29,23 @@ export class EventBusService {
   private readonly logger = new Logger(EventBusService.name);
 
   constructor(
-    private readonly emitter: EventEmitter2,
     private readonly prisma: PrismaService,
+    private readonly typedEmitter: TypedEventEmitter,
   ) {}
 
-  async emit<TPayload extends Record<string, unknown>>(
-    name: DomainEventNameType,
-    payload: TPayload,
+  async emit<K extends keyof DomainEventMap>(
+    name: K,
+    payload: DomainEventMap[K],
     options: EmitOptions,
   ): Promise<void> {
-    const envelope: DomainEventEnvelope<TPayload> = {
-      name,
+    const envelope: DomainEventEnvelope<Record<string, unknown>> = {
+      name: name as unknown as DomainEventNameType,
       organizationId: options.organizationId,
       aggregateType: options.aggregateType,
       aggregateId: options.aggregateId,
       actorId: options.actorId,
       correlationId: options.correlationId,
-      payload,
+      payload: payload as unknown as Record<string, unknown>,
       occurredAt: new Date(),
     };
 
@@ -53,8 +53,9 @@ export class EventBusService {
       await this.persist(envelope);
     }
 
-    // Broadcast synchronously in-process; subscribers isolate their own errors.
-    this.emitter.emit(name, envelope);
+    // Broadcast synchronously in-process using typed emitter for type safety.
+    // Subscribers isolate their own errors.
+    this.typedEmitter.emit(name, payload);
   }
 
   private async persist(envelope: DomainEventEnvelope): Promise<void> {
