@@ -7,7 +7,10 @@ describe('Worker Graceful Shutdown & Lifecycle', () => {
     const worker = new WebhookWorker();
     const closeMock = vi.fn().mockResolvedValue(undefined);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (worker as any).worker = { close: closeMock };
+    Object.defineProperty(worker, 'worker', {
+      value: { close: closeMock },
+      configurable: true,
+    });
 
     await worker.onModuleDestroy();
     expect(closeMock).toHaveBeenCalledTimes(1);
@@ -17,7 +20,10 @@ describe('Worker Graceful Shutdown & Lifecycle', () => {
     const worker = new TransactionWorker();
     const closeMock = vi.fn().mockResolvedValue(undefined);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (worker as any).worker = { close: closeMock };
+    Object.defineProperty(worker, 'worker', {
+      value: { close: closeMock },
+      configurable: true,
+    });
 
     await worker.onModuleDestroy();
     expect(closeMock).toHaveBeenCalledTimes(1);
@@ -27,7 +33,10 @@ describe('Worker Graceful Shutdown & Lifecycle', () => {
     const worker = new WebhookWorker();
     const onMock = vi.fn();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (worker as any).worker = { on: onMock };
+    Object.defineProperty(worker, 'worker', {
+      value: { on: onMock },
+      configurable: true,
+    });
 
     await worker.onApplicationBootstrap();
     expect(onMock).toHaveBeenCalledWith('failed', expect.any(Function));
