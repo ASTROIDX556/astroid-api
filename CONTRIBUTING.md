@@ -12,6 +12,11 @@ cd astroid-api
 npm install
 cp .env.example .env     # fill in your database and API keys
 npx prisma generate      # generate the Prisma client
+npx prisma migrate dev    # run local migrations
+npx prisma migrate deploy # deploy migrations
+npx prisma db push        # sync database schema
+npx prisma db seed        # seed initial development data
+npx prisma studio         # inspect database via GUI
 npm run start:dev         # start the NestJS dev server
 npm run typecheck         # strict TypeScript checking
 npm run test              # run the vitest suites
