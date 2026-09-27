@@ -1,8 +1,8 @@
 import { createParamDecorator, ExecutionContext } from '@nestjs/common';
-import { ZodSchema } from 'zod';
+import { ZodTypeAny } from 'zod';
 import { ZodValidationPipe } from '../pipes/zod-validation.pipe';
 
-export function ZodBody(schema: ZodSchema<any>) {
+export function ZodBody(schema: ZodTypeAny) {
   return createParamDecorator((_data: unknown, ctx: ExecutionContext) => {
     const request = ctx.switchToHttp().getRequest();
     const pipe = new ZodValidationPipe(schema);
