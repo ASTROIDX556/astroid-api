@@ -1,5 +1,5 @@
 import { ArgumentMetadata, Injectable, PipeTransform } from '@nestjs/common';
-import { ZodType, ZodError } from 'zod';
+import { ZodType } from 'zod';
 import { ValidationException } from '../exceptions/domain.exception';
 import { formatZodError } from '../validators/zod-error';
 

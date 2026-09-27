@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { StellarNetwork, WalletType } from '@prisma/client';
+import { StellarNetwork, WalletType, WalletStatus } from '@prisma/client';
 import { stellarAddressSchema } from '../../common/validators/stellar-address.schema';
 
 /**

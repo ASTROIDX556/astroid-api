@@ -179,7 +179,7 @@ export class PolicyService {
           action: 'POLICY_EVALUATED',
           entity: 'policy',
           entityId: result.matchedPolicyId,
-          oldValue: null,
+          oldValue: null as Prisma.InputJsonValue,
           newValue: {
             passed: result.passed,
             requiresApproval: result.requiresApproval,
