@@ -1,5 +1,4 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { EventEmitter2 } from '@nestjs/event-emitter';
 import { PrismaService } from '../database/prisma.service';
 import { DomainEventNameType } from './event-names';
 import { DomainEventEnvelope } from './domain-event.types';
@@ -30,7 +29,6 @@ export class EventBusService {
   private readonly logger = new Logger(EventBusService.name);
 
   constructor(
-    private readonly emitter: EventEmitter2,
     private readonly prisma: PrismaService,
     private readonly typedEmitter: TypedEventEmitter,
   ) {}
@@ -40,14 +38,14 @@ export class EventBusService {
     payload: DomainEventMap[K],
     options: EmitOptions,
   ): Promise<void> {
-    const envelope: DomainEventEnvelope<DomainEventMap[K]> = {
+    const envelope: DomainEventEnvelope<Record<string, unknown>> = {
       name: name as DomainEventNameType,
       organizationId: options.organizationId,
       aggregateType: options.aggregateType,
       aggregateId: options.aggregateId,
       actorId: options.actorId,
       correlationId: options.correlationId,
-      payload,
+      payload: payload as unknown as Record<string, unknown>,
       occurredAt: new Date(),
     };
 
