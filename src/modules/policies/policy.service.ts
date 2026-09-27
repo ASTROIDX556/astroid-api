@@ -179,13 +179,13 @@ export class PolicyService {
           action: 'POLICY_EVALUATED',
           entity: 'policy',
           entityId: result.matchedPolicyId,
-          oldValue: null as Prisma.InputJsonValue,
+          oldValue: null as unknown as Prisma.InputJsonValue,
           newValue: {
             passed: result.passed,
             requiresApproval: result.requiresApproval,
             violations: result.violations,
             transactionIntent: intent,
-          } as Prisma.InputJsonValue,
+          } as unknown as Prisma.InputJsonValue,
         },
       }).catch((error) => {
         // Audit log failures should not block policy evaluation
