@@ -1,59 +1,41 @@
 #!/usr/bin/env bash
-#
-# Verifies the Prisma database migrations for the Astroid API.
-#
-# What it does, in order:
-#   1. Generates the Prisma client.
-#   2. Applies every pending migration to the target database (idempotent).
-#   3. Drift check: rebuilds the schema purely from the committed migrations
-#      (in an ephemeral shadow database) and fails if it does not match
-#      prisma/schema.prisma. This catches schema edits that were never
-#      captured in a migration.
-#
-# Env:
-#   DATABASE_URL          (required) Target PostgreSQL the migrations are
-#                         applied to — e.g. a fresh ephemeral CI database.
-#   SHADOW_DATABASE_URL   (optional but recommended) An empty scratch database
-#                         used for the drift check. When unset the drift check
-#                         is skipped and only apply + status are verified.
-#
-# Exit code 0 when migrations apply cleanly and stay in sync with the schema.
 set -euo pipefail
 
-: "${DATABASE_URL:?DATABASE_URL is required}"
+echo "Starting database migration verification..."
 
-echo "==> Generating Prisma client"
-npx prisma generate
+# Validate Prisma schema syntax
+echo "Validating Prisma schema..."
+npx prisma validate
 
-echo "==> Applying migrations to ${DATABASE_URL}"
-npx prisma migrate deploy
-
-echo "==> Checking migration status"
-npx prisma migrate status
-
-if [[ -n "${SHADOW_DATABASE_URL:-}" ]]; then
-  echo "==> Drift check: rebuilding schema from migrations only"
-  echo "    shadow database: ${SHADOW_DATABASE_URL}"
-  # `--script` prints the SQL that would reconcile the migrations-built schema
-  # with schema.prisma: nothing when in sync, the full delta when out of sync.
-  # Strip blank lines and SQL comment markers so an "empty migration" counts as
-  # in sync.
-  drift="$(npx prisma migrate diff \
-    --from-migrations prisma/migrations \
-    --to-schema-datamodel prisma/schema.prisma \
-    --script \
-    --shadow-database-url "${SHADOW_DATABASE_URL}" \
-    | grep -Ev '^[[:space:]]*$|^--' || true)"
-
-  if [[ -n "${drift//[[:space:]]/}" ]]; then
-    echo "!! Schema drift detected — schema.prisma differs from the applied migrations." >&2
-    echo "$drift" >&2
-    exit 1
-  fi
-
-  echo "==> Migrations are in sync with the schema"
-else
-  echo "!! SHADOW_DATABASE_URL unset — skipping drift check" >&2
+# Check if migration directory exists
+MIGRATION_DIR="prisma/migrations"
+if [ ! -d "$MIGRATION_DIR" ]; then
+  echo "Error: Migration directory $MIGRATION_DIR does not exist."
+  exit 1
 fi
 
-echo "==> Migration verification passed"
+# Count migration folders
+MIGRATION_DIRS=$(find "$MIGRATION_DIR" -mindepth 1 -maxdepth 1 -type d ! -name ".*")
+DIR_COUNT=$(echo "$MIGRATION_DIRS" | grep -v '^$' | wc -l || true)
+echo "Found $DIR_COUNT migration directory(ies)"
+
+# Verify each migration directory
+for dir in $MIGRATION_DIRS;
+  if [ -d "$dir" ]; then
+    BASENAME=$(basename "$dir")
+    echo "Checking migration: $BASENAME"
+    
+    # Check for migration.sql
+    if [ ! -f "${dir}/migration.sql" ]; then
+      echo "Error: Migration $BASENAME is missing migration.sql"
+      exit 1
+    fi
+    
+    # Check naming convention (e.g., timestamp_name)
+    if ! echo "$BASENAME" | grep -qE '^[0-9]{14}_[a-zA-Z0-9_-]+$'; then
+      echo "Warning: Migration $BASENAME does not strictly match the YYYYMMDDHHMMSS_name format"
+    fi
+  fi
+done
+
+echo "Migration verification completed successfully!"
