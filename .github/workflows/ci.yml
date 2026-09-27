@@ -39,7 +39,7 @@ jobs:
         run: npm ci
 
       - name: Verify migrations and schema syntax
-        run: npm run db:verify
+        run: bash scripts/verify-migrations.sh
         env:
           DATABASE_URL: postgresql://postgres:password@localhost:5432/astroid_test?schema=public
           SHADOW_DATABASE_URL: postgresql://postgres:password@localhost:5432/astroid_shadow?schema=public
