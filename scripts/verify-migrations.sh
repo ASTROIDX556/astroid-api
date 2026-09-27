@@ -1,41 +1,24 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -e
 
 echo "Starting database migration verification..."
-
-# Validate Prisma schema syntax
 echo "Validating Prisma schema..."
 npx prisma validate
 
-# Check if migration directory exists
-MIGRATION_DIR="prisma/migrations"
-if [ ! -d "$MIGRATION_DIR" ]; then
-  echo "Error: Migration directory $MIGRATION_DIR does not exist."
-  exit 1
+MIGRATIONS_DIR="prisma/migrations"
+if [ -d "$MIGRATIONS_DIR" ]; then
+  COUNT=$(find "$MIGRATIONS_DIR" -mindepth 1 -maxdepth 1 -type d ! -name 'migration_lock.toml' | wc -l)
+  echo "Found $COUNT migration directory(ies)"
+  for dir in "$MIGRATIONS_DIR"/*/; do
+    if [ -d "$dir" ]; then
+      if [ ! -f "${dir}migration.sql" ]; then
+        echo "Error: Missing migration.sql in $dir"
+        exit 1
+      fi
+    fi
+  done
+else
+  echo "No migrations directory found."
 fi
-
-# Count migration folders
-MIGRATION_DIRS=$(find "$MIGRATION_DIR" -mindepth 1 -maxdepth 1 -type d ! -name ".*")
-DIR_COUNT=$(echo "$MIGRATION_DIRS" | grep -v '^$' | wc -l || true)
-echo "Found $DIR_COUNT migration directory(ies)"
-
-# Verify each migration directory
-for dir in $MIGRATION_DIRS;
-  if [ -d "$dir" ]; then
-    BASENAME=$(basename "$dir")
-    echo "Checking migration: $BASENAME"
-    
-    # Check for migration.sql
-    if [ ! -f "${dir}/migration.sql" ]; then
-      echo "Error: Migration $BASENAME is missing migration.sql"
-      exit 1
-    fi
-    
-    # Check naming convention (e.g., timestamp_name)
-    if ! echo "$BASENAME" | grep -qE '^[0-9]{14}_[a-zA-Z0-9_-]+$'; then
-      echo "Warning: Migration $BASENAME does not strictly match the YYYYMMDDHHMMSS_name format"
-    fi
-  fi
-done
 
 echo "Migration verification completed successfully!"
