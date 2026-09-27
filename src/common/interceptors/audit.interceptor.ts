@@ -182,7 +182,7 @@ export class AuditInterceptor implements NestInterceptor {
         query: data.query,
         agentId: data.agentId,
         durationMs: data.durationMs,
-      },
+      } as object,
       ipAddress: data.ipAddress,
       device: data.userAgent,
       requestId: data.requestId,
