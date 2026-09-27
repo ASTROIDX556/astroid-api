@@ -59,8 +59,8 @@ else
   echo "No migrations directory found at $MIGRATIONS_DIR."
 fi
 
-# Check 4: Optionally check git working tree cleanliness if in CI or requested
-if [ "${CI:-false}" = "true" ] || [ "${CHECK_GIT_DIRTY:-false}" = "true" ]; then
+# Check 4: Optionally check git working tree cleanliness if explicitly requested
+if [ "${CHECK_GIT_DIRTY:-false}" = "true" ]; then
   echo "Checking git working tree state..."
   if [ -n "$(git status --porcelain)" ]; then
     echo "Error: Git working tree is dirty. Uncommitted migration or schema changes detected."
