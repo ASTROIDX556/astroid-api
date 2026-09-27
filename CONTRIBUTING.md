@@ -12,9 +12,15 @@ cd astroid-api
 npm install
 cp .env.example .env     # fill in your database and API keys
 npx prisma generate      # generate the Prisma client
+npx prisma migrate dev    # run local migrations
+npx prisma migrate deploy # deploy migrations
+npx prisma db push        # sync database schema
+npx prisma db seed        # seed initial development data
+npx prisma studio         # inspect database via GUI
 npm run start:dev         # start the NestJS dev server
 npm run typecheck         # strict TypeScript checking
 npm run test              # run the vitest suites
+npm run db:verify         # verify migration structure and drift-free state
 ```
 
 The backend is a **NestJS modular monolith** using TypeScript, Prisma,
@@ -33,9 +39,10 @@ its own microservice.
 ## Pull request checklist
 
 1. `npm run typecheck && npm run lint && npm run test` all pass.
-2. Database schema changes include a Prisma migration.
-3. New endpoints are documented with OpenAPI/Swagger decorators.
-4. Cross-repo contracts (response envelope, entity/enum names) still match `astroid-web` and `astroid-sdk`.
+2. Run `npm run db:verify` locally to verify migration structure, syntax validity, and drift-free state (`scripts/verify-migrations.sh`).
+3. Database schema changes include a valid Prisma migration folder containing `migration.sql`.
+4. New endpoints are documented with OpenAPI/Swagger decorators.
+5. Cross-repo contracts (response envelope, entity/enum names) still match `astroid-web` and `astroid-sdk`.
 
 ## Branch strategy
 
