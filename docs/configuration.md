@@ -87,6 +87,8 @@ are rejected:
 | `DATABASE_SLOW_QUERY_THRESHOLD_MS` | `1000` | Queries slower than this are logged as slow queries. |
 | `DATABASE_CONNECT_RETRY_ATTEMPTS` | `5` | Connection attempts before giving up on startup. |
 | `DATABASE_CONNECT_RETRY_DELAY_MS` | `1000` | Delay between connection retry attempts. |
+| `DATABASE_MIGRATION_CHECK_ENABLED` | `true` | Runs a migration status check during bootstrap before the app accepts traffic. |
+| `DATABASE_MIGRATION_CHECK_MODE` | `halt` | `halt` exits the process when migrations are pending/failed; `warn` logs and continues. |
 
 ### Redis
 
