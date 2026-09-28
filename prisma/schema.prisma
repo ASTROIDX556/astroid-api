@@ -202,6 +202,7 @@ model Organization {
   notifications Notification[]
   memoryRecords MemoryRecord[]
   domainEvents  DomainEvent[]
+  riskAssessments RiskAssessment[]
 
   @@index([status])
   @@index([createdAt])
@@ -764,4 +765,28 @@ model CleanupJobLog {
 
   @@index([jobName, createdAt])
   @@map("cleanup_job_logs")
+}
+
+// ---------------------------------------------------------------------------
+// Risk Assessment  (historical risk scoring for compliance and analytics)
+// ---------------------------------------------------------------------------
+
+model RiskAssessment {
+  id             String   @id @default(uuid(7))
+  organizationId String
+  transactionId  String   @unique
+  score          Int
+  band           RiskBand
+  factors        Json     @default("{}")
+  canAutoExecute Boolean  @default(true)
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@index([transactionId])
+  @@index([score])
+  @@index([band])
+  @@index([createdAt])
+  @@map("risk_assessments")
 }
