@@ -85,7 +85,9 @@ describe('ZodValidationPipe Integration', () => {
         expect(error).toBeInstanceOf(ValidationException);
         const exception = error as ValidationException;
         expect(exception.details).toBeDefined();
-        expect(exception.details.length).toBeGreaterThan(0);
+        const details = exception.details as Array<{ path: string; message: string }>;
+        expect(Array.isArray(details)).toBe(true);
+        expect(details.length).toBeGreaterThan(0);
       }
     });
 
@@ -109,7 +111,8 @@ describe('ZodValidationPipe Integration', () => {
       } catch (error) {
         expect(error).toBeInstanceOf(ValidationException);
         const exception = error as ValidationException;
-        expect(exception.details[0].message).toContain('Custom:');
+        const details = exception.details as Array<{ message: string }>;
+        expect(details[0].message).toContain('Custom:');
       }
     });
 
@@ -130,7 +133,8 @@ describe('ZodValidationPipe Integration', () => {
       } catch (error) {
         expect(error).toBeInstanceOf(ValidationException);
         const exception = error as ValidationException;
-        expect(exception.details[0].message).toBe('Name is required');
+        const details = exception.details as Array<{ message: string }>;
+        expect(details[0].message).toBe('Name is required');
       }
     });
   });

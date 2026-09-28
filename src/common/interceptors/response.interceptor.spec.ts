@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, beforeEach } from 'vitest';
 import { ResponseInterceptor } from './response.interceptor';
 import { ExecutionContext, CallHandler } from '@nestjs/common';
 import { of } from 'rxjs';
@@ -29,72 +29,57 @@ describe('ResponseInterceptor', () => {
   };
 
   describe('intercept', () => {
-    it('wraps successful responses in success envelope', (done) => {
+    it('wraps successful responses in success envelope', async () => {
       const context = createMockContext('test-request-id');
       const handler = createMockHandler({ data: 'test' });
 
-      interceptor.intercept(context, handler).subscribe({
-        next: (value) => {
-          expect(value).toEqual({
-            success: true,
-            data: { data: 'test' },
-            meta: {},
-            requestId: 'test-request-id',
-          });
-          done();
-        },
+      const result = await interceptor.intercept(context, handler).toPromise();
+      expect(result).toEqual({
+        success: true,
+        data: { data: 'test' },
+        meta: {},
+        requestId: 'test-request-id',
       });
     });
 
-    it('handles null data', (done) => {
+    it('handles null data', async () => {
       const context = createMockContext();
       const handler = createMockHandler(null);
 
-      interceptor.intercept(context, handler).subscribe({
-        next: (value) => {
-          expect(value).toEqual({
-            success: true,
-            data: null,
-            meta: {},
-            requestId: 'unknown',
-          });
-          done();
-        },
+      const result = await interceptor.intercept(context, handler).toPromise();
+      expect(result).toEqual({
+        success: true,
+        data: null,
+        meta: {},
+        requestId: 'unknown',
       });
     });
 
-    it('extracts items and meta from Paginated responses', (done) => {
+    it('extracts items and meta from Paginated responses', async () => {
       const paginated = new Paginated(
         [{ id: '1' }, { id: '2' }],
-        { total: 2, page: 1, limit: 10 },
+        { total: 2, page: 1, limit: 10, totalPages: 1, hasNext: false, hasPrev: false },
       );
 
       const context = createMockContext('test-request-id');
       const handler = createMockHandler(paginated);
 
-      interceptor.intercept(context, handler).subscribe({
-        next: (value) => {
-          expect(value).toEqual({
-            success: true,
-            data: [{ id: '1' }, { id: '2' }],
-            meta: { total: 2, page: 1, limit: 10 },
-            requestId: 'test-request-id',
-          });
-          done();
-        },
+      const result = await interceptor.intercept(context, handler).toPromise();
+      expect(result).toBeDefined();
+      expect(result).toEqual({
+        success: true,
+        data: [{ id: '1' }, { id: '2' }],
+        meta: { total: 2, page: 1, limit: 10, totalPages: 1, hasNext: false, hasPrev: false },
+        requestId: 'test-request-id',
       });
     });
 
-    it('uses unknown requestId when header is missing', (done) => {
+    it('uses unknown requestId when header is missing', async () => {
       const context = createMockContext();
       const handler = createMockHandler({ data: 'test' });
 
-      interceptor.intercept(context, handler).subscribe({
-        next: (value) => {
-          expect(value.requestId).toBe('unknown');
-          done();
-        },
-      });
+      const result = await interceptor.intercept(context, handler).toPromise();
+      expect(result.requestId).toBe('unknown');
     });
   });
 });

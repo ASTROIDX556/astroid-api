@@ -31,7 +31,7 @@ describe('RiskRepository', () => {
         createdAt: new Date(),
       };
 
-      vi.mocked(prisma.riskAssessment.create).mockResolvedValue(mockAssessment);
+      vi.mocked((prisma as any).riskAssessment.create).mockResolvedValue(mockAssessment);
 
       const result = await repository.createAssessmentRecord({
         organizationId: 'org-1',
@@ -42,7 +42,7 @@ describe('RiskRepository', () => {
         canAutoExecute: true,
       });
 
-      expect(prisma.riskAssessment.create).toHaveBeenCalledWith({
+      expect((prisma as any).riskAssessment.create).toHaveBeenCalledWith({
         data: {
           organizationId: 'org-1',
           transactionId: 'tx-1',
@@ -71,11 +71,11 @@ describe('RiskRepository', () => {
         },
       ];
 
-      vi.mocked(prisma.riskAssessment.findMany).mockResolvedValue(mockAssessments);
+      vi.mocked((prisma as any).riskAssessment.findMany).mockResolvedValue(mockAssessments);
 
       const result = await repository.findByOrganization('org-1', 100);
 
-      expect(prisma.riskAssessment.findMany).toHaveBeenCalledWith({
+      expect((prisma as any).riskAssessment.findMany).toHaveBeenCalledWith({
         where: { organizationId: 'org-1' },
         orderBy: { createdAt: 'desc' },
         take: 100,
@@ -97,11 +97,11 @@ describe('RiskRepository', () => {
         createdAt: new Date(),
       };
 
-      vi.mocked(prisma.riskAssessment.findUnique).mockResolvedValue(mockAssessment);
+      vi.mocked((prisma as any).riskAssessment.findUnique).mockResolvedValue(mockAssessment);
 
       const result = await repository.findByTransaction('tx-1');
 
-      expect(prisma.riskAssessment.findUnique).toHaveBeenCalledWith({
+      expect((prisma as any).riskAssessment.findUnique).toHaveBeenCalledWith({
         where: { transactionId: 'tx-1' },
       });
       expect(result).toEqual(mockAssessment);
@@ -143,11 +143,11 @@ describe('RiskRepository', () => {
         },
       ];
 
-      vi.mocked(prisma.riskAssessment.findMany).mockResolvedValue(mockAssessments);
+      vi.mocked((prisma as any).riskAssessment.findMany).mockResolvedValue(mockAssessments);
 
       const result = await repository.getStatistics('org-1', 30);
 
-      expect(prisma.riskAssessment.findMany).toHaveBeenCalledWith({
+      expect((prisma as any).riskAssessment.findMany).toHaveBeenCalledWith({
         where: {
           organizationId: 'org-1',
           createdAt: expect.any(Date),
@@ -163,7 +163,7 @@ describe('RiskRepository', () => {
     });
 
     it('handles empty results', async () => {
-      vi.mocked(prisma.riskAssessment.findMany).mockResolvedValue([]);
+      vi.mocked((prisma as any).riskAssessment.findMany).mockResolvedValue([]);
 
       const result = await repository.getStatistics('org-1', 30);
 
