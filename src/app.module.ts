@@ -1,12 +1,13 @@
 import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
 import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { ConfigService } from '@nestjs/config';
-import { ThrottlerModule } from '@nestjs/throttler';
+import { ThrottlerModule, ThrottlerStorage } from '@nestjs/throttler';
 import { LoggerModule } from 'nestjs-pino';
 import { Redis } from 'ioredis';
 
 import { AppConfigModule } from './config';
 import { createThrottlerOptions, ThrottlerConfig } from './config/throttler.config';
+import { RedisThrottlerStorage } from './common/throttler/redis-throttler.storage';
 import { DatabaseModule } from './database/database.module';
 import { EventsModule } from './events/events.module';
 import { LocksModule } from './common/locks/locks.module';
@@ -126,6 +127,13 @@ import { RedisThrottlerStorage } from './common/throttler/redis-throttler.storag
     StellarModule,
     AuditModule,
     AiModule,
+    ThrottlerModule.forRootAsync({
+      inject: [ConfigService, REDIS_CLIENT],
+      useFactory: (configService: ConfigService, redis: Redis) => ({
+        ...createThrottlerOptions(configService.get<ThrottlerConfig>('throttler', { windowSeconds: 60, apiLimit: 120, authLimit: 10 })),
+        storage: new RedisThrottlerStorage(redis),
+      }),
+    }),
     HealthModule,
     MetricsModule,
     DeadLetterModule,
