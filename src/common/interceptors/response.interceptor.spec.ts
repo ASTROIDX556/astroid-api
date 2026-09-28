@@ -34,6 +34,7 @@ describe('ResponseInterceptor', () => {
       const handler = createMockHandler({ data: 'test' });
 
       const result = await interceptor.intercept(context, handler).toPromise();
+      if (!result) throw new Error('Result should be defined');
       expect(result).toEqual({
         success: true,
         data: { data: 'test' },
@@ -47,6 +48,7 @@ describe('ResponseInterceptor', () => {
       const handler = createMockHandler(null);
 
       const result = await interceptor.intercept(context, handler).toPromise();
+      if (!result) throw new Error('Result should be defined');
       expect(result).toEqual({
         success: true,
         data: null,
@@ -66,6 +68,7 @@ describe('ResponseInterceptor', () => {
 
       const result = await interceptor.intercept(context, handler).toPromise();
       expect(result).toBeDefined();
+      if (!result) throw new Error('Result should be defined');
       expect(result).toEqual({
         success: true,
         data: [{ id: '1' }, { id: '2' }],
@@ -79,6 +82,7 @@ describe('ResponseInterceptor', () => {
       const handler = createMockHandler({ data: 'test' });
 
       const result = await interceptor.intercept(context, handler).toPromise();
+      if (!result) throw new Error('Result should be defined');
       expect(result.requestId).toBe('unknown');
     });
   });
