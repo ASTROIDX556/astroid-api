@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { ZodValidationPipe } from './zod-validation.pipe';
+import { ZodValidationPipe, ZodValidationException } from './zod-validation.pipe';
 import { z } from 'zod';
-import { ValidationException } from '../exceptions/domain.exception';
 
 describe('ZodValidationPipe Integration', () => {
   describe('validation scenarios', () => {
@@ -17,7 +16,7 @@ describe('ZodValidationPipe Integration', () => {
       expect(result).toEqual({ name: 'John', age: 30 });
     });
 
-    it('throws ValidationException for invalid data', () => {
+    it('throws ZodValidationException for invalid data', () => {
       const schema = z.object({
         name: z.string().min(1),
         age: z.number().int().positive(),
@@ -26,7 +25,7 @@ describe('ZodValidationPipe Integration', () => {
       const pipe = new ZodValidationPipe(schema);
 
       expect(() => pipe.transform({ name: '', age: -5 }, { type: 'body' })).toThrow(
-        ValidationException,
+        ZodValidationException,
       );
     });
 
@@ -80,10 +79,10 @@ describe('ZodValidationPipe Integration', () => {
 
       try {
         pipe.transform({ name: 'Jo', email: 'invalid' }, { type: 'body' });
-        expect.fail('Should have thrown ValidationException');
+        expect.fail('Should have thrown ZodValidationException');
       } catch (error) {
-        expect(error).toBeInstanceOf(ValidationException);
-        const exception = error as ValidationException;
+        expect(error).toBeInstanceOf(ZodValidationException);
+        const exception = error as ZodValidationException;
         expect(exception.details).toBeDefined();
         const details = exception.details as Array<{ path: string; message: string }>;
         expect(Array.isArray(details)).toBe(true);
@@ -107,10 +106,10 @@ describe('ZodValidationPipe Integration', () => {
 
       try {
         pipe.transform({ name: '' }, { type: 'body' });
-        expect.fail('Should have thrown ValidationException');
+        expect.fail('Should have thrown ZodValidationException');
       } catch (error) {
-        expect(error).toBeInstanceOf(ValidationException);
-        const exception = error as ValidationException;
+        expect(error).toBeInstanceOf(ZodValidationException);
+        const exception = error as ZodValidationException;
         const details = exception.details as Array<{ message: string }>;
         expect(details[0].message).toContain('Custom:');
       }
@@ -129,10 +128,10 @@ describe('ZodValidationPipe Integration', () => {
 
       try {
         pipe.transform({ name: '' }, { type: 'body' });
-        expect.fail('Should have thrown ValidationException');
+        expect.fail('Should have thrown ZodValidationException');
       } catch (error) {
-        expect(error).toBeInstanceOf(ValidationException);
-        const exception = error as ValidationException;
+        expect(error).toBeInstanceOf(ZodValidationException);
+        const exception = error as ZodValidationException;
         const details = exception.details as Array<{ message: string }>;
         expect(details[0].message).toBe('Name is required');
       }
