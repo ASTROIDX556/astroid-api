@@ -32,6 +32,7 @@ export class RiskRepository {
     factors: Record<string, unknown>;
     canAutoExecute: boolean;
   }) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     return (this.prisma as any).riskAssessment.create({
       data: {
         organizationId: data.organizationId,
@@ -48,6 +49,7 @@ export class RiskRepository {
    * Get historical risk assessments for an organization.
    */
   async findByOrganization(organizationId: string, limit = 100) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     return (this.prisma as any).riskAssessment.findMany({
       where: { organizationId },
       orderBy: { createdAt: 'desc' },
@@ -59,6 +61,7 @@ export class RiskRepository {
    * Get risk assessment by transaction ID.
    */
   async findByTransaction(transactionId: string) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     return (this.prisma as any).riskAssessment.findUnique({
       where: { transactionId },
     });
@@ -71,6 +74,7 @@ export class RiskRepository {
     const since = new Date();
     since.setDate(since.getDate() - days);
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const assessments = await (this.prisma as any).riskAssessment.findMany({
       where: {
         organizationId,
