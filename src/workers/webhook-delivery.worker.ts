@@ -1,6 +1,7 @@
 import { Injectable, Logger, Optional } from '@nestjs/common';
 import { Queues } from '../queues/queues.constants';
 import { WorkerMetricsService } from '../modules/metrics/worker-metrics.service';
+import { runWorkerJob, WorkerJob } from './job-worker';
 import { signWebhookPayload } from '../modules/webhooks/utils/signing';
 
 export interface WebhookDeliveryJob {
@@ -21,9 +22,7 @@ export class WebhookDeliveryWorker {
     @Optional() private readonly workerMetrics?: WorkerMetricsService,
   ) {}
 
-  async process(job: { data: WebhookDeliveryJob; name?: string }): Promise<void> {
-    const jobName = job.name ?? 'webhook-delivery';
-
+  async process(job: WorkerJob<WebhookDeliveryJob>): Promise<void> {
     const execute = async (): Promise<void> => {
       this.logger.log(
         `deliver ${job.data.event} -> webhook ${job.data.webhookId} (attempt ${job.data.attempt})`,
@@ -54,10 +53,13 @@ export class WebhookDeliveryWorker {
       }
     };
 
-    if (this.workerMetrics) {
-      await this.workerMetrics.instrumentJob(this.queue, jobName, execute);
-    } else {
-      await execute();
-    }
+    await runWorkerJob({
+      queue: this.queue,
+      job,
+      logger: this.logger,
+      metrics: this.workerMetrics,
+      defaultJobName: 'webhook-delivery',
+      handler: execute,
+    });
   }
 }
