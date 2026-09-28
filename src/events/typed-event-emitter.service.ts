@@ -73,6 +73,10 @@ export interface DomainEventMap {
 export class TypedEventEmitter {
   constructor(private readonly emitter: EventEmitter2) {}
 
+  emitEnvelope(envelope: PayloadTypes.DomainEventEnvelope<Record<string, unknown>>): void {
+    this.emitter.emit('domain.event', envelope);
+  }
+
   /**
    * Emit a typed domain event.
    * @param event - The event name

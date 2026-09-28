@@ -24,7 +24,7 @@ export class HealthController {
     private readonly migrationIndicator: DatabaseMigrationHealthIndicator,
   ) {}
 
-  @Get('liveness')
+  @Get(['live', 'liveness'])
   @ApiOperation({ summary: 'Application liveness check' })
   @ApiResponse({ status: 200, description: 'Application is alive' })
   getLiveness() {
@@ -34,7 +34,7 @@ export class HealthController {
     };
   }
 
-  @Get('readiness')
+  @Get(['ready', 'readiness'])
   @ApiOperation({ summary: 'Application readiness check' })
   @ApiResponse({ status: 200, description: 'Application is ready' })
   @ApiResponse({ status: 503, description: 'Application is not ready' })

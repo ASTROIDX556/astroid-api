@@ -77,7 +77,7 @@ export class TransactionService {
 
     // 2.5. Velocity limit check for agent spending
     if (input.agentId) {
-      await this.policies.checkVelocityLimit(input.agentId, amount, input.asset);
+      await this.policies.checkVelocityLimit(organizationId, input.agentId, amount, input.asset, actorId);
     }
 
     // 3. Policy evaluation — a hard failure blocks the transaction outright.

@@ -220,11 +220,17 @@ export class PolicyService {
   }
 
   /**
-   * Check velocity limit for an agent's spending within a rolling 24-hour window.
-   * This acts as a circuit breaker to prevent rapid draining of wallets.
+  * Check an agent's UTC-calendar-day spend before execution to prevent wallet draining.
    */
-  async checkVelocityLimit(agentId: string, amount: number, assetCode: string): Promise<void> {
-    const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+  async checkVelocityLimit(
+    organizationId: string,
+    agentId: string,
+    amount: number,
+    assetCode: string,
+    actorId?: string,
+  ): Promise<void> {
+    const now = new Date();
+    const utcDayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
 
     // Query historical agent transactions from the last 24 hours
     const transactions = await this.prisma.transaction.findMany({
@@ -232,7 +238,7 @@ export class PolicyService {
         agentId,
         status: { in: ['COMPLETED', 'CONFIRMED'] },
         asset: assetCode,
-        createdAt: { gte: twentyFourHoursAgo },
+        createdAt: { gte: utcDayStart },
       },
       select: {
         amount: true,
@@ -240,13 +246,13 @@ export class PolicyService {
     });
 
     // Sum up transaction volumes
-    const spentInWindow = transactions.reduce(
+    const spentToday = transactions.reduce(
       (sum, tx) => sum + Number(tx.amount),
       0,
     );
 
     // Retrieve the agent's active daily limit from policies
-    const policies = await this.repository.findActiveForEvaluationByAgent(agentId);
+    const policies = await this.repository.findActiveForEvaluation(organizationId, agentId);
     const dailyLimitPolicy = policies.find((policy) => {
       const config = policy.configuration as PolicyConfiguration;
       return config.dailyLimit !== undefined && config.dailyLimit > 0;
@@ -261,11 +267,26 @@ export class PolicyService {
     const dailyLimit = config.dailyLimit!;
 
     // Check if the pending transaction would exceed the limit
-    if (spentInWindow + amount > dailyLimit) {
-      throw new VelocityLimitExceededException(
-        `Daily velocity limit exceeded. Spent: ${spentInWindow}, Pending: ${amount}, Limit: ${dailyLimit}`,
+    if (spentToday + amount > dailyLimit) {
+      await this.eventBus.emit(
+        DomainEventName.PolicyViolated,
         {
-          spentInWindow,
+          violations: [{
+            code: 'DAILY_LIMIT_EXCEEDED',
+            message: `Daily limit exceeded. Spent: ${spentToday}, Pending: ${amount}, Limit: ${dailyLimit}`,
+          }],
+        },
+        {
+          organizationId,
+          actorId,
+          aggregateType: 'agent',
+          aggregateId: agentId,
+        },
+      );
+      throw new VelocityLimitExceededException(
+        `Daily velocity limit exceeded. Spent: ${spentToday}, Pending: ${amount}, Limit: ${dailyLimit}`,
+        {
+          spentInWindow: spentToday,
           pendingAmount: amount,
           limit: dailyLimit,
           assetCode,

@@ -5,7 +5,7 @@ import { SlidingWindowThrottlerGuard } from './sliding-window-throttler.guard';
 const exec = vi.fn();
 const chain = { zremrangebyscore: vi.fn().mockReturnThis(), zcard: vi.fn().mockReturnThis(), zadd: vi.fn().mockReturnThis(), expire: vi.fn().mockReturnThis(), exec };
 
-function makeContext(user?: Record<string, string>, ip = '127.0.0.1', headers: Record<string, string> = {}) {
+function makeContext(user?: Record<string, unknown>, ip = '127.0.0.1', headers: Record<string, string> = {}) {
   const response = { setHeader: vi.fn() };
   const request = { user, ip, headers };
   const handler = vi.fn();
@@ -58,6 +58,19 @@ describe('SlidingWindowThrottlerGuard', () => {
     await guard.canActivate(anonymous.context as never);
     expect(chain.zadd.mock.calls[0][1]).toBeGreaterThan(0);
     expect(redis.multi).toHaveBeenCalledTimes(2);
+  });
+
+  it('uses the authenticated API key ID instead of its organization for throttling', async () => {
+    const { context } = makeContext({
+      organizationId: 'org-1',
+      apiKeyId: 'key-1',
+      isApiKey: true,
+    });
+    const guard = makeGuard({ multi: () => chain });
+
+    await guard.canActivate(context as never);
+
+    expect(chain.zremrangebyscore.mock.calls[0][0]).toContain(':key:key-1:');
   });
 
   it('falls back to a hashed API key scope when unauthenticated but keyed', async () => {

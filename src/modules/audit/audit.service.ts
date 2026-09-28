@@ -30,7 +30,7 @@ export class AuditService {
 
   async record(data: CreateAuditLogData) {
     const previousHash = await this.hashService.getLatestHash(data.organizationId);
-    const createdAt = new Date();
+    const createdAt = data.createdAt ?? new Date();
 
     const hashResult = this.hashService.computeEntryHash(
       {
