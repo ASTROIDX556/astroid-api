@@ -50,6 +50,7 @@ import { DeadLetterModule } from './modules/dead-letter/dead-letter.module';
 import { AgentTraceInterceptor } from './common/interceptors/agent-trace.interceptor';
 import { RequestContextInterceptor } from './common/interceptors/request-context.interceptor';
 import { AuditLogInterceptor } from './common/interceptors/audit-log.interceptor';
+import { MetricsInterceptor } from './common/interceptors/metrics.interceptor';
 
 /**
  * Root application module. Wires the global infrastructure (config, logging,
@@ -62,6 +63,7 @@ import { AuditLogInterceptor } from './common/interceptors/audit-log.interceptor
  *   - ThrottlerGuard    : per-organization / per-IP rate limiting, shared via Redis
  *   - ResponseInterceptor: wraps every result in the success envelope
  *   - AuditLogInterceptor: persists masked mutation requests to the audit trail
+ *   - MetricsInterceptor: records Prometheus metrics for HTTP requests
  *   - AllExceptionsFilter: converts every error into the error envelope
  */
 @Module({
@@ -142,6 +144,7 @@ import { AuditLogInterceptor } from './common/interceptors/audit-log.interceptor
     { provide: APP_INTERCEPTOR, useClass: AuditLogInterceptor },
     { provide: APP_INTERCEPTOR, useClass: ResponseInterceptor },
     { provide: APP_INTERCEPTOR, useClass: AuditInterceptor },
+    { provide: APP_INTERCEPTOR, useClass: MetricsInterceptor },
     { provide: APP_FILTER, useClass: AllExceptionsFilter },
   ],
 })

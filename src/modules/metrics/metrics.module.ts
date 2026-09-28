@@ -7,7 +7,7 @@ import { WorkerMetricsService } from './worker-metrics.service';
 
 /**
  * Prometheus metrics module: HTTP duration/counter collection
- * (`RequestMetricsMiddleware`), the `/metrics` scrape endpoint,
+ * (`RequestMetricsMiddleware` and `MetricsInterceptor`), the `/metrics` scrape endpoint,
  * and worker job latency/outcome tracking (`WorkerMetricsService`).
  *
  * Both `MetricsService` and `WorkerMetricsService` are exported so
