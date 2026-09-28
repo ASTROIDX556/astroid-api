@@ -10,6 +10,10 @@ import {
   DatabaseMigrationHealthIndicator,
   MigrationHealthReport,
 } from './indicators/database-migration.health';
+import {
+  BullMQHealthIndicator,
+  QueuesHealthReport,
+} from './indicators/bullmq.health';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
@@ -21,6 +25,7 @@ export class HealthController {
   constructor(
     private readonly stellarHealthIndicator: StellarHealthIndicator,
     private readonly databaseMigrationIndicator: DatabaseMigrationHealthIndicator,
+    private readonly bullmqHealthIndicator: BullMQHealthIndicator,
   ) {}
 
   @Get('stellar')
@@ -67,6 +72,41 @@ export class HealthController {
           message: report.status === 'down'
             ? 'Database unreachable during migration health check'
             : `${report.pendingMigrations} pending migration(s) detected — run 'prisma migrate deploy'`,
+          report,
+        },
+        HttpStatus.SERVICE_UNAVAILABLE,
+      );
+    }
+
+    return report;
+  }
+
+  @Get('queues')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.DEVELOPER, UserRole.AUDITOR)
+  @ApiBearerAuth('access-token')
+  @ApiOperation({
+    summary: 'BullMQ queue health check',
+    description:
+      'Inspects every registered BullMQ queue (notifications, webhooks, ' +
+      'stellar-sync, analytics, reports, outbox-events, stellar-fee-bump, ' +
+      'transactions, risk-analysis, dead-letter, audit-cleanup, audit) and ' +
+      'returns waiting/active/failed/delayed/completed/paused job counts plus ' +
+      'Redis connectivity. Used by Kubernetes probes and dashboards to monitor ' +
+      'asynchronous worker health.',
+  })
+  @ApiResponse({ status: 200, description: 'Per-queue job counts and Redis connectivity' })
+  @ApiResponse({ status: 401, description: 'Not authenticated' })
+  @ApiResponse({ status: 403, description: 'Insufficient permissions' })
+  @ApiResponse({ status: 503, description: 'Redis unreachable or all queues failing' })
+  async checkQueuesHealth(): Promise<QueuesHealthReport> {
+    const report = await this.bullmqHealthIndicator.checkHealth();
+
+    if (report.status === 'down') {
+      throw new HttpException(
+        {
+          statusCode: 503,
+          message: 'Redis unreachable or all BullMQ queues failing health probes',
           report,
         },
         HttpStatus.SERVICE_UNAVAILABLE,

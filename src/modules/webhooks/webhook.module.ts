@@ -5,6 +5,7 @@ import { WebhookService } from './webhook.service';
 import { WebhookRepository } from './webhook.repository';
 import { WebhookDispatcher } from './webhook.dispatcher';
 import { WebhookDeliveryService } from './services/webhook-delivery.service';
+import { WebhookCircuitBreakerService } from './services/webhook-circuit-breaker.service';
 import { WebhookWorker } from './workers/webhook.worker';
 import { WebhooksProcessor } from './webhooks.processor';
 import { Queues } from '../../queues/queues.constants';
@@ -57,9 +58,10 @@ import type { RegisterQueueOptions } from '@nestjs/bullmq';
     WebhookRepository,
     WebhookDispatcher,
     WebhookDeliveryService,
+    WebhookCircuitBreakerService,
     WebhookWorker,
     WebhooksProcessor,
   ],
-  exports: [WebhookService],
+  exports: [WebhookService, WebhookCircuitBreakerService],
 })
 export class WebhookModule {}
