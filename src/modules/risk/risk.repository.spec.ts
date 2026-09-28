@@ -159,7 +159,9 @@ describe('RiskRepository', () => {
       expect((prisma as any).riskAssessment.findMany).toHaveBeenCalledWith({
         where: {
           organizationId: 'org-1',
-          createdAt: expect.any(Date),
+          createdAt: expect.objectContaining({
+            gte: expect.any(Date),
+          }),
         },
       });
       expect(result.total).toBe(3);
