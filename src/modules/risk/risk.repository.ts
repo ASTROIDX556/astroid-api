@@ -2,6 +2,17 @@ import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service';
 import { RiskBand } from '@prisma/client';
 
+interface RiskAssessment {
+  id: string;
+  organizationId: string;
+  transactionId: string;
+  score: number;
+  band: RiskBand;
+  factors: Record<string, unknown>;
+  canAutoExecute: boolean;
+  createdAt: Date;
+}
+
 /**
  * Repository for risk assessment persistence and historical analysis.
  * Stores risk evaluation results for compliance reporting and pattern detection.
@@ -21,13 +32,13 @@ export class RiskRepository {
     factors: Record<string, unknown>;
     canAutoExecute: boolean;
   }) {
-    return this.prisma.riskAssessment.create({
+    return (this.prisma as any).riskAssessment.create({
       data: {
         organizationId: data.organizationId,
         transactionId: data.transactionId,
         score: data.score,
         band: data.band,
-        factors: data.factors as any,
+        factors: data.factors,
         canAutoExecute: data.canAutoExecute,
       },
     });
@@ -37,7 +48,7 @@ export class RiskRepository {
    * Get historical risk assessments for an organization.
    */
   async findByOrganization(organizationId: string, limit = 100) {
-    return this.prisma.riskAssessment.findMany({
+    return (this.prisma as any).riskAssessment.findMany({
       where: { organizationId },
       orderBy: { createdAt: 'desc' },
       take: limit,
@@ -48,7 +59,7 @@ export class RiskRepository {
    * Get risk assessment by transaction ID.
    */
   async findByTransaction(transactionId: string) {
-    return this.prisma.riskAssessment.findUnique({
+    return (this.prisma as any).riskAssessment.findUnique({
       where: { transactionId },
     });
   }
@@ -60,7 +71,7 @@ export class RiskRepository {
     const since = new Date();
     since.setDate(since.getDate() - days);
 
-    const assessments = await this.prisma.riskAssessment.findMany({
+    const assessments = await (this.prisma as any).riskAssessment.findMany({
       where: {
         organizationId,
         createdAt: { gte: since },
@@ -69,20 +80,20 @@ export class RiskRepository {
 
     const total = assessments.length;
     const byBand = {
-      LOW: assessments.filter((a) => a.band === RiskBand.LOW).length,
-      MEDIUM: assessments.filter((a) => a.band === RiskBand.MEDIUM).length,
-      HIGH: assessments.filter((a) => a.band === RiskBand.HIGH).length,
-      CRITICAL: assessments.filter((a) => a.band === RiskBand.CRITICAL).length,
+      LOW: assessments.filter((a: RiskAssessment) => a.band === RiskBand.LOW).length,
+      MEDIUM: assessments.filter((a: RiskAssessment) => a.band === RiskBand.MEDIUM).length,
+      HIGH: assessments.filter((a: RiskAssessment) => a.band === RiskBand.HIGH).length,
+      CRITICAL: assessments.filter((a: RiskAssessment) => a.band === RiskBand.CRITICAL).length,
     };
 
     const avgScore =
-      total > 0 ? assessments.reduce((sum, a) => sum + a.score, 0) / total : 0;
+      total > 0 ? assessments.reduce((sum: number, a: RiskAssessment) => sum + a.score, 0) / total : 0;
 
     return {
       total,
       averageScore: Math.round(avgScore),
       byBand,
-      autoExecuteRate: total > 0 ? assessments.filter((a) => a.canAutoExecute).length / total : 0,
+      autoExecuteRate: total > 0 ? assessments.filter((a: RiskAssessment) => a.canAutoExecute).length / total : 0,
     };
   }
 }
