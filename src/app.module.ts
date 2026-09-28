@@ -7,6 +7,7 @@ import { Redis } from 'ioredis';
 
 import { AppConfigModule } from './config';
 import { createThrottlerOptions, ThrottlerConfig } from './config/throttler.config';
+import { RedisThrottlerStorage } from './common/throttler/redis-throttler.storage';
 import { DatabaseModule } from './database/database.module';
 import { EventsModule } from './events/events.module';
 import { LocksModule } from './common/locks/locks.module';
@@ -49,7 +50,6 @@ import { DeadLetterModule } from './modules/dead-letter/dead-letter.module';
 import { AgentTraceInterceptor } from './common/interceptors/agent-trace.interceptor';
 import { RequestContextInterceptor } from './common/interceptors/request-context.interceptor';
 import { AuditLogInterceptor } from './common/interceptors/audit-log.interceptor';
-import { RedisThrottlerStorage } from './common/throttler/redis-throttler.storage';
 
 /**
  * Root application module. Wires the global infrastructure (config, logging,
