@@ -108,10 +108,18 @@ export const aiEnvSchema = z.object({
   AI_MODEL: z.string().default('meta/llama-3.1-70b-instruct'),
 });
 
+/**
+ * Publicly known development default for `ENCRYPTION_KEY`. Convenient locally,
+ * but anything encrypted with it is readable by anyone with the source code, so
+ * {@link environmentSchema} rejects it in production.
+ */
+export const INSECURE_DEFAULT_ENCRYPTION_KEY =
+  '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+
 export const encryptionEnvSchema = z.object({
   ENCRYPTION_KEY: z
     .string()
-    .default('0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef')
+    .default(INSECURE_DEFAULT_ENCRYPTION_KEY)
     .refine(
       (key) => {
         if (!key) return false;
@@ -129,6 +137,113 @@ export const encryptionEnvSchema = z.object({
     ),
   ENCRYPTION_ALGORITHM: z.string().default('aes-256-gcm'),
 });
+
+/**
+ * The complete configuration contract: every environment variable the API reads,
+ * composed from the per-slice schemas above so there is a single source of truth.
+ * Validated once at boot by {@link assertValidEnvironment}, before any module is
+ * constructed, so every problem is reported together instead of one slice at a
+ * time from deep inside Nest's module initialization.
+ *
+ * Production additionally rejects insecure-but-valid values that are fine for
+ * local development.
+ */
+export const environmentSchema = appEnvSchema
+  .merge(databaseEnvSchema)
+  .merge(redisEnvSchema)
+  .merge(authEnvSchema)
+  .merge(stellarEnvSchema)
+  .merge(storageEnvSchema)
+  .merge(queueEnvSchema)
+  .merge(throttleEnvSchema)
+  .merge(rateLimitEnvSchema)
+  .merge(metricsEnvSchema)
+  .merge(aiEnvSchema)
+  .merge(encryptionEnvSchema)
+  .superRefine((env, ctx) => {
+    if (env.NODE_ENV !== 'production') {
+      return;
+    }
+
+    if (env.ENCRYPTION_KEY === INSECURE_DEFAULT_ENCRYPTION_KEY) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['ENCRYPTION_KEY'],
+        message:
+          'must be set to a unique secret in production; the built-in development default is publicly known',
+      });
+    }
+
+    if (env.JWT_ACCESS_SECRET === env.JWT_REFRESH_SECRET) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['JWT_REFRESH_SECRET'],
+        message: 'must differ from JWT_ACCESS_SECRET in production',
+      });
+    }
+  });
+
+export type Environment = z.infer<typeof environmentSchema>;
+
+/** A single failing configuration key, safe to log (never contains the value). */
+export interface EnvironmentIssue {
+  key: string;
+  message: string;
+}
+
+/**
+ * Thrown when the environment does not satisfy {@link environmentSchema}. The
+ * message lists every failing variable so an operator can fix them all in one
+ * pass; it never includes the offending values, which may be secrets.
+ */
+export class EnvironmentValidationError extends Error {
+  constructor(readonly issues: EnvironmentIssue[]) {
+    super(
+      [
+        `Invalid environment configuration (${issues.length} problem${issues.length === 1 ? '' : 's'}):`,
+        ...issues.map((issue) => `  - ${issue.key}: ${issue.message}`),
+        'Fix the variables above (see .env.example and docs/configuration.md) and restart.',
+      ].join('\n'),
+    );
+    this.name = 'EnvironmentValidationError';
+  }
+}
+
+/**
+ * Converts a Zod issue into a value-free message. Zod's defaults can echo the
+ * received value (e.g. for enums), which must never reach logs for secrets.
+ */
+function describeIssue(issue: z.ZodIssue): string {
+  switch (issue.code) {
+    case z.ZodIssueCode.invalid_type:
+      return issue.received === 'undefined'
+        ? 'is required but was not set'
+        : `must be a valid ${issue.expected}`;
+    case z.ZodIssueCode.invalid_enum_value:
+      return `must be one of: ${issue.options.join(', ')}`;
+    default:
+      return issue.message;
+  }
+}
+
+/**
+ * Validates the full process environment against {@link environmentSchema} and
+ * returns the parsed configuration (defaults applied, transforms resolved).
+ *
+ * @throws EnvironmentValidationError listing every failing variable.
+ */
+export function assertValidEnvironment(env: NodeJS.ProcessEnv): Environment {
+  const result = environmentSchema.safeParse(env);
+  if (!result.success) {
+    throw new EnvironmentValidationError(
+      result.error.issues.map((issue) => ({
+        key: issue.path.join('.') || '(root)',
+        message: describeIssue(issue),
+      })),
+    );
+  }
+  return result.data;
+}
 
 /**
  * Validates a slice of the environment against a schema, throwing a readable
