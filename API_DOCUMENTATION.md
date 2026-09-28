@@ -372,6 +372,55 @@ Delete a budget.
 
 ---
 
+## Health Probes (`/health`)
+
+The liveness and readiness probes are served **outside** the API prefix, so
+orchestrator and load-balancer probe paths do not change with the API version.
+Both are public, exempt from rate limiting, excluded from the audit trail, and
+return raw JSON (no success envelope).
+
+### GET `/health/live`
+Liveness probe. Returns `200` whenever the process is running. It performs no
+dependency checks, so a database or cache outage never causes an otherwise
+healthy process to be restarted.
+
+**Authentication:** Public
+
+**Response (200):**
+```json
+{ "status": "up", "timestamp": "2026-09-28T10:00:00.000Z", "uptimeSeconds": 42 }
+```
+
+### GET `/health/ready`
+Readiness probe. Probes the database (`SELECT 1`) and cache (Redis `PING`) in
+parallel, each bounded by a 2 second timeout. Returns `200` when every
+dependency is up and `503` when any is down.
+
+**Authentication:** Public
+
+**Response (503 example):**
+```json
+{
+  "status": "down",
+  "timestamp": "2026-09-28T10:00:00.000Z",
+  "services": {
+    "database": {
+      "status": "down",
+      "latencyMs": 2001,
+      "timestamp": "2026-09-28T10:00:00.000Z",
+      "error": "Database health check timed out after 2000ms"
+    },
+    "cache": { "status": "up", "latencyMs": 1, "timestamp": "2026-09-28T10:00:00.000Z" }
+  }
+}
+```
+
+Richer diagnostics (including Stellar and migration status) remain available
+under the API prefix at `GET /{API_PREFIX}/health/readiness`,
+`GET /{API_PREFIX}/health/liveness` and `GET /{API_PREFIX}/health/database`.
+
+---
+
 ## Common Types
 
 ### Pagination Query

@@ -68,6 +68,109 @@ describe('HealthController', () => {
     );
   });
 
+  describe('GET /health/live', () => {
+    it('returns 200 with process uptime without probing any dependency', () => {
+      controller.live(res as Response);
+
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          status: 'up',
+          timestamp: expect.any(String),
+          uptimeSeconds: expect.any(Number),
+        }),
+      );
+      expect(dbHealth.check).not.toHaveBeenCalled();
+      expect(redisHealth.checkHealth).not.toHaveBeenCalled();
+    });
+
+    it('stays 200 during a database outage', () => {
+      dbHealth.check.mockRejectedValue(new Error('ECONNREFUSED'));
+
+      controller.live(res as Response);
+
+      expect(res.status).toHaveBeenCalledWith(200);
+    });
+  });
+
+  describe('GET /health/ready', () => {
+    it('returns 200 with per-dependency status when database and cache are up', async () => {
+      await controller.ready(res as Response);
+
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(res.json).toHaveBeenCalledWith({
+        status: 'up',
+        timestamp: expect.any(String),
+        services: {
+          database: expect.objectContaining({ status: 'up', latencyMs: 5 }),
+          cache: expect.objectContaining({ status: 'up', latencyMs: 2 }),
+        },
+      });
+    });
+
+    it('returns 503 during a simulated database outage', async () => {
+      dbHealth.check.mockResolvedValue(
+        terminus({ status: 'down', error: 'Error', message: 'Database health check timed out after 2000ms' }),
+      );
+
+      await controller.ready(res as Response);
+
+      expect(res.status).toHaveBeenCalledWith(503);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          status: 'down',
+          services: {
+            database: expect.objectContaining({
+              status: 'down',
+              error: 'Database health check timed out after 2000ms',
+            }),
+            cache: expect.objectContaining({ status: 'up' }),
+          },
+        }),
+      );
+    });
+
+    it('returns 503 during a simulated cache outage', async () => {
+      redisHealth.checkHealth.mockResolvedValue({
+        status: 'down',
+        latencyMs: 2000,
+        timestamp: new Date().toISOString(),
+        error: 'Redis health check timed out after 2000ms',
+      });
+
+      await controller.ready(res as Response);
+
+      expect(res.status).toHaveBeenCalledWith(503);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          status: 'down',
+          services: expect.objectContaining({
+            database: expect.objectContaining({ status: 'up' }),
+            cache: expect.objectContaining({ status: 'down' }),
+          }),
+        }),
+      );
+    });
+
+    it('returns 503 when the database indicator produces no result', async () => {
+      dbHealth.check.mockResolvedValue({});
+
+      await controller.ready(res as Response);
+
+      expect(res.status).toHaveBeenCalledWith(503);
+    });
+
+    it('probes only critical dependencies, so an external Stellar outage cannot fail readiness', async () => {
+      stellarHealth.checkHealth.mockResolvedValue({ status: 'down', timestamp: 'now' });
+
+      await controller.ready(res as Response);
+
+      expect(stellarHealth.checkHealth).not.toHaveBeenCalled();
+      expect(migrationHealth.checkHealth).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(200);
+    });
+  });
+
   it('returns liveness payload with status up', () => {
     const response = controller.getLiveness();
     expect(response.status).toBe('up');
