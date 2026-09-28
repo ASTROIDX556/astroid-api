@@ -18,6 +18,7 @@ import {
   withQueryTimeout,
 } from './query-timeout.extension';
 import { buildDatasourceUrl } from './datasource-url';
+import { ShutdownCoordinator, ShutdownResource } from '../common/shutdown/shutdown-coordinator.service';
 import {
   ConnectionPoolExhaustedError,
   DatabaseTimeoutError,
@@ -51,11 +52,11 @@ function createMockClient(): {
   };
 }
 
-function buildPrismaService(): PrismaService {
+function buildPrismaService(shutdown?: ShutdownCoordinator): PrismaService {
   const configService = {
     getOrThrow: vi.fn().mockReturnValue(databaseConfig),
   };
-  return new PrismaService(configService as unknown as ConfigService);
+  return new PrismaService(configService as unknown as ConfigService, shutdown);
 }
 
 describe('withQueryTimeout', () => {
@@ -225,5 +226,34 @@ describe('PrismaService', () => {
   it('exposes a dedicated worker client', () => {
     const service = buildPrismaService();
     expect(service.workerClient).toBeDefined();
+  });
+
+  describe('shutdown', () => {
+    // The PrismaClient mock returns a plain object from `super()`, so restore
+    // PrismaService's prototype to exercise its lifecycle methods.
+    const withMethods = (service: PrismaService) => Object.setPrototypeOf(service, PrismaService.prototype) as PrismaService;
+
+    it('disconnects both pools on module destroy when running without a coordinator', async () => {
+      const service = withMethods(buildPrismaService());
+
+      await service.onModuleDestroy();
+
+      expect(service.$disconnect).toHaveBeenCalledTimes(1);
+      expect(service.workerClient.$disconnect).toHaveBeenCalledTimes(1);
+    });
+
+    it('registers in the database phase and leaves disconnect timing to the coordinator', async () => {
+      const registered: ShutdownResource[] = [];
+      const shutdown = { register: (r: ShutdownResource) => registered.push(r) };
+      const service = withMethods(buildPrismaService(shutdown as unknown as ShutdownCoordinator));
+
+      await service.onModuleDestroy();
+      expect(service.$disconnect).not.toHaveBeenCalled();
+
+      expect(registered).toEqual([expect.objectContaining({ name: 'prisma', phase: 'database' })]);
+      await registered[0].close();
+      expect(service.$disconnect).toHaveBeenCalledTimes(1);
+      expect(service.workerClient.$disconnect).toHaveBeenCalledTimes(1);
+    });
   });
 });

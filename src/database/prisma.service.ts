@@ -1,7 +1,8 @@
-import { INestApplication, Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy, OnModuleInit, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaClient } from '@prisma/client';
 import { DatabaseConfig } from '../config/database.config';
+import { ShutdownCoordinator } from '../common/shutdown/shutdown-coordinator.service';
 import { buildDatasourceUrl } from './datasource-url';
 import { createQueryTimeoutExtension } from './query-timeout.extension';
 import {
@@ -41,7 +42,10 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
    */
   readonly workerClient: PrismaClient;
 
-  constructor(configService: ConfigService) {
+  /** True when the {@link ShutdownCoordinator} owns the disconnect timing. */
+  private readonly coordinatedShutdown: boolean;
+
+  constructor(configService: ConfigService, @Optional() shutdown?: ShutdownCoordinator) {
     const database = configService.getOrThrow<DatabaseConfig>('database');
 
     const url = buildDatasourceUrl(database.url, {
@@ -93,6 +97,11 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
         poolTimeoutMs: database.poolTimeoutMs,
       }),
     ) as unknown as PrismaClient;
+
+    // The database is the last resource released on shutdown, after workers,
+    // queues and Redis, so nothing can still be issuing queries.
+    this.coordinatedShutdown = shutdown !== undefined;
+    shutdown?.register({ name: 'prisma', phase: 'database', close: () => this.disconnectAll() });
   }
 
   async onModuleInit(): Promise<void> {
@@ -139,14 +148,16 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
   }
 
   async onModuleDestroy(): Promise<void> {
-    await this.$disconnect();
-    await this.workerClient.$disconnect();
+    // Under the coordinator, disconnecting here would run before workers and
+    // queues have finished; it disconnects in the `database` phase instead.
+    if (!this.coordinatedShutdown) {
+      await this.disconnectAll();
+    }
   }
 
-  /** Registers a Nest shutdown hook so the process closes the pool cleanly. */
-  async enableShutdownHooks(app: INestApplication): Promise<void> {
-    process.on('beforeExit', () => {
-      void app.close();
-    });
+  /** Closes both connection pools. Safe to call more than once. */
+  async disconnectAll(): Promise<void> {
+    await this.$disconnect();
+    await this.workerClient.$disconnect();
   }
 }

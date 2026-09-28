@@ -6,7 +6,7 @@ import { Logger as PinoLogger } from 'nestjs-pino';
 import helmet from 'helmet';
 import { Request, Response, NextFunction } from 'express';
 import { AppModule } from './app.module';
-import { PrismaService } from './database/prisma.service';
+import { ShutdownCoordinator } from './common/shutdown/shutdown-coordinator.service';
 import { AppConfig } from './config/app.config';
 
 async function bootstrap() {
@@ -85,11 +85,15 @@ async function bootstrap() {
     SwaggerModule.setup('docs', app, document);
   }
 
-  // Prisma shutdown hook
-  const prisma = app.get(PrismaService);
-  await prisma.enableShutdownHooks(app);
-
   await app.listen(appConfig.port);
+
+  // Graceful shutdown on SIGTERM / SIGINT: stop accepting HTTP work, drain
+  // in-flight requests and BullMQ jobs within SHUTDOWN_GRACE_PERIOD_MS, then
+  // close queues, Redis and Prisma in order. Used instead of Nest's
+  // app.enableShutdownHooks(), which disconnects the database before the HTTP
+  // server stops and has no grace period; the coordinator still runs every
+  // Nest lifecycle hook through app.close().
+  app.get(ShutdownCoordinator).enableShutdownHooks(app);
   console.log(`🚀 Astroid API listening on port ${appConfig.port}`);
   console.log(`📚 Swagger docs: http://localhost:${appConfig.port}/docs`);
 }

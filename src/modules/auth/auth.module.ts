@@ -13,6 +13,8 @@ import { TokenBlacklistService } from './services/token-blacklist.service';
 import { PasskeyController } from './controllers/passkey.controller';
 import { PasskeyService } from './services/passkey.service';
 import { redisConfig } from '../../config/redis.config';
+import { ShutdownCoordinator } from '../../common/shutdown/shutdown-coordinator.service';
+import { closeRedisClient } from '../../common/shutdown/close-redis-client';
 
 /**
  * Authentication module. Registers passport-jwt and api-key strategies and a bare
@@ -30,15 +32,18 @@ import { redisConfig } from '../../config/redis.config';
   providers: [
     {
       provide: Redis,
-      useFactory: (): Redis => {
+      inject: [ShutdownCoordinator],
+      useFactory: (shutdown: ShutdownCoordinator): Redis => {
         const config = redisConfig();
-        return new Redis({
+        const client = new Redis({
           host: config.host,
           port: config.port,
           password: config.password || undefined,
           db: config.db,
           lazyConnect: true,
         });
+        shutdown.register({ name: 'redis:auth', phase: 'redis', close: () => closeRedisClient(client) });
+        return client;
       },
     },
     AuthService,
