@@ -11,7 +11,7 @@ export interface ZodValidationPipeOptions {
 
 /**
  * A pipe that validates and parses an incoming payload against a Zod schema.
- * Instantiated per-schema, e.g. `@Body(new ZodValidationPipe(createAgentSchema))`.
+ * Instantiated per-schema, e.g. `@Body(new ZodValidationPipe(createAgentSchema)) کیا۔
  * Rejects unknown/invalid data with a structured VALIDATION_ERROR whose
  * `details` use the canonical {@link formatZodError} shape, supporting localized error message overrides.
  */
