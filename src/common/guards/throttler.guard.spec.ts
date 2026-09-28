@@ -168,7 +168,7 @@ describe('AstroidThrottlerGuard', () => {
     });
   });
 
-  describe('throttled responses', () => {
+  describe('handleRequest throttled responses', () => {
     it('throws a 429 exception and sets Retry-After when the client is blocked', async () => {
       const { response, call } = await prepare({ increment: vi.fn().mockResolvedValue(BLOCKED) });
 
