@@ -416,6 +416,7 @@ model Transaction {
   @@index([organizationId])
   @@index([walletId])
   @@index([agentId])
+  @@index([organizationId, status, deletedAt, agentId])
   @@index([status])
   @@index([createdAt])
   @@index([stellarHash])
