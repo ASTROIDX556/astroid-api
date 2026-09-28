@@ -1,7 +1,7 @@
 import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
 import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { ConfigService } from '@nestjs/config';
-import { ThrottlerModule, ThrottlerStorage } from '@nestjs/throttler';
+import { ThrottlerModule } from '@nestjs/throttler';
 import { LoggerModule } from 'nestjs-pino';
 import { Redis } from 'ioredis';
 
@@ -20,6 +20,7 @@ import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
 import { ScopesGuard } from './common/guards/scopes.guard';
 import { AstroidThrottlerGuard } from './common/guards/throttler.guard';
+import { RedisThrottlerStorage } from './common/throttler/redis-throttler.storage';
 import { ResponseInterceptor } from './common/interceptors/response.interceptor';
 import { AuditInterceptor } from './common/interceptors/audit.interceptor';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
@@ -50,7 +51,6 @@ import { DeadLetterModule } from './modules/dead-letter/dead-letter.module';
 import { AgentTraceInterceptor } from './common/interceptors/agent-trace.interceptor';
 import { RequestContextInterceptor } from './common/interceptors/request-context.interceptor';
 import { AuditLogInterceptor } from './common/interceptors/audit-log.interceptor';
-import { RedisThrottlerStorage } from './common/throttler/redis-throttler.storage';
 
 /**
  * Root application module. Wires the global infrastructure (config, logging,
@@ -127,13 +127,6 @@ import { RedisThrottlerStorage } from './common/throttler/redis-throttler.storag
     StellarModule,
     AuditModule,
     AiModule,
-    ThrottlerModule.forRootAsync({
-      inject: [ConfigService, REDIS_CLIENT],
-      useFactory: (configService: ConfigService, redis: Redis) => ({
-        ...createThrottlerOptions(configService.get<ThrottlerConfig>('throttler', { windowSeconds: 60, apiLimit: 120, authLimit: 10 })),
-        storage: new RedisThrottlerStorage(redis),
-      }),
-    }),
     HealthModule,
     MetricsModule,
     DeadLetterModule,
