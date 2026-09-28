@@ -9,8 +9,7 @@ CREATE TABLE "risk_assessments" (
     "canAutoExecute" BOOLEAN NOT NULL DEFAULT true,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    CONSTRAINT "risk_assessments_pkey" PRIMARY KEY ("id"),
-    CONSTRAINT "risk_assessments_organizationId_fkey" FOREIGN KEY ("organizationId") REFERENCES "organizations"("id") ON DELETE CASCADE ON UPDATE CASCADE
+    CONSTRAINT "risk_assessments_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateIndex
@@ -27,3 +26,6 @@ CREATE INDEX "risk_assessments_band_idx" ON "risk_assessments"("band");
 
 -- CreateIndex
 CREATE INDEX "risk_assessments_createdAt_idx" ON "risk_assessments"("createdAt");
+
+-- AddForeignKey
+ALTER TABLE "risk_assessments" ADD CONSTRAINT "risk_assessments_organizationId_fkey" FOREIGN KEY ("organizationId") REFERENCES "organizations"("id") ON DELETE CASCADE ON UPDATE CASCADE;
