@@ -53,10 +53,44 @@ describe('DlqProcessor', () => {
             originalQueue: Queues.Webhooks,
             originalJobName: 'deliver-webhook',
             failedReason: 'HTTP 500: Internal Server Error',
+            stacktrace: ['Error: HTTP 500 at fetch'],
+            payload: { webhookId: 'wh-1', event: 'payment.completed' },
             attemptsMade: 5,
             failedAt: '2026-08-30T21:00:00.000Z',
           },
         },
+      });
+    });
+
+    it('persists the stack trace and original payload in the audit event for forensic inspection', async () => {
+      const mockJobData: DlqJobData = {
+        originalQueue: Queues.Transactions,
+        originalJobId: 'tx-789',
+        originalJobName: 'execute-transaction',
+        payload: { transactionId: 'tx-789', amount: '100' },
+        failedReason: 'Horizon timeout',
+        stacktrace: ['Error: Horizon timeout', '    at submit (worker.ts:42:11)'],
+        attemptsMade: 3,
+        failedAt: '2026-08-30T21:10:00.000Z',
+      };
+
+      const mockJob = {
+        id: 'dlq-job-3',
+        data: mockJobData,
+      } as unknown as Job<DlqJobData>;
+
+      await processor.process(mockJob);
+
+      expect(mockDomainEventCreate).toHaveBeenCalledTimes(1);
+      const event = mockDomainEventCreate.mock.calls[0][0] as {
+        data: { payload: Record<string, unknown> };
+      };
+      expect(event.data.payload).toMatchObject({
+        originalQueue: Queues.Transactions,
+        failedReason: 'Horizon timeout',
+        stacktrace: ['Error: Horizon timeout', '    at submit (worker.ts:42:11)'],
+        payload: { transactionId: 'tx-789', amount: '100' },
+        attemptsMade: 3,
       });
     });
 

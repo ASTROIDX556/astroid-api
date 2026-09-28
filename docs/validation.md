@@ -71,10 +71,12 @@ A failed parse throws `ValidationException`, which the global
 `details` is always `ValidationErrorDetail[]` (`{ path, message }`), so clients
 can render field-level errors without special-casing individual endpoints.
 
-> The pipe throws `ValidationException` (`422 Unprocessable Entity`) rather than
-> a bare `BadRequestException` because the platform already standardises on
-> domain exceptions carrying a stable `ErrorCode`. This is deliberate — do not
-> swap in a raw Nest HTTP exception, or the error envelope loses its `code`.
+> The pipe throws `ZodValidationException`, a `BadRequestException` subclass
+> that also carries the canonical `VALIDATION_ERROR` code and the structured
+> `details` array. Extending `BadRequestException` keeps the rejection inside
+> Nest's standard HTTP exception flow (framework code, guards and tests can
+> `instanceof`-check it), while the preserved code and details stop the error
+> envelope from degrading to a generic 400 message.
 
 ## Localized error messages
 

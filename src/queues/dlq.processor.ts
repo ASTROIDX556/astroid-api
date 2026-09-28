@@ -31,6 +31,7 @@ export class DlqProcessor extends WorkerHost {
       originalJobName,
       payload,
       failedReason,
+      stacktrace,
       attemptsMade,
       failedAt,
     } = job.data;
@@ -40,7 +41,7 @@ export class DlqProcessor extends WorkerHost {
     );
 
     this.logger.debug(
-      `[DLQ-JOB-DETAILS] Payload: ${JSON.stringify(payload)} | FailedAt: ${failedAt}`,
+      `[DLQ-JOB-DETAILS] Payload: ${JSON.stringify(payload)} | Stacktrace: ${JSON.stringify(stacktrace ?? [])} | FailedAt: ${failedAt}`,
     );
 
     await this.recordDeadLetterAudit(job.data);
@@ -113,6 +114,8 @@ export class DlqProcessor extends WorkerHost {
               originalQueue: data.originalQueue,
               originalJobName: data.originalJobName,
               failedReason: data.failedReason,
+              stacktrace: data.stacktrace ?? [],
+              payload: data.payload,
               attemptsMade: data.attemptsMade,
               failedAt: data.failedAt,
             },

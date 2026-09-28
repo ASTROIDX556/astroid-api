@@ -8,10 +8,12 @@ import {
 } from '@nestjs/common';
 import { Request, Response } from 'express';
 import { Prisma } from '@prisma/client';
+import { v7 as uuidv7 } from 'uuid';
 import { ErrorCode } from '../constants/error-codes';
 import { DomainException } from '../exceptions/domain.exception';
 import { ApiErrorResponse } from '../interfaces/api-response.interface';
 import { REQUEST_ID_HEADER } from '../constants/headers';
+import { RequestContext } from '../context/request-context';
 
 /**
  * Global exception filter. Converts any thrown error into the canonical error
@@ -26,7 +28,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
     const ctx = host.switchToHttp();
     const response = ctx.getResponse<Response>();
     const request = ctx.getRequest<Request>();
-    const requestId = (request.headers[REQUEST_ID_HEADER] as string) ?? 'unknown';
+    const requestId = this.resolveRequestId(request);
 
     const { status, body } = this.resolve(exception, requestId);
 
@@ -42,6 +44,21 @@ export class AllExceptionsFilter implements ExceptionFilter {
     }
 
     response.status(status).json(body);
+  }
+
+  /**
+   * Resolves the request id for an error response. The `x-request-id` header
+   * (set by `RequestIdMiddleware`) is authoritative; when absent — e.g. an
+   * error thrown before the middleware chain ran — the id is recovered from
+   * the ambient {@link RequestContext} or freshly generated so every error
+   * response still carries a correlatable identifier instead of `unknown`.
+   */
+  private resolveRequestId(request: Request): string {
+    const headerId = request.headers[REQUEST_ID_HEADER] as string | undefined;
+    if (headerId && headerId.length > 0) {
+      return headerId;
+    }
+    return RequestContext.getRequestId() ?? `req_${uuidv7()}`;
   }
 
   private resolve(
