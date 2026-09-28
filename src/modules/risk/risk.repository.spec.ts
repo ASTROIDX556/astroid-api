@@ -8,6 +8,7 @@ describe('RiskRepository', () => {
   let prisma: PrismaService;
 
   beforeEach(() => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     prisma = {
       riskAssessment: {
         create: vi.fn(),
@@ -31,6 +32,7 @@ describe('RiskRepository', () => {
         createdAt: new Date(),
       };
 
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       vi.mocked((prisma as any).riskAssessment.create).mockResolvedValue(mockAssessment);
 
       const result = await repository.createAssessmentRecord({
@@ -42,6 +44,7 @@ describe('RiskRepository', () => {
         canAutoExecute: true,
       });
 
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       expect((prisma as any).riskAssessment.create).toHaveBeenCalledWith({
         data: {
           organizationId: 'org-1',
@@ -71,10 +74,12 @@ describe('RiskRepository', () => {
         },
       ];
 
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       vi.mocked((prisma as any).riskAssessment.findMany).mockResolvedValue(mockAssessments);
 
       const result = await repository.findByOrganization('org-1', 100);
 
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       expect((prisma as any).riskAssessment.findMany).toHaveBeenCalledWith({
         where: { organizationId: 'org-1' },
         orderBy: { createdAt: 'desc' },
@@ -97,10 +102,12 @@ describe('RiskRepository', () => {
         createdAt: new Date(),
       };
 
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       vi.mocked((prisma as any).riskAssessment.findUnique).mockResolvedValue(mockAssessment);
 
       const result = await repository.findByTransaction('tx-1');
 
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       expect((prisma as any).riskAssessment.findUnique).toHaveBeenCalledWith({
         where: { transactionId: 'tx-1' },
       });
@@ -143,10 +150,12 @@ describe('RiskRepository', () => {
         },
       ];
 
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       vi.mocked((prisma as any).riskAssessment.findMany).mockResolvedValue(mockAssessments);
 
       const result = await repository.getStatistics('org-1', 30);
 
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       expect((prisma as any).riskAssessment.findMany).toHaveBeenCalledWith({
         where: {
           organizationId: 'org-1',
@@ -163,6 +172,7 @@ describe('RiskRepository', () => {
     });
 
     it('handles empty results', async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       vi.mocked((prisma as any).riskAssessment.findMany).mockResolvedValue([]);
 
       const result = await repository.getStatistics('org-1', 30);
