@@ -4,6 +4,7 @@ import { RiskService } from './risk.service';
 import { RiskEngine } from './risk.engine';
 import { RiskFactorsInput } from './risk.types';
 import { EventBusService } from '../../events/event-bus.service';
+import { RiskRepository } from './risk.repository';
 
 const lowRisk: RiskFactorsInput = {
   amount: 20,
@@ -22,7 +23,8 @@ function createEventBus() {
 describe('RiskService', () => {
   it('emits a RiskEvaluated event with full factor breakdown', async () => {
     const eventBus = createEventBus();
-    const service = new RiskService(new RiskEngine(), eventBus as unknown as EventBusService);
+    const repository = { createAssessmentRecord: vi.fn().mockResolvedValue(undefined) } as unknown as RiskRepository;
+    const service = new RiskService(new RiskEngine(), eventBus as unknown as EventBusService, repository);
 
     const assessment = await service.evaluate('org-1', lowRisk, {
       transactionId: 'tx-1',
@@ -45,7 +47,8 @@ describe('RiskService', () => {
 
   it('assess() returns a result without emitting events', async () => {
     const eventBus = createEventBus();
-    const service = new RiskService(new RiskEngine(), eventBus as unknown as EventBusService);
+    const repository = { createAssessmentRecord: vi.fn().mockResolvedValue(undefined) } as unknown as RiskRepository;
+    const service = new RiskService(new RiskEngine(), eventBus as unknown as EventBusService, repository);
 
     const assessment = service.assess(lowRisk);
     expect(assessment.band).toBe(RiskBand.LOW);
@@ -55,7 +58,8 @@ describe('RiskService', () => {
 
   it('passes config overrides through to the engine', async () => {
     const eventBus = createEventBus();
-    const service = new RiskService(new RiskEngine(), eventBus as unknown as EventBusService);
+    const repository = { createAssessmentRecord: vi.fn().mockResolvedValue(undefined) } as unknown as RiskRepository;
+    const service = new RiskService(new RiskEngine(), eventBus as unknown as EventBusService, repository);
 
     const assessment = service.assess(
       { ...lowRisk, amount: 100 },

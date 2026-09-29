@@ -20,8 +20,8 @@ export interface ZodValidationPipeOptions {
  * Extends Nest's {@link BadRequestException} so the framework and the global
  * exception filter treat it as a standard client-side HTTP error, while also
  * carrying the canonical `VALIDATION_ERROR` code and structured `details` so
- * the error envelope keeps its machine-readable shape:
- * `{ success: false, error: { code, message, details }, requestId }`.
+ * the problem details response keeps them as extension members:
+ * `{ type, title, status: 400, detail, instance, code: 'VALIDATION_ERROR', details, requestId }`.
  */
 export class ZodValidationException extends BadRequestException {
   /** Canonical domain error code preserved through the error envelope. */
