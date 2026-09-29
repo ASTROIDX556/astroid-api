@@ -31,6 +31,10 @@ export type DatabaseConfig = {
   workerQueryTimeoutMs: number;
   migrationCheck: MigrationCheckMode;
   migrationsDir?: string;
+  /** Wall-time threshold above which a query is logged as slow (0 = disabled). */
+  slowQueryThresholdMs: number;
+  connectionRetryAttempts: number;
+  connectionRetryDelayMs: number;
 };
 
 export const databaseConfig = registerAs('database', (): DatabaseConfig => {
@@ -45,5 +49,8 @@ export const databaseConfig = registerAs('database', (): DatabaseConfig => {
     workerQueryTimeoutMs: env.DATABASE_WORKER_QUERY_TIMEOUT_MS,
     migrationCheck: resolveMigrationCheckMode(env.DATABASE_MIGRATION_CHECK, process.env.NODE_ENV),
     migrationsDir: env.DATABASE_MIGRATIONS_DIR,
+    slowQueryThresholdMs: env.DATABASE_SLOW_QUERY_THRESHOLD_MS,
+    connectionRetryAttempts: env.DATABASE_CONNECT_RETRY_ATTEMPTS,
+    connectionRetryDelayMs: env.DATABASE_CONNECT_RETRY_DELAY_MS,
   };
 });
