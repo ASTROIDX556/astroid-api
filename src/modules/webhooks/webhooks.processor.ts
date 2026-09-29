@@ -24,9 +24,6 @@ import { WorkerMetricsService } from '../../modules/metrics/worker-metrics.servi
  *
  * Processing latency and outcomes are recorded against the Prometheus registry
  * via `WorkerMetricsService` when available.
- *
- * This processor mirrors workers/webhook.worker.ts and is registered as an
- * alias to satisfy the expected import path `src/modules/webhooks/webhooks.processor.ts`.
  */
 import { OnModuleDestroy } from '@nestjs/common';
 

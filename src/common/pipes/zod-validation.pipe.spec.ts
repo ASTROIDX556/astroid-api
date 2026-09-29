@@ -64,7 +64,7 @@ describe('ZodValidationPipe', () => {
         expect.fail('Should have thrown');
       } catch (error) {
         // The global exception filter reads this object to build
-        // `{ success:false, error:{ code, message, details }, requestId }`.
+        // the problem details body `{ ..., code, detail, details, requestId }`.
         const response = (error as ZodValidationException).getResponse() as {
           code: string;
           message: string;
