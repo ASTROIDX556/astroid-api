@@ -1,12 +1,19 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
-import { ConfigService } from '@nestjs/config';
 import { Inject, Logger, Optional } from '@nestjs/common';
 import { Job, UnrecoverableError } from 'bullmq';
 import { Queues } from '../../queues/queues.constants';
 import { WebhookJobData, WebhookJobResult } from './types/webhook-job.types';
-import { signWebhookPayload } from './utils/signing';
+import { signWebhookPayload, WEBHOOK_SIGNATURE_VERSION } from './utils/signing';
 import { PrismaService } from '../../database/prisma.service';
 import { WorkerMetricsService } from '../../modules/metrics/worker-metrics.service';
+import {
+  WEBHOOK_DELIVERY_HEADER,
+  WEBHOOK_EVENT_HEADER,
+  WEBHOOK_EVENT_ID_HEADER,
+  WEBHOOK_SIGNATURE_HEADER,
+  WEBHOOK_SIGNATURE_VERSION_HEADER,
+  WEBHOOK_TIMESTAMP_HEADER,
+} from '../../common/constants/headers';
 
 /**
  * BullMQ job processor for webhook event delivery with exponential backoff + jitter.
@@ -54,48 +61,50 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
 
   constructor(
     @Optional() @Inject(PrismaService) private readonly prisma?: PrismaService,
-    @Optional() private readonly configService?: ConfigService,
     @Optional() private readonly workerMetrics?: WorkerMetricsService,
   ) {
     super();
   }
 
-  private resolveSecret(jobSecret?: string): string {
-    if (jobSecret) return jobSecret;
-    const fallback =
-      this.configService?.get<string>('WEBHOOK_SECRET') ??
-      this.configService?.get<string>('STELLAR_WEBHOOK_SECRET') ??
-      this.configService?.get<string>('WEBHOOK_SIGNING_SECRET') ??
-      '';
-    return fallback;
+  private async resolveSecret(webhookId: string, organizationId: string): Promise<string> {
+    const client = this.prisma?.workerClient ?? this.prisma;
+    if (!client) throw new UnrecoverableError('Webhook signing secret is unavailable');
+    const webhook = await client.webhook.findFirst({
+      where: { id: webhookId, organizationId },
+      select: { secret: true },
+    });
+    if (!webhook?.secret) throw new UnrecoverableError('Webhook signing secret is unavailable');
+    return webhook.secret;
   }
 
   async process(job: Job<WebhookJobData>): Promise<WebhookJobResult> {
     const jobName = job.name ?? 'webhook-delivery';
 
     const execute = async (): Promise<WebhookJobResult> => {
-      const { webhookId, organizationId, url, secret, eventName, payload, eventId } = job.data;
-      this.logger.debug(`Processing webhook ${webhookId} event ${eventName} attempt ${job.attemptsMade + 1}/5`);
+      const { webhookId, organizationId, url, eventName, payload, eventId, metadata } = job.data;
+      const requestTrace = metadata?.requestId ? ` requestId=${metadata.requestId}` : '';
+      this.logger.debug(`Processing webhook ${webhookId} event ${eventName} attempt ${job.attemptsMade + 1}/5${requestTrace}`);
 
       let responseStatus: number | undefined;
       let errorMessage: string | undefined;
       let isNonTransient = false;
 
       try {
-        const body = JSON.stringify(payload);
+        const body = Buffer.from(JSON.stringify(payload), 'utf8');
         const timestamp = Math.floor(Date.now() / 1000).toString();
-        const effectiveSecret = this.resolveSecret(secret);
-        const signature = signWebhookPayload(effectiveSecret, timestamp, body);
+        const effectiveSecret = await this.resolveSecret(webhookId, organizationId);
+        const signature = signWebhookPayload(effectiveSecret, timestamp, eventId, body);
 
         const response = await fetch(url, {
           method: 'POST',
           headers: {
             'content-type': 'application/json',
-            'x-astroid-signature': signature,
-            'x-astroid-timestamp': timestamp,
-            'x-astroid-delivery': eventId,
-            'x-astroid-event': eventName,
-            'x-astroid-event-id': eventId,
+            [WEBHOOK_SIGNATURE_HEADER]: signature,
+            [WEBHOOK_TIMESTAMP_HEADER]: timestamp,
+            [WEBHOOK_EVENT_ID_HEADER]: eventId,
+            [WEBHOOK_DELIVERY_HEADER]: eventId,
+            [WEBHOOK_EVENT_HEADER]: eventName,
+            [WEBHOOK_SIGNATURE_VERSION_HEADER]: WEBHOOK_SIGNATURE_VERSION,
             'user-agent': 'Astroid-Webhook-Bot/1.0',
           },
           body,
@@ -104,10 +113,9 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
 
         responseStatus = response.status;
         if (!response.ok) {
-          const errorText = await response.text().catch(() => response.statusText);
-          errorMessage = `HTTP ${response.status}: ${errorText}`;
+          errorMessage = `HTTP ${response.status}`;
           isNonTransient = WebhooksProcessor.NON_TRANSIENT_STATUSES.has(response.status);
-          this.logger.warn(`Webhook ${webhookId} responded ${response.status}: ${errorText}`);
+          this.logger.warn(`Webhook ${webhookId} responded ${response.status}${requestTrace}`);
           if (isNonTransient) {
             await this.persistState({
               webhookId,
@@ -124,12 +132,12 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
           }
           throw new Error(errorMessage);
         }
-        this.logger.debug(`Webhook ${webhookId} delivered successfully`);
+        this.logger.debug(`Webhook ${webhookId} delivered successfully${requestTrace}`);
       } catch (error) {
         if (error instanceof UnrecoverableError) throw error;
-        errorMessage = (error as Error).message;
+        errorMessage = error instanceof UnrecoverableError ? error.message : 'Delivery attempt failed';
         const isLastAttempt = job.attemptsMade >= 4;
-        this.logger.error(`Webhook ${webhookId} failed attempt ${job.attemptsMade + 1}/5: ${errorMessage}`);
+        this.logger.error(`Webhook ${webhookId} failed attempt ${job.attemptsMade + 1}/5${requestTrace}`);
         await this.persistState({
           webhookId,
           organizationId,
@@ -142,7 +150,7 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
           responseStatus,
         });
         if (isLastAttempt) {
-          this.logger.error(`Webhook ${webhookId} exhausted all retry attempts`);
+          this.logger.error(`Webhook ${webhookId} exhausted all retry attempts${requestTrace}`);
         }
         throw error;
       }

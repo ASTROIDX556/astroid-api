@@ -87,6 +87,7 @@ export async function runWorkerJob<TData, TResult>(
     attempt,
     maxAttempts,
     durationMs: Date.now() - startedAt,
+    trace: extractTrace(job.data),
   });
 
   try {
@@ -120,7 +121,6 @@ export async function runWorkerJob<TData, TResult>(
         ...(unrecoverable ? { unrecoverable: true } : {}),
         error: described,
         payload: scrubForLog(job.data),
-        trace: extractTrace(job.data),
         timestamp: new Date().toISOString(),
       };
 
@@ -166,9 +166,13 @@ function describeError(error: unknown): { name: string; message: string; stack?:
 function extractTrace(data: unknown): Record<string, string> | undefined {
   if (!data || typeof data !== 'object') return undefined;
   const payload = data as Record<string, unknown>;
+  const metadata =
+    payload.metadata && typeof payload.metadata === 'object'
+      ? (payload.metadata as Record<string, unknown>)
+      : {};
   const trace: Record<string, string> = {};
   for (const key of TRACE_KEYS) {
-    const value = payload[key];
+    const value = payload[key] ?? metadata[key];
     if (typeof value === 'string') trace[key] = value;
   }
   return Object.keys(trace).length ? trace : undefined;
