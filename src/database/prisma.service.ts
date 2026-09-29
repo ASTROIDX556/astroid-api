@@ -1,4 +1,10 @@
-import { INestApplication, Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import {
+  INestApplication,
+  Injectable,
+  Logger,
+  OnModuleDestroy,
+  OnModuleInit,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaClient } from '@prisma/client';
 import { DatabaseConfig } from '../config/database.config';
@@ -30,6 +36,8 @@ import {
 @Injectable()
 export class PrismaService extends PrismaClient implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(PrismaService.name);
+  private readonly connectionRetryAttempts: number;
+  private readonly connectionRetryDelayMs: number;
 
   /**
    * Dedicated client for background workers. It uses its own (smaller) pool
@@ -57,6 +65,8 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
         { level: 'error', emit: 'event' },
       ],
     });
+    this.connectionRetryAttempts = database.connectionRetryAttempts;
+    this.connectionRetryDelayMs = database.connectionRetryDelayMs;
 
     // Inject the timeout-guard extension into this (API) client. `$extends`
     // returns a new client; copying its delegates onto `this` keeps the
@@ -96,20 +106,32 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
   }
 
   async onModuleInit(): Promise<void> {
-    try {
-      await this.$connect();
-      await this.workerClient.$connect();
-      this.logger.log('Prisma connected to the database');
+    await this.connectWithRetry('API', () => this.$connect());
+    await this.connectWithRetry('worker', () => this.workerClient.$connect());
+    await this.validateMigrations();
+    this.logger.log('Prisma connected to the database and migrations are up to date');
+  }
 
-      // Validate migration status after successful connection.
-      await this.validateMigrations();
-    } catch (error) {
-      // Do not crash on boot when the DB is unavailable (e.g. typecheck/build,
-      // or during local development before `docker compose up`). Log and go on.
-      this.logger.warn(
-        `Prisma could not connect on startup: ${(error as Error).message}. ` +
-          'The API will retry lazily on first query.',
-      );
+  private async connectWithRetry(pool: string, connect: () => Promise<void>): Promise<void> {
+    for (let attempt = 1; attempt <= this.connectionRetryAttempts; attempt += 1) {
+      try {
+        await connect();
+        return;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (attempt === this.connectionRetryAttempts) {
+          this.logger.error(
+            `Prisma ${pool} database connection failed after ${attempt} attempt(s): ${message}`,
+          );
+          throw error;
+        }
+
+        const delayMs = Math.min(this.connectionRetryDelayMs * 2 ** (attempt - 1), 30_000);
+        this.logger.warn(
+          `Prisma ${pool} database connection attempt ${attempt}/${this.connectionRetryAttempts} failed: ${message}. Retrying in ${delayMs}ms.`,
+        );
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
     }
   }
 
@@ -133,6 +155,10 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
       );
     } else if (result.migrations.length > 0) {
       this.logger.log(result.message);
+    }
+
+    if (!result.upToDate) {
+      throw new Error(`Database migrations are not up to date: ${result.message}`);
     }
 
     return result;
