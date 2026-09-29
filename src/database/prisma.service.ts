@@ -9,6 +9,7 @@ import { ConfigService } from '@nestjs/config';
 import { PrismaClient } from '@prisma/client';
 import { DatabaseConfig } from '../config/database.config';
 import { buildDatasourceUrl } from './datasource-url';
+import { createQueryMetricsExtension } from './query-metrics.extension';
 import { createQueryTimeoutExtension } from './query-timeout.extension';
 import {
   checkMigrationStatus,
@@ -68,19 +69,18 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
     this.connectionRetryAttempts = database.connectionRetryAttempts;
     this.connectionRetryDelayMs = database.connectionRetryDelayMs;
 
-    // Inject the timeout-guard extension into this (API) client. `$extends`
-    // returns a new client; copying its delegates onto `this` keeps the
-    // PrismaService identity every repository already depends on. The cast is
-    // required because the generated `$extends` return type is a dynamic
-    // extension type rather than a full `PrismaClient`.
+    // Inject the metrics + timeout-guard extensions into this (API) client.
+    // `$extends` returns a new client; copying its delegates onto `this` keeps
+    // the PrismaService identity every repository already depends on.
     Object.assign(
       this,
-      this.$extends(
-        createQueryTimeoutExtension({
-          queryTimeoutMs: database.queryTimeoutMs,
-          poolTimeoutMs: database.poolTimeoutMs,
-        }),
-      ) as unknown as PrismaClient,
+      this.$extends(createQueryMetricsExtension({ slowQueryThresholdMs: database.slowQueryThresholdMs }))
+          .$extends(
+            createQueryTimeoutExtension({
+              queryTimeoutMs: database.queryTimeoutMs,
+              poolTimeoutMs: database.poolTimeoutMs,
+            }),
+          ) as unknown as PrismaClient,
     );
 
     // Dedicated worker pool: smaller, extended timeout, no statement_timeout.
@@ -89,20 +89,20 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
       poolTimeoutMs: database.poolTimeoutMs,
       statementTimeoutMs: 0,
     });
-    // Same cast rationale as above: the generated `$extends` return type is a
-    // dynamic extension type, not a full `PrismaClient`.
     this.workerClient = new PrismaClient({
       datasources: { db: { url: workerUrl } },
       log: [
         { level: 'warn', emit: 'event' },
         { level: 'error', emit: 'event' },
       ],
-    }).$extends(
-      createQueryTimeoutExtension({
-        queryTimeoutMs: database.workerQueryTimeoutMs,
-        poolTimeoutMs: database.poolTimeoutMs,
-      }),
-    ) as unknown as PrismaClient;
+    })
+      .$extends(createQueryMetricsExtension({ slowQueryThresholdMs: database.slowQueryThresholdMs }))
+      .$extends(
+        createQueryTimeoutExtension({
+          queryTimeoutMs: database.workerQueryTimeoutMs,
+          poolTimeoutMs: database.poolTimeoutMs,
+        }),
+      ) as unknown as PrismaClient;
   }
 
   async onModuleInit(): Promise<void> {
