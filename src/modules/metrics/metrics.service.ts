@@ -68,6 +68,11 @@ export class MetricsService implements OnModuleDestroy {
     return this.registry.contentType;
   }
 
+  /** The shared Prometheus registry, for modules that register their own metrics. */
+  public get promRegistry(): Registry {
+    return this.registry;
+  }
+
   public observeHttpRequest(method: string, route: string, statusCode: number, durationSeconds: number): void {
     const labels = { method, route, status_code: String(statusCode) };
     this.httpRequestTotal.inc(labels);
