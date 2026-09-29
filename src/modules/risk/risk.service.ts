@@ -104,9 +104,11 @@ export class RiskService {
       const amountNum = envelope.payload?.amount ? parseFloat(envelope.payload.amount) : 0;
       const riskInput: RiskFactorsInput = {
         amount: amountNum,
-        destination: 'G-DUMMY-DESTINATION',
-        velocityCount: 1,
-        isNewRecipient: false,
+        asset: envelope.payload?.asset ?? 'XLM',
+        knownRecipient: false,
+        recentTransactionCount: 1,
+        walletAgeDays: 0,
+        policyViolations: 0,
       };
 
       await this.evaluate(organizationId, riskInput, {

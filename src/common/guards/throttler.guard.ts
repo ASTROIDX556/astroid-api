@@ -57,7 +57,7 @@ export class AstroidThrottlerGuard extends ThrottlerGuard {
     if (apiKeyId) {
       return `apikey:${apiKeyId}`;
     }
-    const sub = request.user?.sub ?? request.user?.id;
+    const sub = request.user?.id;
     if (sub) {
       return `user:${sub}`;
     }
