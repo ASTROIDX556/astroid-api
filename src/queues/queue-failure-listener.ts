@@ -4,6 +4,7 @@ import { Queues, DlqJobData } from './queues.constants';
 import { redisConfig } from '../config/redis.config';
 import { isTerminalJobFailure } from '../workers/dlq.processor';
 import { RequestContext } from '../common/context/request-context';
+import { scrubForLog, scrubString } from '../utils/log-scrubber.util';
 
 /** Correlation identifiers recovered from the job payload, when present. */
 export interface JobTraceContext {
@@ -180,7 +181,14 @@ export class QueueFailureListener implements OnModuleInit, OnModuleDestroy {
   }
 
   private logRecord(record: JobFailureRecord): void {
-    const line = JSON.stringify(record);
+    // Only the log line is scrubbed; the dead-letter copy keeps the raw payload
+    // so an operator re-drive replays the job exactly as it was enqueued.
+    const line = JSON.stringify({
+      ...record,
+      failedReason: record.failedReason && scrubString(record.failedReason),
+      stacktrace: record.stacktrace?.map(scrubString),
+      payload: scrubForLog(record.payload),
+    });
     if (record.event === 'stalled') {
       this.logger.warn(
         line,
