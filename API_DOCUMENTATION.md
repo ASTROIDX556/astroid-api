@@ -376,6 +376,55 @@ Delete a budget.
 
 ---
 
+## Health Probes (`/health`)
+
+The liveness and readiness probes are served **outside** the API prefix, so
+orchestrator and load-balancer probe paths do not change with the API version.
+Both are public, exempt from rate limiting, excluded from the audit trail, and
+return raw JSON (no success envelope).
+
+### GET `/health/live`
+Liveness probe. Returns `200` whenever the process is running. It performs no
+dependency checks, so a database or cache outage never causes an otherwise
+healthy process to be restarted.
+
+**Authentication:** Public
+
+**Response (200):**
+```json
+{ "status": "up", "timestamp": "2026-09-28T10:00:00.000Z", "uptimeSeconds": 42 }
+```
+
+### GET `/health/ready`
+Readiness probe. Probes the database (`SELECT 1`) and cache (Redis `PING`) in
+parallel, each bounded by a 2 second timeout. Returns `200` when every
+dependency is up and `503` when any is down.
+
+**Authentication:** Public
+
+**Response (503 example):**
+```json
+{
+  "status": "down",
+  "timestamp": "2026-09-28T10:00:00.000Z",
+  "services": {
+    "database": {
+      "status": "down",
+      "latencyMs": 2001,
+      "timestamp": "2026-09-28T10:00:00.000Z",
+      "error": "Database health check timed out after 2000ms"
+    },
+    "cache": { "status": "up", "latencyMs": 1, "timestamp": "2026-09-28T10:00:00.000Z" }
+  }
+}
+```
+
+Richer diagnostics (including Stellar and migration status) remain available
+under the API prefix at `GET /{API_PREFIX}/health/readiness`,
+`GET /{API_PREFIX}/health/liveness` and `GET /{API_PREFIX}/health/database`.
+
+---
+
 ## Common Types
 
 ### Pagination Query
@@ -402,14 +451,32 @@ Paginated responses carry the total row count in the `X-Total-Count` header and 
 ```
 
 ### Error Response
-All endpoints return errors in a consistent format:
+All endpoints return errors as [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) problem details with `Content-Type: application/problem+json`:
 ```json
 {
-  "statusCode": number,
-  "message": string,
-  "error": string
+  "type": "urn:astroid:problem:validation-error",
+  "title": "Validation Failed",
+  "status": 400,
+  "detail": "Request validation failed",
+  "instance": "/api/v1/agents",
+  "code": "VALIDATION_ERROR",
+  "requestId": "req_018f...",
+  "details": [{ "path": "limit", "message": "Number must be less than or equal to 200" }]
 }
 ```
+
+| Member | Description |
+|--------|-------------|
+| `type` | URI identifying the problem type (`urn:astroid:problem:<code>`), or `about:blank` for plain HTTP errors without a dedicated code (e.g. 405) |
+| `title` | Short summary of the problem type; the same for every occurrence |
+| `status` | HTTP status code |
+| `detail` | Explanation specific to this occurrence |
+| `instance` | Request path that produced the error (query string omitted) |
+| `code` | Machine-readable error code; clients should switch on this rather than on `title` or `detail` |
+| `requestId` | Correlation id, matching the `x-request-id` header |
+| `details` | Optional structured context, e.g. field-level validation errors |
+
+Unhandled server errors always return `500` with `code: "INTERNAL_ERROR"` and a generic `detail`; internal information is only written to the server logs under the `requestId`.
 
 ### Authentication
 Most endpoints require Bearer token authentication in the format:
@@ -418,3 +485,16 @@ Authorization: Bearer <access_token>
 ```
 
 Tokens are obtained via `/auth/login` or `/auth/register` endpoints.
+
+### Public Endpoint Rate Limiting
+Unauthenticated endpoints (routes marked `@Public()`, such as `/auth/login`, `/auth/register` and `/auth/refresh`, and every route under `/public/`) share a per-IP sliding-window budget: 60 requests per 60 seconds by default, configurable with `PUBLIC_RATE_LIMIT_MAX_REQUESTS` and `PUBLIC_RATE_LIMIT_WINDOW_SECONDS`. Counters are stored in Redis, so the budget applies across all API instances.
+
+Every rate-limited response includes:
+
+| Header | Description |
+|--------|-------------|
+| `X-RateLimit-Limit` | Requests allowed per window |
+| `X-RateLimit-Remaining` | Requests left in the current window |
+| `X-RateLimit-Reset` | Unix time (seconds) at which the next request slot frees up |
+
+When the budget is exhausted the API responds with `429 Too Many Requests`, a `Retry-After` header (seconds) and error code `RATE_LIMITED`. These limits are in addition to the per-route auth throttling on the `/auth` endpoints.

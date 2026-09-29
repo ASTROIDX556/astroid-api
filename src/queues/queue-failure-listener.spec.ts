@@ -211,6 +211,32 @@ describe('QueueFailureListener', () => {
       expect(opts.removeOnFail).toEqual({ age: 7 * 24 * 3600 });
     });
 
+    it('scrubs secrets from the log line but keeps the raw payload for dead-letter re-drive', async () => {
+      listener.onModuleInit();
+      getJob.mockResolvedValue(
+        exhaustedJob({
+          data: { webhookId: 'wh-1', secret: 'whsec_live' },
+          stacktrace: ['Error: auth failed with Bearer abc.def.ghi'],
+        }),
+      );
+
+      await listener.handleFailed(Queues.Webhooks, {
+        jobId: 'job-123',
+        failedReason: 'auth failed with Bearer abc.def.ghi',
+      });
+
+      const line = String(errorSpy.mock.calls[0][0]);
+      expect(line).not.toContain('whsec_live');
+      expect(line).not.toContain('abc.def.ghi');
+      expect(loggedRecord(errorSpy).payload).toEqual({ webhookId: 'wh-1', secret: '[REDACTED]' });
+
+      const dlqAdd = add.mock.calls.find((call: unknown[]) => String(call[0]).startsWith('dlq:'));
+      expect((dlqAdd?.[1] as { payload: unknown }).payload).toEqual({
+        webhookId: 'wh-1',
+        secret: 'whsec_live',
+      });
+    });
+
     it('never re-routes a failure that already came from the dead-letter queue', async () => {
       listener.onModuleInit();
       getJob.mockResolvedValue(exhaustedJob());
