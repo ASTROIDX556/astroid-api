@@ -60,8 +60,7 @@ export class AgentController {
 
   @Post()
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.DEVELOPER)
-  @UseGuards(SlidingWindowThrottlerGuard)
-  @SlidingWindowLimit(30, 60)
+  @UseGuards(AstroidThrottlerGuard)
   @AuditAction('AGENT_CREATED')
   @ApiOperation({
     summary: 'Register a new agent',
