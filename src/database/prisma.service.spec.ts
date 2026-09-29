@@ -37,6 +37,7 @@ const databaseConfig = {
   queryTimeoutMs: 5000,
   statementTimeoutMs: 10000,
   workerQueryTimeoutMs: 60000,
+  slowQueryThresholdMs: 1000,
   connectionRetryAttempts: 2,
   connectionRetryDelayMs: 1,
 };
@@ -46,12 +47,17 @@ function createMockClient(): {
   $connect: ReturnType<typeof vi.fn>;
   $disconnect: ReturnType<typeof vi.fn>;
 } {
+  const extendedClient = {
+    user: { findMany: vi.fn(), findUnique: vi.fn() },
+    $connect: vi.fn().mockResolvedValue(undefined),
+    $disconnect: vi.fn().mockResolvedValue(undefined),
+    $extends: vi.fn(),
+  };
+  // Make $extends on the extended client return itself for further chaining.
+  extendedClient.$extends.mockReturnValue(extendedClient);
+
   return {
-    $extends: vi.fn().mockReturnValue({
-      user: { findMany: vi.fn(), findUnique: vi.fn() },
-      $connect: vi.fn().mockResolvedValue(undefined),
-      $disconnect: vi.fn().mockResolvedValue(undefined),
-    }),
+    $extends: vi.fn().mockReturnValue(extendedClient),
     $connect: vi.fn().mockResolvedValue(undefined),
     $disconnect: vi.fn().mockResolvedValue(undefined),
   };

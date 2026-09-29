@@ -34,6 +34,9 @@ export const databaseEnvSchema = z.object({
   // worker transactions (rollups, outbox drains) must not be killed by the API
   // guard; 0 disables the worker guard entirely.
   DATABASE_WORKER_QUERY_TIMEOUT_MS: z.coerce.number().int().nonnegative().default(60000),
+  // Slow query logging threshold (ms). Queries exceeding this emit a warn log.
+  // 0 disables slow query logging.
+  DATABASE_SLOW_QUERY_THRESHOLD_MS: z.coerce.number().int().nonnegative().default(1000),
   DATABASE_CONNECT_RETRY_ATTEMPTS: z.coerce.number().int().positive().max(10).default(5),
   DATABASE_CONNECT_RETRY_DELAY_MS: z.coerce.number().int().positive().max(60000).default(1000),
 });
