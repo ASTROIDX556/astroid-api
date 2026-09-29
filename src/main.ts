@@ -8,8 +8,15 @@ import { Request, Response, NextFunction } from 'express';
 import { AppModule } from './app.module';
 import { PrismaService } from './database/prisma.service';
 import { AppConfig } from './config/app.config';
+import { assertValidEnvironment, EnvironmentValidationError } from './config/env.validation';
 
 async function bootstrap() {
+  // Fail fast on missing or malformed configuration, before any module is
+  // constructed or any connection is opened. `.env` has already been merged
+  // into `process.env` at this point: `ConfigModule.forRoot` loads it when
+  // `AppModule` is imported.
+  assertValidEnvironment(process.env);
+
   const app = await NestFactory.create(AppModule, { bufferLogs: true });
   const config = app.get(ConfigService);
   const appConfig = config.getOrThrow<AppConfig>('app');
@@ -101,6 +108,12 @@ async function bootstrap() {
 }
 
 bootstrap().catch((error) => {
-  console.error('Failed to bootstrap:', error);
+  if (error instanceof EnvironmentValidationError) {
+    // The message already lists every failing variable; a stack trace would
+    // only bury it.
+    console.error(error.message);
+  } else {
+    console.error('Failed to bootstrap:', error);
+  }
   process.exit(1);
 });
