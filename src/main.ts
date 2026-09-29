@@ -65,9 +65,15 @@ async function bootstrap() {
   // API prefix (e.g. api/v1). Versioning is expressed via this stable prefix
   // rather than Nest URI versioning to avoid a duplicated version segment.
   // `/metrics` is excluded so it stays at a fixed, unversioned path for
-  // Prometheus scrape configs.
+  // Prometheus scrape configs. The liveness/readiness probes are excluded for
+  // the same reason: orchestrator and load-balancer probe paths must not change
+  // when the API version does.
   app.setGlobalPrefix(appConfig.apiPrefix, {
-    exclude: [{ path: 'metrics', method: RequestMethod.GET }],
+    exclude: [
+      { path: 'metrics', method: RequestMethod.GET },
+      { path: 'health/live', method: RequestMethod.GET },
+      { path: 'health/ready', method: RequestMethod.GET },
+    ],
   });
 
   // OpenAPI / Swagger documentation
