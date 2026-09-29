@@ -21,6 +21,7 @@ import {
 import {
   ExportAuditLogsQuery,
   exportAuditLogsQuerySchema,
+  ExportAuditLogsQueryDto,
 } from './audit-export.dto';
 
 /** Read-only access to the append-only audit trail. Restricted to auditors/admins. */
@@ -37,11 +38,7 @@ export class AuditController {
     description:
       'Exports audit log entries in CSV or JSON format. Supports filtering by action, date range, and agent.',
   })
-  @ApiQuery({ name: 'format', required: false, enum: ['csv', 'json'], description: 'Export format (default: json)' })
-  @ApiQuery({ name: 'startDate', required: false, type: String, description: 'ISO 8601 start date filter' })
-  @ApiQuery({ name: 'endDate', required: false, type: String, description: 'ISO 8601 end date filter' })
-  @ApiQuery({ name: 'action', required: false, type: String, description: 'Filter by audit action type' })
-  @ApiQuery({ name: 'agentId', required: false, type: String, description: 'Filter by agent UUID' })
+  @ApiQuery({ type: ExportAuditLogsQueryDto })
   @ApiProduces('text/csv', 'application/json')
   @ApiResponse({ status: 200, description: 'Audit log export (CSV or JSON)' })
   @ApiResponse({ status: 401, description: 'Not authenticated' })

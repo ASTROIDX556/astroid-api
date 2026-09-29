@@ -8,20 +8,29 @@ import {
 } from '../decorators/throttle-tier.decorator';
 
 /**
- * Rate-limit guard with two tiers. Every route is evaluated against both named
- * throttlers ('api' = 120/min, 'auth' = 10/min by default), but each throttler
- * only counts a request when its name matches the route's tier — so the auth
- * endpoints (marked `@ThrottleTierDecorator('auth')`) get the stricter limit
- * while everything else falls back to the `api` tier.
+ * Rate-limit guard with per-tier steady-state and burst throttlers.
+ *
+ * Each route is evaluated against every registered named throttler, but a
+ * throttler fires only when its name matches the route's declared tier:
+ *
+ *  - A throttler named `'api'` fires only on `api`-tier routes.
+ *  - A throttler named `'api-burst'` fires only on `api`-tier routes
+ *    (the `-burst` suffix is stripped for comparison).
+ *  - Routes without an explicit `@ThrottleTierDecorator` default to `api`.
+ *
+ * This means auth endpoints (marked `@ThrottleTierDecorator('auth')`) get the
+ * stricter steady-state limit **and** the tighter burst limit, while everything
+ * else is governed by the `api` pair.
  *
  * The counter is scoped to the authenticated organization, falling back to the
- * client IP for anonymous auth endpoints.
+ * client IP for anonymous requests (e.g. auth endpoints before login).
  */
 @Injectable()
 export class AstroidThrottlerGuard extends ThrottlerGuard {
   /**
-   * Enforce a named throttler only when it matches the route's declared tier.
-   * Routes without an explicit tier default to `api`.
+   * Enforce a named throttler only when its base tier matches the route's
+   * declared tier. The base tier of `'api-burst'` is `'api'`, so the burst
+   * throttler fires on the same set of routes as its steady-state counterpart.
    */
   protected async handleRequest(requestProps: ThrottlerRequest): Promise<boolean> {
     const { context, throttler } = requestProps;
@@ -31,16 +40,27 @@ export class AstroidThrottlerGuard extends ThrottlerGuard {
         context.getClass(),
       ]) ?? 'api';
 
+    // Strip the optional `-burst` suffix to get the base tier name.
+    const throttlerBaseTier = throttler.name?.replace(/-burst$/, '') as ThrottleTier | undefined;
+
     // This named throttler does not govern this route's tier — do not count it.
-    if (throttler.name !== routeTier) {
+    if (throttlerBaseTier !== routeTier) {
       return true;
     }
 
     return super.handleRequest(requestProps);
   }
 
-  protected async getTracker(req: Record<string, unknown>): Promise<string> {
-    const request = req as unknown as Request & { user?: AuthenticatedUser };
+  protected async getTracker(req: Record<string, any>): Promise<string> {
+    const request = req as unknown as Request & { user?: AuthenticatedUser; apiKey?: { id: string }; headers: Record<string, any> };
+    const apiKeyId = request.apiKey?.id ?? request.headers['x-api-key'];
+    if (apiKeyId) {
+      return `apikey:${apiKeyId}`;
+    }
+    const sub = request.user?.sub ?? request.user?.id;
+    if (sub) {
+      return `user:${sub}`;
+    }
     const org = request.user?.organizationId;
     if (org) {
       return `org:${org}`;

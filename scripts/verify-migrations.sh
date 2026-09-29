@@ -12,7 +12,8 @@
 #        migration and `migration_lock.toml`).
 #      - Unbalanced parentheses / unclosed quote heuristics catch truncated
 #        or hand-broken SQL before it reaches a database.
-#   2. Generates the Prisma client.
+#      - Migration timestamp prefixes must be unique.
+#   2. Validates schema.prisma and generates the Prisma client.
 #   3. (DATABASE_URL set) Applies every pending migration (idempotent) and
 #      checks `prisma migrate status`.
 #   4. (SHADOW_DATABASE_URL set) Drift check: rebuilds the schema purely from
@@ -27,6 +28,9 @@
 #                         without an active database connection.
 #   SHADOW_DATABASE_URL   (optional) An empty scratch database used for the
 #                         drift check. Requires DATABASE_URL to be set.
+#   CHECK_GIT_DIRTY       (optional) Set to `true` to fail when the git
+#                         working tree is dirty (catches migrations that were
+#                         never committed).
 #
 # Exit codes:
 #   0  verification passed
@@ -114,6 +118,8 @@ check_sql_integrity() {
   fi
 }
 
+declare -A seen_timestamps
+
 found_migrations=0
 for dir in "${MIGRATIONS_DIR}"/*; do
   [[ -d "${dir}" ]] || continue
@@ -126,6 +132,17 @@ for dir in "${MIGRATIONS_DIR}"/*; do
 
   if [[ ! "${name}" =~ ${MIGRATION_NAME_RE} ]]; then
     fail "'${name}' violates the migration naming convention '<UTC-timestamp>_<snake_case_name>'"
+  fi
+
+  # Timestamp prefixes must be unique: two migrations sharing one would make
+  # the applied order ambiguous.
+  if [[ "${name}" =~ ^([0-9]{14}) ]]; then
+    ts="${BASH_REMATCH[1]}"
+    if [[ -n "${seen_timestamps[${ts}]:-}" ]]; then
+      fail "'${name}' shares its timestamp prefix with '${seen_timestamps[${ts}]}'"
+    else
+      seen_timestamps["${ts}"]="${name}"
+    fi
   fi
 
   sql_file="${dir}/migration.sql"
@@ -156,8 +173,29 @@ fi
 echo "==> Static migration verification passed"
 
 # --------------------------------------------------------------------------
-# 2. Prisma client generation (also validates schema.prisma syntax).
+# Optional: fail on a dirty git working tree (opt-in via CHECK_GIT_DIRTY).
 # --------------------------------------------------------------------------
+if [[ "${CHECK_GIT_DIRTY:-false}" == "true" ]]; then
+  echo "==> Checking git working tree state"
+  if [[ -n "$(git status --porcelain)" ]]; then
+    echo "!! Git working tree is dirty. Uncommitted migration or schema changes detected." >&2
+    git status --porcelain >&2
+    exit 1
+  fi
+fi
+
+# --------------------------------------------------------------------------
+# 2. Prisma schema validation + client generation.
+# --------------------------------------------------------------------------
+# `prisma validate` resolves env("DATABASE_URL") and rejects an empty value,
+# so static mode (no real database) validates the schema against a placeholder
+# URL — it is never connected to.
+if [[ -z "${DATABASE_URL:-}" ]]; then
+  DATABASE_URL="postgresql://placeholder:placeholder@localhost:5432/placeholder" npx prisma validate
+else
+  npx prisma validate
+fi
+
 echo "==> Generating Prisma client (validates schema.prisma syntax)"
 npx prisma generate
 
@@ -195,7 +233,7 @@ if [[ -n "${SHADOW_DATABASE_URL:-}" ]]; then
 
   if [[ -n "${drift//[[:space:]]/}" ]]; then
     echo "!! Schema drift detected — schema.prisma differs from the applied migrations." >&2
-    echo "$drift" >&2
+    echo "${drift}" >&2
     exit 1
   fi
 

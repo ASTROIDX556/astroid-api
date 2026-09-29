@@ -126,6 +126,7 @@ export class PolicyService {
   /**
    * Evaluates an intent against all applicable stored policies. Emits a
    * PolicyEvaluated event (and PolicyViolated on failure) for the ledger.
+   * Also persists an audit log entry for compliance tracking.
    */
   async evaluateIntent(
     intent: TransactionIntent,
@@ -137,12 +138,16 @@ export class PolicyService {
     );
     const result = this.engine.evaluate(intent, policies.map(toEvaluable));
 
+    // Emit domain events for the ledger
     await this.eventBus.emit(
       DomainEventName.PolicyEvaluated,
       {
         passed: result.passed,
         requiresApproval: result.requiresApproval,
         violations: result.violations.map((v) => v.code),
+        amount: intent.amount,
+        asset: intent.asset,
+        recipientAddress: intent.recipientAddress,
       },
       {
         organizationId: intent.organizationId,
@@ -164,6 +169,30 @@ export class PolicyService {
         },
       );
     }
+
+    // Persist audit log for policy evaluation
+    if (actorId) {
+      await this.prisma.auditLog.create({
+        data: {
+          organizationId: intent.organizationId,
+          userId: actorId,
+          action: 'POLICY_EVALUATED',
+          entity: 'policy',
+          entityId: result.matchedPolicyId,
+          oldValue: null as unknown as Prisma.InputJsonValue,
+          newValue: {
+            passed: result.passed,
+            requiresApproval: result.requiresApproval,
+            violations: result.violations,
+            transactionIntent: intent,
+          } as unknown as Prisma.InputJsonValue,
+        },
+      }).catch((error) => {
+        // Audit log failures should not block policy evaluation
+        console.error('Failed to persist policy evaluation audit log:', error);
+      });
+    }
+
     return result;
   }
 

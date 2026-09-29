@@ -1,7 +1,6 @@
 import { Module } from '@nestjs/common';
 import { BullModule } from '@nestjs/bullmq';
 import { BalanceWorker } from './balance.worker';
-import { WebhookDeliveryWorker } from './webhook-delivery.worker';
 import { AnalyticsAggregationWorker } from './analytics-aggregation.worker';
 import { NotificationDeliveryWorker } from './notification-delivery.worker';
 import { AuditWorker } from './audit.worker';
@@ -43,14 +42,12 @@ import { Queues } from '../queues/queues.constants';
   ],
   providers: [
     NotificationDeliveryWorker,
-    WebhookDeliveryWorker,
     BalanceWorker,
     AnalyticsAggregationWorker,
     AuditWorker,
   ],
   exports: [
     NotificationDeliveryWorker,
-    WebhookDeliveryWorker,
     BalanceWorker,
     AnalyticsAggregationWorker,
     AuditWorker,

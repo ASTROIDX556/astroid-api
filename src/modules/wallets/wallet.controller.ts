@@ -7,6 +7,7 @@ import {
   Patch,
   Post,
   Query,
+  UseGuards,
 } from '@nestjs/common';
 import {
   ApiOperation,
@@ -26,6 +27,8 @@ import {
   updateWalletSchema,
   UpdateWalletInput,
   UpdateWalletDto,
+  WalletResponseDto,
+  WalletBalanceDto,
 } from './wallet.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
@@ -34,6 +37,7 @@ import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 import { AuthenticatedUser } from '../../common/interfaces/authenticated-user.interface';
 import { PaginationQuery, paginationQuerySchema } from '../../common/helpers/pagination';
 import { ApiEnvelope } from '../../common/decorators/api-envelope.decorator';
+import { AstroidThrottlerGuard } from '../../common/guards/throttler.guard';
 
 @ApiTags('wallets')
 @ApiBearerAuth('access-token')
@@ -52,7 +56,7 @@ export class WalletController {
   @ApiQuery({ name: 'limit', required: false, type: Number, description: 'Items per page (default: 20)' })
   @ApiQuery({ name: 'status', required: false, enum: ['ACTIVE', 'FROZEN', 'ARCHIVED'], description: 'Filter by wallet status' })
   @ApiQuery({ name: 'network', required: false, enum: ['TESTNET', 'PUBLIC'], description: 'Filter by Stellar network' })
-  @ApiEnvelope(CreateWalletDto as never, { isArray: true })
+  @ApiEnvelope(WalletResponseDto as never, { isArray: true })
   @ApiResponse({ status: 200, description: 'Paginated list of wallets' })
   @ApiResponse({ status: 401, description: 'Not authenticated' })
   list(
@@ -64,6 +68,7 @@ export class WalletController {
 
   @Post()
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.FINANCE, UserRole.DEVELOPER)
+  @UseGuards(AstroidThrottlerGuard)
   @AuditAction('WALLET_CREATED')
   @ApiOperation({
     summary: 'Create a wallet (generate a keypair or import an address)',
@@ -72,8 +77,7 @@ export class WalletController {
       'When importing, only the public address is recorded for balance tracking.',
   })
   @ApiBody({ type: CreateWalletDto })
-  @ApiEnvelope(CreateWalletDto as never)
-  @ApiResponse({ status: 201, description: 'Wallet created successfully (secret key included on generation)' })
+  @ApiResponse({ status: 201, description: 'Wallet created successfully (secret key included on generation)', type: WalletResponseDto })
   @ApiResponse({ status: 400, description: 'Validation error' })
   @ApiResponse({ status: 401, description: 'Not authenticated' })
   @ApiResponse({ status: 403, description: 'Insufficient permissions' })
@@ -90,8 +94,7 @@ export class WalletController {
     description: 'Returns full details of a single wallet by ID.',
   })
   @ApiParam({ name: 'id', description: 'Wallet UUID', example: '018f0a1b-...' })
-  @ApiEnvelope(CreateWalletDto as never)
-  @ApiResponse({ status: 200, description: 'Wallet details' })
+  @ApiResponse({ status: 200, description: 'Wallet details', type: WalletResponseDto })
   @ApiResponse({ status: 401, description: 'Not authenticated' })
   @ApiResponse({ status: 404, description: 'Wallet not found' })
   findOne(@CurrentUser('organizationId') organizationId: string, @Param('id') id: string) {
@@ -106,7 +109,7 @@ export class WalletController {
       'For generated wallets, this includes XLM and all trustline assets.',
   })
   @ApiParam({ name: 'id', description: 'Wallet UUID', example: '018f0a1b-...' })
-  @ApiResponse({ status: 200, description: 'Current on-chain balances' })
+  @ApiResponse({ status: 200, description: 'Current on-chain balances', type: [WalletBalanceDto] })
   @ApiResponse({ status: 401, description: 'Not authenticated' })
   @ApiResponse({ status: 404, description: 'Wallet not found' })
   @ApiResponse({ status: 502, description: 'Stellar network error' })
@@ -123,7 +126,7 @@ export class WalletController {
   })
   @ApiParam({ name: 'id', description: 'Wallet UUID', example: '018f0a1b-...' })
   @ApiBody({ type: UpdateWalletDto })
-  @ApiResponse({ status: 200, description: 'Wallet updated successfully' })
+  @ApiResponse({ status: 200, description: 'Wallet updated successfully', type: WalletResponseDto })
   @ApiResponse({ status: 400, description: 'Validation error' })
   @ApiResponse({ status: 401, description: 'Not authenticated' })
   @ApiResponse({ status: 403, description: 'Insufficient permissions' })
@@ -145,7 +148,7 @@ export class WalletController {
       'Places the wallet in FROZEN status. All outgoing transactions will be blocked until the wallet is unfrozen.',
   })
   @ApiParam({ name: 'id', description: 'Wallet UUID', example: '018f0a1b-...' })
-  @ApiResponse({ status: 200, description: 'Wallet frozen successfully' })
+  @ApiResponse({ status: 200, description: 'Wallet frozen successfully', type: WalletResponseDto })
   @ApiResponse({ status: 401, description: 'Not authenticated' })
   @ApiResponse({ status: 403, description: 'Insufficient permissions' })
   @ApiResponse({ status: 404, description: 'Wallet not found' })
@@ -162,7 +165,7 @@ export class WalletController {
     description: 'Restores a frozen wallet to ACTIVE status, allowing outgoing transactions again.',
   })
   @ApiParam({ name: 'id', description: 'Wallet UUID', example: '018f0a1b-...' })
-  @ApiResponse({ status: 200, description: 'Wallet unfrozen successfully' })
+  @ApiResponse({ status: 200, description: 'Wallet unfrozen successfully', type: WalletResponseDto })
   @ApiResponse({ status: 401, description: 'Not authenticated' })
   @ApiResponse({ status: 403, description: 'Insufficient permissions' })
   @ApiResponse({ status: 404, description: 'Wallet not found' })
