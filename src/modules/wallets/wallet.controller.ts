@@ -7,6 +7,7 @@ import {
   Patch,
   Post,
   Query,
+  UseGuards,
 } from '@nestjs/common';
 import {
   ApiOperation,
@@ -36,6 +37,7 @@ import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 import { AuthenticatedUser } from '../../common/interfaces/authenticated-user.interface';
 import { PaginationQuery, paginationQuerySchema } from '../../common/helpers/pagination';
 import { ApiEnvelope } from '../../common/decorators/api-envelope.decorator';
+import { AstroidThrottlerGuard } from '../../common/guards/throttler.guard';
 
 @ApiTags('wallets')
 @ApiBearerAuth('access-token')
@@ -66,6 +68,7 @@ export class WalletController {
 
   @Post()
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.FINANCE, UserRole.DEVELOPER)
+  @UseGuards(AstroidThrottlerGuard)
   @AuditAction('WALLET_CREATED')
   @ApiOperation({
     summary: 'Create a wallet (generate a keypair or import an address)',
