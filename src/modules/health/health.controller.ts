@@ -1,7 +1,10 @@
 import { Controller, Get, Res, HttpStatus } from '@nestjs/common';
 import { ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { HealthIndicatorResult } from '@nestjs/terminus';
+import { SkipThrottle } from '@nestjs/throttler';
 import { Response } from 'express';
+import { Public } from '../../common/decorators/public.decorator';
+import { SkipAudit } from '../../common/decorators/skip-audit.decorator';
 import { PrismaHealthIndicator } from './indicators/prisma.health';
 import { RedisHealthIndicator } from './indicators/redis.health';
 import { StellarHealthIndicator } from './indicators/stellar.health';
@@ -14,8 +17,21 @@ interface ReadinessServiceReport {
   [key: string]: unknown;
 }
 
+/**
+ * Health and probe endpoints. Public (orchestrators and load balancers carry no
+ * credentials), excluded from rate limiting so frequent probes can never be
+ * answered with a 429, and excluded from the audit trail so probes do not write
+ * a row per request — or attempt to while the database is down.
+ *
+ * `GET /health/live` and `GET /health/ready` are the orchestrator probes and are
+ * served outside the global API prefix (see `main.ts`); the remaining routes are
+ * richer diagnostics served under it.
+ */
 @ApiTags('Health')
 @Controller('health')
+@Public()
+@SkipAudit()
+@SkipThrottle({ api: true, auth: true })
 export class HealthController {
   constructor(
     private readonly dbIndicator: PrismaHealthIndicator,
@@ -24,7 +40,55 @@ export class HealthController {
     private readonly migrationIndicator: DatabaseMigrationHealthIndicator,
   ) {}
 
-  @Get(['live', 'liveness'])
+  @Get('live')
+  @ApiOperation({
+    summary: 'Liveness probe',
+    description:
+      'Returns 200 whenever the process is running and able to serve HTTP. Performs no ' +
+      'dependency checks, so a downstream outage never causes the orchestrator to restart ' +
+      'an otherwise healthy process.',
+  })
+  @ApiResponse({ status: 200, description: 'Process is alive' })
+  live(@Res() res: Response) {
+    return res.status(HttpStatus.OK).json({
+      status: 'up',
+      timestamp: new Date().toISOString(),
+      uptimeSeconds: Math.floor(process.uptime()),
+    });
+  }
+
+  @Get('ready')
+  @ApiOperation({
+    summary: 'Readiness probe',
+    description:
+      'Probes the critical dependencies (database and cache) in parallel. Returns 200 when ' +
+      'every dependency is up and 503 when any is down, with per-dependency status, latency ' +
+      'and error detail under `services`.',
+  })
+  @ApiResponse({ status: 200, description: 'All critical dependencies are reachable' })
+  @ApiResponse({ status: 503, description: 'At least one critical dependency is unreachable' })
+  async ready(@Res() res: Response) {
+    const [database, cache] = await Promise.all([
+      this.dbIndicator.check('database'),
+      this.redisIndicator.checkHealth(),
+    ]);
+
+    const services = {
+      database: unwrap(database, 'database'),
+      cache,
+    };
+
+    const isReady = Object.values(services).every((s) => s.status === 'up');
+    const statusCode = isReady ? HttpStatus.OK : HttpStatus.SERVICE_UNAVAILABLE;
+
+    return res.status(statusCode).json({
+      status: isReady ? 'up' : 'down',
+      timestamp: new Date().toISOString(),
+      services,
+    });
+  }
+
+  @Get('liveness')
   @ApiOperation({ summary: 'Application liveness check' })
   @ApiResponse({ status: 200, description: 'Application is alive' })
   getLiveness() {
@@ -77,6 +141,19 @@ export class HealthController {
     const statusCode = isUp ? HttpStatus.OK : HttpStatus.SERVICE_UNAVAILABLE;
 
     return res.status(statusCode).json(database);
+  }
+
+  @Get('redis')
+  @ApiOperation({ summary: 'Redis connectivity check' })
+  @ApiResponse({ status: 200, description: 'Redis is reachable' })
+  @ApiResponse({ status: 503, description: 'Redis is unreachable' })
+  async getRedis(@Res() res: Response) {
+    const redis = await this.redisIndicator.checkHealth();
+
+    const isUp = redis.status === 'up';
+    const statusCode = isUp ? HttpStatus.OK : HttpStatus.SERVICE_UNAVAILABLE;
+
+    return res.status(statusCode).json(redis);
   }
 
   @Get()
