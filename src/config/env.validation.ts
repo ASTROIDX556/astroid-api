@@ -97,6 +97,20 @@ export const rateLimitEnvSchema = z.object({
   RATE_LIMIT_WINDOW_SECONDS: z.coerce.number().int().positive().default(60),
   // Max requests allowed per client within the sliding window.
   RATE_LIMIT_MAX_REQUESTS: z.coerce.number().int().positive().default(120),
+  // IP-based limiter for unauthenticated routes (@Public() or under
+  // `<API_PREFIX>/public/`), shared across replicas via Redis.
+  PUBLIC_RATE_LIMIT_ENABLED: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((value) => value === 'true'),
+  PUBLIC_RATE_LIMIT_MAX_REQUESTS: z.coerce.number().int().positive().default(60),
+  PUBLIC_RATE_LIMIT_WINDOW_SECONDS: z.coerce.number().int().positive().default(60),
+  // Only enable behind a trusted reverse proxy: the client IP is then read from
+  // the first X-Forwarded-For entry, which clients can otherwise spoof.
+  PUBLIC_RATE_LIMIT_TRUST_PROXY: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
 });
 
 export const metricsEnvSchema = z.object({
