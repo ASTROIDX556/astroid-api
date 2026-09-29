@@ -1,6 +1,7 @@
 import { Controller, Get, Res, HttpStatus } from '@nestjs/common';
 import { ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { HealthIndicatorResult } from '@nestjs/terminus';
+import { SkipThrottle } from '@nestjs/throttler';
 import { Response } from 'express';
 import { PrismaHealthIndicator } from './indicators/prisma.health';
 import { RedisHealthIndicator } from './indicators/redis.health';
@@ -16,6 +17,7 @@ interface ReadinessServiceReport {
 
 @ApiTags('Health')
 @Controller('health')
+@SkipThrottle()
 export class HealthController {
   constructor(
     private readonly dbIndicator: PrismaHealthIndicator,

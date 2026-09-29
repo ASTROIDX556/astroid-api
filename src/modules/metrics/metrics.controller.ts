@@ -1,5 +1,6 @@
 import { Controller, Get, Res, UseGuards } from '@nestjs/common';
 import { ApiExcludeController } from '@nestjs/swagger';
+import { SkipThrottle } from '@nestjs/throttler';
 import { Response } from 'express';
 import { MetricsService } from './metrics.service';
 import { MetricsAccessGuard } from './metrics-access.guard';
@@ -10,12 +11,14 @@ import { SkipAudit } from '../../common/decorators/skip-audit.decorator';
  * Prometheus scrape endpoint. Public (no JWT/API key) but restricted to
  * internal network ranges by `MetricsAccessGuard`, and excluded from both
  * the audit trail and the global response envelope since scrapers expect
- * raw Prometheus text exposition format.
+ * raw Prometheus text exposition format. Rate limiting is also skipped so
+ * frequent Prometheus scrape intervals never trip the rate limiter.
  */
 @ApiExcludeController()
 @Controller('metrics')
 @Public()
 @SkipAudit()
+@SkipThrottle()
 @UseGuards(MetricsAccessGuard)
 export class MetricsController {
   constructor(private readonly metricsService: MetricsService) {}

@@ -82,7 +82,14 @@ export const queueEnvSchema = z.object({
 export const throttleEnvSchema = z.object({
   THROTTLE_AUTH_LIMIT: z.coerce.number().int().positive().default(10),
   THROTTLE_API_LIMIT: z.coerce.number().int().positive().default(120),
+  THROTTLE_WEBHOOK_LIMIT: z.coerce.number().int().positive().default(30),
   THROTTLE_TTL: z.coerce.number().int().positive().default(60),
+  // Short-term burst allowance per tier (requests per second). A burst window
+  // is intentionally kept very short (1 s) so spikes don't exhaust the full
+  // steady-state quota. Set to 0 to disable burst enforcement.
+  THROTTLE_API_BURST: z.coerce.number().int().nonnegative().default(10),
+  THROTTLE_AUTH_BURST: z.coerce.number().int().nonnegative().default(3),
+  THROTTLE_WEBHOOK_BURST: z.coerce.number().int().nonnegative().default(5),
 });
 
 export const rateLimitEnvSchema = z.object({

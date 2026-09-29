@@ -9,20 +9,29 @@ import { throttleEnvSchema, validateEnv } from './env.validation';
 export type TieredThrottlerOptions = Exclude<ThrottlerModuleOptions, ThrottlerOptions[]>;
 
 export type ThrottlerConfig = {
-  /** Fixed-window length in seconds, shared by every tier. */
+  /** Fixed-window length in seconds, shared by every steady-state tier. */
   windowSeconds: number;
   /** Requests allowed per window on the public `api` tier. */
   apiLimit: number;
   /** Requests allowed per window on the sensitive `auth` tier. */
   authLimit: number;
+  /** Requests allowed per window on the `webhook` management tier. */
+  webhookLimit: number;
+  /**
+   * Burst throttlers — each applies a 1-second window with a per-tier
+   * maximum so single-second spikes don't consume the full steady-state quota.
+   * A value of 0 disables burst enforcement for that tier.
+   */
+  apiBurst: number;
+  authBurst: number;
+  webhookBurst: number;
 };
 
 /**
  * Rate-limit configuration, driven by the `THROTTLE_*` environment variables.
  *
- * Historically these values lived under the `queue` namespace even though
- * BullMQ never read them — they only ever configured `@nestjs/throttler`. The
- * dedicated `throttler` namespace makes the ownership explicit.
+ * The dedicated `throttler` namespace makes the ownership of these variables
+ * explicit (they previously lived ambiguously under `queue`).
  */
 export const throttlerConfig = registerAs('throttler', (): ThrottlerConfig => {
   const env = validateEnv(throttleEnvSchema, process.env);
@@ -30,13 +39,25 @@ export const throttlerConfig = registerAs('throttler', (): ThrottlerConfig => {
     windowSeconds: env.THROTTLE_TTL,
     apiLimit: env.THROTTLE_API_LIMIT,
     authLimit: env.THROTTLE_AUTH_LIMIT,
+    webhookLimit: env.THROTTLE_WEBHOOK_LIMIT,
+    apiBurst: env.THROTTLE_API_BURST,
+    authBurst: env.THROTTLE_AUTH_BURST,
+    webhookBurst: env.THROTTLE_WEBHOOK_BURST,
   };
 });
 
 /**
- * Builds the two tiered throttlers consumed by `AstroidThrottlerGuard`:
- *  - `api`  — every route that does not declare a tier explicitly
- *  - `auth` — routes marked with `@ThrottleTierDecorator('auth')`
+ * Builds the named throttlers consumed by `AstroidThrottlerGuard`:
+ *
+ *  Steady-state tiers (TTL = `windowSeconds`):
+ *   - `api`     — every route that does not declare a tier explicitly
+ *   - `auth`    — routes marked with `@ThrottleTierDecorator('auth')`
+ *   - `webhook` — routes marked with `@ThrottleTierDecorator('webhook')`
+ *
+ *  Burst tiers (TTL = 1 second), only registered when the burst limit > 0:
+ *   - `api-burst`     — short-term spike guard for `api` routes
+ *   - `auth-burst`    — short-term spike guard for `auth` routes
+ *   - `webhook-burst` — short-term spike guard for `webhook` routes
  *
  * The options must be returned in the object form (not the bare array) so the
  * shared Redis {@link ThrottlerStorage} can be attached: `@nestjs/throttler`
@@ -50,12 +71,28 @@ export function createThrottlerOptions(
   storage?: ThrottlerStorage,
 ): TieredThrottlerOptions {
   const ttl = config.windowSeconds * 1000;
+  const burstTtl = 1_000; // 1 second burst window
+
+  const throttlers: ThrottlerOptions[] = [
+    // ── Steady-state tiers ──────────────────────────────────────────────────
+    { name: 'api', ttl, limit: config.apiLimit },
+    { name: 'auth', ttl, limit: config.authLimit },
+    { name: 'webhook', ttl, limit: config.webhookLimit },
+  ];
+
+  // ── Burst tiers — only wired when burst > 0 ─────────────────────────────
+  if (config.apiBurst > 0) {
+    throttlers.push({ name: 'api-burst', ttl: burstTtl, limit: config.apiBurst });
+  }
+  if (config.authBurst > 0) {
+    throttlers.push({ name: 'auth-burst', ttl: burstTtl, limit: config.authBurst });
+  }
+  if (config.webhookBurst > 0) {
+    throttlers.push({ name: 'webhook-burst', ttl: burstTtl, limit: config.webhookBurst });
+  }
 
   return {
     ...(storage ? { storage } : {}),
-    throttlers: [
-      { name: 'api', ttl, limit: config.apiLimit },
-      { name: 'auth', ttl, limit: config.authLimit },
-    ],
+    throttlers,
   };
 }
