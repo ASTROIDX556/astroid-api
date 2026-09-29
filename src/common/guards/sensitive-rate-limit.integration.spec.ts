@@ -6,6 +6,7 @@ import { AstroidThrottlerGuard } from './throttler.guard';
 import { REDIS_CLIENT } from '../locks/locks.constants';
 import { MemorySlidingWindowStore } from '../throttler/sliding-window.store';
 import { RedisThrottlerStorage } from '../throttler/redis-throttler.storage';
+import type { Redis } from 'ioredis';
 
 @Controller('test-sensitive')
 class TestSensitiveController {
@@ -44,7 +45,7 @@ describe('Sensitive Endpoint Rate Limiting (Integration)', () => {
         },
         {
           provide: 'ThrottlerStorage',
-          useFactory: (redisClient: any) => new RedisThrottlerStorage(redisClient),
+          useFactory: (redisClient: Redis) => new RedisThrottlerStorage(redisClient),
           inject: [REDIS_CLIENT],
         },
       ],
