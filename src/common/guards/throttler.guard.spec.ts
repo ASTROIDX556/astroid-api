@@ -9,7 +9,16 @@ import { THROTTLE_TIER_KEY, ThrottleTier } from '../decorators/throttle-tier.dec
 /** Shape returned by `ThrottlerStorage#increment` (not re-exported by the lib). */
 type ThrottlerStorageRecord = Awaited<ReturnType<AstroidThrottlerGuard['storageService']['increment']>>;
 
-const CONFIG: ThrottlerConfig = { windowSeconds: 60, apiLimit: 120, authLimit: 10, agentLimit: 300 };
+const CONFIG: ThrottlerConfig = {
+  windowSeconds: 60,
+  apiLimit: 120,
+  authLimit: 10,
+  agentLimit: 300,
+  webhookLimit: 30,
+  apiBurst: 10,
+  authBurst: 3,
+  webhookBurst: 5,
+};
 
 const UNBLOCKED: ThrottlerStorageRecord = {
   totalHits: 1,
@@ -27,7 +36,10 @@ const BLOCKED: ThrottlerStorageRecord = {
 
 type MockResponse = { header: ReturnType<typeof vi.fn> };
 
-function buildContext(request: Record<string, unknown> = { ip: '203.0.113.7', headers: {} }, response: MockResponse = { header: vi.fn() }) {
+function buildContext(
+  request: Record<string, unknown> = { ip: '203.0.113.7', headers: {} },
+  response: MockResponse = { header: vi.fn() },
+) {
   const handler = () => undefined;
   return {
     getHandler: () => handler,
@@ -82,16 +94,16 @@ describe('AstroidThrottlerGuard', () => {
     vi.clearAllMocks();
   });
 
-  describe('tier routing', () => {
-    it('ignores the throttler whose name does not match the route tier', async () => {
-      const { increment, call } = await prepare(); // no tier set -> defaults to 'api'
+  describe('tier routing — steady-state', () => {
+    it('ignores the auth throttler on a default api-tier route', async () => {
+      const { increment, call } = await prepare(); // no tier → 'api'
 
       await expect(call(throttlerNamed('auth'))).resolves.toBe(true);
 
       expect(increment).not.toHaveBeenCalled();
     });
 
-    it('enforces the throttler whose name matches the default `api` tier', async () => {
+    it('enforces the api throttler on a default api-tier route', async () => {
       const { increment, call } = await prepare();
 
       await expect(call(throttlerNamed('api'))).resolves.toBe(true);
@@ -99,13 +111,24 @@ describe('AstroidThrottlerGuard', () => {
       expect(increment).toHaveBeenCalledTimes(1);
     });
 
-    it('enforces only `auth` for routes declared with the auth tier', async () => {
+    it('enforces only the auth throttler on routes declared with the auth tier', async () => {
       const { increment, call } = await prepare({ tier: 'auth' });
 
       await expect(call(throttlerNamed('api'))).resolves.toBe(true);
       expect(increment).not.toHaveBeenCalled();
 
       await expect(call(throttlerNamed('auth'))).resolves.toBe(true);
+      expect(increment).toHaveBeenCalledTimes(1);
+    });
+
+    it('enforces only the webhook throttler on routes declared with the webhook tier', async () => {
+      const { increment, call } = await prepare({ tier: 'webhook' });
+
+      await expect(call(throttlerNamed('api'))).resolves.toBe(true);
+      await expect(call(throttlerNamed('auth'))).resolves.toBe(true);
+      expect(increment).not.toHaveBeenCalled();
+
+      await expect(call(throttlerNamed('webhook'))).resolves.toBe(true);
       expect(increment).toHaveBeenCalledTimes(1);
     });
 
@@ -121,6 +144,48 @@ describe('AstroidThrottlerGuard', () => {
         60_000,
         'auth',
       );
+    });
+  });
+
+  describe('tier routing — burst throttlers', () => {
+    it('fires the api-burst throttler on api-tier routes (base tier matches)', async () => {
+      const { increment, call } = await prepare();
+
+      await expect(call(throttlerNamed('api-burst'))).resolves.toBe(true);
+
+      expect(increment).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not fire the api-burst throttler on auth-tier routes', async () => {
+      const { increment, call } = await prepare({ tier: 'auth' });
+
+      await expect(call(throttlerNamed('api-burst'))).resolves.toBe(true);
+
+      expect(increment).not.toHaveBeenCalled();
+    });
+
+    it('fires the auth-burst throttler on auth-tier routes', async () => {
+      const { increment, call } = await prepare({ tier: 'auth' });
+
+      await expect(call(throttlerNamed('auth-burst'))).resolves.toBe(true);
+
+      expect(increment).toHaveBeenCalledTimes(1);
+    });
+
+    it('fires the webhook-burst throttler on webhook-tier routes', async () => {
+      const { increment, call } = await prepare({ tier: 'webhook' });
+
+      await expect(call(throttlerNamed('webhook-burst'))).resolves.toBe(true);
+
+      expect(increment).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not fire the webhook-burst throttler on api-tier routes', async () => {
+      const { increment, call } = await prepare(); // api tier
+
+      await expect(call(throttlerNamed('webhook-burst'))).resolves.toBe(true);
+
+      expect(increment).not.toHaveBeenCalled();
     });
   });
 
@@ -179,6 +244,24 @@ describe('AstroidThrottlerGuard', () => {
         'X-RateLimit-Remaining-api',
         expect.anything(),
       );
+    });
+
+    it('throws a 429 for auth-tier routes when blocked', async () => {
+      const { call } = await prepare({
+        tier: 'auth',
+        increment: vi.fn().mockResolvedValue(BLOCKED),
+      });
+
+      await expect(call(throttlerNamed('auth'))).rejects.toMatchObject({ status: 429 });
+    });
+
+    it('throws a 429 for webhook-tier routes when blocked', async () => {
+      const { call } = await prepare({
+        tier: 'webhook',
+        increment: vi.fn().mockResolvedValue(BLOCKED),
+      });
+
+      await expect(call(throttlerNamed('webhook'))).rejects.toMatchObject({ status: 429 });
     });
 
     it('exposes getStatus() so the exception filter can render the 429 envelope', async () => {

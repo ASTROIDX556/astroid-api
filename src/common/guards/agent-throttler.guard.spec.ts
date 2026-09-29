@@ -46,7 +46,8 @@ function buildContext(
 }
 
 function throttlerNamed(name: string): ThrottlerOptions {
-  return { name, ttl: 60_000, limit: name === 'agent' ? AGENT_LIMIT : 120 };
+  const limit = name === 'agent' ? AGENT_LIMIT : name === 'auth' ? 10 : 120;
+  return { name, ttl: 60_000, limit };
 }
 
 async function prepare(

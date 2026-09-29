@@ -85,14 +85,16 @@ export const queueEnvSchema = z.object({
 export const throttleEnvSchema = z.object({
   THROTTLE_AUTH_LIMIT: z.coerce.number().int().positive().default(10),
   THROTTLE_API_LIMIT: z.coerce.number().int().positive().default(120),
-  /**
-   * Requests allowed per window for traffic identified as an autonomous agent.
-   * Agents poll balances and transaction statuses far more often than humans,
-   * so the agent tier is deliberately more generous than `api` while still
-   * bounding a single runaway agent.
-   */
+  /** Requests allowed per window for traffic identified as an autonomous agent. */
   THROTTLE_AGENT_LIMIT: z.coerce.number().int().positive().default(300),
+  THROTTLE_WEBHOOK_LIMIT: z.coerce.number().int().positive().default(30),
   THROTTLE_TTL: z.coerce.number().int().positive().default(60),
+  // Short-term burst allowance per tier (requests per second). A burst window
+  // is intentionally kept very short (1 s) so spikes don't exhaust the full
+  // steady-state quota. Set to 0 to disable burst enforcement.
+  THROTTLE_API_BURST: z.coerce.number().int().nonnegative().default(10),
+  THROTTLE_AUTH_BURST: z.coerce.number().int().nonnegative().default(3),
+  THROTTLE_WEBHOOK_BURST: z.coerce.number().int().nonnegative().default(5),
 });
 
 export const rateLimitEnvSchema = z.object({
