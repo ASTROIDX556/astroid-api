@@ -21,6 +21,7 @@ import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
 import { ScopesGuard } from './common/guards/scopes.guard';
 import { AstroidThrottlerGuard } from './common/guards/throttler.guard';
+import { PublicRateLimitGuard } from './common/guards/public-rate-limit.guard';
 import { ResponseInterceptor } from './common/interceptors/response.interceptor';
 import { AuditInterceptor } from './common/interceptors/audit.interceptor';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
@@ -58,6 +59,9 @@ import { MetricsInterceptor } from './common/interceptors/metrics.interceptor';
  * database, events, rate limiting) and every domain module, then registers the
  * cross-cutting guards, interceptor and exception filter that enforce the
  * platform's contract on every request:
+ *   - PublicRateLimitGuard: per-IP sliding-window limit on @Public() routes and
+ *                          /<prefix>/public/*, shared via Redis (runs first so
+ *                          bursts are rejected before any other work)
  *   - JwtAuthGuard      : authentication on all routes except @Public()
  *   - RolesGuard        : RBAC on routes decorated with @Roles()
  *   - ScopesGuard       : Fine-grained permission scopes for API keys & agents
@@ -127,6 +131,7 @@ import { MetricsInterceptor } from './common/interceptors/metrics.interceptor';
     AdminModule,
   ],
   providers: [
+    { provide: APP_GUARD, useClass: PublicRateLimitGuard },
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: RolesGuard },
     { provide: APP_GUARD, useClass: ScopesGuard },
