@@ -5,9 +5,9 @@ import { DatabaseConfig } from '../config/database.config';
 import { buildDatasourceUrl } from './datasource-url';
 import { createQueryTimeoutExtension } from './query-timeout.extension';
 import {
-  checkMigrationStatus,
-  getDefaultMigrationsDir,
+  MigrationCheckMode,
   MigrationCheckResult,
+  verifyMigrationsOnStartup,
 } from './migration-checker';
 
 /**
@@ -40,6 +40,9 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
    * client so their work is never aborted by API request timeouts.
    */
   readonly workerClient: PrismaClient;
+
+  private readonly migrationCheck: MigrationCheckMode;
+  private readonly migrationsDir?: string;
 
   constructor(configService: ConfigService) {
     const database = configService.getOrThrow<DatabaseConfig>('database');
@@ -93,6 +96,9 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
         poolTimeoutMs: database.poolTimeoutMs,
       }),
     ) as unknown as PrismaClient;
+
+    this.migrationCheck = database.migrationCheck;
+    this.migrationsDir = database.migrationsDir;
   }
 
   async onModuleInit(): Promise<void> {
@@ -100,12 +106,11 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
       await this.$connect();
       await this.workerClient.$connect();
       this.logger.log('Prisma connected to the database');
-
-      // Validate migration status after successful connection.
-      await this.validateMigrations();
     } catch (error) {
       // Do not crash on boot when the DB is unavailable (e.g. typecheck/build,
       // or during local development before `docker compose up`). Log and go on.
+      // Whether the process may then serve traffic is decided by
+      // `verifyMigrations()`, which `main.ts` runs before listening.
       this.logger.warn(
         `Prisma could not connect on startup: ${(error as Error).message}. ` +
           'The API will retry lazily on first query.',
@@ -114,28 +119,18 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
   }
 
   /**
-   * Validates that all Prisma migrations have been applied to the database.
-   * In production/strict mode, pending or failed migrations cause a critical
-   * error log. The application still starts (to avoid breaking CI/dev), but
-   * the error is clearly surfaced for operators.
+   * Verifies that every migration shipped with this build has been applied.
+   * Called by `main.ts` before the HTTP server starts listening. In `strict`
+   * mode (the production default) pending/failed migrations, or a database
+   * whose migration history cannot be read, throw and abort startup; in `warn`
+   * mode they are logged with remediation steps; `off` skips the check.
    */
-  async validateMigrations(): Promise<MigrationCheckResult> {
-    const migrationsDir = getDefaultMigrationsDir();
-    const result = await checkMigrationStatus(this, migrationsDir);
-
-    if (!result.upToDate) {
-      this.logger.error(
-        `Migration status check failed: ${result.message}`,
-        JSON.stringify({
-          pending: result.pending.map((m) => m.name),
-          failed: result.failed.map((m) => m.name),
-        }),
-      );
-    } else if (result.migrations.length > 0) {
-      this.logger.log(result.message);
-    }
-
-    return result;
+  async verifyMigrations(): Promise<MigrationCheckResult | null> {
+    return verifyMigrationsOnStartup(this, {
+      mode: this.migrationCheck,
+      migrationsDir: this.migrationsDir,
+      logger: this.logger,
+    });
   }
 
   async onModuleDestroy(): Promise<void> {
