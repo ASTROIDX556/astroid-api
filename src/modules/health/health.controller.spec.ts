@@ -122,6 +122,52 @@ describe('HealthController', () => {
     });
   });
 
+  describe('GET /health/redis', () => {
+    it('returns 200 with status and latency when the PING answers', async () => {
+      await controller.getRedis(res as Response);
+
+      expect(redisHealth.checkHealth).toHaveBeenCalledTimes(1);
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'up', latencyMs: 2, timestamp: expect.any(String) }),
+      );
+    });
+
+    it('returns 503 with the failure detail when the ping fails', async () => {
+      redisHealth.checkHealth.mockResolvedValue({
+        status: 'down',
+        latencyMs: 3000,
+        timestamp: new Date().toISOString(),
+        error: 'Redis ping timed out',
+      });
+
+      await controller.getRedis(res as Response);
+
+      expect(res.status).toHaveBeenCalledWith(503);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'down', error: 'Redis ping timed out', latencyMs: 3000 }),
+      );
+    });
+
+    it('reports only Redis, so a broken database cannot mask a Redis outage', async () => {
+      redisHealth.checkHealth.mockResolvedValue({
+        status: 'down',
+        latencyMs: 12,
+        timestamp: new Date().toISOString(),
+        error: 'connect ECONNREFUSED',
+      });
+      dbHealth.check.mockResolvedValue(terminus({ status: 'down', message: 'pool exhausted' }));
+
+      await controller.getRedis(res as Response);
+
+      expect(dbHealth.check).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(503);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'down', error: 'connect ECONNREFUSED' }),
+      );
+    });
+  });
+
   it('returns 200 OK when all services are healthy', async () => {
     await controller.getReadiness(res as Response);
 

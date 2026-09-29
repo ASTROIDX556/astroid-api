@@ -79,6 +79,19 @@ export class HealthController {
     return res.status(statusCode).json(database);
   }
 
+  @Get('redis')
+  @ApiOperation({ summary: 'Redis connectivity check' })
+  @ApiResponse({ status: 200, description: 'Redis is reachable' })
+  @ApiResponse({ status: 503, description: 'Redis is unreachable' })
+  async getRedis(@Res() res: Response) {
+    const redis = await this.redisIndicator.checkHealth();
+
+    const isUp = redis.status === 'up';
+    const statusCode = isUp ? HttpStatus.OK : HttpStatus.SERVICE_UNAVAILABLE;
+
+    return res.status(statusCode).json(redis);
+  }
+
   @Get()
   @ApiOperation({ summary: 'Application health check' })
   @ApiResponse({ status: 200, description: 'Application is healthy' })
