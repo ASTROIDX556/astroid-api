@@ -10,7 +10,7 @@ and welcome issues, discussion, and pull requests.
 git clone https://github.com/ASTROIDX556/astroid-api.git
 cd astroid-api
 npm install
-cp .env.example .env     # fill in your database and API keys
+cp .env.example .env     # fill in your database and API keys (see docs/configuration.md)
 npx prisma generate      # generate the Prisma client
 npx prisma migrate dev    # run local migrations
 npx prisma migrate deploy # deploy migrations

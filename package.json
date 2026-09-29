@@ -26,6 +26,8 @@
     "prisma:seed": "ts-node prisma/seed.ts",
     "db:seed": "ts-node prisma/seed.ts",
     "db:verify": "bash scripts/verify-migrations.sh"
+    "db:verify": "scripts/verify-migrations.sh",
+    "db:migrate": "ts-node src/database/migrate.cli.ts"
   },
   "prisma": {
     "seed": "ts-node prisma/seed.ts"

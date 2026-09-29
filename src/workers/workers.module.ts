@@ -1,6 +1,5 @@
 import { Module } from '@nestjs/common';
 import { BalanceWorker } from './balance.worker';
-import { WebhookDeliveryWorker } from './webhook-delivery.worker';
 import { AnalyticsAggregationWorker } from './analytics-aggregation.worker';
 import { NotificationDeliveryWorker } from './notification-delivery.worker';
 import { WalletModule } from '../modules/wallets/wallet.module';
@@ -23,13 +22,11 @@ import { MetricsModule } from '../modules/metrics/metrics.module';
   imports: [WalletModule, MetricsModule],
   providers: [
     NotificationDeliveryWorker,
-    WebhookDeliveryWorker,
     BalanceWorker,
     AnalyticsAggregationWorker,
   ],
   exports: [
     NotificationDeliveryWorker,
-    WebhookDeliveryWorker,
     BalanceWorker,
     AnalyticsAggregationWorker,
   ],

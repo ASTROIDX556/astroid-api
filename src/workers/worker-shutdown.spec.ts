@@ -1,10 +1,10 @@
 import { describe, it, expect, vi } from 'vitest';
-import { WebhookWorker } from '../modules/webhooks/workers/webhook.worker';
+import { WebhooksProcessor } from '../modules/webhooks/webhooks.processor';
 import { TransactionWorker } from '../modules/transactions/workers/transaction.worker';
 
 describe('Worker Graceful Shutdown & Lifecycle', () => {
   it('closes webhook worker gracefully on module destroy', async () => {
-    const worker = new WebhookWorker();
+    const worker = new WebhooksProcessor();
     const closeMock = vi.fn().mockResolvedValue(undefined);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     Object.defineProperty(worker, 'worker', {
@@ -30,7 +30,7 @@ describe('Worker Graceful Shutdown & Lifecycle', () => {
   });
 
   it('registers error and event listeners on worker initialization', async () => {
-    const worker = new WebhookWorker();
+    const worker = new WebhooksProcessor();
     const onMock = vi.fn();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     Object.defineProperty(worker, 'worker', {

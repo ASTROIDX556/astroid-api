@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ConfigService } from '@nestjs/config';
 
 // Mock the Prisma runtime entirely so the suite never touches a real DB or the
@@ -8,8 +8,15 @@ const { mockPrismaClient } = vi.hoisted(() => {
   const mockPrismaClient = vi.fn();
   return { mockPrismaClient };
 });
+const { checkMigrationStatusMock } = vi.hoisted(() => ({
+  checkMigrationStatusMock: vi.fn(),
+}));
 
 vi.mock('@prisma/client', () => ({ PrismaClient: mockPrismaClient }));
+vi.mock('./migration-checker', () => ({
+  checkMigrationStatus: checkMigrationStatusMock,
+  getDefaultMigrationsDir: vi.fn().mockReturnValue('/migrations'),
+}));
 
 import { PrismaService } from './prisma.service';
 import {
@@ -18,10 +25,7 @@ import {
   withQueryTimeout,
 } from './query-timeout.extension';
 import { buildDatasourceUrl } from './datasource-url';
-import {
-  ConnectionPoolExhaustedError,
-  DatabaseTimeoutError,
-} from './database.errors';
+import { ConnectionPoolExhaustedError, DatabaseTimeoutError } from './database.errors';
 
 const BASE_URL = 'postgresql://user:pass@localhost:5432/astroid?schema=public';
 
@@ -33,6 +37,9 @@ const databaseConfig = {
   queryTimeoutMs: 5000,
   statementTimeoutMs: 10000,
   workerQueryTimeoutMs: 60000,
+  slowQueryThresholdMs: 1000,
+  connectionRetryAttempts: 2,
+  connectionRetryDelayMs: 1,
 };
 
 function createMockClient(): {
@@ -40,12 +47,17 @@ function createMockClient(): {
   $connect: ReturnType<typeof vi.fn>;
   $disconnect: ReturnType<typeof vi.fn>;
 } {
+  const extendedClient = {
+    user: { findMany: vi.fn(), findUnique: vi.fn() },
+    $connect: vi.fn().mockResolvedValue(undefined),
+    $disconnect: vi.fn().mockResolvedValue(undefined),
+    $extends: vi.fn(),
+  };
+  // Make $extends on the extended client return itself for further chaining.
+  extendedClient.$extends.mockReturnValue(extendedClient);
+
   return {
-    $extends: vi.fn().mockReturnValue({
-      user: { findMany: vi.fn(), findUnique: vi.fn() },
-      $connect: vi.fn().mockResolvedValue(undefined),
-      $disconnect: vi.fn().mockResolvedValue(undefined),
-    }),
+    $extends: vi.fn().mockReturnValue(extendedClient),
     $connect: vi.fn().mockResolvedValue(undefined),
     $disconnect: vi.fn().mockResolvedValue(undefined),
   };
@@ -55,7 +67,9 @@ function buildPrismaService(): PrismaService {
   const configService = {
     getOrThrow: vi.fn().mockReturnValue(databaseConfig),
   };
-  return new PrismaService(configService as unknown as ConfigService);
+  const service = new PrismaService(configService as unknown as ConfigService);
+  Object.setPrototypeOf(service, PrismaService.prototype);
+  return service;
 }
 
 describe('withQueryTimeout', () => {
@@ -123,12 +137,14 @@ describe('createQueryTimeoutExtension', () => {
     );
     const failingQuery = () => Promise.reject(poolError);
 
-    const error = await extension.query!.$allOperations({
-      operation: 'create',
-      model: 'Transaction',
-      args: {},
-      query: failingQuery,
-    }).catch((e: unknown) => e);
+    const error = await extension
+      .query!.$allOperations({
+        operation: 'create',
+        model: 'Transaction',
+        args: {},
+        query: failingQuery,
+      })
+      .catch((e: unknown) => e);
 
     expect(error).toBeInstanceOf(ConnectionPoolExhaustedError);
     const poolExhausted = error as ConnectionPoolExhaustedError;
@@ -194,6 +210,17 @@ describe('PrismaService', () => {
   beforeEach(() => {
     mockPrismaClient.mockReset();
     mockPrismaClient.mockImplementation(createMockClient);
+    checkMigrationStatusMock.mockReset().mockResolvedValue({
+      upToDate: true,
+      migrations: [],
+      pending: [],
+      failed: [],
+      message: 'All migrations are applied and up to date.',
+    });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it('configures the API datasource with pool sizing and statement timeout params', () => {
@@ -225,5 +252,51 @@ describe('PrismaService', () => {
   it('exposes a dedicated worker client', () => {
     const service = buildPrismaService();
     expect(service.workerClient).toBeDefined();
+  });
+
+  it('retries a transient database connection failure during startup', async () => {
+    vi.useFakeTimers();
+    const service = buildPrismaService();
+    const apiConnect = vi
+      .spyOn(service, '$connect')
+      .mockRejectedValueOnce(new Error('database starting'))
+      .mockResolvedValue(undefined);
+    const workerConnect = vi.spyOn(service.workerClient, '$connect').mockResolvedValue(undefined);
+
+    const initialization = service.onModuleInit();
+    await vi.runAllTimersAsync();
+    await initialization;
+
+    expect(apiConnect).toHaveBeenCalledTimes(2);
+    expect(workerConnect).toHaveBeenCalledOnce();
+    expect(checkMigrationStatusMock).toHaveBeenCalledOnce();
+  });
+
+  it('fails startup when migration health reports pending migrations', async () => {
+    const service = buildPrismaService();
+    checkMigrationStatusMock.mockResolvedValue({
+      upToDate: false,
+      migrations: [],
+      pending: [{ name: 'pending_migration', applied: false, finished: false, error: null }],
+      failed: [],
+      message: '1 pending migration(s)',
+    });
+
+    await expect(service.onModuleInit()).rejects.toThrow(
+      'Database migrations are not up to date: 1 pending migration(s)',
+    );
+  });
+
+  it('fails startup after exhausting database connection attempts', async () => {
+    vi.useFakeTimers();
+    const service = buildPrismaService();
+    const apiConnect = vi.spyOn(service, '$connect').mockRejectedValue(new Error('unavailable'));
+
+    const initialization = expect(service.onModuleInit()).rejects.toThrow('unavailable');
+    await vi.runAllTimersAsync();
+    await initialization;
+
+    expect(apiConnect).toHaveBeenCalledTimes(databaseConfig.connectionRetryAttempts);
+    expect(checkMigrationStatusMock).not.toHaveBeenCalled();
   });
 });
