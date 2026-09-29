@@ -397,3 +397,16 @@ Authorization: Bearer <access_token>
 ```
 
 Tokens are obtained via `/auth/login` or `/auth/register` endpoints.
+
+### Public Endpoint Rate Limiting
+Unauthenticated endpoints (routes marked `@Public()`, such as `/auth/login`, `/auth/register` and `/auth/refresh`, and every route under `/public/`) share a per-IP sliding-window budget: 60 requests per 60 seconds by default, configurable with `PUBLIC_RATE_LIMIT_MAX_REQUESTS` and `PUBLIC_RATE_LIMIT_WINDOW_SECONDS`. Counters are stored in Redis, so the budget applies across all API instances.
+
+Every rate-limited response includes:
+
+| Header | Description |
+|--------|-------------|
+| `X-RateLimit-Limit` | Requests allowed per window |
+| `X-RateLimit-Remaining` | Requests left in the current window |
+| `X-RateLimit-Reset` | Unix time (seconds) at which the next request slot frees up |
+
+When the budget is exhausted the API responds with `429 Too Many Requests`, a `Retry-After` header (seconds) and error code `RATE_LIMITED`. These limits are in addition to the per-route auth throttling on the `/auth` endpoints.
