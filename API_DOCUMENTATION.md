@@ -381,14 +381,32 @@ Delete a budget.
 | limit | number | 10 | Items per page |
 
 ### Error Response
-All endpoints return errors in a consistent format:
+All endpoints return errors as [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) problem details with `Content-Type: application/problem+json`:
 ```json
 {
-  "statusCode": number,
-  "message": string,
-  "error": string
+  "type": "urn:astroid:problem:validation-error",
+  "title": "Validation Failed",
+  "status": 400,
+  "detail": "Request validation failed",
+  "instance": "/api/v1/agents",
+  "code": "VALIDATION_ERROR",
+  "requestId": "req_018f...",
+  "details": [{ "path": "limit", "message": "Number must be less than or equal to 200" }]
 }
 ```
+
+| Member | Description |
+|--------|-------------|
+| `type` | URI identifying the problem type (`urn:astroid:problem:<code>`), or `about:blank` for plain HTTP errors without a dedicated code (e.g. 405) |
+| `title` | Short summary of the problem type; the same for every occurrence |
+| `status` | HTTP status code |
+| `detail` | Explanation specific to this occurrence |
+| `instance` | Request path that produced the error (query string omitted) |
+| `code` | Machine-readable error code; clients should switch on this rather than on `title` or `detail` |
+| `requestId` | Correlation id, matching the `x-request-id` header |
+| `details` | Optional structured context, e.g. field-level validation errors |
+
+Unhandled server errors always return `500` with `code: "INTERNAL_ERROR"` and a generic `detail`; internal information is only written to the server logs under the `requestId`.
 
 ### Authentication
 Most endpoints require Bearer token authentication in the format:
