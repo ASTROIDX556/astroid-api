@@ -38,6 +38,7 @@ describe('retryWithBackoff', () => {
     const fn = vi.fn().mockRejectedValue(boom);
 
     const promise = retryWithBackoff(fn, { maxAttempts: 3, baseDelayMs: 10 });
+    promise.catch(() => {});
     await vi.runAllTimersAsync();
     await expect(promise).rejects.toBe(boom);
     expect(fn).toHaveBeenCalledTimes(3);
@@ -50,6 +51,7 @@ describe('retryWithBackoff', () => {
       !(err instanceof Error && err.message.includes('NOT NULL'));
 
     const promise = retryWithBackoff(fn, { maxAttempts: 5, isRetryable });
+    promise.catch(() => {});
     await vi.runAllTimersAsync();
     await expect(promise).rejects.toBe(nonRetryable);
     expect(fn).toHaveBeenCalledTimes(1);
@@ -96,6 +98,7 @@ describe('retryWithBackoff', () => {
     const onRetry = vi.fn();
 
     const promise = retryWithBackoff(fn, { maxAttempts: 2, baseDelayMs: 10, onRetry });
+    promise.catch(() => {});
     await vi.runAllTimersAsync();
     await expect(promise).rejects.toThrow();
 
