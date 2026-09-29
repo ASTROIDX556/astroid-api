@@ -13,16 +13,8 @@ export class AnalyticsService {
   /** High-level overview cards for the dashboard home. */
   async overview(organizationId: string) {
     const since30d = new Date(Date.now() - 30 * 86_400_000);
-    const [agents, wallets, pendingProposals, allTime, last30d, byStatus, byRisk] =
-      await Promise.all([
-        this.repository.countAgents(organizationId),
-        this.repository.countWallets(organizationId),
-        this.repository.countPendingProposals(organizationId),
-        this.repository.aggregateSpend(organizationId),
-        this.repository.aggregateSpend(organizationId, since30d),
-        this.repository.groupByStatus(organizationId),
-        this.repository.groupByRiskBand(organizationId),
-      ]);
+    const { agents, wallets, pendingProposals, allTime, last30d, byStatus, byRisk } =
+      await this.repository.overview(organizationId, since30d);
 
     return {
       counts: {

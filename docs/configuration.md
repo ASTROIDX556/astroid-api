@@ -84,6 +84,9 @@ are rejected:
 | `DATABASE_QUERY_TIMEOUT_MS` | `5000` | Client-side query timeout for the API pool. `0` disables it. |
 | `DATABASE_STATEMENT_TIMEOUT_MS` | `10000` | Server-side `statement_timeout`. `0` disables it. |
 | `DATABASE_WORKER_QUERY_TIMEOUT_MS` | `60000` | Client-side query timeout for the worker pool. `0` disables it. |
+| `DATABASE_SLOW_QUERY_THRESHOLD_MS` | `1000` | Queries slower than this are logged as slow queries. |
+| `DATABASE_CONNECT_RETRY_ATTEMPTS` | `5` | Connection attempts before giving up on startup. |
+| `DATABASE_CONNECT_RETRY_DELAY_MS` | `1000` | Delay between connection retry attempts. |
 
 ### Redis
 
@@ -140,6 +143,10 @@ are rejected:
 | `THROTTLE_TTL` | `60` | Throttler window in seconds. |
 | `RATE_LIMIT_WINDOW_SECONDS` | `60` | Sliding-window size for the Redis rate-limiter guard. |
 | `RATE_LIMIT_MAX_REQUESTS` | `120` | Requests allowed per client per sliding window. |
+| `PUBLIC_RATE_LIMIT_ENABLED` | `true` | Enables the IP-based limiter for unauthenticated (`@Public()`) routes. |
+| `PUBLIC_RATE_LIMIT_MAX_REQUESTS` | `60` | Requests allowed per client IP per sliding window on public routes. |
+| `PUBLIC_RATE_LIMIT_WINDOW_SECONDS` | `60` | Sliding-window size for the public-route rate limiter. |
+| `PUBLIC_RATE_LIMIT_TRUST_PROXY` | `false` | Reads client IP from `X-Forwarded-For`. Only enable behind a trusted reverse proxy. |
 
 ### Metrics
 
