@@ -4,7 +4,6 @@ import { RiskEngine } from './risk.engine';
 import { RiskRepository } from './risk.repository';
 import { EventBusService } from '../../events/event-bus.service';
 import { DomainEventName } from '../../events/event-names';
-import { RiskFactorsInput } from './risk.types';
 
 describe('RiskService Event Handler', () => {
   let riskService: RiskService;
@@ -103,18 +102,3 @@ describe('RiskService Event Handler', () => {
     await expect(riskService.handleTransactionCreated(envelope)).rejects.toThrow('DB connection failed');
   });
 });
-
-
-const lowRisk: RiskFactorsInput = {
-  amount: 20,
-  asset: 'USDC',
-  knownRecipient: true,
-  recentTransactionCount: 1,
-  walletAgeDays: 365,
-  policyViolations: 0,
-  hourUtc: 12,
-};
-
-function createEventBus() {
-  return { emit: vi.fn().mockResolvedValue(undefined) } as unknown as Pick<EventBusService, 'emit'> & { emit: ReturnType<typeof vi.fn> };
-}

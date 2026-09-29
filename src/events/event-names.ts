@@ -60,7 +60,6 @@ export const DomainEventName = {
   RiskEvaluated: 'risk.evaluated',
   RiskAlert: 'risk.alert',
   TransactionRiskScoringRequested: 'transaction.risk_scoring_requested',
-  TransactionRiskScoringRequested: 'transaction.risk_scoring_requested',
 
   // Notification / audit
   NotificationCreated: 'notification.created',
