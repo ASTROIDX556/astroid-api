@@ -52,7 +52,7 @@ import { DeadLetterModule } from './modules/dead-letter/dead-letter.module';
 import { AgentTraceInterceptor } from './common/interceptors/agent-trace.interceptor';
 import { RequestContextInterceptor } from './common/interceptors/request-context.interceptor';
 import { AuditLogInterceptor } from './common/interceptors/audit-log.interceptor';
-import { MetricsInterceptor } from './common/interceptors/metrics.interceptor';
+import { RequestIdInterceptor } from './common/interceptors/request-id.interceptor';
 
 /**
  * Root application module. Wires the global infrastructure (config, logging,
@@ -137,6 +137,7 @@ import { MetricsInterceptor } from './common/interceptors/metrics.interceptor';
     { provide: APP_GUARD, useClass: ScopesGuard },
     { provide: APP_GUARD, useClass: AstroidThrottlerGuard },
     AgentPolicyGuard,
+    { provide: APP_INTERCEPTOR, useClass: RequestIdInterceptor },
     { provide: APP_INTERCEPTOR, useClass: RequestContextInterceptor },
     { provide: APP_INTERCEPTOR, useClass: AgentTraceInterceptor },
     { provide: APP_INTERCEPTOR, useClass: AuditLogInterceptor },
