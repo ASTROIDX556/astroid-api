@@ -30,7 +30,6 @@ export class RiskService {
   ): Promise<RiskAssessment> {
     const assessment = this.engine.assess(input, context.config, context.rules);
 
-    // Emit domain event for audit trail
     await this.eventBus.emit(
       DomainEventName.RiskEvaluated,
       {
@@ -48,7 +47,6 @@ export class RiskService {
       },
     );
 
-    // Persist assessment record for compliance and analytics
     if (context.transactionId) {
       await this.repository.createAssessmentRecord({
         organizationId,
@@ -72,16 +70,10 @@ export class RiskService {
     return this.engine.assess(input, config, rules);
   }
 
-  /**
-   * Get historical risk assessments for an organization.
-   */
   async getHistory(organizationId: string, limit = 100) {
     return this.repository.findByOrganization(organizationId, limit);
   }
 
-  /**
-   * Get risk statistics for an organization.
-   */
   async getStatistics(organizationId: string, days = 30) {
     return this.repository.getStatistics(organizationId, days);
   }
