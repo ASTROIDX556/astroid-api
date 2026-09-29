@@ -70,8 +70,10 @@ interface InterceptorOptions {
 
 function makeInterceptor(
   record: ReturnType<typeof vi.fn>,
-  { audit = {}, skip = false, trustProxy = false }: InterceptorOptions = {},
+  options: InterceptorOptions = {},
 ): AuditLogInterceptor {
+  const audit = Object.prototype.hasOwnProperty.call(options, 'audit') ? options.audit : {};
+  const { skip = false, trustProxy = false } = options;
   const auditService = { record } as unknown as AuditService;
   const config = { get: vi.fn().mockReturnValue(trustProxy) } as never;
   return new AuditLogInterceptor(auditService, config, makeReflector({ audit, skip }));
@@ -191,7 +193,11 @@ describe('AuditLogInterceptor', () => {
       const request = baseRequest({
         method: 'POST',
         path: '/api/v1/wallets/wal-1/rotate',
-        headers: { 'user-agent': 'AgentRunner/1.0', 'x-agent-id': 'agent-9' },
+        headers: {
+          'user-agent': 'AgentRunner/1.0',
+          'x-agent-id': 'agent-9',
+          'x-organization-id': 'org-1',
+        },
         params: { id: 'wal-1' },
         body: { newLabel: 'ops' },
         user: undefined,
