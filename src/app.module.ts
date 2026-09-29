@@ -14,6 +14,7 @@ import { LocksModule } from './common/locks/locks.module';
 import { REDIS_CLIENT } from './common/locks/locks.constants';
 import { EncryptionModule } from './common/encryption/encryption.module';
 import { RequestIdMiddleware } from './middleware/request-id.middleware';
+import { StructuredRequestLoggingMiddleware } from './middleware/structured-request-logging.middleware';
 import { REQUEST_ID_HEADER } from './common/constants/headers';
 
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
@@ -75,18 +76,10 @@ import { MetricsInterceptor } from './common/interceptors/metrics.interceptor';
         genReqId: (req) => (req.headers[REQUEST_ID_HEADER] as string) ?? undefined,
         // Never log Authorization headers, cookies or API keys.
         redact: {
-          paths: [
-            'req.headers.authorization',
-            'req.headers.cookie',
-            'req.headers["x-api-key"]',
-          ],
+          paths: ['req.headers.authorization', 'req.headers.cookie', 'req.headers["x-api-key"]'],
           remove: true,
         },
-        autoLogging: true,
-        transport:
-          process.env.NODE_ENV === 'production'
-            ? undefined
-            : { target: 'pino-pretty', options: { singleLine: true } },
+        autoLogging: false,
       },
     }),
     // Three rate-limit tiers, all driven by THROTTLE_* env vars (see
@@ -152,7 +145,7 @@ import { MetricsInterceptor } from './common/interceptors/metrics.interceptor';
 })
 export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer): void {
-    consumer.apply(RequestIdMiddleware).forRoutes('*');
+    consumer.apply(RequestIdMiddleware, StructuredRequestLoggingMiddleware).forRoutes('*');
     consumer.apply(RequestMetricsMiddleware).forRoutes('*');
   }
 }

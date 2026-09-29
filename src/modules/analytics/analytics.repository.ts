@@ -63,6 +63,7 @@ export class AnalyticsRepository {
       },
       _sum: { amount: true },
       _count: { _all: true },
+      orderBy: { _sum: { amount: 'desc' } },
     });
   }
 }

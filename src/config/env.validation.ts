@@ -11,9 +11,7 @@ export const appEnvSchema = z.object({
   APP_NAME: z.string().default('astroid-api'),
   PORT: z.coerce.number().int().positive().default(3000),
   API_PREFIX: z.string().default('api/v1'),
-  LOG_LEVEL: z
-    .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'])
-    .default('info'),
+  LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
   CORS_ORIGINS: z.string().default('*'),
 });
 
@@ -36,6 +34,8 @@ export const databaseEnvSchema = z.object({
   // worker transactions (rollups, outbox drains) must not be killed by the API
   // guard; 0 disables the worker guard entirely.
   DATABASE_WORKER_QUERY_TIMEOUT_MS: z.coerce.number().int().nonnegative().default(60000),
+  DATABASE_CONNECT_RETRY_ATTEMPTS: z.coerce.number().int().positive().max(10).default(5),
+  DATABASE_CONNECT_RETRY_DELAY_MS: z.coerce.number().int().positive().max(60000).default(1000),
 });
 
 export const redisEnvSchema = z.object({
@@ -142,10 +142,7 @@ export const encryptionEnvSchema = z.object({
  * error that lists every failing variable. Returns the schema's OUTPUT type
  * (defaults applied, transforms resolved).
  */
-export function validateEnv<T extends z.ZodTypeAny>(
-  schema: T,
-  env: NodeJS.ProcessEnv,
-): z.infer<T> {
+export function validateEnv<T extends z.ZodTypeAny>(schema: T, env: NodeJS.ProcessEnv): z.infer<T> {
   const result = schema.safeParse(env);
   if (!result.success) {
     const issues = result.error.issues

@@ -50,12 +50,10 @@ export class AnalyticsService {
   /** Completed spend grouped by initiating agent. */
   async spendByAgent(organizationId: string) {
     const rows = await this.repository.spendByAgent(organizationId);
-    return rows
-      .map((row) => ({
-        agentId: row.agentId,
-        totalSpent: (row._sum.amount ?? 0).toString(),
-        transactionCount: row._count._all,
-      }))
-      .sort((a, b) => Number(b.totalSpent) - Number(a.totalSpent));
+    return rows.map((row) => ({
+      agentId: row.agentId,
+      totalSpent: (row._sum.amount ?? 0).toString(),
+      transactionCount: row._count._all,
+    }));
   }
 }
