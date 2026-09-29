@@ -196,6 +196,7 @@ describe('AuditLogInterceptor', () => {
         apiKey: 'abc123',
         token: 'jwt-token',
         passkey: 'cred-1',
+        stellarSecretKey: 'SXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX',
         webhook: { signature: 'sig-here', url: 'https://example.com/hook' },
         nested: { refreshToken: 'rt-1', note: 'keep me' },
       };
@@ -221,6 +222,7 @@ describe('AuditLogInterceptor', () => {
         apiKey: REDACTED_VALUE,
         token: REDACTED_VALUE,
         passkey: REDACTED_VALUE,
+        stellarSecretKey: REDACTED_VALUE,
         webhook: { signature: REDACTED_VALUE, url: 'https://example.com/hook' },
         nested: { refreshToken: REDACTED_VALUE, note: 'keep me' },
       });
@@ -231,6 +233,7 @@ describe('AuditLogInterceptor', () => {
         apiKey: 'abc123',
         token: 'jwt-token',
         passkey: 'cred-1',
+        stellarSecretKey: 'SXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX',
         webhook: { signature: 'sig-here', url: 'https://example.com/hook' },
         nested: { refreshToken: 'rt-1', note: 'keep me' },
       });
@@ -246,6 +249,7 @@ describe('AuditLogInterceptor', () => {
       expect(isSensitiveKey('passkey')).toBe(true);
       expect(isSensitiveKey('signature')).toBe(true);
       expect(isSensitiveKey('privateKey')).toBe(true);
+      expect(isSensitiveKey('stellarSecretKey')).toBe(true);
       expect(isSensitiveKey('username')).toBe(false);
       expect(isSensitiveKey('name')).toBe(false);
       expect(isSensitiveKey('amount')).toBe(false);

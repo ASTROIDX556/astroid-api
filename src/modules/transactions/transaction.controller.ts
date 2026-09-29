@@ -30,6 +30,7 @@ import {
   SlidingWindowThrottlerGuard,
   SlidingWindowLimit,
 } from '../../common/guards/sliding-window-throttler.guard';
+import { AgentBudgetValidationPipe } from '../budgets/pipes/agent-budget-validation.pipe';
 
 @ApiTags('transactions')
 @ApiBearerAuth('access-token')
@@ -80,7 +81,8 @@ export class TransactionController {
   @ApiResponse({ status: 409, description: 'Insufficient budget or risk threshold exceeded' })
   create(
     @CurrentUser() user: AuthenticatedUser,
-    @Body(new ZodValidationPipe(createTransactionSchema)) body: CreateTransactionInput,
+    @Body(new ZodValidationPipe(createTransactionSchema), AgentBudgetValidationPipe)
+    body: CreateTransactionInput,
   ) {
     return this.transactionService.create(user.organizationId, user.id, body);
   }
