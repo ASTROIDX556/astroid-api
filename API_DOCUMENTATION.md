@@ -83,8 +83,9 @@ List wallets for the organization.
 **Query Parameters:**
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| page | number | No | Page number (default: 1) |
-| limit | number | No | Items per page (default: 10) |
+| offset | number | No | Rows to skip (default: 0); mutually exclusive with `page` |
+| page | number | No | Page number, alternative to `offset` (default: 1) |
+| limit | number | No | Items per page (default: 50, max: 200) |
 
 **Authentication:** Bearer token required
 
@@ -168,8 +169,9 @@ List transactions for the organization.
 **Query Parameters:**
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| page | number | No | Page number (default: 1) |
-| limit | number | No | Items per page (default: 10) |
+| offset | number | No | Rows to skip (default: 0); mutually exclusive with `page` |
+| page | number | No | Page number, alternative to `offset` (default: 1) |
+| limit | number | No | Items per page (default: 50, max: 200) |
 
 **Authentication:** Bearer token required
 
@@ -228,8 +230,9 @@ List policies for the organization.
 **Query Parameters:**
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| page | number | No | Page number (default: 1) |
-| limit | number | No | Items per page (default: 10) |
+| offset | number | No | Rows to skip (default: 0); mutually exclusive with `page` |
+| page | number | No | Page number, alternative to `offset` (default: 1) |
+| limit | number | No | Items per page (default: 50, max: 200) |
 
 **Authentication:** Bearer token required
 
@@ -322,8 +325,9 @@ List budgets for the organization.
 **Query Parameters:**
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| page | number | No | Page number (default: 1) |
-| limit | number | No | Items per page (default: 10) |
+| offset | number | No | Rows to skip (default: 0); mutually exclusive with `page` |
+| page | number | No | Page number, alternative to `offset` (default: 1) |
+| limit | number | No | Items per page (default: 50, max: 200) |
 
 **Authentication:** Bearer token required
 
@@ -375,10 +379,27 @@ Delete a budget.
 ## Common Types
 
 ### Pagination Query
+Every list endpoint accepts the same query parameters.
+
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| page | number | 1 | Page number |
-| limit | number | 10 | Items per page |
+| offset | number | 0 | Zero-based number of rows to skip. Mutually exclusive with `page` |
+| page | number | 1 | 1-based page number, an alternative to `offset` |
+| limit | number | 50 | Items per page, capped at 200 |
+| sort | string | createdAt | Sort field (restricted to an allow-list per endpoint) |
+| order | `asc` \| `desc` | desc | Sort direction |
+
+Negative, non-integer or non-numeric values, a `limit` above 200, or supplying both `offset` and `page` return `400 Bad Request`.
+
+Paginated responses carry the total row count in the `X-Total-Count` header and in `meta`:
+```json
+{
+  "success": true,
+  "data": [],
+  "meta": { "offset": 50, "page": 2, "limit": 50, "total": 120, "totalPages": 3, "hasNext": true, "hasPrev": true },
+  "requestId": "req_..."
+}
+```
 
 ### Error Response
 All endpoints return errors in a consistent format:

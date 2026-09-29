@@ -70,7 +70,7 @@ export class AuditService {
     }
     const pagination = toPrismaPagination(query, SORTABLE);
     const { items, total } = await this.repository.findManyAndCount(where, pagination);
-    return new Paginated(items, buildPaginationMeta(total, query.page, query.limit));
+    return new Paginated(items, buildPaginationMeta(total, query));
   }
 
   async export(organizationId: string, query: import('./audit-export.dto').ExportAuditLogsQuery) {

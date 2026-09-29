@@ -8,3 +8,5 @@ export const WEBHOOK_EVENT_ID_HEADER = 'x-astroid-event-id';
 export const WEBHOOK_DELIVERY_HEADER = 'x-astroid-delivery';
 export const WEBHOOK_EVENT_HEADER = 'x-astroid-event';
 export const IDEMPOTENCY_KEY_HEADER = 'idempotency-key';
+/** Total number of rows matching a list request, set on every paginated response. */
+export const TOTAL_COUNT_HEADER = 'x-total-count';

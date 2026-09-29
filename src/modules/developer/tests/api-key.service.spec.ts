@@ -110,6 +110,7 @@ describe('ApiKeyService', () => {
       repository.findManyAndCount.mockResolvedValue({ items: mockItems, total: 1 });
 
       const result = await service.list(orgId, {
+        offset: 0,
         page: 1,
         limit: 20,
         sort: 'createdAt',
@@ -128,6 +129,7 @@ describe('ApiKeyService', () => {
       repository.findManyAndCount.mockResolvedValue({ items: [], total: 0 });
 
       await service.list(orgId, {
+        offset: 0,
         page: 1,
         limit: 20,
         sort: 'createdAt',

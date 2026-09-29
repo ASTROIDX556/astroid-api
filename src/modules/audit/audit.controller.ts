@@ -18,6 +18,7 @@ import {
   PaginationQuery,
   paginationQuerySchema,
 } from '../../common/helpers/pagination';
+import { ApiPaginationQuery } from '../../common/decorators/api-pagination-query.decorator';
 import {
   ExportAuditLogsQuery,
   exportAuditLogsQuerySchema,
@@ -75,8 +76,7 @@ export class AuditController {
     description:
       'Returns a paginated list of audit log entries. Supports filtering by action, date range, and agent.',
   })
-  @ApiQuery({ name: 'page', required: false, type: Number, description: 'Page number (default: 1)' })
-  @ApiQuery({ name: 'limit', required: false, type: Number, description: 'Items per page (default: 20)' })
+  @ApiPaginationQuery()
   @ApiQuery({ name: 'action', required: false, type: String, description: 'Filter by audit action type' })
   @ApiQuery({ name: 'agentId', required: false, type: String, description: 'Filter by agent UUID' })
   @ApiResponse({ status: 200, description: 'Paginated list of audit log entries' })
