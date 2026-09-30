@@ -16,7 +16,6 @@ function makeContext(
   ip = '127.0.0.1',
   headers: Record<string, string> = {},
 ) {
-function makeContext(user?: Record<string, unknown>, ip = '127.0.0.1', headers: Record<string, string> = {}) {
   const response = { setHeader: vi.fn() };
   const request = { user, ip, headers };
   const handler = vi.fn();

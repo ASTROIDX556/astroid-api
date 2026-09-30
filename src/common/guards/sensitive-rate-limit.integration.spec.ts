@@ -2,40 +2,11 @@ import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { INestApplication, Controller, Post, UseGuards } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { ThrottlerModule } from '@nestjs/throttler';
-import type { Redis } from 'ioredis';
-import * as http from 'node:http';
 import { AstroidThrottlerGuard } from './throttler.guard';
 import { REDIS_CLIENT } from '../locks/locks.constants';
 import { MemorySlidingWindowStore } from '../throttler/sliding-window.store';
 import { RedisThrottlerStorage } from '../throttler/redis-throttler.storage';
 import type { Redis } from 'ioredis';
-
-/** Minimal POST helper over the app's underlying http.Server (no supertest dependency). */
-function post(
-  server: http.Server,
-  path: string,
-  headers: Record<string, string>,
-): Promise<{ statusCode: number }> {
-  return new Promise((resolve, reject) => {
-    const address = server.address();
-    const port = typeof address === 'object' && address ? address.port : 0;
-    const req = http.request(
-      {
-        host: '127.0.0.1',
-        port,
-        path,
-        method: 'POST',
-        headers: { 'content-length': '0', ...headers },
-      },
-      (res) => {
-        res.resume();
-        res.on('end', () => resolve({ statusCode: res.statusCode ?? 0 }));
-      },
-    );
-    req.on('error', reject);
-    req.end();
-  });
-}
 
 @Controller('test-sensitive')
 class TestSensitiveController {
@@ -89,10 +60,8 @@ describe('Sensitive Endpoint Rate Limiting (Integration)', () => {
       ],
     }).compile();
 
-    app = moduleRef.createNestApplication();
-    await app.init();
-    await app.listen(0);
     app = moduleRef.createNestApplication({ logger: false });
+    await app.init();
     await app.listen(0, '127.0.0.1');
     baseUrl = await app.getUrl();
   });
@@ -101,18 +70,6 @@ describe('Sensitive Endpoint Rate Limiting (Integration)', () => {
     await app.close();
   });
 
-  it('enforces rate limit and returns 429 when threshold is exceeded', async () => {
-    const server = app.getHttpServer() as http.Server;
-    const headers = { 'x-api-key': 'test-key-123' };
-
-    const res1 = await post(server, '/test-sensitive/action', headers);
-    expect(res1.statusCode).toBe(201);
-
-    const res2 = await post(server, '/test-sensitive/action', headers);
-    expect(res2.statusCode).toBe(201);
-
-    const res3 = await post(server, '/test-sensitive/action', headers);
-    expect(res3.statusCode).toBe(429);
   const send = () =>
     fetch(`${baseUrl}/test-sensitive/action`, {
       method: 'POST',
