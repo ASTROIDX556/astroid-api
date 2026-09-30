@@ -45,6 +45,21 @@ describe('createTransactionSchema memo validation', () => {
         createTransactionSchema.parse({ ...baseInput, metadata: ['unexpected'] }),
       ).toThrow();
     });
+
+    it('rejects non-JSON values nested in metadata', () => {
+      expect(() =>
+        createTransactionSchema.parse({
+          ...baseInput,
+          metadata: { nested: { unsupported: undefined } },
+        }),
+      ).toThrow();
+      expect(() =>
+        createTransactionSchema.parse({
+          ...baseInput,
+          metadata: { nested: [Number.NaN] },
+        }),
+      ).toThrow();
+    });
   });
 
   describe('legacy string memo (TEXT type)', () => {
