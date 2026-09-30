@@ -13,7 +13,6 @@ import { TokenVerificationCacheService } from './services/token-verification-cac
 import { CacheService } from '../../common/cache/cache.service';
 import { PasskeyController } from './controllers/passkey.controller';
 import { PasskeyService } from './services/passkey.service';
-import { REDIS_CLIENT } from '../../common/locks/locks.constants';
 
 /**
  * Authentication module. Registers passport-jwt and api-key strategies and a bare

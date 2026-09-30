@@ -47,7 +47,7 @@ describe('JwtStrategy', () => {
     tokenBlacklist = { isAccessTokenRevoked: vi.fn().mockResolvedValue(false) };
     verificationCache = {
       resolveSessionRevocation: vi.fn().mockImplementation(
-        (sessionId: string, resolve: () => Promise<boolean>) =>
+        (_sessionId: string, resolve: () => Promise<boolean>) =>
           resolve().then((revoked) => ({ revoked, verifiedAt: Date.now() })),
       ),
     };

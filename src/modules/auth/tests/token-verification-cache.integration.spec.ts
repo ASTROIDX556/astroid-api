@@ -168,7 +168,6 @@ describe('Token verification caching (integration)', () => {
 
   it('keeps independent sessions isolated (no cross-session cache leakage)', async () => {
     const tokenA = await signAccessToken('session-A');
-    const tokenB = await signAccessToken('session-B');
 
     expect(await authenticate(tokenA)).toBe(200);
     expect(blacklistLookups).toBe(1);

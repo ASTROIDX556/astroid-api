@@ -51,13 +51,17 @@ export class AstroidThrottlerGuard extends ThrottlerGuard {
     return super.handleRequest(requestProps);
   }
 
-  protected async getTracker(req: Record<string, any>): Promise<string> {
-    const request = req as unknown as Request & { user?: AuthenticatedUser; apiKey?: { id: string }; headers: Record<string, any> };
-    const apiKeyId = request.apiKey?.id ?? request.headers['x-api-key'];
+  protected async getTracker(req: Record<string, unknown>): Promise<string> {
+    const request = req as unknown as Request & {
+      user?: AuthenticatedUser;
+      apiKey?: { id: string };
+      headers: Record<string, unknown>;
+    };
+    const apiKeyId = request.apiKey?.id ?? (request.headers['x-api-key'] as string | undefined);
     if (apiKeyId) {
       return `apikey:${apiKeyId}`;
     }
-    const sub = request.user?.sub ?? request.user?.id;
+    const sub = request.user?.id;
     if (sub) {
       return `user:${sub}`;
     }
@@ -66,11 +70,13 @@ export class AstroidThrottlerGuard extends ThrottlerGuard {
       return `org:${org}`;
     }
     const forwarded = request.headers?.['x-forwarded-for'];
-    const ip =
-      (Array.isArray(forwarded) ? forwarded[0] : forwarded) ??
-      request.ip ??
-      request.socket?.remoteAddress ??
-      'anonymous';
+    const headerIp =
+      forwarded === undefined || forwarded === null
+        ? undefined
+        : Array.isArray(forwarded)
+          ? String(forwarded[0])
+          : String(forwarded);
+    const ip = headerIp ?? request.ip ?? request.socket?.remoteAddress ?? 'anonymous';
     return `ip:${ip}`;
   }
 }
