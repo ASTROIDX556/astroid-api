@@ -6,6 +6,7 @@ import { Queues } from '../../../queues/queues.constants';
 import { WebhookJobData, WebhookJobResult } from '../types/webhook-job.types';
 import { generateWebhookSignature } from '../../../utils/crypto.util';
 import { PrismaService } from '../../../database/prisma.service';
+import { WebhookAuditService } from '../services/webhook-audit.service';
 
 /**
  * BullMQ worker for processing webhook delivery jobs.
@@ -54,8 +55,39 @@ export class WebhookWorker extends WorkerHost implements OnModuleDestroy {
   constructor(
     @Optional() @Inject(PrismaService) private readonly prisma?: PrismaService,
     @Optional() private readonly configService?: ConfigService,
+    @Optional() private readonly webhookAudit?: WebhookAuditService,
   ) {
     super();
+  }
+
+  /**
+   * Audit entry for a delivery that will not be retried again: an unrecoverable
+   * 4xx or the final attempt. `WebhookAuditService` swallows its own failures, so
+   * this can never mask the original delivery error or crash the worker.
+   */
+  private async auditTerminalFailure(
+    job: Job<WebhookJobData>,
+    failedReason: string,
+    responseStatus?: number,
+  ): Promise<void> {
+    if (!this.webhookAudit) return;
+    try {
+      await this.webhookAudit.recordTerminalFailure({
+        webhookId: job.data.webhookId,
+        organizationId: job.data.organizationId,
+        url: job.data.url,
+        eventName: job.data.eventName,
+        eventId: job.data.eventId,
+        attemptsMade: job.attemptsMade + 1,
+        failedReason,
+        responseStatus,
+      });
+    } catch (error) {
+      // Never let compliance bookkeeping mask the original delivery failure.
+      this.logger.warn(
+        `Could not audit webhook ${job.data.webhookId} failure: ${(error as Error).message}`,
+      );
+    }
   }
 
   private resolveSecret(jobSecret?: string): string {
@@ -120,6 +152,9 @@ export class WebhookWorker extends WorkerHost implements OnModuleDestroy {
             lastError: errorMessage,
             responseStatus,
           });
+          // Non-transient (4xx): record the abandoned delivery in the audit trail
+          // before BullMQ moves the job straight to the failed set.
+          await this.auditTerminalFailure(job, errorMessage ?? 'HTTP error', responseStatus);
           // Prevent BullMQ from retrying — this will move to failed without backoff
           throw new UnrecoverableError(errorMessage);
         }
@@ -157,6 +192,9 @@ export class WebhookWorker extends WorkerHost implements OnModuleDestroy {
 
       if (isLastAttempt) {
         this.logger.error(`Webhook ${webhookId} exhausted all retry attempts`);
+        // Retries are exhausted: the delivery is dead-lettered by the queue
+        // failure listener, so record it permanently in the compliance trail.
+        await this.auditTerminalFailure(job, errorMessage ?? 'unknown error', responseStatus);
         // On final attempt, return failure instead of throwing to place in DLQ
         // without consuming extra threadpool cycles. Alternatively throw to mark failed.
         // We throw to let BullMQ mark job as failed (with stalled handling)

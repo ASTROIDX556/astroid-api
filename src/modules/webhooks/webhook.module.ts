@@ -5,21 +5,21 @@ import { WebhookService } from './webhook.service';
 import { WebhookRepository } from './webhook.repository';
 import { WebhookDispatcher } from './webhook.dispatcher';
 import { WebhookDeliveryService } from './services/webhook-delivery.service';
+import { WebhookAuditService } from './services/webhook-audit.service';
 import { WebhookWorker } from './workers/webhook.worker';
 import { WebhooksProcessor } from './webhooks.processor';
-import { Queues } from '../../queues/queues.constants';
+import { createWebhookQueueOptions } from '../../queues/webhook.queue';
 import { redisConfig } from '../../config/redis.config';
-import { webhookBackoffStrategy } from '../../utils/backoff.util';
 import { MetricsModule } from '../metrics/metrics.module';
-import type { RegisterQueueOptions } from '@nestjs/bullmq';
 
 /**
- * Webhooks module. The dispatcher listens to domain events and queues
- * the curated WEBHOOK_EVENTS set to subscribed external endpoints via BullMQ.
+ * Webhooks module. The dispatcher listens to domain events and queues the
+ * curated WEBHOOK_EVENTS set to subscribed external endpoints via BullMQ.
  *
- * Uses a custom backoffStrategy with randomized jitter (20% of base delay)
- * to prevent thundering herd problems when multiple webhook deliveries
- * are retried simultaneously.
+ * Retry policy (5 attempts, exponential backoff with jitter) and the
+ * dead-letter routing live in `@queues/webhook.queue`, so the API and the worker
+ * can never drift apart. `WebhookAuditService` records deliveries that exhaust
+ * their retries in the compliance audit trail.
  */
 @Module({
   imports: [
@@ -31,24 +31,7 @@ import type { RegisterQueueOptions } from '@nestjs/bullmq';
         db: redisConfig().db,
       },
     }),
-    BullModule.registerQueue({
-      name: Queues.Webhooks,
-      defaultJobOptions: {
-        attempts: 5,
-        backoff: {
-          type: 'exponential',
-          delay: 2000,
-        },
-        removeOnComplete: { count: 1000 },
-        removeOnFail: { age: 24 * 3600 },
-      },
-      // BullMQ reads queue.opts.settings.backoffStrategy at retry time.
-      // The AdvancedOptions type is not fully exposed by @nestjs/bullmq, so we
-      // cast to include the backoffStrategy field that BullMQ supports at runtime.
-      settings: {
-        backoffStrategy: webhookBackoffStrategy,
-      } as RegisterQueueOptions['settings'],
-    }),
+    BullModule.registerQueue(createWebhookQueueOptions()),
     MetricsModule,
   ],
   controllers: [WebhookController],
@@ -57,6 +40,7 @@ import type { RegisterQueueOptions } from '@nestjs/bullmq';
     WebhookRepository,
     WebhookDispatcher,
     WebhookDeliveryService,
+    WebhookAuditService,
     WebhookWorker,
     WebhooksProcessor,
   ],
