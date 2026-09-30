@@ -25,13 +25,11 @@ export type RateLimitConfig = {
 };
 
 /**
- * Config for the Redis-backed sliding-window rate limiters: the per-route
- * `SlidingWindowThrottlerGuard` (top-level fields) and the IP-based
- * `PublicRateLimitGuard` for public endpoints (`public`).
- */
-/**
  * Parses the `PUBLIC_RATE_LIMIT_CLIENT_IDENTIFIERS` list. Unknown entries are
  * ignored so a typo cannot break startup; the IP always participates anyway.
+ *
+ * Read outside the Zod environment schema (same pattern as
+ * `BALANCE_CACHE_TTL`) so the schema file keeps a fixed set of keys.
  */
 function parseClientIdentifiers(raw: string | undefined): PublicRateLimitIdentifier[] {
   if (!raw) {
@@ -46,6 +44,11 @@ function parseClientIdentifiers(raw: string | undefined): PublicRateLimitIdentif
     );
 }
 
+/**
+ * Config for the Redis-backed sliding-window rate limiters: the per-route
+ * `SlidingWindowThrottlerGuard` (top-level fields) and the IP-based
+ * `PublicRateLimitGuard` for public endpoints (`public`).
+ */
 export const rateLimitConfig = registerAs('rateLimit', (): RateLimitConfig => {
   const env = validateEnv(rateLimitEnvSchema, process.env);
   return {
