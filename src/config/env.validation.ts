@@ -82,6 +82,13 @@ export const queueEnvSchema = z.object({
 export const throttleEnvSchema = z.object({
   THROTTLE_AUTH_LIMIT: z.coerce.number().int().positive().default(10),
   THROTTLE_API_LIMIT: z.coerce.number().int().positive().default(120),
+  /**
+   * Requests allowed per window for traffic identified as an autonomous agent.
+   * Agents poll balances and transaction statuses far more often than humans,
+   * so the agent tier is deliberately more generous than `api` while still
+   * bounding a single runaway agent.
+   */
+  THROTTLE_AGENT_LIMIT: z.coerce.number().int().positive().default(300),
   THROTTLE_TTL: z.coerce.number().int().positive().default(60),
 });
 

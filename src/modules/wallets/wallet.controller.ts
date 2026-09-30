@@ -7,6 +7,7 @@ import {
   Patch,
   Post,
   Query,
+  UseGuards,
 } from '@nestjs/common';
 import {
   ApiOperation,
@@ -32,6 +33,8 @@ import {
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { AuditAction } from '../../common/decorators/audit-action.decorator';
+import { AuditLog } from '../../common/decorators/audit-log.decorator';
+import { AgentThrottlerGuard } from '../../common/guards/agent-throttler.guard';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 import { AuthenticatedUser } from '../../common/interfaces/authenticated-user.interface';
 import { PaginationQuery, paginationQuerySchema } from '../../common/helpers/pagination';
@@ -39,6 +42,7 @@ import { ApiEnvelope } from '../../common/decorators/api-envelope.decorator';
 
 @ApiTags('wallets')
 @ApiBearerAuth('access-token')
+@UseGuards(AgentThrottlerGuard)
 @Controller('wallets')
 export class WalletController {
   constructor(private readonly walletService: WalletService) {}
@@ -117,6 +121,7 @@ export class WalletController {
   @Patch(':id')
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.FINANCE, UserRole.DEVELOPER)
   @AuditAction('WALLET_UPDATED')
+  @AuditLog({ action: 'WALLET_UPDATED', entity: 'Wallet' })
   @ApiOperation({
     summary: 'Update a wallet label or owning agent',
     description: 'Partial update of wallet metadata. Does not affect the Stellar keypair.',
@@ -139,6 +144,7 @@ export class WalletController {
   @Post(':id/freeze')
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.FINANCE)
   @AuditAction('WALLET_FROZEN')
+  @AuditLog({ action: 'WALLET_FROZEN', entity: 'Wallet' })
   @ApiOperation({
     summary: 'Freeze a wallet (block outgoing transactions)',
     description:
@@ -157,6 +163,7 @@ export class WalletController {
   @Post(':id/unfreeze')
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.FINANCE)
   @AuditAction('WALLET_UNFROZEN')
+  @AuditLog({ action: 'WALLET_UNFROZEN', entity: 'Wallet' })
   @ApiOperation({
     summary: 'Unfreeze a wallet',
     description: 'Restores a frozen wallet to ACTIVE status, allowing outgoing transactions again.',
@@ -174,6 +181,7 @@ export class WalletController {
   @Delete(':id')
   @Roles(UserRole.OWNER, UserRole.ADMIN)
   @AuditAction('WALLET_ARCHIVED')
+  @AuditLog({ action: 'WALLET_ARCHIVED', entity: 'Wallet' })
   @ApiOperation({
     summary: 'Archive (soft-delete) a wallet',
     description:

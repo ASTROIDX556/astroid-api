@@ -9,7 +9,7 @@ import { THROTTLE_TIER_KEY, ThrottleTier } from '../decorators/throttle-tier.dec
 /** Shape returned by `ThrottlerStorage#increment` (not re-exported by the lib). */
 type ThrottlerStorageRecord = Awaited<ReturnType<AstroidThrottlerGuard['storageService']['increment']>>;
 
-const CONFIG: ThrottlerConfig = { windowSeconds: 60, apiLimit: 120, authLimit: 10 };
+const CONFIG: ThrottlerConfig = { windowSeconds: 60, apiLimit: 120, authLimit: 10, agentLimit: 300 };
 
 const UNBLOCKED: ThrottlerStorageRecord = {
   totalHits: 1,

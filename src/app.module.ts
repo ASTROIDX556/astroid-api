@@ -89,12 +89,14 @@ import { MetricsInterceptor } from './common/interceptors/metrics.interceptor';
             : { target: 'pino-pretty', options: { singleLine: true } },
       },
     }),
-    // Two rate-limit tiers, both driven by THROTTLE_* env vars (see
-    // config/throttler.config.ts). Every route is subject to both named
+    // Three rate-limit tiers, all driven by THROTTLE_* env vars (see
+    // config/throttler.config.ts). Every route is subject to all named
     // throttlers, but AstroidThrottlerGuard enforces only the one matching the
     // route's @ThrottleTierDecorator tier ('api' default, 'auth' for the
-    // sensitive auth endpoints). Counters live in Redis so every replica behind
-    // the load balancer enforces the same budget.
+    // sensitive auth endpoints), and AgentThrottlerGuard (applied to the
+    // agent-facing controllers) enforces the 'agent' tier keyed by acting agent.
+    // Counters live in Redis so every replica behind the load balancer enforces
+    // the same budget.
     ThrottlerModule.forRootAsync({
       imports: [LocksModule],
       inject: [ConfigService, REDIS_CLIENT],

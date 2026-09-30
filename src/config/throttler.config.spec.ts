@@ -19,6 +19,7 @@ describe('throttlerConfig', () => {
       windowSeconds: 60,
       apiLimit: 120,
       authLimit: 10,
+      agentLimit: 300,
     });
   });
 
@@ -26,11 +27,13 @@ describe('throttlerConfig', () => {
     process.env.THROTTLE_TTL = '30';
     process.env.THROTTLE_API_LIMIT = '500';
     process.env.THROTTLE_AUTH_LIMIT = '5';
+    process.env.THROTTLE_AGENT_LIMIT = '900';
 
     expect(throttlerConfig() as ThrottlerConfig).toEqual({
       windowSeconds: 30,
       apiLimit: 500,
       authLimit: 5,
+      agentLimit: 900,
     });
   });
 
@@ -42,13 +45,17 @@ describe('throttlerConfig', () => {
 });
 
 describe('createThrottlerOptions', () => {
-  const config: ThrottlerConfig = { windowSeconds: 60, apiLimit: 120, authLimit: 10 };
+  const config: ThrottlerConfig = { windowSeconds: 60, apiLimit: 120, authLimit: 10, agentLimit: 300 };
 
-  it('exposes exactly two named tiers so AstroidThrottlerGuard can route by tier', () => {
+  it('exposes exactly three named tiers so the guards can route by tier', () => {
     const options = createThrottlerOptions(config);
 
     expect(Array.isArray(options)).toBe(false);
-    expect(options.throttlers.map((throttler) => throttler.name)).toEqual(['api', 'auth']);
+    expect(options.throttlers.map((throttler) => throttler.name)).toEqual([
+      'api',
+      'auth',
+      'agent',
+    ]);
   });
 
   it('converts the configured window from seconds to the milliseconds @nestjs/throttler expects', () => {
@@ -56,13 +63,15 @@ describe('createThrottlerOptions', () => {
 
     expect(options.throttlers[0].ttl).toBe(30_000);
     expect(options.throttlers[1].ttl).toBe(30_000);
+    expect(options.throttlers[2].ttl).toBe(30_000);
   });
 
-  it('applies the stricter limit to the auth tier only', () => {
+  it('applies the stricter limit to the auth tier and the most generous to agents', () => {
     const options = createThrottlerOptions(config);
 
     expect(options.throttlers.find((t) => t.name === 'api')?.limit).toBe(120);
     expect(options.throttlers.find((t) => t.name === 'auth')?.limit).toBe(10);
+    expect(options.throttlers.find((t) => t.name === 'agent')?.limit).toBe(300);
   });
 
   it('attaches the shared Redis storage, without which counters stay in-process', () => {

@@ -15,6 +15,8 @@ export type ThrottlerConfig = {
   apiLimit: number;
   /** Requests allowed per window on the sensitive `auth` tier. */
   authLimit: number;
+  /** Requests allowed per window for a single autonomous agent (`agent` tier). */
+  agentLimit: number;
 };
 
 /**
@@ -30,13 +32,15 @@ export const throttlerConfig = registerAs('throttler', (): ThrottlerConfig => {
     windowSeconds: env.THROTTLE_TTL,
     apiLimit: env.THROTTLE_API_LIMIT,
     authLimit: env.THROTTLE_AUTH_LIMIT,
+    agentLimit: env.THROTTLE_AGENT_LIMIT,
   };
 });
 
 /**
- * Builds the two tiered throttlers consumed by `AstroidThrottlerGuard`:
- *  - `api`  — every route that does not declare a tier explicitly
- *  - `auth` — routes marked with `@ThrottleTierDecorator('auth')`
+ * Builds the three tiered throttlers consumed by the rate-limit guards:
+ *  - `api`   — every route that does not declare a tier explicitly
+ *  - `auth`  — routes marked with `@ThrottleTierDecorator('auth')`
+ *  - `agent` — agent-identified traffic handled by `AgentThrottlerGuard`
  *
  * The options must be returned in the object form (not the bare array) so the
  * shared Redis {@link ThrottlerStorage} can be attached: `@nestjs/throttler`
@@ -56,6 +60,7 @@ export function createThrottlerOptions(
     throttlers: [
       { name: 'api', ttl, limit: config.apiLimit },
       { name: 'auth', ttl, limit: config.authLimit },
+      { name: 'agent', ttl, limit: config.agentLimit },
     ],
   };
 }

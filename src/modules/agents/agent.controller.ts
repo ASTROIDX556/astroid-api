@@ -34,9 +34,11 @@ import {
   SlidingWindowLimit,
 } from '../../common/guards/sliding-window-throttler.guard';
 import { AgentRateLimiterGuard } from './guards/agent-rate-limiter.guard';
+import { AgentThrottlerGuard } from '../../common/guards/agent-throttler.guard';
 
 @ApiTags('agents')
 @ApiBearerAuth('access-token')
+@UseGuards(AgentThrottlerGuard)
 @Controller('agents')
 export class AgentController {
   constructor(private readonly agentService: AgentService) {}
