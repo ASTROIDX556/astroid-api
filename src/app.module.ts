@@ -52,6 +52,7 @@ import { DeadLetterModule } from './modules/dead-letter/dead-letter.module';
 import { AgentTraceInterceptor } from './common/interceptors/agent-trace.interceptor';
 import { RequestContextInterceptor } from './common/interceptors/request-context.interceptor';
 import { AuditLogInterceptor } from './common/interceptors/audit-log.interceptor';
+import { MetricsInterceptor } from './common/interceptors/metrics.interceptor';
 import { RequestIdInterceptor } from './common/interceptors/request-id.interceptor';
 
 /**

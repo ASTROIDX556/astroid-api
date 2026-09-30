@@ -1,12 +1,24 @@
-import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
-import { INestApplication, Controller, Post, UseGuards } from '@nestjs/common';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { Controller, INestApplication, Post, UseGuards } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
-import { ThrottlerModule } from '@nestjs/throttler';
+import { ThrottlerModule, ThrottlerStorage } from '@nestjs/throttler';
+import { Redis } from 'ioredis';
 import { AstroidThrottlerGuard } from './throttler.guard';
 import { REDIS_CLIENT } from '../locks/locks.constants';
-import { MemorySlidingWindowStore } from '../throttler/sliding-window.store';
 import { RedisThrottlerStorage } from '../throttler/redis-throttler.storage';
-import type { Redis } from 'ioredis';
+
+/**
+ * The app runs on Express (no Fastify `app.inject`), so bursts are driven over
+ * real HTTP. The Redis client is a stand-in whose `eval` reproduces the
+ * throttler storage script's contract
+ * (`[totalHits, timeToExpire, isBlocked, timeToBlockExpire]`) on top of a
+ * fixed-window counter, exercising the Redis-backed storage code path end to
+ * end — mirroring how `AppModule` wires `RedisThrottlerStorage` through
+ * `ThrottlerModule.forRootAsync`.
+ */
+
+const LIMIT = 2;
+const WINDOW_SECONDS = 60;
 
 @Controller('test-sensitive')
 class TestSensitiveController {
@@ -20,21 +32,23 @@ class TestSensitiveController {
 describe('Sensitive Endpoint Rate Limiting (Integration)', () => {
   let app: INestApplication;
   let baseUrl: string;
+  let hits: number;
 
   beforeAll(async () => {
-    const store = new MemorySlidingWindowStore();
+    hits = 0;
     const fakeRedis = {
       status: 'ready',
-      eval: vi.fn(async (_script: string, _keys: number, key: string, now: number, windowMs: number, limit: number) => {
-        const hit = await store.hit(key, limit, windowMs, now);
-        return [hit.allowed ? 1 : 0, hit.count, hit.resetAt, 0];
+      eval: vi.fn(async () => {
+        hits += 1;
+        // [totalHits, timeToExpire, isBlocked, timeToBlockExpire]
+        return [hits, WINDOW_SECONDS, hits > LIMIT ? 1 : 0, hits > LIMIT ? WINDOW_SECONDS : 0];
       }),
     };
 
     const moduleRef = await Test.createTestingModule({
       imports: [
         ThrottlerModule.forRoot({
-          throttlers: [{ name: 'api', ttl: 60000, limit: 2 }],
+          throttlers: [{ name: 'api', ttl: WINDOW_SECONDS * 1000, limit: LIMIT }],
         }),
       ],
       controllers: [TestSensitiveController],
@@ -44,7 +58,7 @@ describe('Sensitive Endpoint Rate Limiting (Integration)', () => {
           useValue: fakeRedis,
         },
         {
-          provide: 'ThrottlerStorage',
+          provide: ThrottlerStorage,
           useFactory: (redisClient: Redis) => new RedisThrottlerStorage(redisClient),
           inject: [REDIS_CLIENT],
         },

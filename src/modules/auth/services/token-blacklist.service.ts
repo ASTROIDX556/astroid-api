@@ -1,6 +1,7 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { Redis } from 'ioredis';
 import { TokenVerificationCacheService } from './token-verification-cache.service';
+import { REDIS_CLIENT } from '../../../common/locks/locks.constants';
 
 /**
  * Redis-backed token revocation store. Issued JWTs remain valid until their
@@ -21,7 +22,9 @@ export class TokenBlacklistService {
   private readonly logger = new Logger(TokenBlacklistService.name);
 
   constructor(
-    private readonly redis: Redis,
+    // Injected by token so the global LocksModule provider is resolved
+    // regardless of the class-token import graph.
+    @Inject(REDIS_CLIENT) private readonly redis: Redis,
     private readonly verificationCache: TokenVerificationCacheService,
   ) {}
 

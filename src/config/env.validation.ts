@@ -91,6 +91,8 @@ export const queueEnvSchema = z.object({
 export const throttleEnvSchema = z.object({
   THROTTLE_AUTH_LIMIT: z.coerce.number().int().positive().default(10),
   THROTTLE_API_LIMIT: z.coerce.number().int().positive().default(120),
+  /** Requests allowed per window for traffic identified as an autonomous agent. */
+  THROTTLE_AGENT_LIMIT: z.coerce.number().int().positive().default(300),
   THROTTLE_WEBHOOK_LIMIT: z.coerce.number().int().positive().default(30),
   THROTTLE_TTL: z.coerce.number().int().positive().default(60),
   // Short-term burst allowance per tier (requests per second). A burst window

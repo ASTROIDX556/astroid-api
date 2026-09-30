@@ -11,6 +11,13 @@ import {
 import { DomainException } from '../../../common/exceptions/domain.exception';
 import { ErrorCode } from '../../../common/constants/error-codes';
 
+/** Runs `promise` and resolves with the thrown error instead of rejecting. */
+const caught = async (promise: Promise<unknown>): Promise<DomainException | null> =>
+  promise.then(
+    () => null,
+    (e: unknown) => e as DomainException,
+  );
+
 describe('StellarService - Transaction Simulation', () => {
   let service: StellarService;
   let mockSorobanClient: SorobanClient;
@@ -52,14 +59,16 @@ describe('StellarService - Transaction Simulation', () => {
     const mockResult: SorobanSimulationResult = {
       success: true,
       minResourceFee: '100',
-      cost: { cpuInstructions: 1000, memoryBytes: 2000 },
+      cost: { cpuInstructions: 1000, memoryBytes: 2048 },
       footprint: { readOnly: [], readWrite: [] },
       events: [],
       result: 'AAAA...',
+      transactionHash: 'sim_123',
     };
-    vi.spyOn(mockSorobanClient, 'simulateTransaction').mockResolvedValueOnce(mockResult);
+    vi.spyOn(mockSorobanClient, 'simulateTransaction').mockResolvedValue(mockResult);
 
     const result = await service.simulateTransaction('AAAA...valid_xdr');
+
     expect(result).toEqual(mockResult);
     expect(mockSorobanClient.simulateTransaction).toHaveBeenCalledWith({
       transactionXdr: 'AAAA...valid_xdr',
@@ -67,13 +76,10 @@ describe('StellarService - Transaction Simulation', () => {
   });
 
   it('should throw DomainException when transaction XDR is empty or invalid', async () => {
-    await expect(service.simulateTransaction('')).rejects.toThrow(DomainException);
-    try {
-      await service.simulateTransaction('');
-    } catch (e: unknown) {
-      const err = e as DomainException;
-      expect(err.code).toBe(ErrorCode.INVALID_STELLAR_TRANSACTION);
-    }
+    const error = await caught(service.simulateTransaction(''));
+
+    expect(error).toBeInstanceOf(DomainException);
+    expect(error?.code).toBe(ErrorCode.INVALID_STELLAR_TRANSACTION);
   });
 
   it('should handle simulation failure and Soroban error codes correctly', async () => {
@@ -83,30 +89,27 @@ describe('StellarService - Transaction Simulation', () => {
       cost: { cpuInstructions: 0, memoryBytes: 0 },
       footprint: { readOnly: [], readWrite: [] },
       events: [],
-      error: { code: 'Contract', message: 'HostError: Error(Contract, #4)' },
+      error: {
+        code: 'Contract',
+        message: 'HostError: Error(Contract, #4)',
+      },
     };
     vi.spyOn(mockSorobanClient, 'simulateTransaction').mockResolvedValue(errorResult);
 
-    await expect(service.simulateTransaction('AAAA...trap_xdr')).rejects.toThrow(DomainException);
-    try {
-      await service.simulateTransaction('AAAA...trap_xdr');
-    } catch (e: unknown) {
-      const err = e as DomainException;
-      expect(err.code).toBe(ErrorCode.STELLAR_ERROR);
-      expect(err.message).toContain('HostError: Error(Contract, #4)');
-    }
+    const error = await caught(service.simulateTransaction('AAAA...trap_xdr'));
+
+    expect(error).toBeInstanceOf(DomainException);
+    expect(error?.code).toBe(ErrorCode.STELLAR_ERROR);
+    expect(error?.message).toContain('Simulation failed: HostError: Error(Contract, #4)');
   });
 
   it('should handle RPC network timeouts and errors robustly', async () => {
     vi.spyOn(mockSorobanClient, 'simulateTransaction').mockRejectedValue(new Error('RPC timeout'));
 
-    await expect(service.simulateTransaction('AAAA...timeout_xdr')).rejects.toThrow(DomainException);
-    try {
-      await service.simulateTransaction('AAAA...timeout_xdr');
-    } catch (e: unknown) {
-      const err = e as DomainException;
-      expect(err.code).toBe(ErrorCode.STELLAR_ERROR);
-      expect(err.message).toContain('RPC timeout');
-    }
+    const error = await caught(service.simulateTransaction('AAAA...timeout_xdr'));
+
+    expect(error).toBeInstanceOf(DomainException);
+    expect(error?.code).toBe(ErrorCode.STELLAR_ERROR);
+    expect(error?.message).toContain('RPC timeout');
   });
 });

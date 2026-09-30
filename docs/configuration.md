@@ -143,6 +143,7 @@ are rejected:
 | --- | --- | --- |
 | `THROTTLE_AUTH_LIMIT` | `10` | Requests per window on the `auth` tier. |
 | `THROTTLE_API_LIMIT` | `120` | Requests per window on the `api` tier. |
+| `THROTTLE_AGENT_LIMIT` | `300` | Requests per window for autonomous-agent traffic. |
 | `THROTTLE_WEBHOOK_LIMIT` | `30` | Requests per window on the `webhook` tier. |
 | `THROTTLE_TTL` | `60` | Throttler window in seconds. |
 | `THROTTLE_API_BURST` | `10` | Short-term (1s) burst allowance on the `api` tier. `0` disables burst enforcement. |
@@ -154,6 +155,7 @@ are rejected:
 | `PUBLIC_RATE_LIMIT_MAX_REQUESTS` | `60` | Requests allowed per client IP per sliding window on public routes. |
 | `PUBLIC_RATE_LIMIT_WINDOW_SECONDS` | `60` | Sliding-window size for the public-route rate limiter. |
 | `PUBLIC_RATE_LIMIT_TRUST_PROXY` | `false` | Reads client IP from `X-Forwarded-For`. Only enable behind a trusted reverse proxy. |
+| `PUBLIC_RATE_LIMIT_CLIENT_IDENTIFIERS` | _(empty)_ | Comma-separated client identifiers to add to the IP bucket, currently `apiKey`. |
 
 ### Metrics
 
