@@ -16,9 +16,11 @@ vi.mock('../../config/redis.config', () => ({
 }));
 
 import { MetricsService } from './metrics.service';
+import { PrismaService } from '../../database/prisma.service';
 
 describe('MetricsService', () => {
   let service: MetricsService;
+  let getPoolStats: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -30,7 +32,8 @@ describe('MetricsService', () => {
       delayed: 0,
       paused: 0,
     });
-    service = new MetricsService();
+    getPoolStats = vi.fn().mockResolvedValue({ active: 2, idle: 5, waiting: 0 });
+    service = new MetricsService({ getPoolStats } as unknown as PrismaService);
   });
 
   it('exposes the Prometheus content type', () => {
@@ -81,6 +84,16 @@ describe('MetricsService', () => {
     await service.onModuleDestroy();
 
     expect(close).toHaveBeenCalled();
+  });
+
+  it('samples active/idle/waiting connection counts into the pool gauge', async () => {
+    const output = await service.getMetrics();
+
+    expect(getPoolStats).toHaveBeenCalled();
+    expect(output).toContain('db_pool_connections');
+    expect(output).toMatch(/db_pool_connections\{state="active"\} 2/);
+    expect(output).toMatch(/db_pool_connections\{state="idle"\} 5/);
+    expect(output).toMatch(/db_pool_connections\{state="waiting"\} 0/);
   });
 
   describe('worker job metrics', () => {

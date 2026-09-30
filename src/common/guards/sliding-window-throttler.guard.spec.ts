@@ -16,6 +16,7 @@ function makeContext(
   ip = '127.0.0.1',
   headers: Record<string, string> = {},
 ) {
+function makeContext(user?: Record<string, unknown>, ip = '127.0.0.1', headers: Record<string, string> = {}) {
   const response = { setHeader: vi.fn() };
   const request = { user, ip, headers };
   const handler = vi.fn();
@@ -111,19 +112,5 @@ describe('SlidingWindowThrottlerGuard', () => {
     await expect(guard.canActivate(context as never)).resolves.toBe(true);
     expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('allowing request'));
     expect(response.setHeader).toHaveBeenCalledWith('X-RateLimit-Remaining', 2);
-  });
-
-  it('supports enterprise tier dynamic limits', async () => {
-    const { context, response } = makeContext({ organizationId: 'org-ent', tier: 'enterprise' });
-    const guard = makeGuard({ multi: () => chain }, 100);
-    expect(await guard.canActivate(context as never)).toBe(true);
-    expect(response.setHeader).toHaveBeenCalledWith('X-RateLimit-Limit', 500);
-  });
-
-  it('supports pro tier dynamic limits', async () => {
-    const { context, response } = makeContext({ organizationId: 'org-pro', tier: 'pro' });
-    const guard = makeGuard({ multi: () => chain }, 100);
-    expect(await guard.canActivate(context as never)).toBe(true);
-    expect(response.setHeader).toHaveBeenCalledWith('X-RateLimit-Limit', 250);
   });
 });

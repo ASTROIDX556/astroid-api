@@ -39,6 +39,12 @@ export const databaseEnvSchema = z.object({
   DATABASE_SLOW_QUERY_THRESHOLD_MS: z.coerce.number().int().nonnegative().default(1000),
   DATABASE_CONNECT_RETRY_ATTEMPTS: z.coerce.number().int().positive().max(10).default(5),
   DATABASE_CONNECT_RETRY_DELAY_MS: z.coerce.number().int().positive().max(60000).default(1000),
+  // Startup migration check: verifies prisma/migrations on disk against the
+  // _prisma_migrations table before the app accepts traffic.
+  DATABASE_MIGRATION_CHECK_ENABLED: z.coerce.boolean().default(true),
+  // When a pending/failed migration is detected: 'halt' exits the process before
+  // listen(), 'warn' logs and continues. Production should stay 'halt'.
+  DATABASE_MIGRATION_CHECK_MODE: z.enum(['halt', 'warn']).default('halt'),
 });
 
 export const redisEnvSchema = z.object({
@@ -172,18 +178,21 @@ export const encryptionEnvSchema = z.object({
  * Production additionally rejects insecure-but-valid values that are fine for
  * local development.
  */
-export const environmentSchema = appEnvSchema
-  .merge(databaseEnvSchema)
-  .merge(redisEnvSchema)
-  .merge(authEnvSchema)
-  .merge(stellarEnvSchema)
-  .merge(storageEnvSchema)
-  .merge(queueEnvSchema)
-  .merge(throttleEnvSchema)
-  .merge(rateLimitEnvSchema)
-  .merge(metricsEnvSchema)
-  .merge(aiEnvSchema)
-  .merge(encryptionEnvSchema)
+export const environmentSchema = z
+  .object({
+    ...appEnvSchema.shape,
+    ...databaseEnvSchema.shape,
+    ...redisEnvSchema.shape,
+    ...authEnvSchema.shape,
+    ...stellarEnvSchema.shape,
+    ...storageEnvSchema.shape,
+    ...queueEnvSchema.shape,
+    ...throttleEnvSchema.shape,
+    ...rateLimitEnvSchema.shape,
+    ...metricsEnvSchema.shape,
+    ...aiEnvSchema.shape,
+    ...encryptionEnvSchema.shape,
+  })
   .superRefine((env, ctx) => {
     if (env.NODE_ENV !== 'production') {
       return;

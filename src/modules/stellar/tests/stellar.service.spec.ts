@@ -52,7 +52,7 @@ describe('StellarService - Transaction Simulation', () => {
     const mockResult: SorobanSimulationResult = {
       success: true,
       minResourceFee: '100',
-      cost: { cpuInstructions: 0, memoryBytes: 0 },
+      cost: { cpuInstructions: 1000, memoryBytes: 2000 },
       footprint: { readOnly: [], readWrite: [] },
       events: [],
       result: 'AAAA...',
@@ -85,6 +85,7 @@ describe('StellarService - Transaction Simulation', () => {
       footprint: { readOnly: [], readWrite: [] },
       events: [],
       error: { code: 'HOST_ERROR', message: 'HostError: Error(Contract, #4)' },
+      error: { code: 'Contract', message: 'HostError: Error(Contract, #4)' },
     };
     vi.spyOn(mockSorobanClient, 'simulateTransaction').mockResolvedValue(errorResult);
 

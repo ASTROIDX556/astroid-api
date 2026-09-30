@@ -8,6 +8,7 @@ import { AstroidThrottlerGuard } from './throttler.guard';
 import { REDIS_CLIENT } from '../locks/locks.constants';
 import { MemorySlidingWindowStore } from '../throttler/sliding-window.store';
 import { RedisThrottlerStorage } from '../throttler/redis-throttler.storage';
+import type { Redis } from 'ioredis';
 
 /** Minimal POST helper over the app's underlying http.Server (no supertest dependency). */
 function post(
@@ -47,6 +48,7 @@ class TestSensitiveController {
 
 describe('Sensitive Endpoint Rate Limiting (Integration)', () => {
   let app: INestApplication;
+  let baseUrl: string;
 
   beforeAll(async () => {
     const store = new MemorySlidingWindowStore();
@@ -90,6 +92,9 @@ describe('Sensitive Endpoint Rate Limiting (Integration)', () => {
     app = moduleRef.createNestApplication();
     await app.init();
     await app.listen(0);
+    app = moduleRef.createNestApplication({ logger: false });
+    await app.listen(0, '127.0.0.1');
+    baseUrl = await app.getUrl();
   });
 
   afterAll(async () => {
@@ -108,5 +113,20 @@ describe('Sensitive Endpoint Rate Limiting (Integration)', () => {
 
     const res3 = await post(server, '/test-sensitive/action', headers);
     expect(res3.statusCode).toBe(429);
+  const send = () =>
+    fetch(`${baseUrl}/test-sensitive/action`, {
+      method: 'POST',
+      headers: { 'x-api-key': 'test-key-123' },
+    });
+
+  it('enforces rate limit and returns 429 when threshold is exceeded', async () => {
+    const res1 = await send();
+    expect(res1.status).toBe(201);
+
+    const res2 = await send();
+    expect(res2.status).toBe(201);
+
+    const res3 = await send();
+    expect(res3.status).toBe(429);
   });
 });
