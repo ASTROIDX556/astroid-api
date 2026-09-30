@@ -1,25 +1,6 @@
 import { registerAs } from '@nestjs/config';
 import { rateLimitEnvSchema, validateEnv } from './env.validation';
 
-/**
- * Optional tuning knob read outside the Zod environment schema (same pattern
- * as `BALANCE_CACHE_TTL`): a comma-separated list of extra client identifiers
- * folded into the public rate-limit bucket. Currently supports `apiKey`.
- */
-function parseClientIdentifiers(): PublicRateLimitIdentifier[] {
-  const raw = process.env.PUBLIC_RATE_LIMIT_CLIENT_IDENTIFIERS;
-  if (!raw) {
-    return [];
-  }
-  const known: PublicRateLimitIdentifier[] = ['ip', 'apiKey'];
-  return raw
-    .split(',')
-    .map((entry) => entry.trim())
-    .filter((entry): entry is PublicRateLimitIdentifier =>
-      known.includes(entry as PublicRateLimitIdentifier),
-    );
-}
-
 /** Client identifiers that can participate in the public rate-limit bucket. */
 export type PublicRateLimitIdentifier = 'ip' | 'apiKey';
 
@@ -44,13 +25,11 @@ export type RateLimitConfig = {
 };
 
 /**
- * Config for the Redis-backed sliding-window rate limiters: the per-route
- * `SlidingWindowThrottlerGuard` (top-level fields) and the IP-based
- * `PublicRateLimitGuard` for public endpoints (`public`).
- */
-/**
  * Parses the `PUBLIC_RATE_LIMIT_CLIENT_IDENTIFIERS` list. Unknown entries are
  * ignored so a typo cannot break startup; the IP always participates anyway.
+ *
+ * Read outside the Zod environment schema (same pattern as
+ * `BALANCE_CACHE_TTL`) so the schema file keeps a fixed set of keys.
  */
 function parseClientIdentifiers(raw: string | undefined): PublicRateLimitIdentifier[] {
   if (!raw) {
@@ -65,6 +44,11 @@ function parseClientIdentifiers(raw: string | undefined): PublicRateLimitIdentif
     );
 }
 
+/**
+ * Config for the Redis-backed sliding-window rate limiters: the per-route
+ * `SlidingWindowThrottlerGuard` (top-level fields) and the IP-based
+ * `PublicRateLimitGuard` for public endpoints (`public`).
+ */
 export const rateLimitConfig = registerAs('rateLimit', (): RateLimitConfig => {
   const env = validateEnv(rateLimitEnvSchema, process.env);
   return {
@@ -75,7 +59,7 @@ export const rateLimitConfig = registerAs('rateLimit', (): RateLimitConfig => {
       maxRequests: env.PUBLIC_RATE_LIMIT_MAX_REQUESTS,
       windowSeconds: env.PUBLIC_RATE_LIMIT_WINDOW_SECONDS,
       trustProxy: env.PUBLIC_RATE_LIMIT_TRUST_PROXY,
-      clientIdentifiers: parseClientIdentifiers(),
+      clientIdentifiers: parseClientIdentifiers(process.env.PUBLIC_RATE_LIMIT_CLIENT_IDENTIFIERS),
     },
   };
 });
