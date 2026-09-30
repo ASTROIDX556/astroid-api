@@ -204,6 +204,46 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
     await this.workerClient.$disconnect();
   }
 
+  /**
+   * Reads live connection counts for this database from Postgres'
+   * `pg_stat_activity`. Prisma's Rust query engine doesn't expose pool
+   * internals (active/idle/waiting) through the Node client, so this is the
+   * only accurate source for those numbers — used by MetricsService to
+   * publish `db_pool_connections`.
+   */
+  async getPoolStats(): Promise<{ active: number; idle: number; waiting: number }> {
+    try {
+      const rows = await this.$queryRawUnsafe<
+        { state: string | null; wait_event_type: string | null; count: bigint }[]
+      >(
+        `SELECT state, wait_event_type, count(*) AS count
+         FROM pg_stat_activity
+         WHERE datname = current_database()
+         GROUP BY state, wait_event_type`,
+      );
+
+      let active = 0;
+      let idle = 0;
+      let waiting = 0;
+
+      for (const row of rows) {
+        const count = Number(row.count);
+        if (row.wait_event_type === 'Lock') {
+          waiting += count;
+        } else if (row.state === 'active') {
+          active += count;
+        } else if (row.state?.startsWith('idle')) {
+          idle += count;
+        }
+      }
+
+      return { active, idle, waiting };
+    } catch (error) {
+      this.logger.warn(`Failed to read pool stats from pg_stat_activity: ${(error as Error).message}`);
+      return { active: 0, idle: 0, waiting: 0 };
+    }
+  }
+
   /** Registers a Nest shutdown hook so the process closes the pool cleanly. */
   async enableShutdownHooks(app: INestApplication): Promise<void> {
     process.on('beforeExit', () => {

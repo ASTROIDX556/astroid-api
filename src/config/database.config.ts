@@ -35,6 +35,8 @@ export type DatabaseConfig = {
   slowQueryThresholdMs: number;
   connectionRetryAttempts: number;
   connectionRetryDelayMs: number;
+  migrationCheckEnabled: boolean;
+  migrationCheckMode: 'halt' | 'warn';
 };
 
 export const databaseConfig = registerAs('database', (): DatabaseConfig => {
@@ -52,5 +54,7 @@ export const databaseConfig = registerAs('database', (): DatabaseConfig => {
     slowQueryThresholdMs: env.DATABASE_SLOW_QUERY_THRESHOLD_MS,
     connectionRetryAttempts: env.DATABASE_CONNECT_RETRY_ATTEMPTS,
     connectionRetryDelayMs: env.DATABASE_CONNECT_RETRY_DELAY_MS,
+    migrationCheckEnabled: env.DATABASE_MIGRATION_CHECK_ENABLED,
+    migrationCheckMode: env.DATABASE_MIGRATION_CHECK_MODE,
   };
 });
