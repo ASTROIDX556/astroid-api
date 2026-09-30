@@ -1,5 +1,6 @@
 import { Controller, Get, Res, UseGuards } from '@nestjs/common';
 import { ApiExcludeController } from '@nestjs/swagger';
+import { SkipThrottle } from '@nestjs/throttler';
 import { Response } from 'express';
 import { MetricsService } from './metrics.service';
 import { MetricsAccessGuard } from './metrics-access.guard';
@@ -18,6 +19,7 @@ import { SkipPublicRateLimit } from '../../common/decorators/skip-public-rate-li
 @Controller('metrics')
 @Public()
 @SkipAudit()
+@SkipThrottle()
 @SkipPublicRateLimit()
 @UseGuards(MetricsAccessGuard)
 export class MetricsController {
