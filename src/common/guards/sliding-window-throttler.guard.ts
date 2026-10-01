@@ -48,6 +48,7 @@ export class SlidingWindowThrottlerGuard implements CanActivate {
     );
     const limit = configured?.limit ?? this.defaultLimit;
     const windowSeconds = configured?.windowSeconds ?? this.defaultWindowSeconds;
+
     const key = this.keyFor(request, context);
     const now = Date.now();
     const windowStart = now - windowSeconds * 1000;

@@ -3,6 +3,7 @@ import { Registry, Counter, Histogram, Gauge } from 'prom-client';
 import { Queue } from 'bullmq';
 import { redisConfig } from '../../config/redis.config';
 import { Queues } from '../../queues/queues.constants';
+import { PrismaService } from '../../database/prisma.service';
 
 @Injectable()
 export class MetricsService implements OnModuleDestroy {
@@ -44,7 +45,14 @@ export class MetricsService implements OnModuleDestroy {
     registers: [this.registry],
   });
 
-  constructor() {
+  private readonly dbPoolConnectionsGauge = new Gauge({
+    name: 'db_pool_connections',
+    help: 'Database connections by state (active, idle, waiting)',
+    labelNames: ['state'],
+    registers: [this.registry],
+  });
+
+  constructor(private readonly prisma: PrismaService) {
     const rConfig = redisConfig();
     const connection = {
       host: rConfig.host,
@@ -101,8 +109,16 @@ export class MetricsService implements OnModuleDestroy {
     }
   }
 
+  private async collectPoolMetrics(): Promise<void> {
+    const stats = await this.prisma.getPoolStats();
+    this.dbPoolConnectionsGauge.set({ state: 'active' }, stats.active);
+    this.dbPoolConnectionsGauge.set({ state: 'idle' }, stats.idle);
+    this.dbPoolConnectionsGauge.set({ state: 'waiting' }, stats.waiting);
+  }
+
   public async getMetrics(): Promise<string> {
     await this.collectQueueMetrics();
+    await this.collectPoolMetrics();
     return this.registry.metrics();
   }
 
