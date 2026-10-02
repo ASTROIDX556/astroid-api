@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Job, UnrecoverableError } from 'bullmq';
 import { WebhooksProcessor } from './webhooks.processor';
 import { WebhookJobData } from './types/webhook-job.types';
-import { createHmac } from 'crypto';
+import { verifyWebhookSignature } from './utils/signing';
 
 describe('WebhooksProcessor', () => {
   let processor: WebhooksProcessor;
@@ -19,7 +19,6 @@ describe('WebhooksProcessor', () => {
     webhookId: WEBHOOK_ID,
     organizationId: ORG_ID,
     url: WEBHOOK_URL,
-    secret: WEBHOOK_SECRET,
     eventName: 'transaction.completed',
     payload: { event: 'transaction.completed', data: { transactionId: 'txn-123' } },
     eventId: EVENT_ID,
@@ -35,7 +34,9 @@ describe('WebhooksProcessor', () => {
     }) as unknown as Job<WebhookJobData>;
 
   beforeEach(() => {
-    mockPrisma = {};
+    mockPrisma = {
+      webhook: { findFirst: vi.fn().mockResolvedValue({ secret: WEBHOOK_SECRET }) },
+    };
     // Access private property via type assertion
     processor = new WebhooksProcessor(mockPrisma as never);
     fetchSpy = vi.fn();
@@ -69,14 +70,13 @@ describe('WebhooksProcessor', () => {
       expect(options.headers['x-astroid-delivery']).toBe(EVENT_ID);
       expect(options.headers['x-astroid-timestamp']).toBeDefined();
       expect(options.headers['x-astroid-timestamp']).toMatch(/^\d+$/);
+      expect(options.headers['x-astroid-signature-version']).toBe('v1');
 
-      // Verify HMAC-SHA256 signature = HMAC(secret, timestamp + body)
-      const body = options.body;
+      const body = Buffer.from(options.body);
       const timestamp = options.headers['x-astroid-timestamp'];
-      const expectedSignature = createHmac('sha256', WEBHOOK_SECRET)
-        .update(`${timestamp}.${body}`)
-        .digest('hex');
-      expect(options.headers['x-astroid-signature']).toBe(expectedSignature);
+      expect(options.headers['x-astroid-signature']).toMatch(/^v1=[0-9a-f]{64}$/);
+      expect(verifyWebhookSignature(WEBHOOK_SECRET, timestamp, EVENT_ID, body, options.headers['x-astroid-signature'])).toBe(true);
+      expect(job.data).not.toHaveProperty('secret');
     });
 
     it('returns success result with status code', async () => {
@@ -233,6 +233,35 @@ describe('WebhooksProcessor', () => {
       // Attempt 5 of 5 (attemptsMade = 4, which means this is the last attempt)
       const job = createMockJob({ attemptsMade: 4 } as Partial<Job<WebhookJobData>>);
       await expect(processor.process(job)).rejects.toThrow('HTTP 503');
+    });
+
+    it('keeps the same event identity across retry attempts', async () => {
+      const upsert = vi.fn().mockResolvedValue({});
+      mockPrisma.webhookDelivery = { upsert };
+      fetchSpy.mockResolvedValue({ ok: true, status: 200, text: () => Promise.resolve('OK') });
+
+      const firstAttempt = createMockJob();
+      const retryAttempt = createMockJob({ attemptsMade: 1 } as Partial<Job<WebhookJobData>>);
+      await processor.process(firstAttempt);
+      await processor.process(retryAttempt);
+
+      expect(firstAttempt.data.eventId).toBe(retryAttempt.data.eventId);
+      expect(upsert.mock.calls[0][0].where).toEqual(upsert.mock.calls[1][0].where);
+    });
+
+    it('does not include a downstream response body in failure messages or logs', async () => {
+      const secretEcho = `${WEBHOOK_SECRET}:${EVENT_ID}:payload`;
+      const warn = vi.spyOn(processor['logger'], 'warn').mockImplementation(() => undefined);
+      const error = vi.spyOn(processor['logger'], 'error').mockImplementation(() => undefined);
+      fetchSpy.mockResolvedValue({
+        ok: false,
+        status: 500,
+        text: () => Promise.resolve(secretEcho),
+      });
+
+      await expect(processor.process(createMockJob())).rejects.toThrow('HTTP 500');
+      expect(warn.mock.calls.flat().join(' ')).not.toContain(secretEcho);
+      expect(error.mock.calls.flat().join(' ')).not.toContain(secretEcho);
     });
   });
 });

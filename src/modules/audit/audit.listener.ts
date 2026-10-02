@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
 import { AuditService } from './audit.service';
 import { DomainEventEnvelope } from '../../events/domain-event.types';
+import { DOMAIN_EVENT_ENVELOPE } from '../../events/domain-event.types';
 
 /**
  * Subscribes to every domain event (wildcard) and appends an audit-log row.
@@ -14,7 +15,7 @@ export class AuditListener {
 
   constructor(private readonly auditService: AuditService) {}
 
-  @OnEvent('**')
+  @OnEvent(DOMAIN_EVENT_ENVELOPE)
   async handleDomainEvent(envelope: DomainEventEnvelope): Promise<void> {
     if (!envelope?.organizationId) {
       return;
