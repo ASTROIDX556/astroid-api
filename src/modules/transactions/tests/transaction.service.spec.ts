@@ -80,6 +80,14 @@ describe('TransactionService', () => {
         stellarService as unknown as StellarService,
         eventBus as unknown as EventBusService,
         {} as PrismaService,
+        {
+          aggregateSpend: vi.fn().mockResolvedValue({
+            spentToday: 0,
+            spentThisWeek: 0,
+            spentThisMonth: 0,
+          }),
+          evaluateSpendingLimits: vi.fn().mockResolvedValue(undefined),
+        } as unknown as SpendingLimitService,
       );
     });
 
