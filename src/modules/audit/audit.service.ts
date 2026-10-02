@@ -5,14 +5,6 @@ import { AuditRepository, CreateAuditLogData } from './audit.repository';
 import { AuditHashService } from './audit-hash.service';
 import { ExportAuditLogsQuery, StreamAuditLogsQuery } from './audit-export.dto';
 import { sanitizeAuditPayload } from '../../common/helpers/audit-sanitizer';
-import {
-  buildPaginationMeta,
-  PaginationQuery,
-  toPrismaPagination,
-} from '../../common/helpers/pagination';
-import { Paginated } from '../../common/interfaces/api-response.interface';
-
-const SORTABLE = ['createdAt', 'action', 'entity'];
 import { CursorPaginated } from '../../common/interfaces/api-response.interface';
 import { AuditListQuery } from './audit-list.dto';
 import { decodeAuditCursor, encodeAuditCursor } from './audit-cursor';

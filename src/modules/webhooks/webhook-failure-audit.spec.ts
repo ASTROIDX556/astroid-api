@@ -15,7 +15,6 @@ describe('WebhooksProcessor terminal failures', () => {
     webhookId: 'wh-1',
     organizationId: 'org-1',
     url: 'https://downstream.example.com/hook',
-    secret: 'whsec_test',
     eventName: 'transaction.completed',
     payload: { id: 'txn-1' },
     eventId: 'event-1',
@@ -32,8 +31,7 @@ describe('WebhooksProcessor terminal failures', () => {
   beforeEach(() => {
     recordTerminalFailure = vi.fn().mockResolvedValue(undefined);
     processor = new WebhooksProcessor(
-      undefined,
-      undefined,
+      { webhook: { findFirst: vi.fn().mockResolvedValue({ secret: 'whsec_test' }) } } as never,
       undefined,
       { recordTerminalFailure } as unknown as WebhookAuditService,
     );
