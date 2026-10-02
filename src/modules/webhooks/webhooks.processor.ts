@@ -170,7 +170,7 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
         this.logger.debug(`Webhook ${webhookId} delivered successfully${requestTrace}`);
       } catch (error) {
         if (error instanceof UnrecoverableError) throw error;
-        errorMessage = error instanceof UnrecoverableError ? error.message : 'Delivery attempt failed';
+        errorMessage = error instanceof Error ? error.message : 'Delivery attempt failed';
         const isLastAttempt = job.attemptsMade >= 4;
         this.logger.error(`Webhook ${webhookId} failed attempt ${job.attemptsMade + 1}/5${requestTrace}`);
         await this.persistState({
