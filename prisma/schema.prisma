@@ -499,6 +499,7 @@ model AuditLog {
   // `x-correlation-id`). Not part of the hash chain — it's correlation
   // metadata, not tamper-evident content.
   requestId      String?
+  sourceEventId  String?  @unique
   previousHash   String?  // SHA-256 hash of the preceding audit log entry
   hash           String?  // SHA-256 hash of this entry (links to previous)
   createdAt      DateTime @default(now())

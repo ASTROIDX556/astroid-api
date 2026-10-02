@@ -106,6 +106,10 @@ export class SlidingWindowThrottlerGuard implements CanActivate {
    * finally falls back to the client IP for fully unauthenticated routes.
    */
   private clientScope(request: Request & { user?: AuthenticatedUser }): string {
+    if (request.user?.isApiKey) {
+      return `key:${request.user.apiKeyId ?? request.user.id}`;
+    }
+
     const organizationId = request.user?.organizationId;
     if (organizationId) {
       return `org:${organizationId}`;

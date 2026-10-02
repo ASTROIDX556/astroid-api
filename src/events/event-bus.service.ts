@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { randomUUID } from 'crypto';
 import { PrismaService } from '../database/prisma.service';
 import { DomainEventNameType } from './event-names';
 import { DomainEventEnvelope } from './domain-event.types';
@@ -39,6 +40,7 @@ export class EventBusService {
     options: EmitOptions,
   ): Promise<void> {
     const envelope: DomainEventEnvelope<Record<string, unknown>> = {
+      eventId: randomUUID(),
       name: name as unknown as DomainEventNameType,
       organizationId: options.organizationId,
       aggregateType: options.aggregateType,
@@ -56,12 +58,14 @@ export class EventBusService {
     // Broadcast synchronously in-process using typed emitter for type safety.
     // Subscribers isolate their own errors.
     this.typedEmitter.emit(name, payload);
+    this.typedEmitter.emitEnvelope(envelope);
   }
 
   private async persist(envelope: DomainEventEnvelope): Promise<void> {
     try {
       await this.prisma.domainEvent.create({
         data: {
+          id: envelope.eventId,
           organizationId: envelope.organizationId ?? null,
           name: envelope.name,
           aggregateType: envelope.aggregateType,

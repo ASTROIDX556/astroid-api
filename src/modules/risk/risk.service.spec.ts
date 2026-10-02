@@ -95,6 +95,7 @@ describe('RiskService Event Handler', () => {
 
   it('should evaluate and persist risk assessment upon handling transaction created event', async () => {
     const envelope = {
+      eventId: 'event-123',
       name: DomainEventName.TransactionCreated,
       organizationId: 'org-1',
       aggregateType: 'transaction',
@@ -135,6 +136,7 @@ describe('RiskService Event Handler', () => {
   it('should deduplicate concurrent or repeated event deliveries', async () => {
     const timestamp = new Date();
     const envelope = {
+      eventId: 'event-duplicate',
       name: DomainEventName.TransactionCreated,
       organizationId: 'org-1',
       aggregateType: 'transaction',
@@ -155,6 +157,7 @@ describe('RiskService Event Handler', () => {
   it('should handle failure resilience gracefully when evaluation throws', async () => {
     vi.spyOn(riskRepository, 'createAssessmentRecord').mockRejectedValueOnce(new Error('DB connection failed'));
     const envelope = {
+      eventId: 'event-failure',
       name: DomainEventName.TransactionCreated,
       organizationId: 'org-1',
       aggregateType: 'transaction',

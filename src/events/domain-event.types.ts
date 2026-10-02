@@ -6,6 +6,7 @@ import { DomainEventNameType } from './event-names';
  * immutable ledger entry and to fan out to webhooks.
  */
 export interface DomainEventEnvelope<TPayload = Record<string, unknown>> {
+  eventId: string;
   name: DomainEventNameType;
   organizationId?: string;
   aggregateType: string;

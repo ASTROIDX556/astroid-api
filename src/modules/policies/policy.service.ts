@@ -160,8 +160,17 @@ export class PolicyService {
   /**
    * Circuit breaker against rapid wallet draining: rejects the pending spend
    * when it would push the agent past its rolling 24-hour limit.
+   * The organization and actor arguments are accepted for the transaction
+   * pipeline's governance signature; the spending-policy service owns the
+   * actual velocity calculation.
    */
-  checkVelocityLimit(agentId: string, amount: number, assetCode: string): Promise<void> {
+  checkVelocityLimit(
+    _organizationId: string,
+    agentId: string,
+    amount: number,
+    assetCode: string,
+    _actorId?: string,
+  ): Promise<void> {
     return this.spendingPolicies.checkVelocityLimit(agentId, amount, assetCode);
   }
 }

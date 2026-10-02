@@ -60,6 +60,19 @@ describe('SlidingWindowThrottlerGuard', () => {
     expect(redis.multi).toHaveBeenCalledTimes(2);
   });
 
+  it('uses the authenticated API key ID instead of its organization for throttling', async () => {
+    const { context } = makeContext({
+      organizationId: 'org-1',
+      apiKeyId: 'key-1',
+      isApiKey: true,
+    });
+    const guard = makeGuard({ multi: () => chain });
+
+    await guard.canActivate(context as never);
+
+    expect(chain.zremrangebyscore.mock.calls[0][0]).toContain(':key:key-1:');
+  });
+
   it('falls back to a hashed API key scope when unauthenticated but keyed', async () => {
     const redis = { multi: vi.fn(() => chain) };
     const withApiKey = makeContext(undefined, '192.0.2.1', { 'x-api-key': 'ast_secret-key' });

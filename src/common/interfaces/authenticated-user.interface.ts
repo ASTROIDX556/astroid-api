@@ -10,6 +10,7 @@ export interface AuthenticatedUser {
   tier?: string;
   sessionId?: string;
   apiKeyId?: string;
+  createdById?: string | null;
   scopes?: string[];
   permissions?: string[];
   isApiKey?: boolean;
@@ -19,6 +20,7 @@ export interface AuthenticatedUser {
 export interface AuthenticatedApiKey {
   id: string;
   keyId: string;
+  apiKeyId?: string;
   organizationId: string;
   createdById?: string | null;
   name: string;
