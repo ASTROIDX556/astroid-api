@@ -1,4 +1,14 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Patch,
+  Post,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 import {
   ApiOperation,
   ApiTags,
@@ -44,8 +54,18 @@ export class AgentController {
     summary: 'List agents',
     description: 'Returns a paginated list of agents for the current organization.',
   })
-  @ApiQuery({ name: 'page', required: false, type: Number, description: 'Page number (default: 1)' })
-  @ApiQuery({ name: 'limit', required: false, type: Number, description: 'Items per page (default: 20)' })
+  @ApiQuery({
+    name: 'page',
+    required: false,
+    type: Number,
+    description: 'Page number (default: 1)',
+  })
+  @ApiQuery({
+    name: 'limit',
+    required: false,
+    type: Number,
+    description: 'Items per page (default: 20)',
+  })
   @ApiEnvelope(AgentResponseDto as never, { isArray: true })
   @ApiResponse({ status: 200, description: 'Paginated list of agents' })
   @ApiResponse({ status: 401, description: 'Not authenticated' })
@@ -68,7 +88,10 @@ export class AgentController {
   @ApiResponse({ status: 201, description: 'Agent created successfully', type: AgentResponseDto })
   @ApiResponse({ status: 400, description: 'Validation error' })
   @ApiResponse({ status: 401, description: 'Not authenticated' })
-  @ApiResponse({ status: 403, description: 'Insufficient permissions (requires OWNER, ADMIN, or DEVELOPER)' })
+  @ApiResponse({
+    status: 403,
+    description: 'Insufficient permissions (requires OWNER, ADMIN, or DEVELOPER)',
+  })
   create(
     @CurrentUser() user: AuthenticatedUser,
     @Body(new ZodValidationPipe(createAgentSchema)) body: CreateAgentInput,
