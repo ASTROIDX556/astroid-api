@@ -2,11 +2,10 @@ import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { INestApplication, Controller, Post, UseGuards } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { ThrottlerModule } from '@nestjs/throttler';
+import { Redis } from 'ioredis';
 import { AstroidThrottlerGuard } from './throttler.guard';
-import { REDIS_CLIENT } from '../locks/locks.constants';
 import { MemorySlidingWindowStore } from '../throttler/sliding-window.store';
 import { RedisThrottlerStorage } from '../throttler/redis-throttler.storage';
-import type { Redis } from 'ioredis';
 
 @Controller('test-sensitive')
 class TestSensitiveController {
@@ -25,33 +24,39 @@ describe('Sensitive Endpoint Rate Limiting (Integration)', () => {
     const store = new MemorySlidingWindowStore();
     const fakeRedis = {
       status: 'ready',
-      eval: vi.fn(async (_script: string, _keys: number, key: string, now: number, windowMs: number, limit: number) => {
-        const hit = await store.hit(key, limit, windowMs, now);
-        return [hit.allowed ? 1 : 0, hit.count, hit.resetAt, 0];
-      }),
+      eval: vi.fn(
+        async (
+          _script: string,
+          _keys: number,
+          key: string,
+          ttl: number,
+          limit: number,
+          blockDuration: number,
+          now: number,
+        ) => {
+          const hit = await store.hit(key, limit, ttl, now);
+          return [
+            hit.count,
+            Math.ceil((hit.resetAt - now) / 1000),
+            hit.allowed ? 0 : 1,
+            hit.allowed ? 0 : Math.ceil(blockDuration / 1000),
+          ];
+        },
+      ),
     };
 
     const moduleRef = await Test.createTestingModule({
       imports: [
         ThrottlerModule.forRoot({
           throttlers: [{ name: 'api', ttl: 60000, limit: 2 }],
+          storage: new RedisThrottlerStorage(fakeRedis as unknown as Redis),
         }),
       ],
       controllers: [TestSensitiveController],
-      providers: [
-        {
-          provide: REDIS_CLIENT,
-          useValue: fakeRedis,
-        },
-        {
-          provide: 'ThrottlerStorage',
-          useFactory: (redisClient: Redis) => new RedisThrottlerStorage(redisClient),
-          inject: [REDIS_CLIENT],
-        },
-      ],
+      providers: [],
     }).compile();
 
-    app = moduleRef.createNestApplication({ logger: false });
+    app = moduleRef.createNestApplication();
     await app.listen(0, '127.0.0.1');
     baseUrl = await app.getUrl();
   });
@@ -60,13 +65,13 @@ describe('Sensitive Endpoint Rate Limiting (Integration)', () => {
     await app.close();
   });
 
-  const send = () =>
-    fetch(`${baseUrl}/test-sensitive/action`, {
-      method: 'POST',
-      headers: { 'x-api-key': 'test-key-123' },
-    });
-
   it('enforces rate limit and returns 429 when threshold is exceeded', async () => {
+    const send = () =>
+      fetch(`${baseUrl}/test-sensitive/action`, {
+        method: 'POST',
+        headers: { 'x-api-key': 'test-key-123' },
+      });
+
     const res1 = await send();
     expect(res1.status).toBe(201);
 

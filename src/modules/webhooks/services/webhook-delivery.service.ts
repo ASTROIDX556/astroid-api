@@ -1,14 +1,17 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
+
 import { Queues } from '../../../queues/queues.constants';
+import { WEBHOOK_JOB_NAME, webhookJobOptions } from '../../../queues/webhook.queue';
 import { WebhookJobData } from '../types/webhook-job.types';
 
 /**
  * Service for queuing webhook delivery jobs with BullMQ.
- * Handles retry logic and dead-letter queueing through the queue configuration.
- * Uses exponential backoff with randomized jitter (via worker-level backoffStrategy)
- * to prevent thundering herd problems.
+ *
+ * Retry policy, jittered backoff and dead-letter settings come from
+ * `@queues/webhook.queue` so the API-side enqueue options and the worker-side
+ * queue registration can never drift apart.
  */
 @Injectable()
 export class WebhookDeliveryService {
@@ -20,23 +23,15 @@ export class WebhookDeliveryService {
   ) {}
 
   /**
-   * Queues a webhook delivery job with exponential backoff retry policy.
-   * The job will be processed by the webhook worker with automatic retries.
-   * Uses 2000ms base delay for exponential backoff.
-   * Randomized jitter is applied by the worker-level backoffStrategy.
-   * Maximum 5 attempts total.
+   * Queues a webhook delivery job.
+   *
+   * The job inherits the queue's retry policy: 5 attempts, exponential backoff
+   * (2000ms base) with ±20% jitter applied by the custom backoff strategy, and
+   * 24h retention of failed jobs so exhausted deliveries remain inspectable.
    */
   async queueDelivery(data: WebhookJobData): Promise<void> {
     try {
-      await this.webhookQueue.add('webhook-delivery', data, {
-        attempts: 5,
-        backoff: {
-          type: 'exponential',
-          delay: 2000,
-        },
-        removeOnComplete: { count: 1000 },
-        removeOnFail: { age: 24 * 3600 },
-      });
+      await this.webhookQueue.add(WEBHOOK_JOB_NAME, data, webhookJobOptions);
       this.logger.debug(`Queued webhook delivery for ${data.eventName} to ${data.url}`);
     } catch (error) {
       this.logger.error(`Failed to queue webhook delivery: ${(error as Error).message}`);
@@ -44,3 +39,4 @@ export class WebhookDeliveryService {
     }
   }
 }
+

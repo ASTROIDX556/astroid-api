@@ -15,6 +15,8 @@ export type ThrottlerConfig = {
   apiLimit: number;
   /** Requests allowed per window on the sensitive `auth` tier. */
   authLimit: number;
+  /** Requests allowed per window for a single autonomous agent. */
+  agentLimit: number;
   /** Requests allowed per window on the `webhook` management tier. */
   webhookLimit: number;
   /**
@@ -39,6 +41,7 @@ export const throttlerConfig = registerAs('throttler', (): ThrottlerConfig => {
     windowSeconds: env.THROTTLE_TTL,
     apiLimit: env.THROTTLE_API_LIMIT,
     authLimit: env.THROTTLE_AUTH_LIMIT,
+    agentLimit: env.THROTTLE_AGENT_LIMIT,
     webhookLimit: env.THROTTLE_WEBHOOK_LIMIT,
     apiBurst: env.THROTTLE_API_BURST,
     authBurst: env.THROTTLE_AUTH_BURST,
@@ -52,6 +55,7 @@ export const throttlerConfig = registerAs('throttler', (): ThrottlerConfig => {
  *  Steady-state tiers (TTL = `windowSeconds`):
  *   - `api`     — every route that does not declare a tier explicitly
  *   - `auth`    — routes marked with `@ThrottleTierDecorator('auth')`
+ *   - `agent`   — high-frequency routes enforced by `AgentThrottlerGuard`
  *   - `webhook` — routes marked with `@ThrottleTierDecorator('webhook')`
  *
  *  Burst tiers (TTL = 1 second), only registered when the burst limit > 0:
@@ -77,6 +81,7 @@ export function createThrottlerOptions(
     // ── Steady-state tiers ──────────────────────────────────────────────────
     { name: 'api', ttl, limit: config.apiLimit },
     { name: 'auth', ttl, limit: config.authLimit },
+    { name: 'agent', ttl, limit: config.agentLimit },
     { name: 'webhook', ttl, limit: config.webhookLimit },
   ];
 
