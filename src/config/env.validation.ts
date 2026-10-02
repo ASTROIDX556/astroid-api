@@ -39,6 +39,8 @@ export const databaseEnvSchema = z.object({
   DATABASE_SLOW_QUERY_THRESHOLD_MS: z.coerce.number().int().nonnegative().default(1000),
   DATABASE_CONNECT_RETRY_ATTEMPTS: z.coerce.number().int().positive().max(10).default(5),
   DATABASE_CONNECT_RETRY_DELAY_MS: z.coerce.number().int().positive().max(60000).default(1000),
+  DATABASE_MIGRATION_CHECK_ENABLED: z.coerce.boolean().default(true),
+  DATABASE_MIGRATION_CHECK_MODE: z.enum(['halt', 'warn']).default('halt'),
 });
 
 export const redisEnvSchema = z.object({

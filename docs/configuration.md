@@ -87,6 +87,8 @@ are rejected:
 | `DATABASE_SLOW_QUERY_THRESHOLD_MS` | `1000` | Queries slower than this are logged as slow queries. |
 | `DATABASE_CONNECT_RETRY_ATTEMPTS` | `5` | Connection attempts before giving up on startup. |
 | `DATABASE_CONNECT_RETRY_DELAY_MS` | `1000` | Delay between connection retry attempts. |
+| `DATABASE_MIGRATION_CHECK_ENABLED` | `true` | Runs a migration status check during bootstrap before the app accepts traffic. |
+| `DATABASE_MIGRATION_CHECK_MODE` | `halt` | `halt` exits the process when migrations are pending/failed; `warn` logs and continues. |
 
 ### Redis
 
@@ -143,15 +145,16 @@ are rejected:
 | `THROTTLE_AGENT_LIMIT` | `300` | Requests per window for autonomous-agent traffic. |
 | `THROTTLE_WEBHOOK_LIMIT` | `30` | Requests per window on the `webhook` tier. |
 | `THROTTLE_TTL` | `60` | Throttler window in seconds. |
-| `THROTTLE_API_BURST` | `10` | `api`-tier requests allowed per one-second burst window; `0` disables it. |
-| `THROTTLE_AUTH_BURST` | `3` | `auth`-tier requests allowed per one-second burst window; `0` disables it. |
-| `THROTTLE_WEBHOOK_BURST` | `5` | `webhook`-tier requests allowed per one-second burst window; `0` disables it. |
+| `THROTTLE_API_BURST` | `10` | Short-term (1s) burst allowance on the `api` tier. `0` disables burst enforcement. |
+| `THROTTLE_AUTH_BURST` | `3` | Short-term (1s) burst allowance on the `auth` tier. `0` disables burst enforcement. |
+| `THROTTLE_WEBHOOK_BURST` | `5` | Short-term (1s) burst allowance on the `webhook` tier. `0` disables burst enforcement. |
 | `RATE_LIMIT_WINDOW_SECONDS` | `60` | Sliding-window size for the Redis rate-limiter guard. |
 | `RATE_LIMIT_MAX_REQUESTS` | `120` | Requests allowed per client per sliding window. |
 | `PUBLIC_RATE_LIMIT_ENABLED` | `true` | Enables the IP-based limiter for unauthenticated (`@Public()`) routes. |
 | `PUBLIC_RATE_LIMIT_MAX_REQUESTS` | `60` | Requests allowed per client IP per sliding window on public routes. |
 | `PUBLIC_RATE_LIMIT_WINDOW_SECONDS` | `60` | Sliding-window size for the public-route rate limiter. |
 | `PUBLIC_RATE_LIMIT_TRUST_PROXY` | `false` | Reads client IP from `X-Forwarded-For`. Only enable behind a trusted reverse proxy. |
+| `PUBLIC_RATE_LIMIT_CLIENT_IDENTIFIERS` | _(empty)_ | Comma-separated client identifiers to add to the IP bucket, currently `apiKey`. |
 
 ### Metrics
 

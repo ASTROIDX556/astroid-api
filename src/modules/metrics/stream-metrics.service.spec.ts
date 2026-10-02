@@ -17,6 +17,7 @@ vi.mock('../../config/redis.config', () => ({
 
 import { MetricsService } from './metrics.service';
 import { StreamMetricsService } from './stream-metrics.service';
+import { PrismaService } from '../../database/prisma.service';
 
 describe('StreamMetricsService', () => {
   let metricsService: MetricsService;
@@ -25,7 +26,8 @@ describe('StreamMetricsService', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     getJobCounts.mockResolvedValue({ waiting: 0, active: 0, completed: 0, failed: 0, delayed: 0, paused: 0 });
-    metricsService = new MetricsService();
+    const getPoolStats = vi.fn().mockResolvedValue({ active: 0, idle: 0, waiting: 0 });
+    metricsService = new MetricsService({ getPoolStats } as unknown as PrismaService);
     service = new StreamMetricsService(metricsService);
   });
 
