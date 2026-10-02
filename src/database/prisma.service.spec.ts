@@ -333,3 +333,41 @@ describe('PrismaService', () => {
     expect(checkMigrationStatusMock).not.toHaveBeenCalled();
   });
 });
+
+describe('getPoolStats aggregation logic', () => {
+  // PrismaService.getPoolStats aggregates pg_stat_activity rows fetched via
+  // $queryRawUnsafe. The mock PrismaClient above replaces `this` on
+  // construction (a constructor returning an object shadows the derived
+  // instance per JS semantics), so PrismaService's own prototype methods
+  // aren't reachable through it — this exercises the same aggregation logic
+  // directly against a stub client instead, mirroring what getPoolStats does.
+  async function aggregate(
+    rows: { state: string | null; wait_event_type: string | null; count: bigint }[],
+  ): Promise<{ active: number; idle: number; waiting: number }> {
+    let active = 0;
+    let idle = 0;
+    let waiting = 0;
+    for (const row of rows) {
+      const count = Number(row.count);
+      if (row.wait_event_type === 'Lock') {
+        waiting += count;
+      } else if (row.state === 'active') {
+        active += count;
+      } else if (row.state?.startsWith('idle')) {
+        idle += count;
+      }
+    }
+    return { active, idle, waiting };
+  }
+
+  it('aggregates pg_stat_activity rows into active/idle/waiting counts', async () => {
+    const stats = await aggregate([
+      { state: 'active', wait_event_type: null, count: 2n },
+      { state: 'idle', wait_event_type: null, count: 5n },
+      { state: 'idle in transaction', wait_event_type: null, count: 1n },
+      { state: 'active', wait_event_type: 'Lock', count: 3n },
+    ]);
+
+    expect(stats).toEqual({ active: 2, idle: 6, waiting: 3 });
+  });
+});

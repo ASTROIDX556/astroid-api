@@ -29,10 +29,7 @@ import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 import { AuthenticatedUser } from '../../common/interfaces/authenticated-user.interface';
 import { PaginationQuery, paginationQuerySchema } from '../../common/helpers/pagination';
 import { ApiEnvelope } from '../../common/decorators/api-envelope.decorator';
-import {
-  SlidingWindowThrottlerGuard,
-  SlidingWindowLimit,
-} from '../../common/guards/sliding-window-throttler.guard';
+import { AstroidThrottlerGuard } from '../../common/guards/throttler.guard';
 import { AgentRateLimiterGuard } from './guards/agent-rate-limiter.guard';
 
 @ApiTags('agents')
@@ -60,8 +57,7 @@ export class AgentController {
 
   @Post()
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.DEVELOPER)
-  @UseGuards(SlidingWindowThrottlerGuard)
-  @SlidingWindowLimit(30, 60)
+  @UseGuards(AstroidThrottlerGuard)
   @AuditAction('AGENT_CREATED')
   @ApiOperation({
     summary: 'Register a new agent',

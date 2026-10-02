@@ -9,6 +9,7 @@ import { AppModule } from './app.module';
 import { ShutdownCoordinator } from './common/shutdown/shutdown-coordinator.service';
 import { AppConfig } from './config/app.config';
 import { assertValidEnvironment, EnvironmentValidationError } from './config/env.validation';
+import { DatabaseConfig } from './config/database.config';
 
 async function bootstrap() {
   // Fail fast on missing or malformed configuration, before any module is
@@ -20,6 +21,23 @@ async function bootstrap() {
   const app = await NestFactory.create(AppModule, { bufferLogs: true });
   const config = app.get(ConfigService);
   const appConfig = config.getOrThrow<AppConfig>('app');
+  const databaseConfig = config.getOrThrow<DatabaseConfig>('database');
+  const prisma = app.get(PrismaService);
+
+  // Startup migration check: refuse to accept traffic against a database
+  // whose schema hasn't caught up with prisma/migrations (mode 'halt'), or
+  // log a warning and continue (mode 'warn'). Reuses the same check
+  // PrismaService.onModuleInit already ran (and logged) on connect.
+  if (databaseConfig.migrationCheckEnabled) {
+    const logger = app.get(PinoLogger);
+    const result = await prisma.validateMigrations();
+
+    if (!result.upToDate && databaseConfig.migrationCheckMode === 'halt') {
+      logger.error(result.message, 'MigrationCheck');
+      await app.close();
+      throw new Error(`Migration check failed: ${result.message}`);
+    }
+  }
 
   // Structured logging (nestjs-pino)
   app.useLogger(app.get(PinoLogger));
@@ -97,6 +115,9 @@ async function bootstrap() {
     const document = SwaggerModule.createDocument(app, swaggerConfig);
     SwaggerModule.setup('docs', app, document);
   }
+
+  // Prisma shutdown hook
+  await prisma.enableShutdownHooks(app);
 
   await app.listen(appConfig.port);
 
