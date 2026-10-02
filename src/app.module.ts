@@ -7,18 +7,21 @@ import { Redis } from 'ioredis';
 
 import { AppConfigModule } from './config';
 import { createThrottlerOptions, ThrottlerConfig } from './config/throttler.config';
+import { RedisThrottlerStorage } from './common/throttler/redis-throttler.storage';
 import { DatabaseModule } from './database/database.module';
 import { EventsModule } from './events/events.module';
 import { LocksModule } from './common/locks/locks.module';
 import { REDIS_CLIENT } from './common/locks/locks.constants';
 import { EncryptionModule } from './common/encryption/encryption.module';
 import { RequestIdMiddleware } from './middleware/request-id.middleware';
+import { StructuredRequestLoggingMiddleware } from './middleware/structured-request-logging.middleware';
 import { REQUEST_ID_HEADER } from './common/constants/headers';
 
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
 import { ScopesGuard } from './common/guards/scopes.guard';
 import { AstroidThrottlerGuard } from './common/guards/throttler.guard';
+import { PublicRateLimitGuard } from './common/guards/public-rate-limit.guard';
 import { ResponseInterceptor } from './common/interceptors/response.interceptor';
 import { AuditInterceptor } from './common/interceptors/audit.interceptor';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
@@ -49,13 +52,16 @@ import { DeadLetterModule } from './modules/dead-letter/dead-letter.module';
 import { AgentTraceInterceptor } from './common/interceptors/agent-trace.interceptor';
 import { RequestContextInterceptor } from './common/interceptors/request-context.interceptor';
 import { AuditLogInterceptor } from './common/interceptors/audit-log.interceptor';
-import { RedisThrottlerStorage } from './common/throttler/redis-throttler.storage';
+import { RequestIdInterceptor } from './common/interceptors/request-id.interceptor';
 
 /**
  * Root application module. Wires the global infrastructure (config, logging,
  * database, events, rate limiting) and every domain module, then registers the
  * cross-cutting guards, interceptor and exception filter that enforce the
  * platform's contract on every request:
+ *   - PublicRateLimitGuard: per-IP sliding-window limit on @Public() routes and
+ *                          /<prefix>/public/*, shared via Redis (runs first so
+ *                          bursts are rejected before any other work)
  *   - JwtAuthGuard      : authentication on all routes except @Public()
  *   - RolesGuard        : RBAC on routes decorated with @Roles()
  *   - ScopesGuard       : Fine-grained permission scopes for API keys & agents
@@ -73,18 +79,10 @@ import { RedisThrottlerStorage } from './common/throttler/redis-throttler.storag
         genReqId: (req) => (req.headers[REQUEST_ID_HEADER] as string) ?? undefined,
         // Never log Authorization headers, cookies or API keys.
         redact: {
-          paths: [
-            'req.headers.authorization',
-            'req.headers.cookie',
-            'req.headers["x-api-key"]',
-          ],
+          paths: ['req.headers.authorization', 'req.headers.cookie', 'req.headers["x-api-key"]'],
           remove: true,
         },
-        autoLogging: true,
-        transport:
-          process.env.NODE_ENV === 'production'
-            ? undefined
-            : { target: 'pino-pretty', options: { singleLine: true } },
+        autoLogging: false,
       },
     }),
     // Two rate-limit tiers, both driven by THROTTLE_* env vars (see
@@ -132,11 +130,13 @@ import { RedisThrottlerStorage } from './common/throttler/redis-throttler.storag
     AdminModule,
   ],
   providers: [
+    { provide: APP_GUARD, useClass: PublicRateLimitGuard },
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: RolesGuard },
     { provide: APP_GUARD, useClass: ScopesGuard },
     { provide: APP_GUARD, useClass: AstroidThrottlerGuard },
     AgentPolicyGuard,
+    { provide: APP_INTERCEPTOR, useClass: RequestIdInterceptor },
     { provide: APP_INTERCEPTOR, useClass: RequestContextInterceptor },
     { provide: APP_INTERCEPTOR, useClass: AgentTraceInterceptor },
     { provide: APP_INTERCEPTOR, useClass: AuditLogInterceptor },
@@ -147,7 +147,7 @@ import { RedisThrottlerStorage } from './common/throttler/redis-throttler.storag
 })
 export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer): void {
-    consumer.apply(RequestIdMiddleware).forRoutes('*');
+    consumer.apply(RequestIdMiddleware, StructuredRequestLoggingMiddleware).forRoutes('*');
     consumer.apply(RequestMetricsMiddleware).forRoutes('*');
   }
 }

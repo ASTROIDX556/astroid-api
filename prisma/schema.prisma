@@ -417,6 +417,7 @@ model Transaction {
   @@index([organizationId])
   @@index([walletId])
   @@index([agentId])
+  @@index([organizationId, status, deletedAt, agentId])
   @@index([status])
   @@index([createdAt])
   @@index([stellarHash])
@@ -452,6 +453,8 @@ model Proposal {
   @@index([status])
   @@index([transactionId])
   @@index([createdAt])
+  @@index([organizationId, createdAt])
+  @@index([organizationId, status, createdAt])
   @@map("proposals")
 }
 
@@ -535,6 +538,8 @@ model Notification {
   @@index([userId])
   @@index([read])
   @@index([createdAt])
+  @@index([userId, createdAt])
+  @@index([organizationId, userId, read, createdAt])
   @@map("notifications")
 }
 
@@ -669,6 +674,8 @@ model MemoryRecord {
   @@index([transactionId])
   @@index([conversationId])
   @@index([createdAt])
+  @@index([organizationId, createdAt])
+  @@index([agentId, createdAt])
   @@map("memory_records")
 }
 

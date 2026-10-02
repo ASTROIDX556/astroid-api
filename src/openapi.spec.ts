@@ -90,12 +90,20 @@ describe('OpenAPI Documentation', () => {
     app.setGlobalPrefix(appConfig.apiPrefix);
     
     await app.init();
-  });
+  }, 60_000);
 
   afterAll(async () => {
-    await app.close();
-    await moduleFixture.close();
-  });
+    // The full AppModule opens Redis-backed queue observers (DLQ listeners,
+    // throttler storage) that cannot connect in a test environment; a graceful
+    // close can hang waiting on those sockets, so bound it with a timer.
+    await Promise.race([
+      (async () => {
+        await app.close();
+        await moduleFixture.close();
+      })(),
+      new Promise<void>((resolve) => setTimeout(resolve, 5_000)),
+    ]);
+  }, 15_000);
 
   it('should generate a valid OpenAPI document', () => {
     const swaggerConfig = new DocumentBuilder()
