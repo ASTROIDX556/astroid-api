@@ -42,6 +42,13 @@ async function bootstrap() {
   // Structured logging (nestjs-pino)
   app.useLogger(app.get(PinoLogger));
 
+  // Fail fast on schema drift: verify every migration shipped with this build
+  // is applied before any route is served. In strict mode (the production
+  // default, see DATABASE_MIGRATION_CHECK) this throws and the process exits
+  // without ever accepting traffic.
+  const prisma = app.get(PrismaService);
+  await prisma.verifyMigrations();
+
   // Security headers (CSP, HSTS, X-Frame-Options, X-Content-Type-Options,
   // Referrer-Policy). Swagger UI — served only outside production — needs inline
   // styles/scripts, so CSP is relaxed there and kept at helmet's strict default
