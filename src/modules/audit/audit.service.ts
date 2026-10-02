@@ -5,14 +5,9 @@ import { AuditRepository, CreateAuditLogData } from './audit.repository';
 import { AuditHashService } from './audit-hash.service';
 import { ExportAuditLogsQuery, StreamAuditLogsQuery } from './audit-export.dto';
 import { sanitizeAuditPayload } from '../../common/helpers/audit-sanitizer';
-import {
-  buildPaginationMeta,
-  PaginationQuery,
-  toPrismaPagination,
-} from '../../common/helpers/pagination';
-import { Paginated } from '../../common/interfaces/api-response.interface';
-
-const SORTABLE = ['createdAt', 'action', 'entity'];
+import { CursorPaginated } from '../../common/interfaces/api-response.interface';
+import { AuditListQuery } from './audit-list.dto';
+import { decodeAuditCursor, encodeAuditCursor } from './audit-cursor';
 
 /** An audit row as returned by `AuditRepository.exportLogs`, with its joined user. */
 type ExportedAuditLog = Prisma.AuditLogGetPayload<{
@@ -108,21 +103,28 @@ export class AuditService {
     });
   }
 
-  async list(organizationId: string, query: PaginationQuery) {
+  async list(organizationId: string, query: AuditListQuery) {
     const where: Prisma.AuditLogWhereInput = { organizationId };
-    if (query.search) {
-      where.OR = [
-        { action: { contains: query.search, mode: 'insensitive' } },
-        { entity: { contains: query.search, mode: 'insensitive' } },
-        { entityId: { contains: query.search, mode: 'insensitive' } },
-      ];
+    if (query.actorId) where.userId = query.actorId;
+    if (query.action) where.action = query.action;
+    if (query.resourceId) where.entityId = query.resourceId;
+    if (query.from || query.to) {
+      where.createdAt = {
+        ...(query.from ? { gte: new Date(query.from) } : {}),
+        ...(query.to ? { lte: new Date(query.to) } : {}),
+      };
     }
-    if (query.filter) {
-      where.entity = query.filter;
-    }
-    const pagination = toPrismaPagination(query, SORTABLE);
-    const { items, total } = await this.repository.findManyAndCount(where, pagination);
-    return new Paginated(items, buildPaginationMeta(total, query.page, query.limit));
+
+    const cursor = query.cursor ? decodeAuditCursor(query.cursor) : undefined;
+    const records = await this.repository.findPage(where, cursor, query.limit + 1);
+    const hasNext = records.length > query.limit;
+    const items = hasNext ? records.slice(0, query.limit) : records;
+    const lastItem = items.at(-1);
+    const nextCursor = hasNext && lastItem
+      ? encodeAuditCursor({ createdAt: lastItem.createdAt, id: lastItem.id })
+      : null;
+
+    return new CursorPaginated(items, { limit: query.limit, hasNext, nextCursor });
   }
 
   async export(organizationId: string, query: ExportAuditLogsQuery) {

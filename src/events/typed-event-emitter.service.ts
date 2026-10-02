@@ -1,6 +1,8 @@
 import { Injectable } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import * as PayloadTypes from './domain-event.types';
+import { DomainEventMetadata } from './domain-event.types';
+import { DOMAIN_EVENT_ENVELOPE, DomainEventEnvelope } from './domain-event.types';
 
 /**
  * Type-safe mapping of event names to their payload types.
@@ -86,8 +88,15 @@ export class TypedEventEmitter {
   emit<K extends keyof DomainEventMap>(
     event: K,
     payload: DomainEventMap[K],
+    metadata?: DomainEventMetadata,
   ): boolean {
-    return this.emitter.emit(event as string, payload);
+    return metadata
+      ? this.emitter.emit(event as string, payload, metadata)
+      : this.emitter.emit(event as string, payload);
+  }
+
+  emitEnvelope(envelope: DomainEventEnvelope): boolean {
+    return this.emitter.emit(DOMAIN_EVENT_ENVELOPE, envelope);
   }
 
   /**
@@ -97,7 +106,7 @@ export class TypedEventEmitter {
    */
   on<K extends keyof DomainEventMap>(
     event: K,
-    handler: (payload: DomainEventMap[K]) => void | Promise<void>,
+    handler: (payload: DomainEventMap[K], metadata?: DomainEventMetadata) => void | Promise<void>,
   ): this {
     this.emitter.on(event as string, handler);
     return this;
@@ -110,7 +119,7 @@ export class TypedEventEmitter {
    */
   once<K extends keyof DomainEventMap>(
     event: K,
-    handler: (payload: DomainEventMap[K]) => void | Promise<void>,
+    handler: (payload: DomainEventMap[K], metadata?: DomainEventMetadata) => void | Promise<void>,
   ): this {
     this.emitter.once(event as string, handler);
     return this;

@@ -6,6 +6,7 @@ import { DomainEventEnvelope } from '../../events/domain-event.types';
 import { RequestContext } from '../../common/context/request-context';
 
 const MAX_AUDIT_EVENT_BYTES = 16_384;
+import { DOMAIN_EVENT_ENVELOPE } from '../../events/domain-event.types';
 
 /**
  * Subscribes to every domain event (wildcard) and appends an audit-log row.
@@ -18,7 +19,7 @@ export class AuditListener {
 
   constructor(private readonly auditService: AuditService) {}
 
-  @OnEvent('domain.event', { async: true })
+  @OnEvent(DOMAIN_EVENT_ENVELOPE)
   async handleDomainEvent(envelope: DomainEventEnvelope): Promise<void> {
     if (!envelope?.eventId) {
       return;
