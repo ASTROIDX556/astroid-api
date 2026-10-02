@@ -6,7 +6,6 @@ import { DomainEventEnvelope } from './domain-event.types';
 import { TypedEventEmitter, DomainEventMap } from './typed-event-emitter.service';
 import { RequestContext } from '../common/context/request-context';
 import { resolveRequestId } from '../common/helpers/request-id';
-import { randomUUID } from 'crypto';
 
 export interface EmitOptions {
   organizationId?: string;
