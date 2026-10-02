@@ -8,6 +8,7 @@ import { PolicyService } from '../../policies/policy.service';
 import { RiskService } from '../../risk/risk.service';
 import { BudgetService } from '../../budgets/budget.service';
 import { StellarService } from '../../stellar/stellar.service';
+import { SpendingLimitService } from '../spending-limit.service';
 import { EventBusService } from '../../../events/event-bus.service';
 import { PrismaService } from '../../../database/prisma.service';
 import { DomainException } from '../../../common/exceptions/domain.exception';
@@ -107,6 +108,13 @@ describe('TransactionService - create', () => {
           provide: PrismaService,
           useValue: {},
         },
+        {
+          provide: SpendingLimitService,
+          useValue: {
+            aggregateSpend: vi.fn().mockResolvedValue({ spentToday: 0, spentThisWeek: 0, spentThisMonth: 0 }),
+            evaluateSpendingLimits: vi.fn().mockResolvedValue(undefined),
+          },
+        },
       ],
     }).compile();
 
@@ -165,6 +173,13 @@ describe('TransactionService - create', () => {
         { provide: StellarService, useValue: { submitPayment: vi.fn() } },
         { provide: EventBusService, useValue: { emit: vi.fn().mockResolvedValue(undefined) } },
         { provide: PrismaService, useValue: {} },
+        {
+          provide: SpendingLimitService,
+          useValue: {
+            aggregateSpend: vi.fn().mockResolvedValue({ spentToday: 0, spentThisWeek: 0, spentThisMonth: 0 }),
+            evaluateSpendingLimits: vi.fn().mockResolvedValue(undefined),
+          },
+        },
       ],
     }).compile();
 
