@@ -68,11 +68,14 @@ export class StellarService {
     return this.wrap(() => this.client.submitPayment(params));
   }
 
-  async getTransactionInfo(
-    txHash: string,
-    network: StellarNetworkName,
-  ): Promise<StellarTransactionInfo | null> {
-    return this.wrap(() => this.client.getTransaction(txHash, network));
+  async getTransactionInfo(txHash: string, network: StellarNetworkName): Promise<StellarTransactionInfo> {
+    return this.wrap(async () => {
+      const info = await this.client.getTransaction(txHash, network);
+      if (!info) {
+        throw new DomainException(ErrorCode.NOT_FOUND, `Transaction '${txHash}' not found`);
+      }
+      return info;
+    });
   }
 
   async simulateTransaction(transactionXdr: string): Promise<SorobanSimulationResult> {
