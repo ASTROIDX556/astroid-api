@@ -6,6 +6,7 @@ import { AstroidThrottlerGuard } from './throttler.guard';
 import { REDIS_CLIENT } from '../locks/locks.constants';
 import { MemorySlidingWindowStore } from '../throttler/sliding-window.store';
 import { RedisThrottlerStorage } from '../throttler/redis-throttler.storage';
+import type { Redis } from 'ioredis';
 
 @Controller('test-sensitive')
 class TestSensitiveController {
@@ -18,6 +19,7 @@ class TestSensitiveController {
 
 describe('Sensitive Endpoint Rate Limiting (Integration)', () => {
   let app: INestApplication;
+  let baseUrl: string;
 
   beforeAll(async () => {
     const store = new MemorySlidingWindowStore();
@@ -32,7 +34,7 @@ describe('Sensitive Endpoint Rate Limiting (Integration)', () => {
     const moduleRef = await Test.createTestingModule({
       imports: [
         ThrottlerModule.forRoot({
-          throttlers: [{ ttl: 60000, limit: 2 }],
+          throttlers: [{ name: 'api', ttl: 60000, limit: 2 }],
         }),
       ],
       controllers: [TestSensitiveController],
@@ -43,40 +45,35 @@ describe('Sensitive Endpoint Rate Limiting (Integration)', () => {
         },
         {
           provide: 'ThrottlerStorage',
-          useFactory: (redisClient: any) => new RedisThrottlerStorage(redisClient),
+          useFactory: (redisClient: Redis) => new RedisThrottlerStorage(redisClient),
           inject: [REDIS_CLIENT],
         },
       ],
     }).compile();
 
-    app = moduleRef.createNestApplication();
-    await app.init();
+    app = moduleRef.createNestApplication({ logger: false });
+    await app.listen(0, '127.0.0.1');
+    baseUrl = await app.getUrl();
   });
 
   afterAll(async () => {
     await app.close();
   });
 
+  const send = () =>
+    fetch(`${baseUrl}/test-sensitive/action`, {
+      method: 'POST',
+      headers: { 'x-api-key': 'test-key-123' },
+    });
+
   it('enforces rate limit and returns 429 when threshold is exceeded', async () => {
-    const res1 = await app.inject({
-      method: 'POST',
-      url: '/test-sensitive/action',
-      headers: { 'x-api-key': 'test-key-123' },
-    });
-    expect(res1.statusCode).toBe(201);
+    const res1 = await send();
+    expect(res1.status).toBe(201);
 
-    const res2 = await app.inject({
-      method: 'POST',
-      url: '/test-sensitive/action',
-      headers: { 'x-api-key': 'test-key-123' },
-    });
-    expect(res2.statusCode).toBe(201);
+    const res2 = await send();
+    expect(res2.status).toBe(201);
 
-    const res3 = await app.inject({
-      method: 'POST',
-      url: '/test-sensitive/action',
-      headers: { 'x-api-key': 'test-key-123' },
-    });
-    expect(res3.statusCode).toBe(429);
+    const res3 = await send();
+    expect(res3.status).toBe(429);
   });
 });
