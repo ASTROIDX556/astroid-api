@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { PrismaPagination } from '../../common/helpers/pagination';
+import { AuditCursor } from './audit-cursor';
 
 export interface CreateAuditLogData {
   organizationId: string;
@@ -48,6 +49,23 @@ export class AuditRepository {
       this.prisma.auditLog.count({ where }),
     ]);
     return { items, total };
+  }
+
+  findPage(where: Prisma.AuditLogWhereInput, cursor: AuditCursor | undefined, limit: number) {
+    const cursorWhere: Prisma.AuditLogWhereInput | undefined = cursor
+      ? {
+          OR: [
+            { createdAt: { lt: cursor.createdAt } },
+            { createdAt: cursor.createdAt, id: { lt: cursor.id } },
+          ],
+        }
+      : undefined;
+
+    return this.prisma.auditLog.findMany({
+      where: cursorWhere ? { AND: [where, cursorWhere] } : where,
+      take: limit,
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+    });
   }
 
   async exportLogs(

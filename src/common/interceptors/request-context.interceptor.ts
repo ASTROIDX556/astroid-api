@@ -6,7 +6,6 @@ import {
 } from '@nestjs/common';
 import { Observable } from 'rxjs';
 import { Request } from 'express';
-import { v7 as uuidv7 } from 'uuid';
 import {
   RequestContext,
   RequestContextData,
@@ -17,6 +16,7 @@ import {
   CORRELATION_ID_HEADER,
   REQUEST_ID_HEADER,
 } from '../constants/headers';
+import { resolveRequestId } from '../helpers/request-id';
 
 /**
  * Seeds the structured request context (see {@link RequestContext}) at the very
@@ -49,10 +49,9 @@ export class RequestContextInterceptor implements NestInterceptor {
   }
 
   private seed(req: Request & { user?: AuthenticatedUser }): RequestContextData {
-    const requestId =
-      RequestContext.getRequestId() ??
-      (req.headers[REQUEST_ID_HEADER] as string | undefined) ??
-      `req_${uuidv7()}`;
+    const requestId = resolveRequestId(
+      RequestContext.getRequestId() ?? req.headers[REQUEST_ID_HEADER],
+    );
 
     const traceId =
       (req.headers[CORRELATION_ID_HEADER] as string | undefined) ??

@@ -6,14 +6,25 @@ import { DomainEventNameType } from './event-names';
  * immutable ledger entry and to fan out to webhooks.
  */
 export interface DomainEventEnvelope<TPayload = Record<string, unknown>> {
+  eventId?: string;
   name: DomainEventNameType;
   organizationId?: string;
   aggregateType: string;
   aggregateId?: string;
   actorId?: string;
+  requestId?: string;
   correlationId?: string;
+  metadata?: DomainEventMetadata;
   payload: TPayload;
   occurredAt: Date;
+}
+
+export const DOMAIN_EVENT_ENVELOPE = 'astroid.domain_event';
+
+export interface DomainEventMetadata {
+  requestId: string;
+  correlationId: string;
+  traceId?: string;
 }
 
 // Base payload types that extend Record<string, unknown> for flexibility
