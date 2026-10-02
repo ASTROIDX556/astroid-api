@@ -23,9 +23,7 @@ describe('retryWithBackoff', () => {
   });
 
   it('retries on failure and succeeds on the second attempt', async () => {
-    const fn = vi.fn()
-      .mockRejectedValueOnce(new Error('transient'))
-      .mockResolvedValue('ok');
+    const fn = vi.fn().mockRejectedValueOnce(new Error('transient')).mockResolvedValue('ok');
 
     const promise = retryWithBackoff(fn, { maxAttempts: 3, baseDelayMs: 10 });
     await vi.runAllTimersAsync();
@@ -38,6 +36,8 @@ describe('retryWithBackoff', () => {
     const fn = vi.fn().mockRejectedValue(boom);
 
     const promise = retryWithBackoff(fn, { maxAttempts: 3, baseDelayMs: 10 });
+    // Attach a handler immediately so the rejection isn't flagged as unhandled
+    // while `runAllTimersAsync` drives the retry loop forward below.
     promise.catch(() => {});
     await vi.runAllTimersAsync();
     await expect(promise).rejects.toBe(boom);
@@ -59,7 +59,8 @@ describe('retryWithBackoff', () => {
 
   it('calls onRetry before each retry sleep', async () => {
     const onRetry = vi.fn();
-    const fn = vi.fn()
+    const fn = vi
+      .fn()
       .mockRejectedValueOnce(new Error('t1'))
       .mockRejectedValueOnce(new Error('t2'))
       .mockResolvedValue('ok');
@@ -77,9 +78,7 @@ describe('retryWithBackoff', () => {
     const { exponentialBackoffWithJitter } = await import('./backoff.util');
     (exponentialBackoffWithJitter as ReturnType<typeof vi.fn>).mockReturnValue(60_000);
 
-    const fn = vi.fn()
-      .mockRejectedValueOnce(new Error('t'))
-      .mockResolvedValue('ok');
+    const fn = vi.fn().mockRejectedValueOnce(new Error('t')).mockResolvedValue('ok');
 
     const onRetry = vi.fn();
     const promise = retryWithBackoff(fn, {
