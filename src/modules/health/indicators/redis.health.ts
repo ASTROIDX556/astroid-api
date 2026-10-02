@@ -23,8 +23,6 @@ export interface RedisHealthReport {
 @Injectable()
 export class RedisHealthIndicator {
   private readonly logger = new Logger(RedisHealthIndicator.name);
-  private readonly timeoutMs = 2_000;
-  private redisClient: Redis | null = null;
 
   /** Ceiling on a single probe, in ms. */
   static readonly DEFAULT_TIMEOUT_MS = 2_000;
@@ -35,18 +33,7 @@ export class RedisHealthIndicator {
     timeoutMs: number = RedisHealthIndicator.DEFAULT_TIMEOUT_MS,
   ): Promise<RedisHealthReport> {
     const start = Date.now();
-    let timer: NodeJS.Timeout | undefined;
     try {
-      const client = this.getClient();
-      const res = await Promise.race([
-        client.ping(),
-        new Promise<never>((_, reject) => {
-          timer = setTimeout(
-            () => reject(new Error(`Redis health check timed out after ${this.timeoutMs}ms`)),
-            this.timeoutMs,
-          );
-        }),
-      ]);
       // A client that has been explicitly closed will never reconnect; fail
       // fast instead of waiting for the timeout.
       if (this.redis.status === 'end') {
@@ -76,10 +63,6 @@ export class RedisHealthIndicator {
         latencyMs,
         error: message,
       };
-    } finally {
-      if (timer) {
-        clearTimeout(timer);
-      }
     }
   }
 
