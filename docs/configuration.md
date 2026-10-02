@@ -140,7 +140,12 @@ are rejected:
 | --- | --- | --- |
 | `THROTTLE_AUTH_LIMIT` | `10` | Requests per window on the `auth` tier. |
 | `THROTTLE_API_LIMIT` | `120` | Requests per window on the `api` tier. |
+| `THROTTLE_AGENT_LIMIT` | `300` | Requests per window for autonomous-agent traffic. |
+| `THROTTLE_WEBHOOK_LIMIT` | `30` | Requests per window on the `webhook` tier. |
 | `THROTTLE_TTL` | `60` | Throttler window in seconds. |
+| `THROTTLE_API_BURST` | `10` | `api`-tier requests allowed per one-second burst window; `0` disables it. |
+| `THROTTLE_AUTH_BURST` | `3` | `auth`-tier requests allowed per one-second burst window; `0` disables it. |
+| `THROTTLE_WEBHOOK_BURST` | `5` | `webhook`-tier requests allowed per one-second burst window; `0` disables it. |
 | `RATE_LIMIT_WINDOW_SECONDS` | `60` | Sliding-window size for the Redis rate-limiter guard. |
 | `RATE_LIMIT_MAX_REQUESTS` | `120` | Requests allowed per client per sliding window. |
 | `PUBLIC_RATE_LIMIT_ENABLED` | `true` | Enables the IP-based limiter for unauthenticated (`@Public()`) routes. |

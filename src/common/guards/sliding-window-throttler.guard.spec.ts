@@ -5,7 +5,7 @@ import { SlidingWindowThrottlerGuard } from './sliding-window-throttler.guard';
 const exec = vi.fn();
 const chain = { zremrangebyscore: vi.fn().mockReturnThis(), zcard: vi.fn().mockReturnThis(), zadd: vi.fn().mockReturnThis(), expire: vi.fn().mockReturnThis(), exec };
 
-function makeContext(user?: Record<string, any>, ip = '127.0.0.1', headers: Record<string, string> = {}) {
+function makeContext(user?: Record<string, unknown>, ip = '127.0.0.1', headers: Record<string, string> = {}) {
   const response = { setHeader: vi.fn() };
   const request = { user, ip, headers };
   const handler = vi.fn();

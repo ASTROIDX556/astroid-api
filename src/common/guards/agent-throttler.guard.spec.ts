@@ -11,7 +11,16 @@ type ThrottlerStorageRecord = Awaited<
   ReturnType<AgentThrottlerGuard['storageService']['increment']>
 >;
 
-const CONFIG: ThrottlerConfig = { windowSeconds: 60, apiLimit: 120, authLimit: 10, agentLimit: 300 };
+const CONFIG: ThrottlerConfig = {
+  windowSeconds: 60,
+  apiLimit: 120,
+  authLimit: 10,
+  agentLimit: 300,
+  webhookLimit: 30,
+  apiBurst: 10,
+  authBurst: 3,
+  webhookBurst: 5,
+};
 const AGENT_LIMIT = 300;
 
 const UNBLOCKED: ThrottlerStorageRecord = {

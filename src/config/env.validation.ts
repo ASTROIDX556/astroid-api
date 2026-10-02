@@ -174,18 +174,21 @@ export const encryptionEnvSchema = z.object({
  * Production additionally rejects insecure-but-valid values that are fine for
  * local development.
  */
-export const environmentSchema = appEnvSchema
-  .merge(databaseEnvSchema)
-  .merge(redisEnvSchema)
-  .merge(authEnvSchema)
-  .merge(stellarEnvSchema)
-  .merge(storageEnvSchema)
-  .merge(queueEnvSchema)
-  .merge(throttleEnvSchema)
-  .merge(rateLimitEnvSchema)
-  .merge(metricsEnvSchema)
-  .merge(aiEnvSchema)
-  .merge(encryptionEnvSchema)
+export const environmentSchema = z
+  .object({
+    ...appEnvSchema.shape,
+    ...databaseEnvSchema.shape,
+    ...redisEnvSchema.shape,
+    ...authEnvSchema.shape,
+    ...stellarEnvSchema.shape,
+    ...storageEnvSchema.shape,
+    ...queueEnvSchema.shape,
+    ...throttleEnvSchema.shape,
+    ...rateLimitEnvSchema.shape,
+    ...metricsEnvSchema.shape,
+    ...aiEnvSchema.shape,
+    ...encryptionEnvSchema.shape,
+  })
   .superRefine((env, ctx) => {
     if (env.NODE_ENV !== 'production') {
       return;

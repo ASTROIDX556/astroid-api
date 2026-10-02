@@ -50,15 +50,20 @@ describe('StellarService - Transaction Simulation', () => {
 
   it('should successfully simulate a valid transaction XDR', async () => {
     const mockResult: SorobanSimulationResult = {
-      id: 'sim_123',
-      results: [{ xdr: 'AAAA...' }],
+      success: true,
       minResourceFee: '100',
+      cost: { cpuInstructions: 0, memoryBytes: 0 },
+      footprint: { readOnly: [], readWrite: [] },
+      events: [],
+      result: 'AAAA...',
     };
     vi.spyOn(mockSorobanClient, 'simulateTransaction').mockResolvedValueOnce(mockResult);
 
     const result = await service.simulateTransaction('AAAA...valid_xdr');
     expect(result).toEqual(mockResult);
-    expect(mockSorobanClient.simulateTransaction).toHaveBeenCalledWith('AAAA...valid_xdr');
+    expect(mockSorobanClient.simulateTransaction).toHaveBeenCalledWith({
+      transactionXdr: 'AAAA...valid_xdr',
+    });
   });
 
   it('should throw DomainException when transaction XDR is empty or invalid', async () => {
@@ -73,33 +78,31 @@ describe('StellarService - Transaction Simulation', () => {
 
   it('should handle simulation failure and Soroban error codes correctly', async () => {
     const errorResult: SorobanSimulationResult = {
-      id: 'sim_err',
-      results: [],
+      success: false,
       minResourceFee: '0',
-      error: 'HostError: Error(Contract, #4)',
+      cost: { cpuInstructions: 0, memoryBytes: 0 },
+      footprint: { readOnly: [], readWrite: [] },
+      events: [],
+      error: { code: 'HOST_ERROR', message: 'HostError: Error(Contract, #4)' },
     };
     vi.spyOn(mockSorobanClient, 'simulateTransaction').mockResolvedValueOnce(errorResult);
 
-    await expect(service.simulateTransaction('AAAA...trap_xdr')).rejects.toThrow(DomainException);
-    try {
-      await service.simulateTransaction('AAAA...trap_xdr');
-    } catch (e: unknown) {
-      const err = e as DomainException;
-      expect(err.code).toBe(ErrorCode.STELLAR_ERROR);
-      expect(err.message).toContain('HostError: Error(Contract, #4)');
-    }
+    const error = await service.simulateTransaction('AAAA...trap_xdr').catch(
+      (reason: unknown) => reason as DomainException,
+    );
+    expect(error).toBeInstanceOf(DomainException);
+    expect((error as DomainException).code).toBe(ErrorCode.STELLAR_ERROR);
+    expect((error as DomainException).message).toContain('HostError: Error(Contract, #4)');
   });
 
   it('should handle RPC network timeouts and errors robustly', async () => {
     vi.spyOn(mockSorobanClient, 'simulateTransaction').mockRejectedValueOnce(new Error('RPC timeout'));
 
-    await expect(service.simulateTransaction('AAAA...timeout_xdr')).rejects.toThrow(DomainException);
-    try {
-      await service.simulateTransaction('AAAA...timeout_xdr');
-    } catch (e: unknown) {
-      const err = e as DomainException;
-      expect(err.code).toBe(ErrorCode.STELLAR_ERROR);
-      expect(err.message).toContain('RPC timeout');
-    }
+    const error = await service.simulateTransaction('AAAA...timeout_xdr').catch(
+      (reason: unknown) => reason as DomainException,
+    );
+    expect(error).toBeInstanceOf(DomainException);
+    expect((error as DomainException).code).toBe(ErrorCode.STELLAR_ERROR);
+    expect((error as DomainException).message).toContain('RPC timeout');
   });
 });

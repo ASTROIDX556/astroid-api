@@ -12,7 +12,8 @@ MIGRATIONS_DIR="prisma/migrations"
 if [ -d "$MIGRATIONS_DIR" ]; then
   echo "Checking migration directories under $MIGRATIONS_DIR..."
   
-  declare -A timestamps
+  timestamps=()
+  timestamp_dirs=()
   migration_count=0
 
   for dir in "$MIGRATIONS_DIR"/*/;
@@ -44,11 +45,14 @@ if [ -d "$MIGRATIONS_DIR" ]; then
     # Check 3: Extract timestamp prefix (expects YYYYMMDDHHMMSS or similar leading numeric prefix)
     if [[ "$dirname" =~ ^([0-9]{14}) ]]; then
       ts="${BASH_REMATCH[1]}"
-      if [ -n "${timestamps[$ts]:-}" ]; then
-        echo "Error: Conflicting migration timestamps detected: '$dirname' shares timestamp prefix with '${timestamps[$ts]}'"
-        exit 1
-      fi
-      timestamps["$ts"]="$dirname"
+      for index in "${!timestamps[@]}"; do
+        if [ "${timestamps[$index]}" = "$ts" ]; then
+          echo "Error: Conflicting migration timestamps detected: '$dirname' shares timestamp prefix with '${timestamp_dirs[$index]}'"
+          exit 1
+        fi
+      done
+      timestamps+=("$ts")
+      timestamp_dirs+=("$dirname")
     else
       echo "Warning: Migration directory '$dirname' does not start with a standard 14-digit timestamp (YYYYMMDDHHMMSS)"
     fi
