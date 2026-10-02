@@ -49,9 +49,7 @@ export class SlidingWindowThrottlerGuard implements CanActivate {
     let limit = configured?.limit ?? this.defaultLimit;
     const windowSeconds = configured?.windowSeconds ?? this.defaultWindowSeconds;
 
-    const userTier =
-      (request.user as { tier?: string } | undefined)?.tier ??
-      (request as Request & { apiKey?: { tier?: string } }).apiKey?.tier;
+    const userTier = request.user?.tier ?? (request as Request & { apiKey?: { tier?: string } }).apiKey?.tier;
     if (userTier === 'enterprise') {
       limit = Math.max(limit, 500);
     } else if (userTier === 'pro') {

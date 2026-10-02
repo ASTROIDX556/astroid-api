@@ -51,14 +51,19 @@ export class AstroidThrottlerGuard extends ThrottlerGuard {
     return super.handleRequest(requestProps);
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- must match ThrottlerGuard's base signature
-  protected async getTracker(req: Record<string, any>): Promise<string> {
-    const request = req as unknown as Request & { user?: AuthenticatedUser; apiKey?: { id: string }; headers: Record<string, unknown> };
-    const apiKeyId = request.apiKey?.id ?? request.headers['x-api-key'];
+  protected async getTracker(req: Record<string, unknown>): Promise<string> {
+    const request = req as unknown as Request & {
+      user?: AuthenticatedUser;
+      apiKey?: { id: string };
+    };
+    const apiKeyHeader = request.headers['x-api-key'];
+    const apiKeyId =
+      request.apiKey?.id ??
+      (Array.isArray(apiKeyHeader) ? apiKeyHeader[0] : apiKeyHeader);
     if (apiKeyId) {
       return `apikey:${apiKeyId}`;
     }
-    const sub = request.user?.id;
+    const sub = request.user?.sub ?? request.user?.id;
     if (sub) {
       return `user:${sub}`;
     }

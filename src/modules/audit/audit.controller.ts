@@ -1,4 +1,4 @@
-import { Controller, Get, Param, Query, Res } from '@nestjs/common';
+import { Controller, Get, Param, Query, Res, StreamableFile } from '@nestjs/common';
 import {
   ApiOperation,
   ApiTags,
@@ -22,6 +22,9 @@ import {
   ExportAuditLogsQuery,
   exportAuditLogsQuerySchema,
   ExportAuditLogsQueryDto,
+  StreamAuditLogsQuery,
+  StreamAuditLogsQueryDto,
+  streamAuditLogsQuerySchema,
 } from './audit-export.dto';
 
 /** Read-only access to the append-only audit trail. Restricted to auditors/admins. */
@@ -66,6 +69,28 @@ export class AuditController {
         count: result.count,
         nextCursor: result.nextCursor,
       },
+    });
+  }
+
+  @Get('export/stream')
+  @ApiOperation({
+    summary: 'Stream an audit log export in bounded database batches',
+    description:
+      'Streams JSON or CSV rows without buffering the complete export. Sensitive keys in oldValue and newValue are redacted.',
+  })
+  @ApiQuery({ type: StreamAuditLogsQueryDto })
+  @ApiProduces('text/csv', 'application/json')
+  @ApiResponse({ status: 200, description: 'Streamed audit log export' })
+  @ApiResponse({ status: 400, description: 'Invalid export filters' })
+  streamExport(
+    @CurrentUser('organizationId') organizationId: string,
+    @Query(new ZodValidationPipe(streamAuditLogsQuerySchema)) query: StreamAuditLogsQuery,
+  ): StreamableFile {
+    const extension = query.format === 'csv' ? 'csv' : 'json';
+    const contentType = query.format === 'csv' ? 'text/csv' : 'application/json';
+    return new StreamableFile(this.auditService.streamExport(organizationId, query), {
+      type: contentType,
+      disposition: `attachment; filename="audit-logs-${organizationId}-${Date.now()}.${extension}"`,
     });
   }
 
