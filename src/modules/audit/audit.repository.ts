@@ -72,6 +72,44 @@ export class AuditRepository {
     });
   }
 
+  /**
+   * Reads audit rows in bounded batches so exports do not load the full result
+   * set into memory. The last row id is used as the next Prisma cursor.
+   */
+  async *streamLogs(
+    where: Prisma.AuditLogWhereInput,
+    batchSize: number,
+    cursor?: string,
+  ): AsyncGenerator<Prisma.AuditLogGetPayload<{
+    include: { user: { select: { id: true; email: true; name: true } } };
+  }>> {
+    let nextCursor = cursor;
+
+    while (true) {
+      const records = await this.prisma.auditLog.findMany({
+        where,
+        take: batchSize,
+        ...(nextCursor ? { cursor: { id: nextCursor }, skip: 1 } : {}),
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+        include: {
+          user: {
+            select: {
+              id: true,
+              email: true,
+              name: true,
+            },
+          },
+        },
+      });
+
+      if (records.length === 0) return;
+
+      yield* records;
+      if (records.length < batchSize) return;
+      nextCursor = records[records.length - 1].id;
+    }
+  }
+
   findById(organizationId: string, id: string) {
     return this.prisma.auditLog.findFirst({ where: { id, organizationId } });
   }
