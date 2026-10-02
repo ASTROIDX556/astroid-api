@@ -10,6 +10,8 @@ import { BudgetModule } from '../budgets/budget.module';
 import { SorobanSimulationService } from './services/soroban-simulation.service';
 import { StellarSimulationService } from './services/stellar-simulation.service';
 import { StellarModule } from '../stellar/stellar.module';
+import { SpendingLimitService } from './spending-limit.service';
+import { SpendingLimitGuard } from './guards/spending-limit.guard';
 
 /**
  * Transaction pipeline module. Pulls together wallets, agents, policies, risk
@@ -20,7 +22,14 @@ import { StellarModule } from '../stellar/stellar.module';
 @Module({
   imports: [WalletModule, AgentModule, PolicyModule, RiskModule, BudgetModule, StellarModule],
   controllers: [TransactionController],
-  providers: [TransactionService, TransactionRepository, SorobanSimulationService, StellarSimulationService],
-  exports: [TransactionService, SorobanSimulationService, StellarSimulationService],
+  providers: [
+    TransactionService,
+    TransactionRepository,
+    SorobanSimulationService,
+    StellarSimulationService,
+    SpendingLimitService,
+    SpendingLimitGuard,
+  ],
+  exports: [TransactionService, SorobanSimulationService, StellarSimulationService, SpendingLimitService],
 })
 export class TransactionModule {}
