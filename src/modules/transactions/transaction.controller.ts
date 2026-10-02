@@ -23,6 +23,7 @@ import { AuditAction } from '../../common/decorators/audit-action.decorator';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 import { UseWalletLock } from '../../common/locks/wallet-lock.decorator';
 import { UseTransactionLock } from '../../common/locks/transaction-lock.decorator';
+import { AgentThrottlerGuard } from '../../common/guards/agent-throttler.guard';
 import { AuthenticatedUser } from '../../common/interfaces/authenticated-user.interface';
 import { PaginationQuery, paginationQuerySchema } from '../../common/helpers/pagination';
 import { ApiEnvelope } from '../../common/decorators/api-envelope.decorator';
@@ -33,6 +34,7 @@ import {
 
 @ApiTags('transactions')
 @ApiBearerAuth('access-token')
+@UseGuards(AgentThrottlerGuard)
 @Controller('transactions')
 export class TransactionController {
   constructor(private readonly transactionService: TransactionService) {}

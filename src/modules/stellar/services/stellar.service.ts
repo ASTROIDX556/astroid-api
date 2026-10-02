@@ -86,10 +86,10 @@ export class StellarService {
     try {
       return await this.breaker.execute(async () => {
         const result = await this.sorobanClient.simulateTransaction({ transactionXdr });
-        if (result.error) {
+        if (!result.success || result.error) {
           throw new DomainException(
             ErrorCode.STELLAR_ERROR,
-            `Simulation failed: ${result.error.message}`,
+            `Simulation failed: ${result.error?.message ?? 'Unknown simulation error'}`,
           );
         }
         return result;

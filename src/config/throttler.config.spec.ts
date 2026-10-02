@@ -14,12 +14,14 @@ describe('throttlerConfig', () => {
     delete process.env.THROTTLE_TTL;
     delete process.env.THROTTLE_API_LIMIT;
     delete process.env.THROTTLE_AUTH_LIMIT;
+    delete process.env.THROTTLE_AGENT_LIMIT;
     delete process.env.THROTTLE_WEBHOOK_LIMIT;
 
     expect(throttlerConfig() as ThrottlerConfig).toEqual({
       windowSeconds: 60,
       apiLimit: 120,
       authLimit: 10,
+      agentLimit: 300,
       webhookLimit: 30,
       apiBurst: 10,
       authBurst: 3,
@@ -31,6 +33,7 @@ describe('throttlerConfig', () => {
     process.env.THROTTLE_TTL = '30';
     process.env.THROTTLE_API_LIMIT = '500';
     process.env.THROTTLE_AUTH_LIMIT = '5';
+    process.env.THROTTLE_AGENT_LIMIT = '900';
     process.env.THROTTLE_WEBHOOK_LIMIT = '60';
     process.env.THROTTLE_API_BURST = '20';
     process.env.THROTTLE_AUTH_BURST = '2';
@@ -40,6 +43,7 @@ describe('throttlerConfig', () => {
       windowSeconds: 30,
       apiLimit: 500,
       authLimit: 5,
+      agentLimit: 900,
       webhookLimit: 60,
       apiBurst: 20,
       authBurst: 2,
@@ -71,19 +75,21 @@ describe('createThrottlerOptions', () => {
     windowSeconds: 60,
     apiLimit: 120,
     authLimit: 10,
+    agentLimit: 300,
     webhookLimit: 30,
     apiBurst: 10,
     authBurst: 3,
     webhookBurst: 5,
   };
 
-  it('exposes three steady-state tiers so AstroidThrottlerGuard can route by tier', () => {
+  it('exposes four steady-state tiers so guards can route by tier', () => {
     const options = createThrottlerOptions(config);
 
     expect(Array.isArray(options)).toBe(false);
     expect(options.throttlers.filter((t) => !t.name?.endsWith('-burst')).map((t) => t.name)).toEqual([
       'api',
       'auth',
+      'agent',
       'webhook',
     ]);
   });
@@ -95,13 +101,15 @@ describe('createThrottlerOptions', () => {
     expect(steadyState[0].ttl).toBe(30_000);
     expect(steadyState[1].ttl).toBe(30_000);
     expect(steadyState[2].ttl).toBe(30_000);
+    expect(steadyState[3].ttl).toBe(30_000);
   });
 
-  it('applies tier-specific limits to api, auth and webhook', () => {
+  it('applies tier-specific limits to api, auth, agent and webhook', () => {
     const options = createThrottlerOptions(config);
 
     expect(options.throttlers.find((t) => t.name === 'api')?.limit).toBe(120);
     expect(options.throttlers.find((t) => t.name === 'auth')?.limit).toBe(10);
+    expect(options.throttlers.find((t) => t.name === 'agent')?.limit).toBe(300);
     expect(options.throttlers.find((t) => t.name === 'webhook')?.limit).toBe(30);
   });
 
