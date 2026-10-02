@@ -37,6 +37,7 @@ describe('AuditRepository.streamLogs', () => {
         skip: 1,
       }),
     );
+  });
 });
 
 describe('AuditRepository.findPage', () => {
