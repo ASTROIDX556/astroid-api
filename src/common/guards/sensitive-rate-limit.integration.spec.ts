@@ -56,7 +56,8 @@ describe('Sensitive Endpoint Rate Limiting (Integration)', () => {
       providers: [],
     }).compile();
 
-    app = moduleRef.createNestApplication();
+    app = moduleRef.createNestApplication({ logger: false });
+    await app.init();
     await app.listen(0, '127.0.0.1');
     baseUrl = await app.getUrl();
   });
