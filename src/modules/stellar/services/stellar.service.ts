@@ -102,7 +102,10 @@ export class StellarService {
         throw error;
       }
       const errMessage = error instanceof Error ? error.message : 'Unknown simulation error';
-      this.logger.error(`Stellar transaction simulation failed: ${errMessage}`, error instanceof Error ? error.stack : undefined);
+      this.logger.error(
+        `Stellar transaction simulation failed: ${errMessage}`,
+        error instanceof Error ? error.stack : undefined,
+      );
       throw new DomainException(
         ErrorCode.STELLAR_ERROR,
         `Failed to simulate Stellar transaction: ${errMessage}`,

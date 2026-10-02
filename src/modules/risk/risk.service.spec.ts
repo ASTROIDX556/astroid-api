@@ -91,7 +91,7 @@ describe('RiskService Event Handler', () => {
     } as unknown as EventBusService;
 
     riskService = new RiskService(riskEngine, eventBusService, riskRepository);
-    });
+  });
 
   it('should evaluate and persist risk assessment upon handling transaction created event', async () => {
     const envelope = {
@@ -153,7 +153,9 @@ describe('RiskService Event Handler', () => {
   });
 
   it('should handle failure resilience gracefully when evaluation throws', async () => {
-    vi.spyOn(riskRepository, 'createAssessmentRecord').mockRejectedValueOnce(new Error('DB connection failed'));
+    vi.spyOn(riskRepository, 'createAssessmentRecord').mockRejectedValueOnce(
+      new Error('DB connection failed'),
+    );
     const envelope = {
       name: DomainEventName.TransactionCreated,
       organizationId: 'org-1',
@@ -166,6 +168,8 @@ describe('RiskService Event Handler', () => {
       occurredAt: new Date(),
     };
 
-    await expect(riskService.handleTransactionCreated(envelope)).rejects.toThrow('DB connection failed');
+    await expect(riskService.handleTransactionCreated(envelope)).rejects.toThrow(
+      'DB connection failed',
+    );
   });
 });

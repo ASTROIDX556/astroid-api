@@ -67,10 +67,11 @@ describe('StellarService - Transaction Simulation', () => {
   });
 
   it('should throw DomainException when transaction XDR is empty or invalid', async () => {
-    await expect(service.simulateTransaction('')).rejects.toThrow(DomainException);
     try {
       await service.simulateTransaction('');
+      expect.unreachable('expected simulateTransaction to throw');
     } catch (e: unknown) {
+      expect(e).toBeInstanceOf(DomainException);
       const err = e as DomainException;
       expect(err.code).toBe(ErrorCode.INVALID_STELLAR_TRANSACTION);
     }
