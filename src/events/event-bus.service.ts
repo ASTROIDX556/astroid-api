@@ -1,11 +1,11 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { randomUUID } from 'crypto';
 import { PrismaService } from '../database/prisma.service';
 import { DomainEventNameType } from './event-names';
 import { DomainEventEnvelope } from './domain-event.types';
 import { TypedEventEmitter, DomainEventMap } from './typed-event-emitter.service';
 import { RequestContext } from '../common/context/request-context';
 import { resolveRequestId } from '../common/helpers/request-id';
-import { randomUUID } from 'crypto';
 
 export interface EmitOptions {
   organizationId?: string;
@@ -77,6 +77,7 @@ export class EventBusService {
     try {
       await this.prisma.domainEvent.create({
         data: {
+          id: envelope.eventId,
           organizationId: envelope.organizationId ?? null,
           name: envelope.name,
           aggregateType: envelope.aggregateType,

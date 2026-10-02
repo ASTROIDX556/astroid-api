@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { PATH_METADATA } from '@nestjs/common/constants';
 import { Response } from 'express';
 import { HealthController } from './health.controller';
 import { PrismaHealthIndicator } from './indicators/prisma.health';
@@ -175,6 +176,13 @@ describe('HealthController', () => {
     const response = controller.getLiveness();
     expect(response.status).toBe('up');
     expect(response.timestamp).toBeDefined();
+  });
+
+  it('exposes the orchestration liveness and readiness routes', () => {
+    expect(Reflect.getMetadata(PATH_METADATA, HealthController.prototype.getLiveness))
+      .toContain('live');
+    expect(Reflect.getMetadata(PATH_METADATA, HealthController.prototype.getReadiness))
+      .toContain('ready');
   });
 
   describe('GET /health/database', () => {

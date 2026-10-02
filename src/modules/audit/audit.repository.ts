@@ -15,6 +15,8 @@ export interface CreateAuditLogData {
   ipAddress?: string | null;
   device?: string | null;
   requestId?: string | null;
+  sourceEventId?: string | null;
+  createdAt?: Date;
   previousHash?: string | null;
   hash?: string | null;
 }
@@ -25,22 +27,32 @@ export class AuditRepository {
   constructor(private readonly prisma: PrismaService) {}
 
   create(data: CreateAuditLogData) {
-    return this.prisma.auditLog.create({
-      data: {
-        organizationId: data.organizationId,
-        userId: data.userId ?? null,
-        action: data.action,
-        entity: data.entity,
-        entityId: data.entityId ?? null,
-        oldValue: data.oldValue,
-        newValue: data.newValue,
-        ipAddress: data.ipAddress ?? null,
-        device: data.device ?? null,
-        requestId: data.requestId ?? null,
-        previousHash: data.previousHash ?? null,
-        hash: data.hash ?? null,
-      },
-    });
+    const create = {
+      organizationId: data.organizationId,
+      userId: data.userId ?? null,
+      action: data.action,
+      entity: data.entity,
+      entityId: data.entityId ?? null,
+      oldValue: data.oldValue,
+      newValue: data.newValue,
+      ipAddress: data.ipAddress ?? null,
+      device: data.device ?? null,
+      requestId: data.requestId ?? null,
+      sourceEventId: data.sourceEventId ?? null,
+      previousHash: data.previousHash ?? null,
+      hash: data.hash ?? null,
+      ...(data.createdAt ? { createdAt: data.createdAt } : {}),
+    };
+
+    if (data.sourceEventId) {
+      return this.prisma.auditLog.upsert({
+        where: { sourceEventId: data.sourceEventId },
+        create,
+        update: {},
+      });
+    }
+
+    return this.prisma.auditLog.create({ data: create });
   }
 
   async findManyAndCount(where: Prisma.AuditLogWhereInput, pagination: PrismaPagination) {

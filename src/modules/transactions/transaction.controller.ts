@@ -92,7 +92,8 @@ export class TransactionController {
     @CurrentUser() user: AuthenticatedUser,
     @Body(new ZodValidationPipe(createTransactionSchema)) body: CreateTransactionInput,
   ) {
-    return this.transactionService.create(user.organizationId, user.id, body);
+    const actorId = user.isApiKey ? user.createdById ?? user.id : user.id;
+    return this.transactionService.create(user.organizationId, actorId, body);
   }
 
   @Post('simulate')

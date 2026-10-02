@@ -98,7 +98,7 @@ export class HealthController {
     };
   }
 
-  @Get('readiness')
+  @Get(['ready', 'readiness'])
   @ApiOperation({ summary: 'Application readiness check' })
   @ApiResponse({ status: 200, description: 'Application is ready' })
   @ApiResponse({ status: 503, description: 'Application is not ready' })
