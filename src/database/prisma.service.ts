@@ -1,3 +1,4 @@
+import { Injectable, Logger, OnModuleDestroy, OnModuleInit, Optional } from '@nestjs/common';
 import {
   INestApplication,
   Injectable,
@@ -8,6 +9,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { PrismaClient } from '@prisma/client';
 import { DatabaseConfig } from '../config/database.config';
+import { ShutdownCoordinator } from '../common/shutdown/shutdown-coordinator.service';
 import { buildDatasourceUrl } from './datasource-url';
 import { createQueryMetricsExtension } from './query-metrics.extension';
 import { createQueryTimeoutExtension } from './query-timeout.extension';
@@ -50,7 +52,10 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
    */
   readonly workerClient: PrismaClient;
 
-  constructor(configService: ConfigService) {
+  /** True when the {@link ShutdownCoordinator} owns the disconnect timing. */
+  private readonly coordinatedShutdown: boolean;
+
+  constructor(configService: ConfigService, @Optional() shutdown?: ShutdownCoordinator) {
     const database = configService.getOrThrow<DatabaseConfig>('database');
 
     const url = buildDatasourceUrl(database.url, {
@@ -95,6 +100,17 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
         { level: 'warn', emit: 'event' },
         { level: 'error', emit: 'event' },
       ],
+    }).$extends(
+      createQueryTimeoutExtension({
+        queryTimeoutMs: database.workerQueryTimeoutMs,
+        poolTimeoutMs: database.poolTimeoutMs,
+      }),
+    ) as unknown as PrismaClient;
+
+    // The database is the last resource released on shutdown, after workers,
+    // queues and Redis, so nothing can still be issuing queries.
+    this.coordinatedShutdown = shutdown !== undefined;
+    shutdown?.register({ name: 'prisma', phase: 'database', close: () => this.disconnectAll() });
     })
       .$extends(createQueryMetricsExtension({ slowQueryThresholdMs: database.slowQueryThresholdMs }))
       .$extends(
@@ -165,10 +181,17 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
   }
 
   async onModuleDestroy(): Promise<void> {
-    await this.$disconnect();
-    await this.workerClient.$disconnect();
+    // Under the coordinator, disconnecting here would run before workers and
+    // queues have finished; it disconnects in the `database` phase instead.
+    if (!this.coordinatedShutdown) {
+      await this.disconnectAll();
+    }
   }
 
+  /** Closes both connection pools. Safe to call more than once. */
+  async disconnectAll(): Promise<void> {
+    await this.$disconnect();
+    await this.workerClient.$disconnect();
   /**
    * Reads live connection counts for this database from Postgres'
    * `pg_stat_activity`. Prisma's Rust query engine doesn't expose pool

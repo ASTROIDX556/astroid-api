@@ -13,6 +13,9 @@ import { TokenVerificationCacheService } from './services/token-verification-cac
 import { CacheService } from '../../common/cache/cache.service';
 import { PasskeyController } from './controllers/passkey.controller';
 import { PasskeyService } from './services/passkey.service';
+import { redisConfig } from '../../config/redis.config';
+import { ShutdownCoordinator } from '../../common/shutdown/shutdown-coordinator.service';
+import { closeRedisClient } from '../../common/shutdown/close-redis-client';
 
 /**
  * Authentication module. Registers passport-jwt and api-key strategies and a bare
@@ -30,6 +33,22 @@ import { PasskeyService } from './services/passkey.service';
   imports: [PassportModule.register({ defaultStrategy: 'jwt' }), JwtModule.register({})],
   controllers: [AuthController, PasskeyController],
   providers: [
+    {
+      provide: Redis,
+      inject: [ShutdownCoordinator],
+      useFactory: (shutdown: ShutdownCoordinator): Redis => {
+        const config = redisConfig();
+        const client = new Redis({
+          host: config.host,
+          port: config.port,
+          password: config.password || undefined,
+          db: config.db,
+          lazyConnect: true,
+        });
+        shutdown.register({ name: 'redis:auth', phase: 'redis', close: () => closeRedisClient(client) });
+        return client;
+      },
+    },
     CacheService,
     TokenVerificationCacheService,
     AuthService,
