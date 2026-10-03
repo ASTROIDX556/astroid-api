@@ -9,6 +9,7 @@ import { Request, Response } from 'express';
 import { Observable } from 'rxjs';
 import { tap } from 'rxjs/operators';
 import { REQUEST_ID_HEADER } from '../constants/headers';
+import { resolveRequestId } from '../helpers/request-id';
 
 /**
  * Global interceptor that ensures every HTTP request carries a stable,
@@ -43,10 +44,9 @@ export class RequestIdInterceptor implements NestInterceptor {
     const request = http.getRequest<Request & { id?: string }>();
     const response = http.getResponse<Response>();
 
-    // 1. Preserve an existing header value; generate a new UUID when absent.
+    // 1. Preserve a valid incoming header; replace missing or invalid values.
     const incoming = request.headers[REQUEST_ID_HEADER] as string | undefined;
-    const requestId =
-      incoming && incoming.trim().length > 0 ? incoming.trim() : crypto.randomUUID();
+    const requestId = resolveRequestId(incoming);
 
     // 2. Normalise — stamp the resolved ID back onto the request headers so
     //    every downstream consumer reads the same value regardless of whether

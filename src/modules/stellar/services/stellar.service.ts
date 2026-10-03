@@ -68,11 +68,14 @@ export class StellarService {
     return this.wrap(() => this.client.submitPayment(params));
   }
 
-  async getTransactionInfo(
-    txHash: string,
-    network: StellarNetworkName,
-  ): Promise<StellarTransactionInfo | null> {
-    return this.wrap(() => this.client.getTransaction(txHash, network));
+  async getTransactionInfo(txHash: string, network: StellarNetworkName): Promise<StellarTransactionInfo> {
+    return this.wrap(async () => {
+      const info = await this.client.getTransaction(txHash, network);
+      if (!info) {
+        throw new DomainException(ErrorCode.NOT_FOUND, `Transaction '${txHash}' not found`);
+      }
+      return info;
+    });
   }
 
   async simulateTransaction(transactionXdr: string): Promise<SorobanSimulationResult> {
@@ -86,10 +89,10 @@ export class StellarService {
     try {
       return await this.breaker.execute(async () => {
         const result = await this.sorobanClient.simulateTransaction({ transactionXdr });
-        if (result.error) {
+        if (!result.success || result.error) {
           throw new DomainException(
             ErrorCode.STELLAR_ERROR,
-            `Simulation failed: ${result.error.message}`,
+            `Simulation failed: ${result.error?.message ?? 'Unknown simulation error'}`,
           );
         }
         return result;
@@ -99,7 +102,10 @@ export class StellarService {
         throw error;
       }
       const errMessage = error instanceof Error ? error.message : 'Unknown simulation error';
-      this.logger.error(`Stellar transaction simulation failed: ${errMessage}`, error instanceof Error ? error.stack : undefined);
+      this.logger.error(
+        `Stellar transaction simulation failed: ${errMessage}`,
+        error instanceof Error ? error.stack : undefined,
+      );
       throw new DomainException(
         ErrorCode.STELLAR_ERROR,
         `Failed to simulate Stellar transaction: ${errMessage}`,

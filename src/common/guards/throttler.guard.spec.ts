@@ -13,6 +13,7 @@ const CONFIG: ThrottlerConfig = {
   windowSeconds: 60,
   apiLimit: 120,
   authLimit: 10,
+  agentLimit: 300,
   webhookLimit: 30,
   apiBurst: 10,
   authBurst: 3,

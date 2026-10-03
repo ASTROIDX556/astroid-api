@@ -40,6 +40,17 @@ describe('TypedEventEmitter', () => {
       expect(result).toBe(false);
     });
 
+    it('forwards typed metadata as a separate event argument', () => {
+      const handler = vi.fn();
+      const payload: DomainEventMap['wallet.created'] = { walletId: 'wallet-123' };
+      const metadata = { requestId: 'req-1', correlationId: 'corr-1' };
+      eventEmitter.on('wallet.created', handler);
+
+      typedEmitter.emit('wallet.created', payload, metadata);
+
+      expect(handler).toHaveBeenCalledWith(payload, metadata);
+    });
+
     it('enforces type safety at compile time', () => {
       const payload: DomainEventMap['agent.registered'] = {
         agentId: 'agent-123',
