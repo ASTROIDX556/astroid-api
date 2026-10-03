@@ -121,11 +121,6 @@ export class TransactionService {
       { actorId },
     );
 
-    // 5. Budget headroom (no mutation yet).
-    if (input.budgetId) {
-      await this.budgets.assertWithinBudget(organizationId, input.budgetId, amount);
-    }
-
     const requiresApproval = policyResult.requiresApproval || !assessment.canAutoExecute;
 
     // 6. Persist the transaction row.
@@ -187,6 +182,10 @@ export class TransactionService {
     }
     const wallet = await this.wallets.getOrThrow(organizationId, tx.walletId);
     this.assertWalletSpendable(wallet);
+
+    if (tx.budgetId) {
+      await this.budgets.assertWithinBudget(organizationId, tx.budgetId, Number(tx.amount));
+    }
 
     await this.repository.update(tx.id, { status: TransactionStatus.SUBMITTED });
     await this.eventBus.emit(
