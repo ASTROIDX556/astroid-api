@@ -31,7 +31,12 @@ export class RiskService {
   async evaluate(
     organizationId: string,
     input: RiskFactorsInput,
-    context: { transactionId?: string; actorId?: string; config?: Partial<RiskConfig>; rules?: RiskRule[] } = {},
+    context: {
+      transactionId?: string;
+      actorId?: string;
+      config?: Partial<RiskConfig>;
+      rules?: RiskRule[];
+    } = {},
   ): Promise<RiskAssessment> {
     const assessment = this.engine.assess(input, context.config, context.rules);
 
@@ -80,7 +85,14 @@ export class RiskService {
   }
 
   @TypedOnEvent(DomainEventName.TransactionCreated)
-  async handleTransactionCreated(envelope: DomainEventEnvelope<{ transactionId: string; walletId?: string; amount?: string; asset?: string }>): Promise<void> {
+  async handleTransactionCreated(
+    envelope: DomainEventEnvelope<{
+      transactionId: string;
+      walletId?: string;
+      amount?: string;
+      asset?: string;
+    }>,
+  ): Promise<void> {
     const transactionId = envelope.payload?.transactionId;
     if (!transactionId) {
       return;
@@ -88,7 +100,9 @@ export class RiskService {
 
     const dedupKey = `${transactionId}:${envelope.occurredAt?.getTime() || 0}`;
     if (this.processedEvents.has(dedupKey)) {
-      this.logger.debug(`Duplicate transaction created event detected for transaction ${transactionId}, skipping.`);
+      this.logger.debug(
+        `Duplicate transaction created event detected for transaction ${transactionId}, skipping.`,
+      );
       return;
     }
     this.processedEvents.add(dedupKey);
@@ -104,18 +118,24 @@ export class RiskService {
       const amountNum = envelope.payload?.amount ? parseFloat(envelope.payload.amount) : 0;
       const riskInput: RiskFactorsInput = {
         amount: amountNum,
-        destination: 'G-DUMMY-DESTINATION',
-        velocityCount: 1,
-        isNewRecipient: false,
+        asset: envelope.payload?.asset ?? 'XLM',
+        knownRecipient: false,
+        recentTransactionCount: 1,
+        walletAgeDays: 0,
+        policyViolations: 0,
       };
 
       await this.evaluate(organizationId, riskInput, {
         transactionId,
         actorId: envelope.actorId,
       });
-      this.logger.log(`Successfully scored risk for transaction ${transactionId} via event handler.`);
+      this.logger.log(
+        `Successfully scored risk for transaction ${transactionId} via event handler.`,
+      );
     } catch (error) {
-      this.logger.error(`Failed to handle risk scoring for transaction ${transactionId}: ${error instanceof Error ? error.message : String(error)}`);
+      this.logger.error(
+        `Failed to handle risk scoring for transaction ${transactionId}: ${error instanceof Error ? error.message : String(error)}`,
+      );
       throw error;
     }
   }

@@ -78,7 +78,16 @@ export class AgentPolicyGuard implements CanActivate {
       }
 
       // Check velocity limits (rolling 24-hour window)
-      await this.policyService.checkVelocityLimit(agentId, Number(amount), asset);
+      const actorId = request.user?.isApiKey
+        ? request.user.createdById ?? undefined
+        : request.user?.id;
+      await this.policyService.checkVelocityLimit(
+        organizationId,
+        agentId,
+        Number(amount),
+        asset,
+        actorId,
+      );
 
       return true;
     } catch (error) {

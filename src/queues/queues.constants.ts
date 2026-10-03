@@ -29,6 +29,12 @@ export const Queues = {
 
 export type QueueName = (typeof Queues)[keyof typeof Queues];
 
+export interface QueueJobMetadata {
+  requestId?: string;
+  correlationId?: string;
+  traceId?: string;
+}
+
 /** Standard payload stored when a job is dead-lettered. */
 export interface DlqJobData {
   /** Original queue the job originated from. */

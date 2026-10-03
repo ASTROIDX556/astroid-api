@@ -52,6 +52,7 @@ import { DeadLetterModule } from './modules/dead-letter/dead-letter.module';
 import { AgentTraceInterceptor } from './common/interceptors/agent-trace.interceptor';
 import { RequestContextInterceptor } from './common/interceptors/request-context.interceptor';
 import { AuditLogInterceptor } from './common/interceptors/audit-log.interceptor';
+import { MetricsInterceptor } from './common/interceptors/metrics.interceptor';
 import { RequestIdInterceptor } from './common/interceptors/request-id.interceptor';
 
 /**
@@ -68,6 +69,7 @@ import { RequestIdInterceptor } from './common/interceptors/request-id.intercept
  *   - ThrottlerGuard    : per-organization / per-IP rate limiting, shared via Redis
  *   - ResponseInterceptor: wraps every result in the success envelope
  *   - AuditLogInterceptor: persists masked mutation requests to the audit trail
+ *   - MetricsInterceptor: records Prometheus metrics for HTTP requests
  *   - AllExceptionsFilter: converts every error into the error envelope
  */
 @Module({
@@ -85,12 +87,14 @@ import { RequestIdInterceptor } from './common/interceptors/request-id.intercept
         autoLogging: false,
       },
     }),
-    // Two rate-limit tiers, both driven by THROTTLE_* env vars (see
-    // config/throttler.config.ts). Every route is subject to both named
+    // Three rate-limit tiers, all driven by THROTTLE_* env vars (see
+    // config/throttler.config.ts). Every route is subject to all named
     // throttlers, but AstroidThrottlerGuard enforces only the one matching the
     // route's @ThrottleTierDecorator tier ('api' default, 'auth' for the
-    // sensitive auth endpoints). Counters live in Redis so every replica behind
-    // the load balancer enforces the same budget.
+    // sensitive auth endpoints), and AgentThrottlerGuard (applied to the
+    // agent-facing controllers) enforces the 'agent' tier keyed by acting agent.
+    // Counters live in Redis so every replica behind the load balancer enforces
+    // the same budget.
     ThrottlerModule.forRootAsync({
       imports: [LocksModule],
       inject: [ConfigService, REDIS_CLIENT],
@@ -142,6 +146,7 @@ import { RequestIdInterceptor } from './common/interceptors/request-id.intercept
     { provide: APP_INTERCEPTOR, useClass: AuditLogInterceptor },
     { provide: APP_INTERCEPTOR, useClass: ResponseInterceptor },
     { provide: APP_INTERCEPTOR, useClass: AuditInterceptor },
+    { provide: APP_INTERCEPTOR, useClass: MetricsInterceptor },
     { provide: APP_FILTER, useClass: AllExceptionsFilter },
   ],
 })

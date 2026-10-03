@@ -18,6 +18,12 @@ export interface PaginationMeta extends ApiMeta {
   hasPrev: boolean;
 }
 
+export interface CursorPaginationMeta extends ApiMeta {
+  limit: number;
+  hasNext: boolean;
+  nextCursor: string | null;
+}
+
 export interface ApiSuccessResponse<T> {
   success: true;
   data: T;
@@ -59,5 +65,12 @@ export class Paginated<T> {
   constructor(
     public readonly items: T[],
     public readonly meta: PaginationMeta,
+  ) {}
+}
+
+export class CursorPaginated<T> {
+  constructor(
+    public readonly items: T[],
+    public readonly meta: CursorPaginationMeta,
   ) {}
 }

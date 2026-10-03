@@ -1,5 +1,5 @@
-import { Test, TestingModule } from '@nestjs/testing';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { Test, TestingModule } from '@nestjs/testing';
 import { TransactionService } from '../transaction.service';
 import { TransactionRepository } from '../transaction.repository';
 import { WalletService } from '../../wallets/wallet.service';
@@ -8,20 +8,134 @@ import { PolicyService } from '../../policies/policy.service';
 import { RiskService } from '../../risk/risk.service';
 import { BudgetService } from '../../budgets/budget.service';
 import { StellarService } from '../../stellar/stellar.service';
+import { SpendingLimitService } from '../spending-limit.service';
 import { EventBusService } from '../../../events/event-bus.service';
 import { PrismaService } from '../../../database/prisma.service';
+import { AgentStatus, RiskBand, TransactionStatus, WalletStatus } from '@prisma/client';
+import { Keypair } from '@stellar/stellar-sdk';
+import { CreateTransactionInput } from '../transaction.dto';
 import { DomainException } from '../../../common/exceptions/domain.exception';
 import { ErrorCode } from '../../../common/constants/error-codes';
-import { WalletStatus, AgentStatus, TransactionStatus, RiskBand } from '@prisma/client';
 
-describe('TransactionService - Simulation Integration', () => {
+describe('TransactionService', () => {
+  describe('Governance simulation', () => {
+    let service: TransactionService;
+    let repository: {
+      hasPaidRecipient: ReturnType<typeof vi.fn>;
+      recentCountForWallet: ReturnType<typeof vi.fn>;
+      create: ReturnType<typeof vi.fn>;
+    };
+    let policyService: { evaluateIntent: ReturnType<typeof vi.fn> };
+    let riskService: { assess: ReturnType<typeof vi.fn> };
+    let eventBus: { emit: ReturnType<typeof vi.fn> };
+    let stellarService: { submitPayment: ReturnType<typeof vi.fn> };
+
+    const input: CreateTransactionInput = {
+      walletId: 'wallet_1',
+      asset: 'XLM',
+      amount: '50.0',
+      recipientAddress: Keypair.random().publicKey(),
+      metadata: {},
+    };
+
+    beforeEach(() => {
+      repository = {
+        hasPaidRecipient: vi.fn().mockResolvedValue(false),
+        recentCountForWallet: vi.fn().mockResolvedValue(0),
+        create: vi.fn(),
+      };
+      policyService = {
+        evaluateIntent: vi.fn().mockResolvedValue({
+          passed: true,
+          requiresApproval: false,
+          violations: [],
+        }),
+      };
+      riskService = {
+        assess: vi.fn().mockReturnValue({
+          score: 10,
+          band: RiskBand.LOW,
+          factors: [],
+          canAutoExecute: true,
+        }),
+      };
+      eventBus = { emit: vi.fn().mockResolvedValue(undefined) };
+      stellarService = { submitPayment: vi.fn() };
+
+      service = new TransactionService(
+        repository as unknown as TransactionRepository,
+        {
+          getOrThrow: vi.fn().mockResolvedValue({
+            id: 'wallet_1',
+            status: WalletStatus.ACTIVE,
+            stellarAddress: Keypair.random().publicKey(),
+            network: 'TESTNET',
+            createdAt: new Date(),
+          }),
+        } as unknown as WalletService,
+        { getOrThrow: vi.fn() } as unknown as AgentService,
+        policyService as unknown as PolicyService,
+        riskService as unknown as RiskService,
+        {} as BudgetService,
+        stellarService as unknown as StellarService,
+        eventBus as unknown as EventBusService,
+        {} as PrismaService,
+        {
+          aggregateSpend: vi.fn().mockResolvedValue({
+            spentToday: 0,
+            spentThisWeek: 0,
+            spentThisMonth: 0,
+          }),
+          evaluateSpendingLimits: vi.fn().mockResolvedValue(undefined),
+        } as unknown as SpendingLimitService,
+      );
+    });
+
+    it('returns policy and risk results without persisting or broadcasting', async () => {
+      const result = await service.simulate('org_1', input);
+
+      expect(result).toMatchObject({
+        wouldPass: true,
+        requiresApproval: false,
+        policy: { passed: true, violations: [] },
+        risk: { score: 10, band: RiskBand.LOW },
+      });
+      expect(repository.hasPaidRecipient).toHaveBeenCalledWith('org_1', input.recipientAddress);
+      expect(repository.recentCountForWallet).toHaveBeenCalledWith('wallet_1');
+      expect(repository.create).not.toHaveBeenCalled();
+      expect(eventBus.emit).not.toHaveBeenCalled();
+      expect(stellarService.submitPayment).not.toHaveBeenCalled();
+    });
+
+    it('flags high-risk assessments for approval during a dry run', async () => {
+      riskService.assess.mockReturnValueOnce({
+        score: 45,
+        band: RiskBand.MEDIUM,
+        factors: [],
+        canAutoExecute: false,
+      });
+
+      const result = await service.simulate('org_1', input);
+
+      expect(result.wouldPass).toBe(true);
+      expect(result.requiresApproval).toBe(true);
+      expect(repository.create).not.toHaveBeenCalled();
+      expect(stellarService.submitPayment).not.toHaveBeenCalled();
+    });
+  });
+});
+
+describe('TransactionService - create', () => {
   let service: TransactionService;
   let stellarService: StellarService;
-  let walletService: WalletService;
-  let agentService: AgentService;
-  let policyService: PolicyService;
-  let riskService: RiskService;
-  let budgetService: BudgetService;
+
+  const wallet = {
+    id: 'wallet_1',
+    status: WalletStatus.ACTIVE,
+    stellarAddress: 'GDWALLETADDRESSXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX',
+    network: 'TESTNET',
+    createdAt: new Date('2025-01-01T00:00:00Z'),
+  };
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
@@ -29,115 +143,153 @@ describe('TransactionService - Simulation Integration', () => {
         TransactionService,
         {
           provide: TransactionRepository,
-          useValue: {
-            create: vi.fn().mockImplementation((data) => Promise.resolve({ id: 'tx_1', ...data.data, status: data.data.status || TransactionStatus.PENDING })),
-          },
+          useValue: (() => {
+            let stored: Record<string, unknown> | undefined;
+            return {
+              create: vi.fn().mockImplementation((data: Record<string, unknown>) => {
+                stored = { id: 'tx_1', ...data, status: data.status ?? TransactionStatus.DRAFT };
+                return Promise.resolve(stored);
+              }),
+              update: vi.fn().mockImplementation((id: string, data: Record<string, unknown>) => {
+                stored = { ...stored, id, ...data };
+                return Promise.resolve(stored);
+              }),
+              findById: vi.fn().mockImplementation(() => Promise.resolve(stored)),
+              hasPaidRecipient: vi.fn().mockResolvedValue(false),
+              recentCountForWallet: vi.fn().mockResolvedValue(0),
+            };
+          })(),
         },
-        {
-          provide: WalletService,
-          useValue: {
-            findById: vi.fn().mockResolvedValue({
-              id: 'wallet_1',
-              status: WalletStatus.ACTIVE,
-              encryptedSecret: 'SCK...',
-              network: 'TESTNET',
-            }),
-          },
-        },
+        { provide: WalletService, useValue: { getOrThrow: vi.fn().mockResolvedValue(wallet) } },
         {
           provide: AgentService,
           useValue: {
-            findById: vi.fn().mockResolvedValue({
-              id: 'agent_1',
-              status: AgentStatus.ACTIVE,
-            }),
+            getOrThrow: vi.fn().mockResolvedValue({ id: 'agent_1', status: AgentStatus.ACTIVE }),
           },
         },
         {
           provide: PolicyService,
           useValue: {
-            evaluate: vi.fn().mockResolvedValue({ allowed: true }),
+            checkVelocityLimit: vi.fn().mockResolvedValue(undefined),
+            evaluateIntent: vi.fn().mockResolvedValue({
+              passed: true,
+              requiresApproval: false,
+              violations: [],
+              evaluatedPolicyIds: [],
+            }),
           },
         },
         {
           provide: RiskService,
           useValue: {
-            evaluate: vi.fn().mockResolvedValue({ score: 10, band: RiskBand.LOW }),
+            evaluate: vi.fn().mockResolvedValue({
+              score: 10,
+              band: RiskBand.LOW,
+              factors: [],
+              canAutoExecute: true,
+            }),
           },
         },
         {
           provide: BudgetService,
           useValue: {
-            checkHeadroom: vi.fn().mockResolvedValue({ hasHeadroom: true }),
+            assertWithinBudget: vi.fn().mockResolvedValue(undefined),
+            consume: vi.fn().mockResolvedValue(undefined),
           },
         },
         {
           provide: StellarService,
           useValue: {
-            buildPaymentXdr: vi.fn().mockResolvedValue('AAAA...xdr'),
-            simulateTransaction: vi.fn().mockResolvedValue({ id: 'sim_1', results: [], minResourceFee: '100' }),
+            submitPayment: vi.fn().mockResolvedValue({
+              hash: 'stellar_hash_1',
+              ledger: 100,
+              successful: true,
+            }),
           },
         },
+        { provide: EventBusService, useValue: { emit: vi.fn().mockResolvedValue(undefined) } },
+        { provide: PrismaService, useValue: {} },
         {
-          provide: EventBusService,
+          provide: SpendingLimitService,
           useValue: {
-            emit: vi.fn().mockResolvedValue(undefined),
+            aggregateSpend: vi.fn().mockResolvedValue({ spentToday: 0, spentThisWeek: 0, spentThisMonth: 0 }),
+            evaluateSpendingLimits: vi.fn().mockResolvedValue(undefined),
           },
-        },
-        {
-          provide: PrismaService,
-          useValue: {},
         },
       ],
     }).compile();
 
     service = module.get<TransactionService>(TransactionService);
     stellarService = module.get<StellarService>(StellarService);
-    walletService = module.get<WalletService>(WalletService);
-    agentService = module.get<AgentService>(AgentService);
-    policyService = module.get<PolicyService>(PolicyService);
-    riskService = module.get<RiskService>(RiskService);
-    budgetService = module.get<BudgetService>(BudgetService);
   });
 
-  it('should run simulation prior to broadcast and create transaction successfully', async () => {
-    const input = {
-      walletId: 'wallet_1',
-      agentId: 'agent_1',
-      recipientAddress: 'GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASUIYIC7FEM',
-      amount: '50.0',
-      assetCode: 'XLM',
-      memo: 'Test payment',
+  const input = {
+    walletId: 'wallet_1',
+    agentId: 'agent_1',
+    recipientAddress: 'GDEGSXLGANKHK7QFOV63XCBHBTZ3YRKUJV7ZB7JMSJQB5CNBRLL5QIG5',
+    amount: '50.0',
+    asset: 'XLM',
+    memo: 'Test payment',
+    metadata: {},
+  };
+
+  it('auto-executes and submits on-chain when policy and risk allow it', async () => {
+    const result = await service.create('org_1', 'user_1', input);
+
+    expect(stellarService.submitPayment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sourceAddress: wallet.stellarAddress,
+        destinationAddress: input.recipientAddress,
+        asset: input.asset,
+      }),
+    );
+    expect(result.requiresApproval).toBe(false);
+    expect(result.transaction.status).toBe(TransactionStatus.COMPLETED);
+  });
+
+  it('blocks a policy-violating transaction before submission', async () => {
+    const blockedPolicy = {
+      checkVelocityLimit: vi.fn().mockResolvedValue(undefined),
+      evaluateIntent: vi.fn().mockResolvedValue({
+        passed: false,
+        requiresApproval: false,
+        violations: [{ policyId: 'policy_1', reason: 'exceeds max amount' }],
+        evaluatedPolicyIds: ['policy_1'],
+      }),
     };
+    const blockedModule: TestingModule = await Test.createTestingModule({
+      providers: [
+        TransactionService,
+        { provide: TransactionRepository, useValue: { create: vi.fn(), update: vi.fn() } },
+        { provide: WalletService, useValue: { getOrThrow: vi.fn().mockResolvedValue(wallet) } },
+        {
+          provide: AgentService,
+          useValue: { getOrThrow: vi.fn().mockResolvedValue({ id: 'agent_1', status: AgentStatus.ACTIVE }) },
+        },
+        { provide: PolicyService, useValue: blockedPolicy },
+        { provide: RiskService, useValue: { evaluate: vi.fn() } },
+        { provide: BudgetService, useValue: { assertWithinBudget: vi.fn(), consume: vi.fn() } },
+        { provide: StellarService, useValue: { submitPayment: vi.fn() } },
+        { provide: EventBusService, useValue: { emit: vi.fn().mockResolvedValue(undefined) } },
+        { provide: PrismaService, useValue: {} },
+        {
+          provide: SpendingLimitService,
+          useValue: {
+            aggregateSpend: vi.fn().mockResolvedValue({ spentToday: 0, spentThisWeek: 0, spentThisMonth: 0 }),
+            evaluateSpendingLimits: vi.fn().mockResolvedValue(undefined),
+          },
+        },
+      ],
+    }).compile();
+    const blockedService = blockedModule.get<TransactionService>(TransactionService);
+    const blockedStellar = blockedModule.get<StellarService>(StellarService);
 
-    const tx = await service.create('org_1', 'user_1', input);
-
-    expect(stellarService.buildPaymentXdr).toHaveBeenCalled();
-    expect(stellarService.simulateTransaction).toHaveBeenCalledWith('AAAA...xdr');
-    expect(tx).toBeDefined();
-    expect(tx.status).toBe(TransactionStatus.PENDING);
-  });
-
-  it('should abort transaction and throw DomainException if simulation fails', async () => {
-    vi.spyOn(stellarService, 'simulateTransaction').mockRejectedValueOnce(
-      new DomainException(ErrorCode.STELLAR_ERROR, 'Simulation failed: HostError')
+    const error = await blockedService.create('org_1', 'user_1', input).catch(
+      (reason: unknown) => reason as DomainException,
     );
 
-    const input = {
-      walletId: 'wallet_1',
-      agentId: 'agent_1',
-      recipientAddress: 'GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASUIYIC7FEM',
-      amount: '50.0',
-      assetCode: 'XLM',
-    };
-
-    await expect(service.create('org_1', 'user_1', input)).rejects.toThrow(DomainException);
-    try {
-      await service.create('org_1', 'user_1', input);
-    } catch (e: unknown) {
-      const err = e as DomainException;
-      expect(err.code).toBe(ErrorCode.STELLAR_ERROR);
-      expect(err.message).toContain('Simulation failed');
-    }
+    expect(error).toBeInstanceOf(DomainException);
+    expect((error as DomainException).code).toBe(ErrorCode.POLICY_VIOLATION);
+    expect(blockedStellar.submitPayment).not.toHaveBeenCalled();
   });
 });
