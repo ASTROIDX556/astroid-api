@@ -7,6 +7,51 @@ on:
     branches: [ main ]
 
 jobs:
+  verify-migrations:
+    runs-on: ubuntu-latest
+
+    services:
+      # Disposable database: the verification script resets it, replays the
+      # full migration history and diffs the result against schema.prisma.
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: password
+          POSTGRES_DB: astroid_shadow
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # Full history so already-merged migrations can be compared against
+          # the base branch.
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify migrations, SQL validity and schema drift
+        run: bash scripts/verify-migrations.sh
+        env:
+          # Pull requests compare against their target branch; pushes compare
+          # against the previous tip (skipped with a warning for new branches).
+          MIGRATION_BASE_REF: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event.before }}
+          SHADOW_DATABASE_URL: postgresql://postgres:password@localhost:5432/astroid_shadow?schema=public
+
   build-and-test:
     runs-on: ubuntu-latest
 
@@ -46,15 +91,6 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
-
-      - name: Verify migrations and schema syntax
-        run: |
-          chmod +x scripts/verify-migrations.sh
-          bash scripts/verify-migrations.sh
-        env:
-          DATABASE_URL: postgresql://postgres:password@localhost:5432/astroid_test?schema=public
-          SHADOW_DATABASE_URL: postgresql://postgres:password@localhost:5432/astroid_shadow?schema=public
-          CI: "true"
 
       - name: Run typecheck
         run: npm run typecheck
