@@ -27,6 +27,7 @@ import { UseTransactionLock } from '../../common/locks/transaction-lock.decorato
 import { AgentThrottlerGuard } from '../../common/guards/agent-throttler.guard';
 import { AuthenticatedUser } from '../../common/interfaces/authenticated-user.interface';
 import { PaginationQuery, paginationQuerySchema } from '../../common/helpers/pagination';
+import { ApiPaginationQuery } from '../../common/decorators/api-pagination-query.decorator';
 import { ApiEnvelope } from '../../common/decorators/api-envelope.decorator';
 import {
   SlidingWindowThrottlerGuard,
@@ -46,8 +47,7 @@ export class TransactionController {
     description:
       'Returns a paginated list of transactions for the current organization. Supports filtering by status, agent, wallet, and date range.',
   })
-  @ApiQuery({ name: 'page', required: false, type: Number, description: 'Page number (default: 1)' })
-  @ApiQuery({ name: 'limit', required: false, type: Number, description: 'Items per page (default: 20)' })
+  @ApiPaginationQuery()
   @ApiQuery({ name: 'status', required: false, enum: ['DRAFT', 'PENDING', 'APPROVED', 'COMPLETED', 'FAILED', 'CANCELLED'], description: 'Filter by transaction status' })
   @ApiQuery({ name: 'agentId', required: false, type: String, description: 'Filter by agent UUID' })
   @ApiQuery({ name: 'walletId', required: false, type: String, description: 'Filter by wallet UUID' })

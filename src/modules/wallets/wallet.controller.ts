@@ -38,6 +38,7 @@ import { AgentThrottlerGuard } from '../../common/guards/agent-throttler.guard';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 import { AuthenticatedUser } from '../../common/interfaces/authenticated-user.interface';
 import { PaginationQuery, paginationQuerySchema } from '../../common/helpers/pagination';
+import { ApiPaginationQuery } from '../../common/decorators/api-pagination-query.decorator';
 import { ApiEnvelope } from '../../common/decorators/api-envelope.decorator';
 import { AstroidThrottlerGuard } from '../../common/guards/throttler.guard';
 
@@ -55,8 +56,7 @@ export class WalletController {
       'Returns a paginated list of wallets for the current organization. ' +
       'Supports filtering by status and network.',
   })
-  @ApiQuery({ name: 'page', required: false, type: Number, description: 'Page number (default: 1)' })
-  @ApiQuery({ name: 'limit', required: false, type: Number, description: 'Items per page (default: 20)' })
+  @ApiPaginationQuery()
   @ApiQuery({ name: 'status', required: false, enum: ['ACTIVE', 'FROZEN', 'ARCHIVED'], description: 'Filter by wallet status' })
   @ApiQuery({ name: 'network', required: false, enum: ['TESTNET', 'PUBLIC'], description: 'Filter by Stellar network' })
   @ApiEnvelope(WalletResponseDto as never, { isArray: true })
