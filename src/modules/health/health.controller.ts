@@ -1,14 +1,20 @@
-import { Controller, Get, Res, HttpStatus } from '@nestjs/common';
-import { ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
+import { Controller, Get, HttpException, HttpStatus, Res, UseGuards } from '@nestjs/common';
+import { ApiOperation, ApiResponse, ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { HealthIndicatorResult } from '@nestjs/terminus';
 import { SkipThrottle } from '@nestjs/throttler';
 import { Response } from 'express';
 import { Public } from '../../common/decorators/public.decorator';
 import { SkipAudit } from '../../common/decorators/skip-audit.decorator';
+import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { RolesGuard } from '../../common/guards/roles.guard';
+import { Roles } from '../../common/decorators/roles.decorator';
+import { UserRole } from '@prisma/client';
+import { SkipPublicRateLimit } from '../../common/decorators/skip-public-rate-limit.decorator';
 import { PrismaHealthIndicator } from './indicators/prisma.health';
 import { RedisHealthIndicator } from './indicators/redis.health';
 import { StellarHealthIndicator } from './indicators/stellar.health';
 import { DatabaseMigrationHealthIndicator } from './indicators/database-migration.health';
+import { BullMQHealthIndicator, QueuesHealthReport } from './indicators/bullmq.health';
 
 /** Per-dependency report shape returned under `services` in the readiness body. */
 interface ReadinessServiceReport {
@@ -98,7 +104,7 @@ export class HealthController {
     };
   }
 
-  @Get(['ready', 'readiness'])
+  @Get('readiness')
   @ApiOperation({ summary: 'Application readiness check' })
   @ApiResponse({ status: 200, description: 'Application is ready' })
   @ApiResponse({ status: 503, description: 'Application is not ready' })
@@ -191,4 +197,53 @@ function unwrap(result: HealthIndicatorResult, key: string): ReadinessServiceRep
     timestamp: entry.timestamp ?? new Date().toISOString(),
     ...(message ?? error ? { error: message ?? error } : {}),
   };
+}
+
+/**
+ * BullMQ queue diagnostics. Separate from `HealthController` so the queue
+ * internals stay protected: this controller is NOT marked `@Public()` and
+ * requires an authenticated OWNER, ADMIN, DEVELOPER or AUDITOR.
+ */
+@ApiTags('health')
+@Controller('health')
+@SkipAudit()
+@SkipThrottle({ api: true, auth: true })
+@SkipPublicRateLimit()
+export class QueuesHealthController {
+  constructor(private readonly bullmqHealthIndicator: BullMQHealthIndicator) {}
+
+  @Get('queues')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.DEVELOPER, UserRole.AUDITOR)
+  @ApiBearerAuth('access-token')
+  @ApiOperation({
+    summary: 'BullMQ queue health check',
+    description:
+      'Inspects every registered BullMQ queue (notifications, webhooks, ' +
+      'stellar-sync, analytics, reports, outbox-events, stellar-fee-bump, ' +
+      'transactions, risk-analysis, dead-letter, audit-cleanup, audit) and ' +
+      'returns waiting/active/failed/delayed/completed/paused job counts plus ' +
+      'Redis connectivity. Used by Kubernetes probes and dashboards to monitor ' +
+      'asynchronous worker health.',
+  })
+  @ApiResponse({ status: 200, description: 'Per-queue job counts and Redis connectivity' })
+  @ApiResponse({ status: 401, description: 'Not authenticated' })
+  @ApiResponse({ status: 403, description: 'Insufficient permissions' })
+  @ApiResponse({ status: 503, description: 'Redis unreachable or all queues failing' })
+  async checkQueuesHealth(): Promise<QueuesHealthReport> {
+    const report = await this.bullmqHealthIndicator.checkHealth();
+
+    if (report.status === 'down') {
+      throw new HttpException(
+        {
+          statusCode: 503,
+          message: 'Redis unreachable or all BullMQ queues failing health probes',
+          report,
+        },
+        HttpStatus.SERVICE_UNAVAILABLE,
+      );
+    }
+
+    return report;
+  }
 }
