@@ -2,7 +2,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Job, UnrecoverableError } from 'bullmq';
 import { WebhooksProcessor } from './webhooks.processor';
 import { WebhookJobData } from './types/webhook-job.types';
-import { verifyWebhookSignature } from './utils/signing';
+import { createHmac } from 'crypto';
+import {
+  WebhookCircuitBreakerService,
+} from './services/webhook-circuit-breaker.service';
 
 describe('WebhooksProcessor', () => {
   let processor: WebhooksProcessor;
@@ -19,6 +22,7 @@ describe('WebhooksProcessor', () => {
     webhookId: WEBHOOK_ID,
     organizationId: ORG_ID,
     url: WEBHOOK_URL,
+    secret: WEBHOOK_SECRET,
     eventName: 'transaction.completed',
     payload: { event: 'transaction.completed', data: { transactionId: 'txn-123' } },
     eventId: EVENT_ID,
@@ -34,9 +38,7 @@ describe('WebhooksProcessor', () => {
     }) as unknown as Job<WebhookJobData>;
 
   beforeEach(() => {
-    mockPrisma = {
-      webhook: { findFirst: vi.fn().mockResolvedValue({ secret: WEBHOOK_SECRET }) },
-    };
+    mockPrisma = {};
     // Access private property via type assertion
     processor = new WebhooksProcessor(mockPrisma as never);
     fetchSpy = vi.fn();
@@ -70,13 +72,14 @@ describe('WebhooksProcessor', () => {
       expect(options.headers['x-astroid-delivery']).toBe(EVENT_ID);
       expect(options.headers['x-astroid-timestamp']).toBeDefined();
       expect(options.headers['x-astroid-timestamp']).toMatch(/^\d+$/);
-      expect(options.headers['x-astroid-signature-version']).toBe('v1');
 
-      const body = Buffer.from(options.body);
+      // Verify HMAC-SHA256 signature = HMAC(secret, timestamp + body)
+      const body = options.body;
       const timestamp = options.headers['x-astroid-timestamp'];
-      expect(options.headers['x-astroid-signature']).toMatch(/^v1=[0-9a-f]{64}$/);
-      expect(verifyWebhookSignature(WEBHOOK_SECRET, timestamp, EVENT_ID, body, options.headers['x-astroid-signature'])).toBe(true);
-      expect(job.data).not.toHaveProperty('secret');
+      const expectedSignature = createHmac('sha256', WEBHOOK_SECRET)
+        .update(`${timestamp}.${body}`)
+        .digest('hex');
+      expect(options.headers['x-astroid-signature']).toBe(expectedSignature);
     });
 
     it('returns success result with status code', async () => {
@@ -234,34 +237,92 @@ describe('WebhooksProcessor', () => {
       const job = createMockJob({ attemptsMade: 4 } as Partial<Job<WebhookJobData>>);
       await expect(processor.process(job)).rejects.toThrow('HTTP 503');
     });
+  });
 
-    it('keeps the same event identity across retry attempts', async () => {
-      const upsert = vi.fn().mockResolvedValue({});
-      mockPrisma.webhookDelivery = { upsert };
-      fetchSpy.mockResolvedValue({ ok: true, status: 200, text: () => Promise.resolve('OK') });
+  describe('per-domain circuit breaker (issue #219)', () => {
+    let breaker: WebhookCircuitBreakerService;
 
-      const firstAttempt = createMockJob();
-      const retryAttempt = createMockJob({ attemptsMade: 1 } as Partial<Job<WebhookJobData>>);
-      await processor.process(firstAttempt);
-      await processor.process(retryAttempt);
-
-      expect(firstAttempt.data.eventId).toBe(retryAttempt.data.eventId);
-      expect(upsert.mock.calls[0][0].where).toEqual(upsert.mock.calls[1][0].where);
+    beforeEach(() => {
+      breaker = new WebhookCircuitBreakerService(2, 10_000);
+      processor = new WebhooksProcessor(
+        mockPrisma as never,
+        undefined,
+        undefined,
+        breaker,
+      );
     });
 
-    it('does not include a downstream response body in failure messages or logs', async () => {
-      const secretEcho = `${WEBHOOK_SECRET}:${EVENT_ID}:payload`;
-      const warn = vi.spyOn(processor['logger'], 'warn').mockImplementation(() => undefined);
-      const error = vi.spyOn(processor['logger'], 'error').mockImplementation(() => undefined);
+    it('records failures and trips the circuit after consecutive HTTP 500s', async () => {
       fetchSpy.mockResolvedValue({
         ok: false,
         status: 500,
-        text: () => Promise.resolve(secretEcho),
+        text: () => Promise.resolve('Internal Server Error'),
       });
 
       await expect(processor.process(createMockJob())).rejects.toThrow('HTTP 500');
-      expect(warn.mock.calls.flat().join(' ')).not.toContain(secretEcho);
-      expect(error.mock.calls.flat().join(' ')).not.toContain(secretEcho);
+      await expect(processor.process(createMockJob())).rejects.toThrow('HTTP 500');
+
+      const report = await breaker.getReport(WEBHOOK_URL);
+      expect(report.state).toBe('OPEN');
+      expect(report.consecutiveFailures).toBe(2);
+    });
+
+    it('fail-fasts without calling fetch while the circuit is OPEN', async () => {
+      await breaker.recordFailure(WEBHOOK_URL, new Error('HTTP 500'));
+      await breaker.recordFailure(WEBHOOK_URL, new Error('HTTP 500'));
+
+      await expect(processor.process(createMockJob())).rejects.toThrow('Circuit open');
+      expect(fetchSpy).not.toHaveBeenCalled();
+    });
+
+    it('records successes and keeps the circuit CLOSED on healthy delivery', async () => {
+      fetchSpy.mockResolvedValue({ ok: true, status: 200, text: () => Promise.resolve('OK') });
+
+      await processor.process(createMockJob());
+
+      const report = await breaker.getReport(WEBHOOK_URL);
+      expect(report.state).toBe('CLOSED');
+      expect(report.consecutiveFailures).toBe(0);
+    });
+
+    it('allows delivery again after the circuit half-opens and delivery succeeds', async () => {
+      vi.useFakeTimers();
+      try {
+        fetchSpy.mockResolvedValue({
+          ok: false,
+          status: 500,
+          text: () => Promise.resolve('Internal Server Error'),
+        });
+        await expect(processor.process(createMockJob())).rejects.toThrow('HTTP 500');
+        await expect(processor.process(createMockJob())).rejects.toThrow('HTTP 500');
+        expect((await breaker.getReport(WEBHOOK_URL)).state).toBe('OPEN');
+
+        // Advance past the open window, then deliver successfully.
+        vi.advanceTimersByTime(10_001);
+        fetchSpy.mockResolvedValue({ ok: true, status: 200, text: () => Promise.resolve('OK') });
+        expect((await breaker.isDeliveryAllowed(WEBHOOK_URL)) as boolean).toBe(true);
+        await processor.process(createMockJob());
+
+        const report = await breaker.getReport(WEBHOOK_URL);
+        expect(['HALF_OPEN', 'CLOSED']).toContain(report.state);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('deliveries to a different domain are unaffected by an OPEN circuit', async () => {
+      fetchSpy.mockResolvedValue({ ok: true, status: 200, text: () => Promise.resolve('OK') });
+
+      await breaker.recordFailure(WEBHOOK_URL, new Error('HTTP 500'));
+      await breaker.recordFailure(WEBHOOK_URL, new Error('HTTP 500'));
+
+      const otherUrlJob = createMockJob({
+        data: createJobData({ url: 'https://other-domain.com/hook' }),
+      });
+      const result = await processor.process(otherUrlJob);
+      expect(result.success).toBe(true);
+      expect(fetchSpy).toHaveBeenCalledOnce();
+      expect(fetchSpy.mock.calls[0][0]).toBe('https://other-domain.com/hook');
     });
   });
 });

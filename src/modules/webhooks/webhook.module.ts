@@ -7,23 +7,24 @@ import { WebhookService } from './webhook.service';
 import { WebhookRepository } from './webhook.repository';
 import { WebhookDispatcher } from './webhook.dispatcher';
 import { WebhookDeliveryService } from './services/webhook-delivery.service';
-import { WebhookAuditService } from './services/webhook-audit.service';
+import { WebhookCircuitBreakerService } from './services/webhook-circuit-breaker.service';
 import { WebhooksProcessor } from './webhooks.processor';
-import { createWebhookQueueOptions } from '../../queues/webhook.queue';
+import { Queues } from '../../queues/queues.constants';
 import { redisConfig } from '../../config/redis.config';
+import { webhookBackoffStrategy } from '../../utils/backoff.util';
 import { MetricsModule } from '../metrics/metrics.module';
 import { RawBodyMiddleware } from '../../common/middleware/raw-body.middleware';
 import { WebhookSignatureGuard } from '../../common/guards/webhook-signature.guard';
 import { SlidingWindowThrottlerGuard } from '../../common/guards/sliding-window-throttler.guard';
+import type { RegisterQueueOptions } from '@nestjs/bullmq';
 
 /**
- * Webhooks module. The dispatcher listens to domain events and queues the
- * curated WEBHOOK_EVENTS set to subscribed external endpoints via BullMQ.
+ * Webhooks module. The dispatcher listens to domain events and queues
+ * the curated WEBHOOK_EVENTS set to subscribed external endpoints via BullMQ.
  *
- * Retry policy (5 attempts, exponential backoff with jitter) and the
- * dead-letter routing live in `@queues/webhook.queue`, so the API and the worker
- * can never drift apart. `WebhookAuditService` records deliveries that exhaust
- * their retries in the compliance audit trail.
+ * Uses a custom backoffStrategy with randomized jitter (20% of base delay)
+ * to prevent thundering herd problems when multiple webhook deliveries
+ * are retried simultaneously.
  */
 @Module({
   imports: [
@@ -35,7 +36,24 @@ import { SlidingWindowThrottlerGuard } from '../../common/guards/sliding-window-
         db: redisConfig().db,
       },
     }),
-    BullModule.registerQueue(createWebhookQueueOptions()),
+    BullModule.registerQueue({
+      name: Queues.Webhooks,
+      defaultJobOptions: {
+        attempts: 5,
+        backoff: {
+          type: 'exponential',
+          delay: 2000,
+        },
+        removeOnComplete: { count: 1000 },
+        removeOnFail: { age: 24 * 3600 },
+      },
+      // BullMQ reads queue.opts.settings.backoffStrategy at retry time.
+      // The AdvancedOptions type is not fully exposed by @nestjs/bullmq, so we
+      // cast to include the backoffStrategy field that BullMQ supports at runtime.
+      settings: {
+        backoffStrategy: webhookBackoffStrategy,
+      } as RegisterQueueOptions['settings'],
+    }),
     MetricsModule,
   ],
   controllers: [WebhookController, WebhookIngressController],
@@ -44,13 +62,13 @@ import { SlidingWindowThrottlerGuard } from '../../common/guards/sliding-window-
     WebhookRepository,
     WebhookDispatcher,
     WebhookDeliveryService,
-    WebhookAuditService,
+    WebhookCircuitBreakerService,
     WebhooksProcessor,
     WebhookIngressService,
     WebhookSignatureGuard,
     SlidingWindowThrottlerGuard,
   ],
-  exports: [WebhookService],
+  exports: [WebhookService, WebhookCircuitBreakerService],
 })
 export class WebhookModule implements NestModule {
   configure(consumer: MiddlewareConsumer): void {
