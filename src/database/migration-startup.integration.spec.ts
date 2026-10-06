@@ -57,8 +57,13 @@ function buildService(mode: MigrationCheckMode, history: MigrationRow[] | Error)
     queryTimeoutMs: 1000,
     statementTimeoutMs: 1000,
     workerQueryTimeoutMs: 1000,
+    slowQueryThresholdMs: 1000,
+    connectionRetryAttempts: 3,
+    connectionRetryDelayMs: 100,
     migrationCheck: mode,
     migrationsDir,
+    migrationCheckEnabled: true,
+    migrationCheckMode: 'halt',
   };
   const config = { getOrThrow: vi.fn().mockReturnValue(database) } as unknown as ConfigService;
   const service = new PrismaService(config);

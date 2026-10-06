@@ -89,6 +89,8 @@ are rejected:
 | `DATABASE_CONNECT_RETRY_DELAY_MS` | `1000` | Delay between connection retry attempts. |
 | `DATABASE_MIGRATION_CHECK_ENABLED` | `true` | Runs a migration status check during bootstrap before the app accepts traffic. |
 | `DATABASE_MIGRATION_CHECK_MODE` | `halt` | `halt` exits the process when migrations are pending/failed; `warn` logs and continues. |
+| `DATABASE_MIGRATION_CHECK` | `strict` in production, `warn` otherwise | Boot-time migration gate used by `PrismaService.verifyMigrations()`: `strict` aborts startup on pending/failed migrations or an unreadable migration history, `warn` only logs, `off` skips the check. |
+| `DATABASE_MIGRATIONS_DIR` | `prisma/migrations` | Overrides where the migrations folder is read from for the `DATABASE_MIGRATION_CHECK` gate. |
 
 ### Redis
 

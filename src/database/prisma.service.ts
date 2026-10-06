@@ -12,6 +12,8 @@ import { buildDatasourceUrl } from './datasource-url';
 import { createQueryMetricsExtension } from './query-metrics.extension';
 import { createQueryTimeoutExtension } from './query-timeout.extension';
 import {
+  checkMigrationStatus,
+  getDefaultMigrationsDir,
   MigrationCheckMode,
   MigrationCheckResult,
   verifyMigrationsOnStartup,
@@ -110,30 +112,6 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
   }
 
   async onModuleInit(): Promise<void> {
-    try {
-      await this.$connect();
-      await this.workerClient.$connect();
-      this.logger.log('Prisma connected to the database');
-    } catch (error) {
-      // Do not crash on boot when the DB is unavailable (e.g. typecheck/build,
-      // or during local development before `docker compose up`). Log and go on.
-      // Whether the process may then serve traffic is decided by
-      // `verifyMigrations()`, which `main.ts` runs before listening.
-      this.logger.warn(
-        `Prisma could not connect on startup: ${(error as Error).message}. ` +
-          'The API will retry lazily on first query.',
-      );
-    })
-      .$extends(createQueryMetricsExtension({ slowQueryThresholdMs: database.slowQueryThresholdMs }))
-      .$extends(
-        createQueryTimeoutExtension({
-          queryTimeoutMs: database.workerQueryTimeoutMs,
-          poolTimeoutMs: database.poolTimeoutMs,
-        }),
-      ) as unknown as PrismaClient;
-  }
-
-  async onModuleInit(): Promise<void> {
     await this.connectWithRetry('API', () => this.$connect());
     await this.connectWithRetry('worker', () => this.workerClient.$connect());
     await this.validateMigrations();
@@ -164,11 +142,12 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
   }
 
   /**
-   * Verifies that every migration shipped with this build has been applied.
-   * Called by `main.ts` before the HTTP server starts listening. In `strict`
-   * mode (the production default) pending/failed migrations, or a database
-   * whose migration history cannot be read, throw and abort startup; in `warn`
-   * mode they are logged with remediation steps; `off` skips the check.
+   * Configurable boot-time migration gate. Called by `main.ts` before the
+   * HTTP server starts listening. In `strict` mode (the production default,
+   * see `DATABASE_MIGRATION_CHECK`) pending/failed migrations, or a database
+   * whose migration history cannot be read, throw and abort startup; in
+   * `warn` mode they are logged with remediation steps; `off` skips the check
+   * entirely.
    */
   async verifyMigrations(): Promise<MigrationCheckResult | null> {
     return verifyMigrationsOnStartup(this, {
@@ -176,6 +155,14 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
       migrationsDir: this.migrationsDir,
       logger: this.logger,
     });
+  }
+
+  /**
+   * Unconditional migration check run by `onModuleInit` right after
+   * connecting: a pending or failed migration always throws here, so a
+   * mismatched instance can never finish booting, regardless of
+   * `DATABASE_MIGRATION_CHECK`.
+   */
   async validateMigrations(): Promise<MigrationCheckResult> {
     const migrationsDir = getDefaultMigrationsDir();
     const result = await checkMigrationStatus(this, migrationsDir);
