@@ -26,10 +26,6 @@ import {
 } from './query-timeout.extension';
 import { buildDatasourceUrl } from './datasource-url';
 import { ShutdownCoordinator, ShutdownResource } from '../common/shutdown/shutdown-coordinator.service';
-import {
-  ConnectionPoolExhaustedError,
-  DatabaseTimeoutError,
-} from './database.errors';
 import { ConnectionPoolExhaustedError, DatabaseTimeoutError } from './database.errors';
 
 const BASE_URL = 'postgresql://user:pass@localhost:5432/astroid?schema=public';
@@ -287,50 +283,51 @@ describe('PrismaService', () => {
       expect(service.$disconnect).toHaveBeenCalledTimes(1);
       expect(service.workerClient.$disconnect).toHaveBeenCalledTimes(1);
     });
-  it('retries a transient database connection failure during startup', async () => {
-    vi.useFakeTimers();
-    const service = buildPrismaService();
-    const apiConnect = vi
-      .spyOn(service, '$connect')
-      .mockRejectedValueOnce(new Error('database starting'))
-      .mockResolvedValue(undefined);
-    const workerConnect = vi.spyOn(service.workerClient, '$connect').mockResolvedValue(undefined);
+    it('retries a transient database connection failure during startup', async () => {
+      vi.useFakeTimers();
+      const service = withMethods(buildPrismaService());
+      const apiConnect = vi
+        .spyOn(service, '$connect')
+        .mockRejectedValueOnce(new Error('database starting'))
+        .mockResolvedValue(undefined);
+      const workerConnect = vi.spyOn(service.workerClient, '$connect').mockResolvedValue(undefined);
 
-    const initialization = service.onModuleInit();
-    await vi.runAllTimersAsync();
-    await initialization;
+      const initialization = service.onModuleInit();
+      await vi.runAllTimersAsync();
+      await initialization;
 
-    expect(apiConnect).toHaveBeenCalledTimes(2);
-    expect(workerConnect).toHaveBeenCalledOnce();
-    expect(checkMigrationStatusMock).toHaveBeenCalledOnce();
-  });
-
-  it('fails startup when migration health reports pending migrations', async () => {
-    const service = buildPrismaService();
-    checkMigrationStatusMock.mockResolvedValue({
-      upToDate: false,
-      migrations: [],
-      pending: [{ name: 'pending_migration', applied: false, finished: false, error: null }],
-      failed: [],
-      message: '1 pending migration(s)',
+      expect(apiConnect).toHaveBeenCalledTimes(2);
+      expect(workerConnect).toHaveBeenCalledOnce();
+      expect(checkMigrationStatusMock).toHaveBeenCalledOnce();
     });
 
-    await expect(service.onModuleInit()).rejects.toThrow(
-      'Database migrations are not up to date: 1 pending migration(s)',
-    );
-  });
+    it('fails startup when migration health reports pending migrations', async () => {
+      const service = withMethods(buildPrismaService());
+      checkMigrationStatusMock.mockResolvedValue({
+        upToDate: false,
+        migrations: [],
+        pending: [{ name: 'pending_migration', applied: false, finished: false, error: null }],
+        failed: [],
+        message: '1 pending migration(s)',
+      });
 
-  it('fails startup after exhausting database connection attempts', async () => {
-    vi.useFakeTimers();
-    const service = buildPrismaService();
-    const apiConnect = vi.spyOn(service, '$connect').mockRejectedValue(new Error('unavailable'));
+      await expect(service.onModuleInit()).rejects.toThrow(
+        'Database migrations are not up to date: 1 pending migration(s)',
+      );
+    });
 
-    const initialization = expect(service.onModuleInit()).rejects.toThrow('unavailable');
-    await vi.runAllTimersAsync();
-    await initialization;
+    it('fails startup after exhausting database connection attempts', async () => {
+      vi.useFakeTimers();
+      const service = withMethods(buildPrismaService());
+      const apiConnect = vi.spyOn(service, '$connect').mockRejectedValue(new Error('unavailable'));
 
-    expect(apiConnect).toHaveBeenCalledTimes(databaseConfig.connectionRetryAttempts);
-    expect(checkMigrationStatusMock).not.toHaveBeenCalled();
+      const initialization = expect(service.onModuleInit()).rejects.toThrow('unavailable');
+      await vi.runAllTimersAsync();
+      await initialization;
+
+      expect(apiConnect).toHaveBeenCalledTimes(databaseConfig.connectionRetryAttempts);
+      expect(checkMigrationStatusMock).not.toHaveBeenCalled();
+    });
   });
 });
 

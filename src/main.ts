@@ -10,6 +10,7 @@ import { ShutdownCoordinator } from './common/shutdown/shutdown-coordinator.serv
 import { AppConfig } from './config/app.config';
 import { assertValidEnvironment, EnvironmentValidationError } from './config/env.validation';
 import { DatabaseConfig } from './config/database.config';
+import { PrismaService } from './database/prisma.service';
 
 async function bootstrap() {
   // Fail fast on missing or malformed configuration, before any module is

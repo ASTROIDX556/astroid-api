@@ -1,10 +1,10 @@
-import { Injectable, Logger, OnModuleDestroy, OnModuleInit, Optional } from '@nestjs/common';
 import {
   INestApplication,
   Injectable,
   Logger,
   OnModuleDestroy,
   OnModuleInit,
+  Optional,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaClient } from '@prisma/client';
@@ -111,14 +111,6 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
     // queues and Redis, so nothing can still be issuing queries.
     this.coordinatedShutdown = shutdown !== undefined;
     shutdown?.register({ name: 'prisma', phase: 'database', close: () => this.disconnectAll() });
-    })
-      .$extends(createQueryMetricsExtension({ slowQueryThresholdMs: database.slowQueryThresholdMs }))
-      .$extends(
-        createQueryTimeoutExtension({
-          queryTimeoutMs: database.workerQueryTimeoutMs,
-          poolTimeoutMs: database.poolTimeoutMs,
-        }),
-      ) as unknown as PrismaClient;
   }
 
   async onModuleInit(): Promise<void> {
@@ -192,6 +184,8 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
   async disconnectAll(): Promise<void> {
     await this.$disconnect();
     await this.workerClient.$disconnect();
+  }
+
   /**
    * Reads live connection counts for this database from Postgres'
    * `pg_stat_activity`. Prisma's Rust query engine doesn't expose pool
