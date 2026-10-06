@@ -189,9 +189,14 @@ describe('runWorkerJob', () => {
     expect(record).toMatchObject({ event: 'job.dead-lettered', unrecoverable: true });
   });
 
-  it('includes trace fields from the job payload', async () => {
+  it('includes trace fields from top-level and nested job metadata', async () => {
     const job = makeJob(
-      { organizationId: 'org-1', traceId: 'trace-abc', extra: 'noise' },
+      {
+        organizationId: 'org-1',
+        metadata: { requestId: 'req-123', correlationId: 'corr-123' },
+        traceId: 'trace-abc',
+        extra: 'noise',
+      },
       { attemptsMade: 2, opts: { attempts: 3 } },
     );
 
@@ -207,7 +212,12 @@ describe('runWorkerJob', () => {
     ).rejects.toThrow();
 
     const record = JSON.parse(String(logger.error.mock.calls[0][0]));
-    expect(record.trace).toEqual({ organizationId: 'org-1', traceId: 'trace-abc' });
+    expect(record.trace).toEqual({
+      organizationId: 'org-1',
+      requestId: 'req-123',
+      correlationId: 'corr-123',
+      traceId: 'trace-abc',
+    });
     expect(record.trace.extra).toBeUndefined();
   });
 

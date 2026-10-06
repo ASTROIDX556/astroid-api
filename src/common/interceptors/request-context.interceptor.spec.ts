@@ -163,4 +163,33 @@ describe('RequestContextInterceptor', () => {
     expect(capturedAgent).toBe('agent-9');
     expect(capturedAuthMethod).toBe('service');
   });
+
+  it('keeps request IDs isolated across concurrent async contexts', async () => {
+    const makeContext = (requestId: string) => ({
+      identity: {
+        requestId,
+        correlationId: requestId,
+        traceId: requestId,
+        method: 'GET',
+        path: '/',
+        url: '/',
+        ip: null,
+        userAgent: null,
+        startedAt: Date.now(),
+      },
+      timings: {},
+      data: {},
+    });
+
+    const results = await Promise.all(
+      ['req-concurrent-a', 'req-concurrent-b'].map((requestId) =>
+        RequestContext.run(makeContext(requestId), async () => {
+          await new Promise((resolve) => setImmediate(resolve));
+          return RequestContext.getRequestId();
+        }),
+      ),
+    );
+
+    expect(results).toEqual(['req-concurrent-a', 'req-concurrent-b']);
+  });
 });

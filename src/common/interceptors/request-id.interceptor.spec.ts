@@ -159,6 +159,19 @@ describe('RequestIdInterceptor', () => {
     );
   });
 
+  it('replaces request IDs containing unsupported characters or exceeding 128 characters', async () => {
+    for (const incomingRequestId of ['bad id', 'bad\nid', 'x'.repeat(129)]) {
+      const { context, requestHeaders, responseHeaders } = buildContext({ incomingRequestId });
+      await run(interceptor, context, { handle: () => of(null) });
+
+      expect(requestHeaders[REQUEST_ID_HEADER]).not.toBe(incomingRequestId);
+      expect(requestHeaders[REQUEST_ID_HEADER]).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+      );
+      expect(responseHeaders[REQUEST_ID_HEADER]).toBe(requestHeaders[REQUEST_ID_HEADER]);
+    }
+  });
+
   it('should generate unique IDs for each request', async () => {
     const { context: ctx1 } = buildContext({});
     const { context: ctx2 } = buildContext({});

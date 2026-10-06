@@ -46,11 +46,7 @@ export const databaseEnvSchema = z.object({
   DATABASE_SLOW_QUERY_THRESHOLD_MS: z.coerce.number().int().nonnegative().default(1000),
   DATABASE_CONNECT_RETRY_ATTEMPTS: z.coerce.number().int().positive().max(10).default(5),
   DATABASE_CONNECT_RETRY_DELAY_MS: z.coerce.number().int().positive().max(60000).default(1000),
-  // Startup migration check: verifies prisma/migrations on disk against the
-  // _prisma_migrations table before the app accepts traffic.
   DATABASE_MIGRATION_CHECK_ENABLED: z.coerce.boolean().default(true),
-  // When a pending/failed migration is detected: 'halt' exits the process before
-  // listen(), 'warn' logs and continues. Production should stay 'halt'.
   DATABASE_MIGRATION_CHECK_MODE: z.enum(['halt', 'warn']).default('halt'),
 });
 
@@ -98,6 +94,8 @@ export const queueEnvSchema = z.object({
 export const throttleEnvSchema = z.object({
   THROTTLE_AUTH_LIMIT: z.coerce.number().int().positive().default(10),
   THROTTLE_API_LIMIT: z.coerce.number().int().positive().default(120),
+  /** Requests allowed per window for traffic identified as an autonomous agent. */
+  THROTTLE_AGENT_LIMIT: z.coerce.number().int().positive().default(300),
   THROTTLE_WEBHOOK_LIMIT: z.coerce.number().int().positive().default(30),
   THROTTLE_TTL: z.coerce.number().int().positive().default(60),
   // Short-term burst allowance per tier (requests per second). A burst window

@@ -268,8 +268,12 @@ export class QueueFailureListener implements OnModuleInit, OnModuleDestroy {
    */
   private extractTrace(data: unknown): JobTraceContext {
     const payload = (data && typeof data === 'object' ? data : {}) as Record<string, unknown>;
+    const metadata =
+      payload.metadata && typeof payload.metadata === 'object'
+        ? (payload.metadata as Record<string, unknown>)
+        : {};
     const read = (key: string): string | undefined => {
-      const value = payload[key];
+      const value = payload[key] ?? metadata[key];
       return typeof value === 'string' ? value : undefined;
     };
 

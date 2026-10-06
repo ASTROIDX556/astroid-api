@@ -372,6 +372,51 @@ Delete a budget.
 
 ---
 
+## Request Correlation
+
+Every response includes the selected request ID in the `x-request-id` header and the standard response envelope. A caller-supplied ID is accepted only when it is 1-128 ASCII characters, starts with a letter or digit, and otherwise contains only letters, digits, `.`, `_`, `:`, or `-`. Invalid values are replaced with a server-generated UUID. The selected ID is propagated as typed event/job metadata and is isolated per concurrent request.
+
+## Audit History (`/audit`)
+
+### GET `/audit`
+List audit records in reverse chronological order using a stable `(createdAt, id)` keyset.
+
+**Query Parameters:** `limit` defaults to 20 and is bounded to 1-100; `cursor` is the opaque `nextCursor` from the previous response; optional `actorId`, `action`, `resourceId`, `from`, and `to` filters apply within the authenticated organization. `from` and `to` are inclusive ISO 8601 timestamps and `from` must not be later than `to`.
+
+The response `meta` includes `limit`, `hasNext`, and `nextCursor` (null on the final page). New records inserted after a page is read do not shift subsequent pages.
+
+**Example:** `GET /audit?limit=20&actorId=user-123&action=wallet.created`
+
+## Outbound Webhook Signatures
+
+Webhook creation and secret rotation responses disclose the signing secret once. Later list, get, update, delivery, and audit responses never include it. Store the secret securely and rotate it when compromised.
+
+Every delivery includes `x-astroid-signature`, `x-astroid-signature-version`, `x-astroid-timestamp`, and `x-astroid-event-id`. `x-astroid-delivery` remains an alias for the event ID. The signature header is `v1=<lowercase hex HMAC-SHA256>` and the version header is `v1`.
+
+The canonical signed bytes are UTF-8 `v1.<timestamp>.<event-id>.` followed by the exact raw HTTP body bytes. Each retry uses the same event ID and body, with a fresh timestamp and signature. Consumers should also reject timestamps outside their chosen replay window.
+
+```js
+import { createHmac, timingSafeEqual } from 'node:crypto';
+
+export function verifyAstroidWebhook({ secret, headers, rawBody }) {
+  const version = headers['x-astroid-signature-version'];
+  const timestamp = headers['x-astroid-timestamp'];
+  const eventId = headers['x-astroid-event-id'];
+  const received = headers['x-astroid-signature'];
+  if (version !== 'v1' || !/^\d{1,12}$/.test(timestamp) || !eventId) return false;
+  if (Math.abs(Date.now() / 1000 - Number(timestamp)) > 300) return false;
+
+  const prefix = Buffer.from(`v1.${timestamp}.${eventId}.`, 'utf8');
+  const expected = createHmac('sha256', secret)
+    .update(Buffer.concat([prefix, rawBody]))
+    .digest();
+  const match = /^v1=([0-9a-f]{64})$/.exec(received);
+  if (!match) return false;
+  const actual = Buffer.from(match[1], 'hex');
+  return actual.length === expected.length && timingSafeEqual(actual, expected);
+}
+```
+
 ## Health Probes (`/health`)
 
 The liveness and readiness probes are served **outside** the API prefix, so
