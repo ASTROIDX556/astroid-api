@@ -8,6 +8,7 @@ import { Request, Response, NextFunction } from 'express';
 import { AppModule } from './app.module';
 import { PrismaService } from './database/prisma.service';
 import { AppConfig } from './config/app.config';
+import { TOTAL_COUNT_HEADER } from './common/constants/headers';
 import { assertValidEnvironment, EnvironmentValidationError } from './config/env.validation';
 import { DatabaseConfig } from './config/database.config';
 
@@ -74,8 +75,13 @@ async function bootstrap() {
     next();
   });
 
-  // CORS
-  app.enableCors({ origin: appConfig.corsOrigins, credentials: true });
+  // CORS. X-Total-Count is exposed so browser clients can read the total row
+  // count of paginated list responses.
+  app.enableCors({
+    origin: appConfig.corsOrigins,
+    credentials: true,
+    exposedHeaders: [TOTAL_COUNT_HEADER],
+  });
 
   // Global validation pipe (transforms + validates DTOs)
   app.useGlobalPipes(
