@@ -136,6 +136,14 @@ export const metricsEnvSchema = z.object({
     .default('127.0.0.1/32,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16'),
 });
 
+export const shutdownEnvSchema = z.object({
+  // How long in-flight HTTP requests and BullMQ jobs may run after SIGTERM /
+  // SIGINT before they are forcibly terminated (ms). Keep this plus ~10s of
+  // resource-close headroom below the orchestrator's kill deadline (Kubernetes
+  // terminationGracePeriodSeconds defaults to 30s).
+  SHUTDOWN_GRACE_PERIOD_MS: z.coerce.number().int().positive().default(20_000),
+});
+
 export const aiEnvSchema = z.object({
   AI_PROVIDER: z.string().default('nvidia'),
   AI_PROVIDER_KEY: z.string().min(1, 'AI_PROVIDER_KEY is required'),

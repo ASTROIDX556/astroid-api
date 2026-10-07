@@ -4,10 +4,12 @@ import {
   Logger,
   OnModuleDestroy,
   OnModuleInit,
+  Optional,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaClient } from '@prisma/client';
 import { DatabaseConfig } from '../config/database.config';
+import { ShutdownCoordinator } from '../common/shutdown/shutdown-coordinator.service';
 import { buildDatasourceUrl } from './datasource-url';
 import { createQueryMetricsExtension } from './query-metrics.extension';
 import { createQueryTimeoutExtension } from './query-timeout.extension';
@@ -52,10 +54,12 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
    */
   readonly workerClient: PrismaClient;
 
+  /** True when the {@link ShutdownCoordinator} owns the disconnect timing. */
+  private readonly coordinatedShutdown: boolean;
   private readonly migrationCheck: MigrationCheckMode;
   private readonly migrationsDir?: string;
 
-  constructor(configService: ConfigService) {
+  constructor(configService: ConfigService, @Optional() shutdown?: ShutdownCoordinator) {
     const database = configService.getOrThrow<DatabaseConfig>('database');
 
     const url = buildDatasourceUrl(database.url, {
@@ -107,6 +111,10 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
       }),
     ) as unknown as PrismaClient;
 
+    // The database is the last resource released on shutdown, after workers,
+    // queues and Redis, so nothing can still be issuing queries.
+    this.coordinatedShutdown = shutdown !== undefined;
+    shutdown?.register({ name: 'prisma', phase: 'database', close: () => this.disconnectAll() });
     this.migrationCheck = database.migrationCheck;
     this.migrationsDir = database.migrationsDir;
   }
@@ -187,6 +195,15 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
   }
 
   async onModuleDestroy(): Promise<void> {
+    // Under the coordinator, disconnecting here would run before workers and
+    // queues have finished; it disconnects in the `database` phase instead.
+    if (!this.coordinatedShutdown) {
+      await this.disconnectAll();
+    }
+  }
+
+  /** Closes both connection pools. Safe to call more than once. */
+  async disconnectAll(): Promise<void> {
     await this.$disconnect();
     await this.workerClient.$disconnect();
   }

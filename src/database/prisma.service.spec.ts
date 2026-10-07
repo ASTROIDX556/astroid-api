@@ -25,6 +25,7 @@ import {
   withQueryTimeout,
 } from './query-timeout.extension';
 import { buildDatasourceUrl } from './datasource-url';
+import { ShutdownCoordinator, ShutdownResource } from '../common/shutdown/shutdown-coordinator.service';
 import { ConnectionPoolExhaustedError, DatabaseTimeoutError } from './database.errors';
 
 const BASE_URL = 'postgresql://user:pass@localhost:5432/astroid?schema=public';
@@ -63,10 +64,11 @@ function createMockClient(): {
   };
 }
 
-function buildPrismaService(): PrismaService {
+function buildPrismaService(shutdown?: ShutdownCoordinator): PrismaService {
   const configService = {
     getOrThrow: vi.fn().mockReturnValue(databaseConfig),
   };
+  return new PrismaService(configService as unknown as ConfigService, shutdown);
   const service = new PrismaService(configService as unknown as ConfigService);
   Object.setPrototypeOf(service, PrismaService.prototype);
   return service;
@@ -254,50 +256,78 @@ describe('PrismaService', () => {
     expect(service.workerClient).toBeDefined();
   });
 
-  it('retries a transient database connection failure during startup', async () => {
-    vi.useFakeTimers();
-    const service = buildPrismaService();
-    const apiConnect = vi
-      .spyOn(service, '$connect')
-      .mockRejectedValueOnce(new Error('database starting'))
-      .mockResolvedValue(undefined);
-    const workerConnect = vi.spyOn(service.workerClient, '$connect').mockResolvedValue(undefined);
+  describe('shutdown', () => {
+    // The PrismaClient mock returns a plain object from `super()`, so restore
+    // PrismaService's prototype to exercise its lifecycle methods.
+    const withMethods = (service: PrismaService) => Object.setPrototypeOf(service, PrismaService.prototype) as PrismaService;
 
-    const initialization = service.onModuleInit();
-    await vi.runAllTimersAsync();
-    await initialization;
+    it('disconnects both pools on module destroy when running without a coordinator', async () => {
+      const service = withMethods(buildPrismaService());
 
-    expect(apiConnect).toHaveBeenCalledTimes(2);
-    expect(workerConnect).toHaveBeenCalledOnce();
-    expect(checkMigrationStatusMock).toHaveBeenCalledOnce();
-  });
+      await service.onModuleDestroy();
 
-  it('fails startup when migration health reports pending migrations', async () => {
-    const service = buildPrismaService();
-    checkMigrationStatusMock.mockResolvedValue({
-      upToDate: false,
-      migrations: [],
-      pending: [{ name: 'pending_migration', applied: false, finished: false, error: null }],
-      failed: [],
-      message: '1 pending migration(s)',
+      expect(service.$disconnect).toHaveBeenCalledTimes(1);
+      expect(service.workerClient.$disconnect).toHaveBeenCalledTimes(1);
     });
 
-    await expect(service.onModuleInit()).rejects.toThrow(
-      'Database migrations are not up to date: 1 pending migration(s)',
-    );
-  });
+    it('registers in the database phase and leaves disconnect timing to the coordinator', async () => {
+      const registered: ShutdownResource[] = [];
+      const shutdown = { register: (r: ShutdownResource) => registered.push(r) };
+      const service = withMethods(buildPrismaService(shutdown as unknown as ShutdownCoordinator));
 
-  it('fails startup after exhausting database connection attempts', async () => {
-    vi.useFakeTimers();
-    const service = buildPrismaService();
-    const apiConnect = vi.spyOn(service, '$connect').mockRejectedValue(new Error('unavailable'));
+      await service.onModuleDestroy();
+      expect(service.$disconnect).not.toHaveBeenCalled();
 
-    const initialization = expect(service.onModuleInit()).rejects.toThrow('unavailable');
-    await vi.runAllTimersAsync();
-    await initialization;
+      expect(registered).toEqual([expect.objectContaining({ name: 'prisma', phase: 'database' })]);
+      await registered[0].close();
+      expect(service.$disconnect).toHaveBeenCalledTimes(1);
+      expect(service.workerClient.$disconnect).toHaveBeenCalledTimes(1);
+    });
+    it('retries a transient database connection failure during startup', async () => {
+      vi.useFakeTimers();
+      const service = withMethods(buildPrismaService());
+      const apiConnect = vi
+        .spyOn(service, '$connect')
+        .mockRejectedValueOnce(new Error('database starting'))
+        .mockResolvedValue(undefined);
+      const workerConnect = vi.spyOn(service.workerClient, '$connect').mockResolvedValue(undefined);
 
-    expect(apiConnect).toHaveBeenCalledTimes(databaseConfig.connectionRetryAttempts);
-    expect(checkMigrationStatusMock).not.toHaveBeenCalled();
+      const initialization = service.onModuleInit();
+      await vi.runAllTimersAsync();
+      await initialization;
+
+      expect(apiConnect).toHaveBeenCalledTimes(2);
+      expect(workerConnect).toHaveBeenCalledOnce();
+      expect(checkMigrationStatusMock).toHaveBeenCalledOnce();
+    });
+
+    it('fails startup when migration health reports pending migrations', async () => {
+      const service = withMethods(buildPrismaService());
+      checkMigrationStatusMock.mockResolvedValue({
+        upToDate: false,
+        migrations: [],
+        pending: [{ name: 'pending_migration', applied: false, finished: false, error: null }],
+        failed: [],
+        message: '1 pending migration(s)',
+      });
+
+      await expect(service.onModuleInit()).rejects.toThrow(
+        'Database migrations are not up to date: 1 pending migration(s)',
+      );
+    });
+
+    it('fails startup after exhausting database connection attempts', async () => {
+      vi.useFakeTimers();
+      const service = withMethods(buildPrismaService());
+      const apiConnect = vi.spyOn(service, '$connect').mockRejectedValue(new Error('unavailable'));
+
+      const initialization = expect(service.onModuleInit()).rejects.toThrow('unavailable');
+      await vi.runAllTimersAsync();
+      await initialization;
+
+      expect(apiConnect).toHaveBeenCalledTimes(databaseConfig.connectionRetryAttempts);
+      expect(checkMigrationStatusMock).not.toHaveBeenCalled();
+    });
   });
 });
 

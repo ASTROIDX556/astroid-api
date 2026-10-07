@@ -179,8 +179,8 @@ describe('RedisLock', () => {
     });
   });
 
-  it('disconnects the shared client on module destroy', () => {
-    lock.onModuleDestroy();
-    expect(redis.disconnect).toHaveBeenCalled();
+  it('does not close the shared client it does not own', () => {
+    expect((lock as unknown as Record<string, unknown>).onModuleDestroy).toBeUndefined();
+    expect(redis.disconnect).not.toHaveBeenCalled();
   });
 });
