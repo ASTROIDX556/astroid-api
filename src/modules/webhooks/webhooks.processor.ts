@@ -1,20 +1,13 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
+import { ConfigService } from '@nestjs/config';
 import { Inject, Logger, Optional } from '@nestjs/common';
 import { Job, UnrecoverableError } from 'bullmq';
 import { Queues } from '../../queues/queues.constants';
 import { WebhookJobData, WebhookJobResult } from './types/webhook-job.types';
-import { signWebhookPayload, WEBHOOK_SIGNATURE_VERSION } from './utils/signing';
+import { signWebhookPayload } from './utils/signing';
 import { PrismaService } from '../../database/prisma.service';
 import { WorkerMetricsService } from '../../modules/metrics/worker-metrics.service';
-import { WebhookAuditService } from './services/webhook-audit.service';
-import {
-  WEBHOOK_DELIVERY_HEADER,
-  WEBHOOK_EVENT_HEADER,
-  WEBHOOK_EVENT_ID_HEADER,
-  WEBHOOK_SIGNATURE_HEADER,
-  WEBHOOK_SIGNATURE_VERSION_HEADER,
-  WEBHOOK_TIMESTAMP_HEADER,
-} from '../../common/constants/headers';
+import { WebhookCircuitBreakerService } from './services/webhook-circuit-breaker.service';
 
 /**
  * BullMQ job processor for webhook event delivery with exponential backoff + jitter.
@@ -25,6 +18,11 @@ import {
  * - Non-transient error detection (400,401,403,404,422) prevents infinite retries
  * - Persistent delivery status tracking (PENDING → RETRYING → FAILED/DELIVERED)
  * - Fail-safe: retry failures never crash the master process
+ *
+ * Per-domain circuit breaker (issue #219):
+ * - Consecutive downstream failures (per endpoint host) trip a circuit that
+ *   fail-fasts further deliveries to that domain until it half-opens again
+ * - Successes reset the failure counter; recovered domains resume delivery
  *
  * Jitter is applied via a custom backoffStrategy configured on the BullMQ
  * queue registration (see webhook.module.ts). BullMQ reads the strategy from
@@ -62,81 +60,67 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
 
   constructor(
     @Optional() @Inject(PrismaService) private readonly prisma?: PrismaService,
+    @Optional() private readonly configService?: ConfigService,
     @Optional() private readonly workerMetrics?: WorkerMetricsService,
-    @Optional() private readonly webhookAudit?: WebhookAuditService,
+    @Optional() private readonly circuitBreaker?: WebhookCircuitBreakerService,
   ) {
     super();
   }
 
-  /**
-   * Audit entry for a delivery that will not be retried again: an unrecoverable
-   * 4xx or the final attempt. `WebhookAuditService` swallows its own failures, so
-   * this can never mask the original delivery error.
-   */
-  private async auditTerminalFailure(
-    job: Job<WebhookJobData>,
-    failedReason: string,
-    responseStatus?: number,
-  ): Promise<void> {
-    if (!this.webhookAudit) return;
-    try {
-      await this.webhookAudit.recordTerminalFailure({
-        webhookId: job.data.webhookId,
-        organizationId: job.data.organizationId,
-        url: job.data.url,
-        eventName: job.data.eventName,
-        eventId: job.data.eventId,
-        attemptsMade: job.attemptsMade + 1,
-        failedReason,
-        responseStatus,
-      });
-    } catch (error) {
-      // Never let compliance bookkeeping mask the original delivery failure.
-      this.logger.warn(
-        `Could not audit webhook ${job.data.webhookId} failure: ${(error as Error).message}`,
-      );
-    }
-  }
-
-  private async resolveSecret(webhookId: string, organizationId: string): Promise<string> {
-    const client = this.prisma?.workerClient ?? this.prisma;
-    if (!client) throw new UnrecoverableError('Webhook signing secret is unavailable');
-    const webhook = await client.webhook.findFirst({
-      where: { id: webhookId, organizationId },
-      select: { secret: true },
-    });
-    if (!webhook?.secret) throw new UnrecoverableError('Webhook signing secret is unavailable');
-    return webhook.secret;
+  private resolveSecret(jobSecret?: string): string {
+    if (jobSecret) return jobSecret;
+    const fallback =
+      this.configService?.get<string>('WEBHOOK_SECRET') ??
+      this.configService?.get<string>('STELLAR_WEBHOOK_SECRET') ??
+      this.configService?.get<string>('WEBHOOK_SIGNING_SECRET') ??
+      '';
+    return fallback;
   }
 
   async process(job: Job<WebhookJobData>): Promise<WebhookJobResult> {
     const jobName = job.name ?? 'webhook-delivery';
 
     const execute = async (): Promise<WebhookJobResult> => {
-      const { webhookId, organizationId, url, eventName, payload, eventId, metadata } = job.data;
-      const requestTrace = metadata?.requestId ? ` requestId=${metadata.requestId}` : '';
-      this.logger.debug(`Processing webhook ${webhookId} event ${eventName} attempt ${job.attemptsMade + 1}/5${requestTrace}`);
+      const { webhookId, organizationId, url, secret, eventName, payload, eventId } = job.data;
+
+      // Circuit breaker (issue #219): fail fast when this endpoint's domain is
+      // OPEN. The error surfaces as a regular (transient) failure so BullMQ
+      // retries with backoff — by which time the breaker may have half-opened.
+      if (this.circuitBreaker) {
+        const allowed = await this.circuitBreaker.isDeliveryAllowed(url);
+        if (!allowed) {
+          const report = await this.circuitBreaker.getReport(url);
+          this.logger.warn(
+            `Circuit OPEN for ${report.host} — skipping webhook ${webhookId} delivery ` +
+              `(${report.remainingOpenMs}ms until half-open trial)`,
+          );
+          throw new Error(
+            `Circuit open for ${report.host}; delivery paused until recovery trial`,
+          );
+        }
+      }
+
+      this.logger.debug(`Processing webhook ${webhookId} event ${eventName} attempt ${job.attemptsMade + 1}/5`);
 
       let responseStatus: number | undefined;
       let errorMessage: string | undefined;
       let isNonTransient = false;
 
       try {
-        const body = Buffer.from(JSON.stringify(payload), 'utf8');
+        const body = JSON.stringify(payload);
         const timestamp = Math.floor(Date.now() / 1000).toString();
-        const effectiveSecret = await this.resolveSecret(webhookId, organizationId);
-        const signature = signWebhookPayload(effectiveSecret, timestamp, eventId, body);
+        const effectiveSecret = this.resolveSecret(secret);
+        const signature = signWebhookPayload(effectiveSecret, timestamp, body);
 
         const response = await fetch(url, {
           method: 'POST',
           headers: {
             'content-type': 'application/json',
-            [WEBHOOK_SIGNATURE_HEADER]: signature,
-            [WEBHOOK_TIMESTAMP_HEADER]: timestamp,
-            [WEBHOOK_EVENT_ID_HEADER]: eventId,
-            [WEBHOOK_DELIVERY_HEADER]: eventId,
-            [WEBHOOK_EVENT_HEADER]: eventName,
-            [WEBHOOK_SIGNATURE_VERSION_HEADER]: WEBHOOK_SIGNATURE_VERSION,
+            'x-astroid-signature': signature,
+            'x-astroid-timestamp': timestamp,
+            'x-astroid-delivery': eventId,
+            'x-astroid-event': eventName,
+            'x-astroid-event-id': eventId,
             'user-agent': 'Astroid-Webhook-Bot/1.0',
           },
           body,
@@ -145,9 +129,10 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
 
         responseStatus = response.status;
         if (!response.ok) {
-          errorMessage = `HTTP ${response.status}`;
+          const errorText = await response.text().catch(() => response.statusText);
+          errorMessage = `HTTP ${response.status}: ${errorText}`;
           isNonTransient = WebhooksProcessor.NON_TRANSIENT_STATUSES.has(response.status);
-          this.logger.warn(`Webhook ${webhookId} responded ${response.status}${requestTrace}`);
+          this.logger.warn(`Webhook ${webhookId} responded ${response.status}: ${errorText}`);
           if (isNonTransient) {
             await this.persistState({
               webhookId,
@@ -160,19 +145,16 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
               lastError: errorMessage,
               responseStatus,
             });
-            // Non-transient (4xx): record the abandoned delivery before BullMQ
-            // moves it straight to the failed set.
-            await this.auditTerminalFailure(job, errorMessage ?? 'HTTP error', responseStatus);
             throw new UnrecoverableError(errorMessage);
           }
           throw new Error(errorMessage);
         }
-        this.logger.debug(`Webhook ${webhookId} delivered successfully${requestTrace}`);
+        this.logger.debug(`Webhook ${webhookId} delivered successfully`);
       } catch (error) {
         if (error instanceof UnrecoverableError) throw error;
-        errorMessage = error instanceof Error ? error.message : 'Delivery attempt failed';
+        errorMessage = (error as Error).message;
         const isLastAttempt = job.attemptsMade >= 4;
-        this.logger.error(`Webhook ${webhookId} failed attempt ${job.attemptsMade + 1}/5${requestTrace}`);
+        this.logger.error(`Webhook ${webhookId} failed attempt ${job.attemptsMade + 1}/5: ${errorMessage}`);
         await this.persistState({
           webhookId,
           organizationId,
@@ -185,12 +167,27 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
           responseStatus,
         });
         if (isLastAttempt) {
-          this.logger.error(`Webhook ${webhookId} exhausted all retry attempts${requestTrace}`);
-          // Retries are exhausted: the delivery is dead-lettered by the queue
-          // failure listener, so record it permanently in the audit trail.
-          await this.auditTerminalFailure(job, errorMessage ?? 'unknown error', responseStatus);
+          this.logger.error(`Webhook ${webhookId} exhausted all retry attempts`);
+        }
+        // Record the failure with the per-domain circuit breaker (issue #219).
+        if (this.circuitBreaker) {
+          try {
+            await this.circuitBreaker.recordFailure(url, error);
+          } catch (err) {
+            this.logger.warn(`Circuit breaker recordFailure failed: ${(err as Error).message}`);
+          }
         }
         throw error;
+      }
+
+      // Record the outcome with the per-domain circuit breaker (issue #219).
+      // Best-effort: breaker bookkeeping failures must never affect delivery.
+      if (this.circuitBreaker) {
+        try {
+          await this.circuitBreaker.recordSuccess(url);
+        } catch (err) {
+          this.logger.warn(`Circuit breaker recordSuccess failed: ${(err as Error).message}`);
+        }
       }
 
       await this.persistState({

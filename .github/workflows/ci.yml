@@ -100,3 +100,21 @@ jobs:
 
       - name: Run tests
         run: npm run test
+
+  # Fast static verification of the committed migrations: checks that every
+  # migration directory contains a non-empty, structurally valid migration.sql
+  # and that directory names follow the Prisma naming convention. Runs on every
+  # pull request and needs no PostgreSQL connection, so it also catches broken
+  # migrations in containerized runners without database services.
+  migrations-static:
+    name: migrations (static)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --include=dev
+      - name: Verify migration files (no database required)
+        run: npm run db:verify:static
