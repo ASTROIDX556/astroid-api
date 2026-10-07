@@ -37,6 +37,7 @@ import { AuditLog } from '../../common/decorators/audit-log.decorator';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 import { AuthenticatedUser } from '../../common/interfaces/authenticated-user.interface';
 import { PaginationQuery, paginationQuerySchema } from '../../common/helpers/pagination';
+import { ApiPaginationQuery } from '../../common/decorators/api-pagination-query.decorator';
 import { ApiEnvelope } from '../../common/decorators/api-envelope.decorator';
 
 @ApiTags('budgets')
@@ -52,8 +53,7 @@ export class BudgetController {
       'Returns a paginated list of budgets for the current organization. ' +
       'Supports filtering by period and status.',
   })
-  @ApiQuery({ name: 'page', required: false, type: Number, description: 'Page number (default: 1)' })
-  @ApiQuery({ name: 'limit', required: false, type: Number, description: 'Items per page (default: 20)' })
+  @ApiPaginationQuery()
   @ApiQuery({ name: 'period', required: false, enum: ['DAILY', 'WEEKLY', 'MONTHLY', 'QUARTERLY', 'YEARLY'], description: 'Filter by budget period' })
   @ApiQuery({ name: 'enabled', required: false, type: Boolean, description: 'Filter by enabled status' })
   @ApiEnvelope(CreateBudgetDto as never, { isArray: true })

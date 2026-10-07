@@ -4,17 +4,21 @@ import {
   Logger,
   OnModuleDestroy,
   OnModuleInit,
+  Optional,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaClient } from '@prisma/client';
 import { DatabaseConfig } from '../config/database.config';
+import { ShutdownCoordinator } from '../common/shutdown/shutdown-coordinator.service';
 import { buildDatasourceUrl } from './datasource-url';
 import { createQueryMetricsExtension } from './query-metrics.extension';
 import { createQueryTimeoutExtension } from './query-timeout.extension';
 import {
   checkMigrationStatus,
   getDefaultMigrationsDir,
+  MigrationCheckMode,
   MigrationCheckResult,
+  verifyMigrationsOnStartup,
 } from './migration-checker';
 
 /**
@@ -50,7 +54,12 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
    */
   readonly workerClient: PrismaClient;
 
-  constructor(configService: ConfigService) {
+  /** True when the {@link ShutdownCoordinator} owns the disconnect timing. */
+  private readonly coordinatedShutdown: boolean;
+  private readonly migrationCheck: MigrationCheckMode;
+  private readonly migrationsDir?: string;
+
+  constructor(configService: ConfigService, @Optional() shutdown?: ShutdownCoordinator) {
     const database = configService.getOrThrow<DatabaseConfig>('database');
 
     const url = buildDatasourceUrl(database.url, {
@@ -95,14 +104,19 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
         { level: 'warn', emit: 'event' },
         { level: 'error', emit: 'event' },
       ],
-    })
-      .$extends(createQueryMetricsExtension({ slowQueryThresholdMs: database.slowQueryThresholdMs }))
-      .$extends(
-        createQueryTimeoutExtension({
-          queryTimeoutMs: database.workerQueryTimeoutMs,
-          poolTimeoutMs: database.poolTimeoutMs,
-        }),
-      ) as unknown as PrismaClient;
+    }).$extends(
+      createQueryTimeoutExtension({
+        queryTimeoutMs: database.workerQueryTimeoutMs,
+        poolTimeoutMs: database.poolTimeoutMs,
+      }),
+    ) as unknown as PrismaClient;
+
+    // The database is the last resource released on shutdown, after workers,
+    // queues and Redis, so nothing can still be issuing queries.
+    this.coordinatedShutdown = shutdown !== undefined;
+    shutdown?.register({ name: 'prisma', phase: 'database', close: () => this.disconnectAll() });
+    this.migrationCheck = database.migrationCheck;
+    this.migrationsDir = database.migrationsDir;
   }
 
   async onModuleInit(): Promise<void> {
@@ -136,10 +150,26 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
   }
 
   /**
-   * Validates that all Prisma migrations have been applied to the database.
-   * In production/strict mode, pending or failed migrations cause a critical
-   * error log. The application still starts (to avoid breaking CI/dev), but
-   * the error is clearly surfaced for operators.
+   * Configurable boot-time migration gate. Called by `main.ts` before the
+   * HTTP server starts listening. In `strict` mode (the production default,
+   * see `DATABASE_MIGRATION_CHECK`) pending/failed migrations, or a database
+   * whose migration history cannot be read, throw and abort startup; in
+   * `warn` mode they are logged with remediation steps; `off` skips the check
+   * entirely.
+   */
+  async verifyMigrations(): Promise<MigrationCheckResult | null> {
+    return verifyMigrationsOnStartup(this, {
+      mode: this.migrationCheck,
+      migrationsDir: this.migrationsDir,
+      logger: this.logger,
+    });
+  }
+
+  /**
+   * Unconditional migration check run by `onModuleInit` right after
+   * connecting: a pending or failed migration always throws here, so a
+   * mismatched instance can never finish booting, regardless of
+   * `DATABASE_MIGRATION_CHECK`.
    */
   async validateMigrations(): Promise<MigrationCheckResult> {
     const migrationsDir = getDefaultMigrationsDir();
@@ -165,6 +195,15 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
   }
 
   async onModuleDestroy(): Promise<void> {
+    // Under the coordinator, disconnecting here would run before workers and
+    // queues have finished; it disconnects in the `database` phase instead.
+    if (!this.coordinatedShutdown) {
+      await this.disconnectAll();
+    }
+  }
+
+  /** Closes both connection pools. Safe to call more than once. */
+  async disconnectAll(): Promise<void> {
     await this.$disconnect();
     await this.workerClient.$disconnect();
   }

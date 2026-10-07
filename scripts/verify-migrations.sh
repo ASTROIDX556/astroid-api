@@ -1,245 +1,399 @@
 #!/usr/bin/env bash
 #
-# Verifies the Prisma database migrations for the Astroid API.
+# Verifies the integrity of the Prisma migration history.
 #
-# What it does, in order:
-#   1. Static verification (no database required):
-#      - Every migration directory contains a migration.sql file.
-#      - Every migration.sql is non-empty and contains executable SQL
-#        statements (not just comments/whitespace).
-#      - Migration directory names follow the Prisma convention
-#        `<UTC-timestamp>_<snake_case_name>` (plus the reserved `0_init`-style
-#        migration and `migration_lock.toml`).
-#      - Unbalanced parentheses / unclosed quote heuristics catch truncated
-#        or hand-broken SQL before it reaches a database.
-#      - Migration timestamp prefixes must be unique.
-#   2. Validates schema.prisma and generates the Prisma client.
-#   3. (DATABASE_URL set) Applies every pending migration (idempotent) and
-#      checks `prisma migrate status`.
-#   4. (SHADOW_DATABASE_URL set) Drift check: rebuilds the schema purely from
-#      the committed migrations in an ephemeral shadow database and fails if
-#      it does not match prisma/schema.prisma. This catches schema edits that
-#      were never captured in a migration.
+# Checks run in three tiers; each tier runs only when its inputs are available,
+# so the script is useful both locally (`npm run db:verify`) and in CI:
 #
-# Env:
-#   DATABASE_URL          (optional) Target PostgreSQL the migrations are
-#                         applied to. When unset the script runs in static
-#                         mode only — suitable for containerized CI runners
-#                         without an active database connection.
-#   SHADOW_DATABASE_URL   (optional) An empty scratch database used for the
-#                         drift check. Requires DATABASE_URL to be set.
-#   CHECK_GIT_DIRTY       (optional) Set to `true` to fail when the git
-#                         working tree is dirty (catches migrations that were
-#                         never committed).
+#   1. Static (always)
+#        - prisma/schema.prisma is valid
+#        - migration_lock.toml exists and matches the schema's datasource provider
+#        - every migration directory is correctly named, uniquely timestamped and
+#          contains a migration.sql with at least one statement
+#        - SQL is lexically well-formed: no merge-conflict markers, balanced
+#          parentheses, terminated strings/comments, final statement ends in ';'
 #
-# Exit codes:
-#   0  verification passed
-#   1  a migration file is missing/empty, invalid SQL, a name violates the
-#      naming convention, migrations fail to apply, or schema drift exists.
+#   2. History (when MIGRATION_BASE_REF is set and resolvable in git)
+#        - migrations that already exist on the base ref are not modified or
+#          deleted (deployed databases record a checksum per migration)
+#        - new migrations sort after the newest migration on the base ref
+#        - destructive statements in new migrations are reported as warnings
+#
+#   3. Database (when SHADOW_DATABASE_URL is set; the database is RESET)
+#        - the full history replays cleanly, in order, on an empty database,
+#          which validates SQL syntax and cross-migration dependencies
+#        - schema.prisma has no changes missing from the migration history
+#
+# Environment:
+#   MIGRATIONS_DIR          migrations directory      (default: prisma/migrations)
+#   SCHEMA_PATH             Prisma schema file        (default: prisma/schema.prisma)
+#   MIGRATION_BASE_REF      git ref to compare against, e.g. origin/main
+#   SHADOW_DATABASE_URL     disposable database for replay and drift checks
+#   CHECK_GIT_DIRTY=true    also fail if the git working tree is dirty
+#   SKIP_SCHEMA_VALIDATION=true  skip `prisma validate` (used by the script's tests)
+#
+# Exits non-zero if any error is found. All errors are reported before exiting.
+
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-MIGRATIONS_DIR="${REPO_ROOT}/prisma/migrations"
-SCHEMA_FILE="${REPO_ROOT}/prisma/schema.prisma"
+# Prisma orders migration folders bytewise; compare and sort the same way.
+export LC_ALL=C
 
-# The Prisma naming convention is a 14-digit UTC timestamp followed by an
-# underscore-separated name (e.g. 20260830174000_sync_schema). Prisma also
-# permits a trailing suffix when a name is regenerated (-, +, <, >). The
-# baseline `0_init` migration (any single-0-prefixed name) is allowed.
-readonly MIGRATION_NAME_RE='^(0|[0-9]{14})_[a-z0-9_]+([-+<>][a-zA-Z0-9_]+)?$'
+MIGRATIONS_DIR="${MIGRATIONS_DIR:-prisma/migrations}"
+SCHEMA_PATH="${SCHEMA_PATH:-prisma/schema.prisma}"
+MIGRATION_BASE_REF="${MIGRATION_BASE_REF:-}"
+SHADOW_DATABASE_URL="${SHADOW_DATABASE_URL:-}"
 
 errors=0
+warnings=0
 
-fail() {
-  echo "!! ${1}" >&2
+# --- reporting ---------------------------------------------------------------
+
+# Emits a GitHub Actions annotation in CI, or a plain prefixed line locally.
+#   annotate <level> <file> <line> <message>
+annotate() {
+  local level="$1" file="$2" line="$3" message="$4"
+  if [ "${GITHUB_ACTIONS:-}" = "true" ]; then
+    local location=""
+    [ -n "$file" ] && location=" file=${file}"
+    [ -n "$file" ] && [ -n "$line" ] && location="${location},line=${line}"
+    echo "::${level}${location}::${message}"
+  else
+    local where=""
+    [ -n "$file" ] && where="${file}${line:+:$line}: "
+    local label
+    label="$(printf '%s' "$level" | tr '[:lower:]' '[:upper:]')"
+    echo "${label}: ${where}${message}"
+  fi
+}
+
+error() {
   errors=$((errors + 1))
+  annotate error "${2:-}" "${3:-}" "$1" >&2
 }
 
-# --------------------------------------------------------------------------
-# 1. Static verification — pure filesystem checks, no database required.
-# --------------------------------------------------------------------------
-echo "==> Verifying migrations directory structure (${MIGRATIONS_DIR})"
-
-if [[ ! -f "${SCHEMA_FILE}" ]]; then
-  fail "Prisma schema not found at ${SCHEMA_FILE}"
-fi
-
-if [[ ! -d "${MIGRATIONS_DIR}" ]]; then
-  fail "Migrations directory not found at ${MIGRATIONS_DIR}"
-  # Nothing else can be verified without the directory.
-  exit 1
-fi
-
-# ---------------------------------------------------------------------------
-# SQL structural sanity check for a single migration file.
-# A migration is considered structurally sound when it contains at least one
-# executable statement (anything that is not a comment/whitespace) and has
-# balanced quotes. Parentheses balance is checked only when the file does not
-# use dollar-quoted strings or `$$` bodies (functions/triggers), where naive
-# counting is unreliable.
-# ---------------------------------------------------------------------------
-check_sql_integrity() {
-  local file="$1"
-  local name
-  name="$(basename "$(dirname "${file}")")"
-
-  if [[ ! -s "${file}" ]]; then
-    fail "${name}: migration.sql is empty"
-    return
-  fi
-
-  # Statements = non-empty lines that are not pure comments or whitespace.
-  if ! grep -Ev '^[[:space:]]*(--.*)?$' "${file}" > /dev/null; then
-    fail "${name}: migration.sql contains no executable SQL (comments/blank lines only)"
-    return
-  fi
-
-  local content
-  content="$(cat "${file}")"
-
-  # Unclosed single-quote detection: strip line comments, then count the
-  # single-quote characters left over. An ODD total means a quote literal was
-  # left open — common in truncated or hand-broken SQL files.
-  local quotes
-  quotes="$(sed 's/--.*$//' "${file}" | tr -cd "'" | wc -c)"
-  if [[ $((quotes % 2)) -ne 0 ]]; then
-    fail "${name}: migration.sql appears to contain an unclosed single-quoted string"
-  fi
-
-  # Skip parenthesis balance when the file declares functions, triggers or
-  # dollar-quoted bodies — a naive count would false-positive there.
-  if ! grep -Eq '\$\$|CREATE[[:space:]]+(OR[[:space:]]+REPLACE[[:space:]]+)?(FUNCTION|TRIGGER|PROCEDURE)' "${file}"; then
-    local open close
-    open="$(sed 's/--.*$//' "${file}" | tr -cd '(' | wc -c)"
-    close="$(sed 's/--.*$//' "${file}" | tr -cd ')' | wc -c)"
-    if [[ "${open}" -ne "${close}" ]]; then
-      fail "${name}: migration.sql has unbalanced parentheses (${open} open vs ${close} close)"
-    fi
-  fi
+warn() {
+  warnings=$((warnings + 1))
+  annotate warning "${2:-}" "${3:-}" "$1" >&2
 }
 
-declare -A seen_timestamps
+section() {
+  echo
+  echo "==> $1"
+}
 
-found_migrations=0
-for dir in "${MIGRATIONS_DIR}"/*; do
-  [[ -d "${dir}" ]] || continue
-  found_migrations=$((found_migrations + 1))
-  name="$(basename "${dir}")"
+# --- SQL lexer ------------------------------------------------------------------
 
-  if [[ "${name}" == "migration_lock.toml" || "${name}" == *.toml ]]; then
-    continue
-  fi
+# Scans a migration.sql file, skipping comments and string/identifier/dollar-
+# quoted literals, and prints one tab-separated finding per line:
+#   E <line> <message>     lexical error
+#   D <line> <statement>   destructive statement (reported for new migrations)
+# Written for POSIX awk so it runs under mawk on ubuntu-latest.
+lint_sql() {
+  awk '
+    BEGIN { state = "code"; depth = 0; open_stmt = 0; has_stmt = 0 }
+    {
+      sub(/\r$/, "")
+      line = $0
+      if (state == "code" && line ~ /^(<<<<<<<|=======|>>>>>>>)( |$)/) {
+        printf "E\t%d\tunresolved merge-conflict marker\n", NR
+        next
+      }
+      code = ""
+      n = length(line)
+      i = 1
+      while (i <= n) {
+        c = substr(line, i, 1)
+        c2 = substr(line, i, 2)
+        if (state == "block") {
+          if (c2 == "*/") { state = "code"; i += 2 } else { i++ }
+          continue
+        }
+        if (state == "squote") {
+          if (c == "\047") {
+            if (substr(line, i + 1, 1) == "\047") { i += 2; continue }
+            state = "code"
+          }
+          i++
+          continue
+        }
+        if (state == "dquote") {
+          if (c == "\"") { state = "code" }
+          i++
+          continue
+        }
+        if (state == "dollar") {
+          if (substr(line, i, length(tag)) == tag) { state = "code"; i += length(tag) } else { i++ }
+          continue
+        }
 
-  if [[ ! "${name}" =~ ${MIGRATION_NAME_RE} ]]; then
-    fail "'${name}' violates the migration naming convention '<UTC-timestamp>_<snake_case_name>'"
-  fi
+        # state == "code"
+        if (c2 == "--") { break }
+        if (c2 == "/*") { state = "block"; opened = NR; i += 2; continue }
+        if (c != " " && c != "\t" && c != ";") { open_stmt = 1; has_stmt = 1; last = NR }
+        if (c == "\047") { state = "squote"; opened = NR; code = code "\047\047"; i++; continue }
+        if (c == "\"") { state = "dquote"; opened = NR; code = code "\"\""; i++; continue }
+        if (c == "$" && match(substr(line, i), /^\$[A-Za-z_]*\$/)) {
+          tag = substr(line, i, RLENGTH); state = "dollar"; opened = NR; i += RLENGTH
+          continue
+        }
+        if (c == "(") {
+          if (depth == 0) { paren = NR }
+          depth++
+        } else if (c == ")") {
+          if (depth == 0) {
+            printf "E\t%d\tunbalanced \")\" with no matching \"(\"\n", NR
+          } else {
+            depth--
+          }
+        } else if (c == ";") {
+          if (depth > 0) {
+            printf "E\t%d\tstatement ends with %d unclosed \"(\" (opened on line %d)\n", NR, depth, paren
+            depth = 0
+          }
+          open_stmt = 0
+        }
+        code = code c
+        i++
+      }
 
-  # Timestamp prefixes must be unique: two migrations sharing one would make
-  # the applied order ambiguous.
-  if [[ "${name}" =~ ^([0-9]{14}) ]]; then
-    ts="${BASH_REMATCH[1]}"
-    if [[ -n "${seen_timestamps[${ts}]:-}" ]]; then
-      fail "'${name}' shares its timestamp prefix with '${seen_timestamps[${ts}]}'"
-    else
-      seen_timestamps["${ts}"]="${name}"
-    fi
-  fi
+      upper = toupper(code)
+      if (upper ~ /DROP[ \t]+(TABLE|COLUMN|SCHEMA|TYPE|VIEW)/ ||
+          upper ~ /TRUNCATE[ \t]/ ||
+          upper ~ /DELETE[ \t]+FROM/ ||
+          upper ~ /ALTER[ \t]+COLUMN.*[ \t]TYPE[ \t]/ ||
+          upper ~ /SET[ \t]+NOT[ \t]+NULL/ ||
+          upper ~ /RENAME[ \t]+(TO|COLUMN)/) {
+        stmt = line
+        gsub(/^[ \t]+|[ \t]+$/, "", stmt)
+        printf "D\t%d\t%s\n", NR, stmt
+      }
+    }
+    END {
+      if (state == "block") {
+        printf "E\t%d\tunterminated /* comment (opened on line %d)\n", NR, opened
+      } else if (state == "squote") {
+        printf "E\t%d\tunterminated string literal (opened on line %d)\n", NR, opened
+      } else if (state == "dquote") {
+        printf "E\t%d\tunterminated quoted identifier (opened on line %d)\n", NR, opened
+      } else if (state == "dollar") {
+        printf "E\t%d\tunterminated dollar-quoted string %s (opened on line %d)\n", NR, tag, opened
+      }
+      if (depth > 0) {
+        printf "E\t%d\t%d unclosed \"(\" (opened on line %d)\n", NR, depth, paren
+      }
+      if (!has_stmt) {
+        printf "E\t1\tcontains no SQL statements (only comments or whitespace)\n"
+      } else if (open_stmt && state == "code") {
+        printf "E\t%d\tfinal statement is not terminated with \";\"\n", last
+      }
+    }
+  ' "$1"
+}
 
-  sql_file="${dir}/migration.sql"
-  if [[ ! -f "${sql_file}" ]]; then
-    fail "'${name}' is missing its migration.sql file"
-    continue
-  fi
+# --- 1. static checks ------------------------------------------------------------
 
-  check_sql_integrity "${sql_file}"
-done
+echo "Verifying Prisma migrations in ${MIGRATIONS_DIR}"
 
-if [[ "${found_migrations}" -eq 0 ]]; then
-  fail "No migration directories found under prisma/migrations"
-fi
-
-echo "    Checked ${found_migrations} migration director(ies)"
-
-# Duplicated migration names (case variants) would silently shadow history.
-duplicate="$(find "${MIGRATIONS_DIR}" -maxdepth 1 -type d \( -iname '[0-9]*' -o -iname '0_*' \) -printf '%f\n' 2>/dev/null | tr '[:upper:]' '[:lower:]' | sort | uniq -d || true)"
-if [[ -n "${duplicate}" ]]; then
-  fail "Duplicate migration directory names detected (case-insensitive): ${duplicate//$'\n'/, }"
-fi
-
-if [[ "${errors}" -gt 0 ]]; then
-  echo "!! Static migration verification failed with ${errors} error(s)" >&2
-  exit 1
-fi
-echo "==> Static migration verification passed"
-
-# --------------------------------------------------------------------------
-# Optional: fail on a dirty git working tree (opt-in via CHECK_GIT_DIRTY).
-# --------------------------------------------------------------------------
-if [[ "${CHECK_GIT_DIRTY:-false}" == "true" ]]; then
-  echo "==> Checking git working tree state"
-  if [[ -n "$(git status --porcelain)" ]]; then
-    echo "!! Git working tree is dirty. Uncommitted migration or schema changes detected." >&2
-    git status --porcelain >&2
-    exit 1
-  fi
-fi
-
-# --------------------------------------------------------------------------
-# 2. Prisma schema validation + client generation.
-# --------------------------------------------------------------------------
-# `prisma validate` resolves env("DATABASE_URL") and rejects an empty value,
-# so static mode (no real database) validates the schema against a placeholder
-# URL — it is never connected to.
-if [[ -z "${DATABASE_URL:-}" ]]; then
-  DATABASE_URL="postgresql://placeholder:placeholder@localhost:5432/placeholder" npx prisma validate
+section "Schema"
+if [ ! -f "$SCHEMA_PATH" ]; then
+  error "Prisma schema not found" "$SCHEMA_PATH"
+elif [ "${SKIP_SCHEMA_VALIDATION:-false}" = "true" ]; then
+  echo "Skipping prisma validate (SKIP_SCHEMA_VALIDATION=true)."
 else
-  npx prisma validate
+  # `prisma validate` resolves env() in the datasource; a placeholder keeps the
+  # check usable without a configured database. It never connects.
+  if ! DATABASE_URL="${DATABASE_URL:-postgresql://placeholder:placeholder@localhost:5432/placeholder}" \
+    npx --no-install prisma validate --schema "$SCHEMA_PATH"; then
+    error "Prisma schema is invalid; see the prisma validate output above" "$SCHEMA_PATH"
+  fi
 fi
 
-echo "==> Generating Prisma client (validates schema.prisma syntax)"
-npx prisma generate
-
-# --------------------------------------------------------------------------
-# 3. Apply migrations when a database is available (skipped in static mode).
-# --------------------------------------------------------------------------
-if [[ -z "${DATABASE_URL:-}" ]]; then
-  echo "==> DATABASE_URL unset — skipping database apply/status/drift checks"
-  echo "==> Migration verification passed (static mode)"
-  exit 0
+schema_provider=""
+if [ -f "$SCHEMA_PATH" ]; then
+  schema_provider="$(awk '
+    /^[ \t]*datasource[ \t]/ { in_ds = 1 }
+    in_ds && /^[ \t]*provider[ \t]*=/ {
+      match($0, /"[^"]*"/); print substr($0, RSTART + 1, RLENGTH - 2); exit
+    }
+    in_ds && /^[ \t]*}/ { in_ds = 0 }
+  ' "$SCHEMA_PATH")"
 fi
 
-echo "==> Applying migrations to ${DATABASE_URL}"
-npx prisma migrate deploy
+section "Migration structure"
 
-echo "==> Checking migration status"
-npx prisma migrate status
+migrations=()
+if [ ! -d "$MIGRATIONS_DIR" ]; then
+  if [ -f "$SCHEMA_PATH" ] && grep -qE '^[[:space:]]*model[[:space:]]' "$SCHEMA_PATH"; then
+    error "Migrations directory not found, but the schema defines models. Create one with: npx prisma migrate dev --name init" "$MIGRATIONS_DIR"
+  else
+    echo "No migrations directory found at ${MIGRATIONS_DIR}."
+  fi
+else
+  lock_file="${MIGRATIONS_DIR}/migration_lock.toml"
+  if [ ! -f "$lock_file" ]; then
+    error "migration_lock.toml is missing; it is generated by prisma migrate dev and must be committed" "$lock_file"
+  else
+    lock_provider="$(sed -n 's/^[[:space:]]*provider[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$lock_file" | head -n 1)"
+    if [ -z "$lock_provider" ]; then
+      error "migration_lock.toml does not declare a provider" "$lock_file"
+    elif [ -n "$schema_provider" ] && [ "$lock_provider" != "$schema_provider" ]; then
+      error "migration_lock.toml provider \"${lock_provider}\" does not match the schema datasource provider \"${schema_provider}\"" "$lock_file"
+    fi
+  fi
 
-# --------------------------------------------------------------------------
-# 4. Drift check (requires an empty shadow database).
-# --------------------------------------------------------------------------
-if [[ -n "${SHADOW_DATABASE_URL:-}" ]]; then
-  echo "==> Drift check: rebuilding schema from migrations only"
-  echo "    shadow database: ${SHADOW_DATABASE_URL}"
-  # `--script` prints the SQL that would reconcile the migrations-built schema
-  # with schema.prisma: nothing when in sync, the full delta when out of sync.
-  # Strip blank lines and SQL comment markers so an "empty migration" counts as
-  # in sync.
-  drift="$(npx prisma migrate diff \
-    --from-migrations prisma/migrations \
-    --to-schema-datamodel prisma/schema.prisma \
+  declare -A seen_timestamps=()
+  for entry in "$MIGRATIONS_DIR"/*; do
+    [ -e "$entry" ] || continue
+    name="$(basename "$entry")"
+
+    if [ ! -d "$entry" ]; then
+      [ "$name" = "migration_lock.toml" ] && continue
+      error "Unexpected file in migrations directory; migrations must live in their own folder as <folder>/migration.sql" "$entry"
+      continue
+    fi
+
+    migrations+=("$name")
+
+    # Prisma applies migrations in lexicographic folder order, so names must be
+    # <14-digit timestamp>_<snake_case_name>. A "0_" prefix is Prisma's
+    # documented convention for a baseline migration and sorts first.
+    if [[ "$name" =~ ^([0-9]{14})_[a-z0-9_]+$ ]]; then
+      ts="${BASH_REMATCH[1]}"
+      if [ -n "${seen_timestamps[$ts]:-}" ]; then
+        error "Timestamp ${ts} is shared with '${seen_timestamps[$ts]}'; regenerate one of them with prisma migrate dev so their order is deterministic" "$entry"
+      else
+        seen_timestamps[$ts]="$name"
+      fi
+    elif [[ ! "$name" =~ ^0_[a-z0-9_]+$ ]]; then
+      error "Invalid migration folder name '${name}'; expected <YYYYMMDDHHMMSS>_<snake_case_name> as generated by prisma migrate dev" "$entry"
+    fi
+
+    sql_file="${entry}/migration.sql"
+    if [ ! -f "$sql_file" ]; then
+      error "Missing migration.sql; every migration folder must contain one (was the migration generated with --create-only and never saved?)" "$entry"
+      continue
+    fi
+
+    for extra in "$entry"/* "$entry"/.[!.]*; do
+      [ -e "$extra" ] || continue
+      [ "$(basename "$extra")" = "migration.sql" ] && continue
+      warn "Unexpected file '$(basename "$extra")' in migration folder; Prisma only applies migration.sql" "$entry"
+    done
+
+    while IFS=$'\t' read -r kind line message; do
+      [ "$kind" = "E" ] && error "Invalid SQL: ${message}" "$sql_file" "$line"
+    done < <(lint_sql "$sql_file")
+  done
+
+  echo "Inspected ${#migrations[@]} migration folder(s)."
+fi
+
+# --- 2. history checks ---------------------------------------------------------
+
+section "Migration history"
+
+if [ -z "$MIGRATION_BASE_REF" ]; then
+  echo "Skipping: set MIGRATION_BASE_REF (e.g. origin/main) to check that merged migrations are unchanged."
+elif [ ! -d "$MIGRATIONS_DIR" ]; then
+  echo "Skipping: no migrations directory."
+elif ! base_commit="$(git -C "$MIGRATIONS_DIR" merge-base "$MIGRATION_BASE_REF" HEAD 2>/dev/null)"; then
+  warn "Skipping history checks: cannot resolve a merge base with '${MIGRATION_BASE_REF}' (is the ref fetched? CI needs fetch-depth: 0)"
+else
+  echo "Comparing against ${MIGRATION_BASE_REF} (merge base ${base_commit:0:12})."
+
+  # Folder names are passed relative to MIGRATIONS_DIR, so git resolves them
+  # regardless of where the repository root is.
+  base_migrations=()
+  while IFS= read -r name; do
+    [ -n "$name" ] && base_migrations+=("$name")
+  done < <(git -C "$MIGRATIONS_DIR" ls-tree -d --name-only "$base_commit" ./ | sed 's#.*/##' | sort)
+
+  newest_base=""
+  declare -A on_base=()
+  for name in "${base_migrations[@]}"; do
+    on_base[$name]=1
+    newest_base="$name"
+    if [ ! -d "${MIGRATIONS_DIR}/${name}" ]; then
+      error "Migration '${name}' exists on ${MIGRATION_BASE_REF} but was deleted; applied migrations must never be removed" "${MIGRATIONS_DIR}/${name}"
+    elif ! git -C "$MIGRATIONS_DIR" diff --quiet "$base_commit" -- "${name}/migration.sql"; then
+      error "Migration '${name}' already exists on ${MIGRATION_BASE_REF} and was modified. Databases that applied it will report a checksum mismatch; revert the edit and add a new migration instead" "${MIGRATIONS_DIR}/${name}/migration.sql"
+    fi
+  done
+
+  new_count=0
+  for name in "${migrations[@]}"; do
+    [ -n "${on_base[$name]:-}" ] && continue
+    new_count=$((new_count + 1))
+    echo "New migration: ${name}"
+
+    if [ -n "$newest_base" ] && [[ ! "$name" > "$newest_base" ]]; then
+      error "New migration '${name}' sorts before '${newest_base}', the newest migration on ${MIGRATION_BASE_REF}; Prisma would apply it out of order. Regenerate it with a current timestamp" "${MIGRATIONS_DIR}/${name}"
+    fi
+
+    sql_file="${MIGRATIONS_DIR}/${name}/migration.sql"
+    [ -f "$sql_file" ] || continue
+    while IFS=$'\t' read -r kind line statement; do
+      [ "$kind" = "D" ] && warn "Potentially destructive statement; confirm it is intended and that existing data is migrated: ${statement}" "$sql_file" "$line"
+    done < <(lint_sql "$sql_file")
+  done
+  echo "${new_count} new migration(s) relative to ${MIGRATION_BASE_REF}."
+fi
+
+# --- 3. database checks --------------------------------------------------------
+
+section "Database replay and drift"
+
+if [ -z "$SHADOW_DATABASE_URL" ]; then
+  echo "Skipping: set SHADOW_DATABASE_URL to a disposable database to replay migrations and detect schema drift."
+elif [ ! -d "$MIGRATIONS_DIR" ]; then
+  echo "Skipping: no migrations directory."
+else
+  # Replays every migration, in order, on the (reset) shadow database, then
+  # diffs the result against schema.prisma. Exit codes: 0 = no drift,
+  # 2 = drift, anything else = a migration failed to apply.
+  set +e
+  diff_output="$(DATABASE_URL="${DATABASE_URL:-$SHADOW_DATABASE_URL}" npx --no-install prisma migrate diff \
+    --from-migrations "$MIGRATIONS_DIR" \
+    --to-schema-datamodel "$SCHEMA_PATH" \
+    --shadow-database-url "$SHADOW_DATABASE_URL" \
     --script \
-    --shadow-database-url "${SHADOW_DATABASE_URL}" \
-    | grep -Ev '^[[:space:]]*$|^--' || true)"
+    --exit-code 2>&1)"
+  status=$?
+  set -e
 
-  if [[ -n "${drift//[[:space:]]/}" ]]; then
-    echo "!! Schema drift detected — schema.prisma differs from the applied migrations." >&2
-    echo "${drift}" >&2
-    exit 1
-  fi
-
-  echo "==> Migrations are in sync with the schema"
-else
-  echo "!! SHADOW_DATABASE_URL unset — skipping drift check" >&2
+  case "$status" in
+    0)
+      echo "All migrations replayed cleanly and match ${SCHEMA_PATH}."
+      ;;
+    2)
+      echo "$diff_output"
+      error "${SCHEMA_PATH} has changes that are not captured by any migration (SQL needed shown above). Generate one with: npx prisma migrate dev --name <change>" "$SCHEMA_PATH"
+      ;;
+    *)
+      echo "$diff_output"
+      error "Replaying the migration history on an empty database failed (see output above). A migration has invalid SQL or depends on an object created by a later migration" "$MIGRATIONS_DIR"
+      ;;
+  esac
 fi
 
-echo "==> Migration verification passed"
+# --- working tree ------------------------------------------------------------
+
+if [ "${CHECK_GIT_DIRTY:-false}" = "true" ]; then
+  section "Working tree"
+  if [ -n "$(git status --porcelain)" ]; then
+    git status --porcelain
+    error "Git working tree is dirty; uncommitted migration or schema changes detected"
+  else
+    echo "Working tree is clean."
+  fi
+fi
+
+# --- summary -------------------------------------------------------------------
+
+echo
+if [ "$errors" -gt 0 ]; then
+  echo "Migration verification FAILED: ${errors} error(s), ${warnings} warning(s)."
+  exit 1
+fi
+echo "Migration verification passed with ${warnings} warning(s)."

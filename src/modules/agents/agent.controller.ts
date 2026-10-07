@@ -1,14 +1,4 @@
-import {
-  Body,
-  Controller,
-  Delete,
-  Get,
-  Param,
-  Patch,
-  Post,
-  Query,
-  UseGuards,
-} from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
 import {
   ApiOperation,
   ApiTags,
@@ -16,7 +6,6 @@ import {
   ApiResponse,
   ApiParam,
   ApiBody,
-  ApiQuery,
 } from '@nestjs/swagger';
 import { AgentStatus, UserRole } from '@prisma/client';
 import { AgentService } from './agent.service';
@@ -38,13 +27,16 @@ import { UseAgentLock } from '../../common/locks/agent-lock.decorator';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 import { AuthenticatedUser } from '../../common/interfaces/authenticated-user.interface';
 import { PaginationQuery, paginationQuerySchema } from '../../common/helpers/pagination';
+import { ApiPaginationQuery } from '../../common/decorators/api-pagination-query.decorator';
 import { ApiEnvelope } from '../../common/decorators/api-envelope.decorator';
+import {
+  SlidingWindowThrottlerGuard,
+  SlidingWindowLimit,
+} from '../../common/guards/sliding-window-throttler.guard';
 import { AgentRateLimiterGuard } from './guards/agent-rate-limiter.guard';
-import { AgentThrottlerGuard } from '../../common/guards/agent-throttler.guard';
 
 @ApiTags('agents')
 @ApiBearerAuth('access-token')
-@UseGuards(AgentThrottlerGuard)
 @Controller('agents')
 export class AgentController {
   constructor(private readonly agentService: AgentService) {}
@@ -54,18 +46,7 @@ export class AgentController {
     summary: 'List agents',
     description: 'Returns a paginated list of agents for the current organization.',
   })
-  @ApiQuery({
-    name: 'page',
-    required: false,
-    type: Number,
-    description: 'Page number (default: 1)',
-  })
-  @ApiQuery({
-    name: 'limit',
-    required: false,
-    type: Number,
-    description: 'Items per page (default: 20)',
-  })
+  @ApiPaginationQuery()
   @ApiEnvelope(AgentResponseDto as never, { isArray: true })
   @ApiResponse({ status: 200, description: 'Paginated list of agents' })
   @ApiResponse({ status: 401, description: 'Not authenticated' })
@@ -78,6 +59,8 @@ export class AgentController {
 
   @Post()
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.DEVELOPER)
+  @UseGuards(SlidingWindowThrottlerGuard)
+  @SlidingWindowLimit(30, 60)
   @AuditAction('AGENT_CREATED')
   @ApiOperation({
     summary: 'Register a new agent',
@@ -88,10 +71,7 @@ export class AgentController {
   @ApiResponse({ status: 201, description: 'Agent created successfully', type: AgentResponseDto })
   @ApiResponse({ status: 400, description: 'Validation error' })
   @ApiResponse({ status: 401, description: 'Not authenticated' })
-  @ApiResponse({
-    status: 403,
-    description: 'Insufficient permissions (requires OWNER, ADMIN, or DEVELOPER)',
-  })
+  @ApiResponse({ status: 403, description: 'Insufficient permissions (requires OWNER, ADMIN, or DEVELOPER)' })
   create(
     @CurrentUser() user: AuthenticatedUser,
     @Body(new ZodValidationPipe(createAgentSchema)) body: CreateAgentInput,

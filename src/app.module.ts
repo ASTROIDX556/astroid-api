@@ -11,6 +11,7 @@ import { RedisThrottlerStorage } from './common/throttler/redis-throttler.storag
 import { DatabaseModule } from './database/database.module';
 import { EventsModule } from './events/events.module';
 import { LocksModule } from './common/locks/locks.module';
+import { ShutdownModule } from './common/shutdown/shutdown.module';
 import { REDIS_CLIENT } from './common/locks/locks.constants';
 import { EncryptionModule } from './common/encryption/encryption.module';
 import { RequestIdMiddleware } from './middleware/request-id.middleware';
@@ -105,6 +106,7 @@ import { RequestIdInterceptor } from './common/interceptors/request-id.intercept
         ),
     }),
 
+    ShutdownModule,
     DatabaseModule,
     EventsModule,
     LocksModule,
