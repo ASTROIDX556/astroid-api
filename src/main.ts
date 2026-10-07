@@ -6,10 +6,11 @@ import { Logger as PinoLogger } from 'nestjs-pino';
 import helmet from 'helmet';
 import { Request, Response, NextFunction } from 'express';
 import { AppModule } from './app.module';
-import { PrismaService } from './database/prisma.service';
+import { ShutdownCoordinator } from './common/shutdown/shutdown-coordinator.service';
 import { AppConfig } from './config/app.config';
+import { TOTAL_COUNT_HEADER } from './common/constants/headers';
 import { assertValidEnvironment, EnvironmentValidationError } from './config/env.validation';
-import { DatabaseConfig } from './config/database.config';
+import { PrismaService } from './database/prisma.service';
 
 async function bootstrap() {
   // Fail fast on missing or malformed configuration, before any module is
@@ -18,29 +19,23 @@ async function bootstrap() {
   // `AppModule` is imported.
   assertValidEnvironment(process.env);
 
+  // `NestFactory.create` awaits every module's `onModuleInit`, and
+  // `PrismaService.onModuleInit` connects and then unconditionally validates
+  // that every migration shipped with this build has been applied — a
+  // pending or failed migration throws there, so `create` rejects and the
+  // process exits before accepting any traffic.
   const app = await NestFactory.create(AppModule, { bufferLogs: true });
   const config = app.get(ConfigService);
   const appConfig = config.getOrThrow<AppConfig>('app');
-  const databaseConfig = config.getOrThrow<DatabaseConfig>('database');
   const prisma = app.get(PrismaService);
-
-  // Startup migration check: refuse to accept traffic against a database
-  // whose schema hasn't caught up with prisma/migrations (mode 'halt'), or
-  // log a warning and continue (mode 'warn'). Reuses the same check
-  // PrismaService.onModuleInit already ran (and logged) on connect.
-  if (databaseConfig.migrationCheckEnabled) {
-    const logger = app.get(PinoLogger);
-    const result = await prisma.validateMigrations();
-
-    if (!result.upToDate && databaseConfig.migrationCheckMode === 'halt') {
-      logger.error(result.message, 'MigrationCheck');
-      await app.close();
-      throw new Error(`Migration check failed: ${result.message}`);
-    }
-  }
 
   // Structured logging (nestjs-pino)
   app.useLogger(app.get(PinoLogger));
+
+  // Configurable boot-time migration gate (DATABASE_MIGRATION_CHECK): in
+  // strict mode (the production default) this throws and aborts startup
+  // before any route is served; in warn mode it only logs; off skips it.
+  await prisma.verifyMigrations();
 
   // Security headers (CSP, HSTS, X-Frame-Options, X-Content-Type-Options,
   // Referrer-Policy). Swagger UI — served only outside production — needs inline
@@ -74,8 +69,13 @@ async function bootstrap() {
     next();
   });
 
-  // CORS
-  app.enableCors({ origin: appConfig.corsOrigins, credentials: true });
+  // CORS. X-Total-Count is exposed so browser clients can read the total row
+  // count of paginated list responses.
+  app.enableCors({
+    origin: appConfig.corsOrigins,
+    credentials: true,
+    exposedHeaders: [TOTAL_COUNT_HEADER],
+  });
 
   // Global validation pipe (transforms + validates DTOs)
   app.useGlobalPipes(
@@ -120,6 +120,14 @@ async function bootstrap() {
   await prisma.enableShutdownHooks(app);
 
   await app.listen(appConfig.port);
+
+  // Graceful shutdown on SIGTERM / SIGINT: stop accepting HTTP work, drain
+  // in-flight requests and BullMQ jobs within SHUTDOWN_GRACE_PERIOD_MS, then
+  // close queues, Redis and Prisma in order. Used instead of Nest's
+  // app.enableShutdownHooks(), which disconnects the database before the HTTP
+  // server stops and has no grace period; the coordinator still runs every
+  // Nest lifecycle hook through app.close().
+  app.get(ShutdownCoordinator).enableShutdownHooks(app);
   console.log(`🚀 Astroid API listening on port ${appConfig.port}`);
   console.log(`📚 Swagger docs: http://localhost:${appConfig.port}/docs`);
 }

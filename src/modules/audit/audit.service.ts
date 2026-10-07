@@ -1,67 +1,17 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
-import { Readable } from 'stream';
 import { AuditRepository, CreateAuditLogData } from './audit.repository';
 import { AuditHashService } from './audit-hash.service';
-import { ExportAuditLogsQuery, StreamAuditLogsQuery } from './audit-export.dto';
-import { sanitizeAuditPayload } from '../../common/helpers/audit-sanitizer';
 import { CursorPaginated } from '../../common/interfaces/api-response.interface';
 import { AuditListQuery } from './audit-list.dto';
 import { decodeAuditCursor, encodeAuditCursor } from './audit-cursor';
+import { ExportAuditLogsQuery, StreamAuditLogsQuery } from './audit-export.dto';
+import { sanitizeAuditPayload } from '../../common/helpers/audit-sanitizer';
 
 /** An audit row as returned by `AuditRepository.exportLogs`, with its joined user. */
 type ExportedAuditLog = Prisma.AuditLogGetPayload<{
   include: { user: { select: { id: true; email: true; name: true } } };
 }>;
-
-const CSV_HEADERS = [
-  'id',
-  'organizationId',
-  'userId',
-  'userEmail',
-  'action',
-  'entity',
-  'entityId',
-  'ipAddress',
-  'device',
-  'oldValue',
-  'newValue',
-  'createdAt',
-];
-
-function redactAuditLog(record: ExportedAuditLog): ExportedAuditLog {
-  return {
-    ...record,
-    oldValue: sanitizeAuditPayload(record.oldValue),
-    newValue: sanitizeAuditPayload(record.newValue),
-  };
-}
-
-function escapeCsvField(value: unknown): string {
-  if (value === null || value === undefined) return '';
-  const text = typeof value === 'object' ? JSON.stringify(value) : String(value);
-  if (text.includes(',') || text.includes('"') || text.includes('\n') || text.includes('\r')) {
-    return `"${text.replace(/"/g, '""')}"`;
-  }
-  return text;
-}
-
-function formatCsvRow(record: ExportedAuditLog): string {
-  return [
-    record.id,
-    record.organizationId,
-    record.userId,
-    record.user?.email ?? '',
-    record.action,
-    record.entity,
-    record.entityId,
-    record.ipAddress,
-    record.device,
-    record.oldValue,
-    record.newValue,
-    record.createdAt ? new Date(record.createdAt).toISOString() : '',
-  ].map(escapeCsvField).join(',');
-}
 
 /**
  * Writes and queries the immutable audit trail. Records Who / When / Where /
@@ -77,7 +27,7 @@ export class AuditService {
 
   async record(data: CreateAuditLogData) {
     const previousHash = await this.hashService.getLatestHash(data.organizationId);
-    const createdAt = data.createdAt ?? new Date();
+    const createdAt = new Date();
 
     const hashResult = this.hashService.computeEntryHash(
       {
@@ -103,32 +53,23 @@ export class AuditService {
     });
   }
 
-  async list(organizationId: string, query: AuditListQuery) {
-    const where: Prisma.AuditLogWhereInput = { organizationId };
-    if (query.actorId) where.userId = query.actorId;
-    if (query.action) where.action = query.action;
-    if (query.resourceId) where.entityId = query.resourceId;
-    if (query.from || query.to) {
-      where.createdAt = {
-        ...(query.from ? { gte: new Date(query.from) } : {}),
-        ...(query.to ? { lte: new Date(query.to) } : {}),
-      };
-    }
-
+  /** Cursor-paginated audit log listing, newest first. */
+  async list(organizationId: string, query: AuditListQuery): Promise<CursorPaginated<ExportedAuditLog>> {
+    const where = this.buildFilterWhere(organizationId, query);
     const cursor = query.cursor ? decodeAuditCursor(query.cursor) : undefined;
-    const records = await this.repository.findPage(where, cursor, query.limit + 1);
-    const hasNext = records.length > query.limit;
-    const items = hasNext ? records.slice(0, query.limit) : records;
-    const lastItem = items.at(-1);
-    const nextCursor = hasNext && lastItem
-      ? encodeAuditCursor({ createdAt: lastItem.createdAt, id: lastItem.id })
-      : null;
+    const take = query.limit + 1;
+
+    const rows = (await this.repository.findPage(where, cursor, take)) as ExportedAuditLog[];
+    const hasNext = rows.length > query.limit;
+    const items = hasNext ? rows.slice(0, query.limit) : rows;
+    const last = items[items.length - 1];
+    const nextCursor = hasNext && last ? encodeAuditCursor({ createdAt: last.createdAt, id: last.id }) : null;
 
     return new CursorPaginated(items, { limit: query.limit, hasNext, nextCursor });
   }
 
   async export(organizationId: string, query: ExportAuditLogsQuery) {
-    const where = this.buildExportWhere(organizationId, query);
+    const where = this.buildFilterWhere(organizationId, query);
     const limit = Math.min(query.limit ?? 100, 1000);
     const records = await this.repository.exportLogs(where, limit, query.cursor);
 
@@ -138,74 +79,101 @@ export class AuditService {
       items = records.slice(0, limit);
       nextCursor = items[items.length - 1]?.id ?? null;
     }
+    const sanitized = items.map((item) => this.sanitizeRecord(item));
 
-    const safeItems = items.map(redactAuditLog);
     if (query.format === 'csv') {
-      return {
-        format: 'csv',
-        data: this.formatAsCsv(safeItems),
-        count: safeItems.length,
-        nextCursor,
-      };
+      const csv = this.formatAsCsv(sanitized);
+      return { format: 'csv', data: csv, count: sanitized.length, nextCursor };
     }
 
     return {
       format: 'json',
-      data: safeItems,
-      count: safeItems.length,
+      data: sanitized,
+      count: sanitized.length,
       nextCursor,
     };
   }
 
   /**
-   * Streams filtered audit rows as a JSON array or CSV without buffering the
-   * complete export in memory.
+   * Streams an export in bounded batches so large exports never load the
+   * full result set into memory. Yields Buffer chunks: a JSON array
+   * (one record per chunk, wrapped by `[`/`]`) or raw CSV rows.
    */
-  streamExport(organizationId: string, query: StreamAuditLogsQuery): Readable {
-    const records = this.repository.streamLogs(
-      this.buildExportWhere(organizationId, query),
-      query.batchSize,
-      query.cursor,
-    );
-    return Readable.from(
-      query.format === 'csv' ? this.streamCsv(records) : this.streamJson(records),
-    );
+  async *streamExport(organizationId: string, query: StreamAuditLogsQuery): AsyncGenerator<Buffer> {
+    const where = this.buildFilterWhere(organizationId, query);
+    const stream = this.repository.streamLogs(where, query.batchSize, query.cursor);
+
+    if (query.format === 'csv') {
+      const headers = [
+        'id',
+        'organizationId',
+        'userId',
+        'userEmail',
+        'action',
+        'entity',
+        'entityId',
+        'ipAddress',
+        'device',
+        'oldValue',
+        'newValue',
+        'createdAt',
+      ];
+      yield Buffer.from(`${headers.join(',')}\n`);
+      for await (const record of stream) {
+        const row = this.formatCsvRow(this.sanitizeRecord(record));
+        yield Buffer.from(`${row}\n`);
+      }
+      return;
+    }
+
+    let first = true;
+    yield Buffer.from('[');
+    for await (const record of stream) {
+      const sanitized = this.sanitizeRecord(record);
+      yield Buffer.from(`${first ? '' : ','}${JSON.stringify(sanitized)}`);
+      first = false;
+    }
+    yield Buffer.from(']');
   }
 
-  private buildExportWhere(
+  /** Builds the shared tenant + filter predicate used by list, export and streamExport. */
+  private buildFilterWhere(
     organizationId: string,
-    query: Pick<
-      ExportAuditLogsQuery,
-      'agentId' | 'userId' | 'actionType' | 'severity' | 'startDate' | 'endDate'
-    >,
+    query: {
+      userId?: string;
+      actionType?: string;
+      agentId?: string;
+      severity?: string;
+      startDate?: string;
+      endDate?: string;
+      actorId?: string;
+      action?: string;
+      resourceId?: string;
+      from?: string;
+      to?: string;
+    },
   ): Prisma.AuditLogWhereInput {
     const where: Prisma.AuditLogWhereInput = { organizationId };
-    const and: Prisma.AuditLogWhereInput[] = [];
+    const andConditions: Prisma.AuditLogWhereInput[] = [];
 
     if (query.userId) where.userId = query.userId;
+    if (query.actorId) where.userId = query.actorId;
     if (query.actionType) where.action = query.actionType;
+    if (query.action) where.action = query.action;
+    if (query.resourceId) where.entityId = query.resourceId;
+
     if (query.agentId) {
-      and.push({
+      andConditions.push({
         OR: [
-        { entityId: query.agentId },
-        {
-          oldValue: {
-            path: ['agentId'],
-            equals: query.agentId,
-          },
-        },
-        {
-          newValue: {
-            path: ['agentId'],
-            equals: query.agentId,
-          },
-        },
+          { entityId: query.agentId },
+          { oldValue: { path: ['agentId'], equals: query.agentId } },
+          { newValue: { path: ['agentId'], equals: query.agentId } },
         ],
       });
     }
 
     if (query.severity) {
-      and.push({
+      andConditions.push({
         OR: [
           { oldValue: { path: ['severity'], equals: query.severity } },
           { newValue: { path: ['severity'], equals: query.severity } },
@@ -213,41 +181,71 @@ export class AuditService {
       });
     }
 
-    if (query.startDate || query.endDate) {
+    const gte = query.startDate ?? query.from;
+    const lte = query.endDate ?? query.to;
+    if (gte || lte) {
       where.createdAt = {};
-      if (query.startDate) {
-        where.createdAt.gte = new Date(query.startDate);
-      }
-      if (query.endDate) {
-        where.createdAt.lte = new Date(query.endDate);
-      }
+      if (gte) where.createdAt.gte = new Date(gte);
+      if (lte) where.createdAt.lte = new Date(lte);
     }
 
-    if (and.length) {
-      where.AND = and;
-    }
+    if (andConditions.length > 0) where.AND = andConditions;
+
     return where;
   }
 
-  private async *streamJson(records: AsyncIterable<ExportedAuditLog>): AsyncGenerator<string> {
-    yield '[';
-    let isFirst = true;
-    for await (const record of records) {
-      yield `${isFirst ? '' : ','}${JSON.stringify(redactAuditLog(record))}`;
-      isFirst = false;
-    }
-    yield ']';
+  /** Redacts sensitive payload fields from a raw audit row before it leaves the service. */
+  private sanitizeRecord(record: ExportedAuditLog): ExportedAuditLog {
+    return {
+      ...record,
+      oldValue: sanitizeAuditPayload(record.oldValue),
+      newValue: sanitizeAuditPayload(record.newValue),
+    };
   }
 
-  private async *streamCsv(records: AsyncIterable<ExportedAuditLog>): AsyncGenerator<string> {
-    yield `${CSV_HEADERS.join(',')}\n`;
-    for await (const record of records) {
-      yield `${formatCsvRow(redactAuditLog(record))}\n`;
-    }
+  private formatCsvRow(r: ExportedAuditLog): string {
+    const escapeCsvField = (value: unknown): string => {
+      if (value === null || value === undefined) return '';
+      const str = typeof value === 'object' ? JSON.stringify(value) : String(value);
+      if (str.includes(',') || str.includes('"') || str.includes('\n') || str.includes('\r')) {
+        return `"${str.replace(/"/g, '""')}"`;
+      }
+      return str;
+    };
+
+    return [
+      escapeCsvField(r.id),
+      escapeCsvField(r.organizationId),
+      escapeCsvField(r.userId),
+      escapeCsvField(r.user?.email ?? ''),
+      escapeCsvField(r.action),
+      escapeCsvField(r.entity),
+      escapeCsvField(r.entityId),
+      escapeCsvField(r.ipAddress),
+      escapeCsvField(r.device),
+      escapeCsvField(r.oldValue),
+      escapeCsvField(r.newValue),
+      escapeCsvField(r.createdAt ? new Date(r.createdAt).toISOString() : ''),
+    ].join(',');
   }
 
   formatAsCsv(records: ExportedAuditLog[]): string {
-    return [CSV_HEADERS.join(','), ...records.map(formatCsvRow)].join('\n');
+    const headers = [
+      'id',
+      'organizationId',
+      'userId',
+      'userEmail',
+      'action',
+      'entity',
+      'entityId',
+      'ipAddress',
+      'device',
+      'oldValue',
+      'newValue',
+      'createdAt',
+    ];
+    const lines = [headers.join(','), ...records.map((r) => this.formatCsvRow(r))];
+    return lines.join('\n');
   }
 
   findById(organizationId: string, id: string) {

@@ -66,7 +66,7 @@ export class SpendingPolicyService {
     }
     const pagination = toPrismaPagination(query, SORTABLE);
     const { items, total } = await this.repository.findManyAndCount(where, pagination);
-    return new Paginated(items, buildPaginationMeta(total, query.page, query.limit));
+    return new Paginated(items, buildPaginationMeta(total, query));
   }
 
   /** Returns a policy or throws a 404 when it does not exist in the organization. */

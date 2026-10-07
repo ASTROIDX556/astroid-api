@@ -1,38 +1,28 @@
 import { Injectable } from '@nestjs/common';
 import { Policy } from '@prisma/client';
-
-import { PaginationQuery } from '../../common/helpers/pagination';
-import { Paginated } from '../../common/interfaces/api-response.interface';
-import { EventBusService } from '../../events/event-bus.service';
-import { DomainEventName } from '../../events/event-names';
+import { SpendingPolicyService } from './spending-policy.service';
 import { PolicyEngine } from './policy.engine';
 import { CreatePolicyInput, SimulatePolicyInput, UpdatePolicyInput } from './policy.dto';
-import {
-  EvaluablePolicy,
-  PolicyConfiguration,
-  PolicyEvaluationResult,
-  TransactionIntent,
-} from './policy.types';
-import { SpendingPolicyService } from './spending-policy.service';
+import { EvaluablePolicy, PolicyConfiguration, PolicyEvaluationResult, TransactionIntent } from './policy.types';
+import { PaginationQuery } from '../../common/helpers/pagination';
+import { EventBusService } from '../../events/event-bus.service';
+import { DomainEventName } from '../../events/event-names';
 
 /**
- * Public entry point for policy definitions and evaluation.
- *
- * Persistence lives in {@link SpendingPolicyService} (backed by
- * `SpendingPolicyRepository`); this service adds the cross-cutting concerns the
- * rest of the platform expects — domain events on every mutation and the pure
- * {@link PolicyEngine} evaluation used by the payment pipeline.
+ * Controller-facing façade over the policy domain. Delegates persistence and
+ * spending-policy enforcement to {@link SpendingPolicyService} and wraps every
+ * mutation with the domain events the audit ledger depends on.
  */
 @Injectable()
 export class PolicyService {
   constructor(
-    private readonly spendingPolicies: SpendingPolicyService,
+    private readonly spendingPolicyService: SpendingPolicyService,
     private readonly engine: PolicyEngine,
     private readonly eventBus: EventBusService,
   ) {}
 
-  async create(organizationId: string, actorId: string, input: CreatePolicyInput): Promise<Policy> {
-    const policy = await this.spendingPolicies.create(organizationId, input);
+  async create(organizationId: string, actorId: string, input: CreatePolicyInput) {
+    const policy = await this.spendingPolicyService.create(organizationId, input);
     await this.eventBus.emit(
       DomainEventName.PolicyCreated,
       { policyId: policy.id, name: policy.name, type: policy.type },
@@ -41,21 +31,16 @@ export class PolicyService {
     return policy;
   }
 
-  list(organizationId: string, query: PaginationQuery): Promise<Paginated<Policy>> {
-    return this.spendingPolicies.list(organizationId, query);
+  list(organizationId: string, query: PaginationQuery) {
+    return this.spendingPolicyService.list(organizationId, query);
   }
 
   getOrThrow(organizationId: string, id: string): Promise<Policy> {
-    return this.spendingPolicies.getOrThrow(organizationId, id);
+    return this.spendingPolicyService.getOrThrow(organizationId, id);
   }
 
-  async update(
-    organizationId: string,
-    actorId: string,
-    id: string,
-    input: UpdatePolicyInput,
-  ): Promise<Policy> {
-    const policy = await this.spendingPolicies.update(organizationId, id, input);
+  async update(organizationId: string, actorId: string, id: string, input: UpdatePolicyInput) {
+    const policy = await this.spendingPolicyService.update(organizationId, id, input);
     await this.eventBus.emit(
       DomainEventName.PolicyUpdated,
       { policyId: id },
@@ -64,12 +49,8 @@ export class PolicyService {
     return policy;
   }
 
-  async remove(
-    organizationId: string,
-    actorId: string,
-    id: string,
-  ): Promise<{ id: string; deleted: true }> {
-    const result = await this.spendingPolicies.remove(organizationId, id);
+  async remove(organizationId: string, actorId: string, id: string) {
+    const result = await this.spendingPolicyService.remove(organizationId, id);
     await this.eventBus.emit(
       DomainEventName.PolicyDeleted,
       { policyId: id },
@@ -80,14 +61,14 @@ export class PolicyService {
 
   /**
    * Evaluates an intent against all applicable stored policies. Emits a
-   * PolicyEvaluated event (and PolicyViolated on failure) for the ledger and
-   * appends the outcome to the compliance audit trail.
+   * PolicyEvaluated event (and PolicyViolated on failure) for the ledger.
+   * Also persists an audit log entry for compliance tracking.
    */
   async evaluateIntent(
     intent: TransactionIntent,
     actorId?: string,
   ): Promise<PolicyEvaluationResult> {
-    const policies = await this.spendingPolicies.listActiveForEvaluation(
+    const policies = await this.spendingPolicyService.listActiveForEvaluation(
       intent.organizationId,
       intent.agentId,
     );
@@ -125,7 +106,7 @@ export class PolicyService {
     }
 
     if (actorId) {
-      await this.spendingPolicies.recordEvaluationAudit(intent, result, actorId);
+      await this.spendingPolicyService.recordEvaluationAudit(intent, result, actorId);
     }
 
     return result;
@@ -144,10 +125,7 @@ export class PolicyService {
       spentThisWeek: input.spentThisWeek,
       spentThisMonth: input.spentThisMonth,
     };
-    const policies = await this.spendingPolicies.listActiveForEvaluation(
-      organizationId,
-      input.agentId,
-    );
+    const policies = await this.spendingPolicyService.listActiveForEvaluation(organizationId, input.agentId);
     const result = this.engine.evaluate(intent, policies.map(toEvaluable));
     return {
       passed: result.passed,
@@ -158,11 +136,11 @@ export class PolicyService {
   }
 
   /**
-   * Circuit breaker against rapid wallet draining: rejects the pending spend
-   * when it would push the agent past its rolling 24-hour limit.
-   * The organization and actor arguments are accepted for the transaction
-   * pipeline's governance signature; the spending-policy service owns the
-   * actual velocity calculation.
+   * Checks the rolling 24-hour velocity limit for an agent's spending. Acts as
+   * a circuit breaker to prevent rapid draining of wallets. Delegates the
+   * actual enforcement to {@link SpendingPolicyService}; `organizationId` and
+   * `actorId` are accepted for call-site symmetry with the rest of the
+   * transaction governance pipeline but are not needed by the check itself.
    */
   checkVelocityLimit(
     _organizationId: string,
@@ -171,7 +149,7 @@ export class PolicyService {
     assetCode: string,
     _actorId?: string,
   ): Promise<void> {
-    return this.spendingPolicies.checkVelocityLimit(agentId, amount, assetCode);
+    return this.spendingPolicyService.checkVelocityLimit(agentId, amount, assetCode);
   }
 }
 

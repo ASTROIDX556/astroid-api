@@ -18,7 +18,10 @@ describe('ResponseInterceptor', () => {
         getRequest: () => ({
           headers: requestId ? { [REQUEST_ID_HEADER]: requestId } : {},
         }),
-        getResponse: () => response,
+        getResponse: () => ({
+          ...(response ?? { statusCode: 200 }),
+          setHeader: () => undefined,
+        }),
       }),
     } as unknown as ExecutionContext;
   };
@@ -103,7 +106,7 @@ describe('ResponseInterceptor', () => {
     it('extracts items and meta from Paginated responses', async () => {
       const paginated = new Paginated(
         [{ id: '1' }, { id: '2' }],
-        { total: 2, page: 1, limit: 10, totalPages: 1, hasNext: false, hasPrev: false },
+        { total: 2, page: 1, limit: 10, offset: 0, totalPages: 1, hasNext: false, hasPrev: false },
       );
 
       const context = createMockContext('test-request-id');
@@ -115,7 +118,7 @@ describe('ResponseInterceptor', () => {
       expect(result).toEqual({
         success: true,
         data: [{ id: '1' }, { id: '2' }],
-        meta: { total: 2, page: 1, limit: 10, totalPages: 1, hasNext: false, hasPrev: false },
+        meta: { total: 2, page: 1, limit: 10, offset: 0, totalPages: 1, hasNext: false, hasPrev: false },
         requestId: 'test-request-id',
       });
     });
