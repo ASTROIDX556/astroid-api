@@ -10,7 +10,6 @@ import { ShutdownCoordinator } from './common/shutdown/shutdown-coordinator.serv
 import { AppConfig } from './config/app.config';
 import { TOTAL_COUNT_HEADER } from './common/constants/headers';
 import { assertValidEnvironment, EnvironmentValidationError } from './config/env.validation';
-import { DatabaseConfig } from './config/database.config';
 import { PrismaService } from './database/prisma.service';
 
 async function bootstrap() {
