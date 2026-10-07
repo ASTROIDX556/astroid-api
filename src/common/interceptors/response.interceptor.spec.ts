@@ -12,13 +12,14 @@ describe('ResponseInterceptor', () => {
     interceptor = new ResponseInterceptor();
   });
 
-  const createMockContext = (requestId?: string): ExecutionContext => {
+  const createMockContext = (requestId?: string, response?: { statusCode: number }): ExecutionContext => {
     return {
       switchToHttp: () => ({
         getRequest: () => ({
           headers: requestId ? { [REQUEST_ID_HEADER]: requestId } : {},
         }),
         getResponse: () => ({
+          ...(response ?? { statusCode: 200 }),
           setHeader: () => undefined,
         }),
       }),
@@ -57,6 +58,48 @@ describe('ResponseInterceptor', () => {
         data: null,
         meta: {},
         requestId: 'unknown',
+      });
+    });
+
+    it('wraps arrays without changing their contents', async () => {
+      const items = [{ id: '1' }, { id: '2' }];
+      const result = await interceptor
+        .intercept(createMockContext('array-request'), createMockHandler(items))
+        .toPromise();
+
+      expect(result).toEqual({
+        success: true,
+        data: items,
+        meta: {},
+        requestId: 'array-request',
+      });
+    });
+
+    it('wraps primitive values as data', async () => {
+      const result = await interceptor
+        .intercept(createMockContext('primitive-request'), createMockHandler('accepted'))
+        .toPromise();
+
+      expect(result).toEqual({
+        success: true,
+        data: 'accepted',
+        meta: {},
+        requestId: 'primitive-request',
+      });
+    });
+
+    it('preserves a custom HTTP status set by the controller', async () => {
+      const response = { statusCode: 202 };
+      const result = await interceptor
+        .intercept(createMockContext('accepted-request', response), createMockHandler({ queued: true }))
+        .toPromise();
+
+      expect(response.statusCode).toBe(202);
+      expect(result).toEqual({
+        success: true,
+        data: { queued: true },
+        meta: {},
+        requestId: 'accepted-request',
       });
     });
 
