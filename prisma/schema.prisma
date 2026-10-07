@@ -792,7 +792,6 @@ model RiskAssessment {
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
   @@index([organizationId])
-  @@index([transactionId])
   @@index([score])
   @@index([band])
   @@index([createdAt])
