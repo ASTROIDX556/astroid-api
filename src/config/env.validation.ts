@@ -34,6 +34,13 @@ export const databaseEnvSchema = z.object({
   // worker transactions (rollups, outbox drains) must not be killed by the API
   // guard; 0 disables the worker guard entirely.
   DATABASE_WORKER_QUERY_TIMEOUT_MS: z.coerce.number().int().nonnegative().default(60000),
+  // Boot-time migration status check: `strict` aborts startup on pending or
+  // failed migrations, `warn` only logs, `off` skips it. When unset, production
+  // is strict and every other environment warns.
+  DATABASE_MIGRATION_CHECK: z.enum(['strict', 'warn', 'off']).optional(),
+  // Location of the Prisma migrations folder the check compares against.
+  // Defaults to `<cwd>/prisma/migrations`.
+  DATABASE_MIGRATIONS_DIR: z.string().min(1).optional(),
   // Slow query logging threshold (ms). Queries exceeding this emit a warn log.
   // 0 disables slow query logging.
   DATABASE_SLOW_QUERY_THRESHOLD_MS: z.coerce.number().int().nonnegative().default(1000),
