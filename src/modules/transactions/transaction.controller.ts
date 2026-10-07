@@ -33,7 +33,6 @@ import {
   SlidingWindowThrottlerGuard,
   SlidingWindowLimit,
 } from '../../common/guards/sliding-window-throttler.guard';
-import { AgentBudgetValidationPipe } from '../budgets/pipes/agent-budget-validation.pipe';
 
 @ApiTags('transactions')
 @ApiBearerAuth('access-token')
@@ -91,8 +90,7 @@ export class TransactionController {
   })
   create(
     @CurrentUser() user: AuthenticatedUser,
-    @Body(new ZodValidationPipe(createTransactionSchema), AgentBudgetValidationPipe)
-    body: CreateTransactionInput,
+    @Body(new ZodValidationPipe(createTransactionSchema)) body: CreateTransactionInput,
   ) {
     const actorId = user.isApiKey ? user.createdById ?? user.id : user.id;
     return this.transactionService.create(user.organizationId, actorId, body);

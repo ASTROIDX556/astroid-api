@@ -25,8 +25,6 @@ export const Queues = {
   DeadLetter: 'dead-letter',
   /** Audit logs cleanup job. */
   AuditCleanup: 'audit-cleanup',
-  /** Asynchronous audit log persistence (batched writes to the audit trail). */
-  Audit: 'audit',
 } as const;
 
 export type QueueName = (typeof Queues)[keyof typeof Queues];
@@ -57,25 +55,5 @@ export interface DlqJobData {
   failedAt: string;
   /** Additional metadata (organizationId, transactionId, etc.). */
   metadata?: Record<string, unknown>;
-}
-
-/** A single audit log entry queued for asynchronous persistence. */
-export interface AuditLogJobEntry {
-  organizationId: string;
-  userId?: string | null;
-  action: string;
-  entity: string;
-  entityId?: string | null;
-  oldValue?: unknown;
-  newValue?: unknown;
-  ipAddress?: string | null;
-  device?: string | null;
-  requestId?: string | null;
-}
-
-/** Standard BullMQ job payload for the audit persistence queue. */
-export interface AuditJobData {
-  /** Batch of audit entries to persist in one transaction. */
-  entries: AuditLogJobEntry[];
 }
 

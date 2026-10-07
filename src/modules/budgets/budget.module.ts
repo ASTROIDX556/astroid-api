@@ -4,7 +4,6 @@ import { BudgetService } from './budget.service';
 import { BudgetRepository } from './budget.repository';
 import { PolicyEvaluatorService } from './services/policy-evaluator.service';
 import { RollingWindowBudgetService } from './services/rolling-window-budget.service';
-import { AgentBudgetValidationPipe } from './pipes/agent-budget-validation.pipe';
 
 /**
  * Budget module. Exports the service so the transactions pipeline can enforce
@@ -17,13 +16,7 @@ import { AgentBudgetValidationPipe } from './pipes/agent-budget-validation.pipe'
  */
 @Module({
   controllers: [BudgetController],
-  providers: [
-    BudgetService,
-    BudgetRepository,
-    PolicyEvaluatorService,
-    RollingWindowBudgetService,
-    AgentBudgetValidationPipe,
-  ],
-  exports: [BudgetService, PolicyEvaluatorService, RollingWindowBudgetService, AgentBudgetValidationPipe],
+  providers: [BudgetService, BudgetRepository, PolicyEvaluatorService, RollingWindowBudgetService],
+  exports: [BudgetService, PolicyEvaluatorService, RollingWindowBudgetService],
 })
 export class BudgetModule {}

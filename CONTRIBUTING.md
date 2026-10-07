@@ -42,39 +42,8 @@ its own microservice.
 2. `npm run db:verify` passes (`scripts/verify-migrations.sh`). See
    [Database migrations](#database-migrations) below.
 3. Database schema changes include a valid Prisma migration folder containing `migration.sql`.
-4. `npm run db:verify:static` passes — see [Database migration verification](#database-migration-verification).
-5. New endpoints are documented with OpenAPI/Swagger decorators.
-6. Cross-repo contracts (response envelope, entity/enum names) still match `astroid-web` and `astroid-sdk`.
-
-## Database migration verification
-
-Schema changes in Prisma are strictly verified before they reach production so a
-malformed or drifted migration can never break a deployment. CI runs the static
-check on every pull request, and the database-backed verification runs whenever
-`DATABASE_URL` is available (locally or in CI):
-
-| Job | Requires a database | What it checks |
-|---|---|---|
-| `migrations (static)` (`npm run db:verify:static`) | No | Every migration directory has a non-empty `migration.sql` containing executable SQL (not only comments), quotes/parentheses are balanced, and directory names follow the Prisma convention `<UTC-timestamp>_<snake_case_name>` |
-| `migrations (database)` (`npm run db:verify`) | Yes | Migrations apply cleanly to a fresh PostgreSQL instance and the schema rebuilt from the migrations alone matches `prisma/schema.prisma` (no drift) |
-
-### Naming convention
-
-Migration directories **must** be named `<UTC-timestamp>_<snake_case_name>`
-(e.g. `20260830174000_sync_schema`). CI fails the build otherwise. Create
-migrations with `npm run prisma:migrate` — never by hand.
-
-### Locally
-
-```bash
-npm run db:verify:static   # fast static checks, no database needed
-npm run db:verify          # full verification (needs DATABASE_URL, and
-                           # SHADOW_DATABASE_URL for the drift check)
-```
-
-The static mode is what containerized CI runners without an active PostgreSQL
-connection use; the full script degrades to it automatically when `DATABASE_URL`
-is unset.
+4. New endpoints are documented with OpenAPI/Swagger decorators.
+5. Cross-repo contracts (response envelope, entity/enum names) still match `astroid-web` and `astroid-sdk`.
 
 ## Database migrations
 
