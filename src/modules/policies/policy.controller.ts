@@ -30,6 +30,7 @@ import {
   PaginationQuery,
   paginationQuerySchema,
 } from '../../common/helpers/pagination';
+import { ApiPaginationQuery } from '../../common/decorators/api-pagination-query.decorator';
 import { ApiEnvelope } from '../../common/decorators/api-envelope.decorator';
 
 @ApiTags('policies')
@@ -45,8 +46,7 @@ export class PolicyController {
       'Returns a paginated list of policies for the current organization. ' +
       'Supports filtering by type, status, and agent.',
   })
-  @ApiQuery({ name: 'page', required: false, type: Number, description: 'Page number (default: 1)' })
-  @ApiQuery({ name: 'limit', required: false, type: Number, description: 'Items per page (default: 20)' })
+  @ApiPaginationQuery()
   @ApiQuery({ name: 'type', required: false, enum: ['SPENDING_LIMIT', 'APPROVAL_REQUIRED', 'ALLOWLIST', 'TIME_WINDOW'], description: 'Filter by policy type' })
   @ApiQuery({ name: 'enabled', required: false, type: Boolean, description: 'Filter by enabled status' })
   @ApiEnvelope(CreatePolicyDto as never, { isArray: true })

@@ -20,6 +20,7 @@ export interface ApiSuccessEnvelope<T> {
   success: true;
   data: T;
   meta?: {
+    offset?: number;
     page?: number;
     limit?: number;
     total?: number;
