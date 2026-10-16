@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Headers, Param, Post, Query, UseGuards } from '@nestjs/common';
 import {
   ApiOperation,
   ApiTags,
@@ -7,6 +7,7 @@ import {
   ApiParam,
   ApiBody,
   ApiQuery,
+  ApiHeader,
 } from '@nestjs/swagger';
 import { UserRole } from '@prisma/client';
 import { TransactionService } from './transaction.service';
@@ -16,6 +17,7 @@ import {
   CreateTransactionDto,
   simulateTransactionSchema,
   SimulateTransactionInput,
+  parseIdempotencyKey,
 } from './transaction.dto';
 import { SpendingLimitGuard, RequireSpendingLimitCheck } from './guards/spending-limit.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -29,6 +31,7 @@ import { AuthenticatedUser } from '../../common/interfaces/authenticated-user.in
 import { PaginationQuery, paginationQuerySchema } from '../../common/helpers/pagination';
 import { ApiPaginationQuery } from '../../common/decorators/api-pagination-query.decorator';
 import { ApiEnvelope } from '../../common/decorators/api-envelope.decorator';
+import { IDEMPOTENCY_KEY_HEADER } from '../../common/constants/headers';
 import {
   SlidingWindowThrottlerGuard,
   SlidingWindowLimit,
@@ -78,12 +81,18 @@ export class TransactionController {
       'limit policies before reaching the service layer.',
   })
   @ApiBody({ type: CreateTransactionDto })
+  @ApiHeader({
+    name: 'Idempotency-Key',
+    required: false,
+    description: 'Optional key for replay-safe transaction submission (1-128 allowed ASCII characters).',
+  })
   @ApiEnvelope(CreateTransactionDto as never)
   @ApiResponse({ status: 201, description: 'Transaction created (may require approval)' })
   @ApiResponse({ status: 400, description: 'Validation error or policy violation' })
   @ApiResponse({ status: 401, description: 'Not authenticated' })
   @ApiResponse({ status: 403, description: 'Insufficient permissions' })
   @ApiResponse({ status: 409, description: 'Insufficient budget or risk threshold exceeded' })
+  @ApiResponse({ status: 409, description: 'Idempotency key is in use or was reused with a different payload' })
   @ApiResponse({
     status: 422,
     description: 'Transaction blocked by spending limit policy (POLICY_VIOLATION)',
@@ -91,9 +100,16 @@ export class TransactionController {
   create(
     @CurrentUser() user: AuthenticatedUser,
     @Body(new ZodValidationPipe(createTransactionSchema)) body: CreateTransactionInput,
+    @Headers(IDEMPOTENCY_KEY_HEADER) rawIdempotencyKey?: string,
   ) {
     const actorId = user.isApiKey ? user.createdById ?? user.id : user.id;
-    return this.transactionService.create(user.organizationId, actorId, body);
+    const key = parseIdempotencyKey(rawIdempotencyKey);
+    return this.transactionService.create(
+      user.organizationId,
+      actorId,
+      body,
+      key ? { principalId: user.id, key } : undefined,
+    );
   }
 
   @Post('simulate')
