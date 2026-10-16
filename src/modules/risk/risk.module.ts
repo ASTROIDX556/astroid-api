@@ -4,9 +4,15 @@ import { RiskService } from './risk.service';
 import { RiskEngine } from './risk.engine';
 import { RiskRepository } from './risk.repository';
 import { DatabaseModule } from '../../database/database.module';
+import { BullModule } from '@nestjs/bullmq';
+import { Queues } from '../../queues/queues.constants';
+import { createQueueRegistrationOptions } from '../../queues/queue-policy';
 
 @Module({
-  imports: [DatabaseModule],
+  imports: [
+    DatabaseModule,
+    BullModule.registerQueue(createQueueRegistrationOptions(Queues.RiskAnalysis)),
+  ],
   controllers: [RiskController],
   providers: [RiskService, RiskEngine, RiskRepository],
   exports: [RiskService, RiskEngine, RiskRepository],

@@ -59,13 +59,30 @@ describe('Webhook signing & delivery', () => {
     const SECRET = 'whsec_test-secret-key';
     const URL = 'https://example.com/webhook';
     const EVENT_ID = 'evt-123';
+    let destinationPolicy: {
+      post: (url: string, options: { headers: Record<string, string>; body: Buffer; timeoutMs: number }) => Promise<{ status: number }>;
+    };
 
     beforeEach(() => {
-      processor = new WebhooksProcessor({
-        webhook: { findFirst: vi.fn().mockResolvedValue({ secret: SECRET }) },
-      } as never);
       fetchSpy = vi.fn();
       vi.stubGlobal('fetch', fetchSpy);
+      destinationPolicy = {
+        post: async (url, options) => {
+          const response = await fetch(url, {
+            method: 'POST',
+            headers: options.headers,
+            body: options.body.toString('utf8'),
+            signal: AbortSignal.timeout(options.timeoutMs),
+          });
+          return { status: response.status };
+        },
+      };
+      processor = new WebhooksProcessor(
+        { webhook: { findFirst: vi.fn().mockResolvedValue({ secret: SECRET }) } } as never,
+        undefined,
+        undefined,
+        destinationPolicy,
+      );
     });
 
     afterEach(() => {
@@ -143,7 +160,12 @@ describe('Webhook signing & delivery', () => {
     it('loads the secret by webhook and organization rather than from the job payload', async () => {
       const fallbackSecret = 'fallback-secret-123';
       const findFirst = vi.fn().mockResolvedValue({ secret: fallbackSecret });
-      const processorWithDatabaseSecret = new WebhooksProcessor({ webhook: { findFirst } } as never);
+      const processorWithDatabaseSecret = new WebhooksProcessor(
+        { webhook: { findFirst } } as never,
+        undefined,
+        undefined,
+        destinationPolicy,
+      );
       fetchSpy.mockResolvedValue({ ok: true, status: 200, text: () => Promise.resolve('OK') });
 
       const job = {
@@ -184,6 +206,29 @@ describe('Webhook signing & delivery', () => {
         attemptsMade: 0,
       } as unknown as Job<WebhookJobData>;
       await expect(processor.process(job)).rejects.toThrow(UnrecoverableError);
+    });
+
+    it('does not follow a redirect and treats it as a permanent endpoint failure', async () => {
+      fetchSpy.mockResolvedValue({
+        ok: false,
+        status: 302,
+        headers: { get: () => 'http://127.0.0.1/' },
+      });
+      const job = {
+        id: 'job-1',
+        data: {
+          webhookId: 'wh-1',
+          organizationId: 'org-1',
+          url: URL,
+          eventName: 'wallet.created',
+          payload: {},
+          eventId: EVENT_ID,
+        },
+        attemptsMade: 0,
+      } as unknown as Job<WebhookJobData>;
+
+      await expect(processor.process(job)).rejects.toThrow(UnrecoverableError);
+      expect(fetchSpy).toHaveBeenCalledOnce();
     });
 
     it('throws retriable error for transient 5xx to allow BullMQ exponential backoff', async () => {

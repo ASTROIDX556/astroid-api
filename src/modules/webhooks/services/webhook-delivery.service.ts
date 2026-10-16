@@ -47,7 +47,7 @@ export class WebhookDeliveryService {
         ...(hasMetadata ? { metadata } : {}),
       };
       await this.webhookQueue.add(WEBHOOK_JOB_NAME, jobData, webhookJobOptions);
-      this.logger.debug(`Queued webhook delivery for ${data.eventName} to ${data.url}`);
+      this.logger.debug(`Queued webhook delivery for ${data.eventName} on webhook ${data.webhookId}`);
     } catch (error) {
       this.logger.error('Failed to queue webhook delivery');
       throw error;

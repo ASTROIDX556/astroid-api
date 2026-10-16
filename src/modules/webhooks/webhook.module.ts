@@ -15,6 +15,7 @@ import { MetricsModule } from '../metrics/metrics.module';
 import { RawBodyMiddleware } from '../../common/middleware/raw-body.middleware';
 import { WebhookSignatureGuard } from '../../common/guards/webhook-signature.guard';
 import { SlidingWindowThrottlerGuard } from '../../common/guards/sliding-window-throttler.guard';
+import { WebhookDestinationPolicy } from './webhook-destination.policy';
 
 /**
  * Webhooks module. The dispatcher listens to domain events and queues the
@@ -41,6 +42,7 @@ import { SlidingWindowThrottlerGuard } from '../../common/guards/sliding-window-
   controllers: [WebhookController, WebhookIngressController],
   providers: [
     WebhookService,
+    WebhookDestinationPolicy,
     WebhookRepository,
     WebhookDispatcher,
     WebhookDeliveryService,

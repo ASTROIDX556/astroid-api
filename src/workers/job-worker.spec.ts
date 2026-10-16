@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { LoggerService } from '@nestjs/common';
 import { UnrecoverableError } from 'bullmq';
+import { BadRequestException } from '@nestjs/common';
 import { runWorkerJob, type WorkerJob } from './job-worker';
 
 vi.mock('../queues/queue.module', () => ({
@@ -187,6 +188,22 @@ describe('runWorkerJob', () => {
     expect(logger.error).toHaveBeenCalledTimes(1);
     const record = JSON.parse(String(logger.error.mock.calls[0][0]));
     expect(record).toMatchObject({ event: 'job.dead-lettered', unrecoverable: true });
+  });
+
+  it('converts deterministic HTTP validation errors into unrecoverable BullMQ errors', async () => {
+    const job = makeJob({}, { attemptsMade: 0, opts: { attempts: 5 } });
+
+    await expect(
+      runWorkerJob({
+        queue: 'test-queue',
+        job,
+        logger,
+        handler: async () => {
+          throw new BadRequestException('invalid payload');
+        },
+      }),
+    ).rejects.toThrow(UnrecoverableError);
+    expect(logger.error).toHaveBeenCalledOnce();
   });
 
   it('includes trace fields from top-level and nested job metadata', async () => {

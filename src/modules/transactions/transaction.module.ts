@@ -12,6 +12,10 @@ import { StellarSimulationService } from './services/stellar-simulation.service'
 import { StellarModule } from '../stellar/stellar.module';
 import { SpendingLimitService } from './spending-limit.service';
 import { SpendingLimitGuard } from './guards/spending-limit.guard';
+import { BullModule } from '@nestjs/bullmq';
+import { Queues } from '../../queues/queues.constants';
+import { createQueueRegistrationOptions } from '../../queues/queue-policy';
+import { TransactionWorker } from './workers/transaction.worker';
 
 /**
  * Transaction pipeline module. Pulls together wallets, agents, policies, risk
@@ -20,7 +24,15 @@ import { SpendingLimitGuard } from './guards/spending-limit.guard';
  * approved proposal's transaction.
  */
 @Module({
-  imports: [WalletModule, AgentModule, PolicyModule, RiskModule, BudgetModule, StellarModule],
+  imports: [
+    WalletModule,
+    AgentModule,
+    PolicyModule,
+    RiskModule,
+    BudgetModule,
+    StellarModule,
+    BullModule.registerQueue(createQueueRegistrationOptions(Queues.Transactions)),
+  ],
   controllers: [TransactionController],
   providers: [
     TransactionService,
@@ -29,6 +41,7 @@ import { SpendingLimitGuard } from './guards/spending-limit.guard';
     StellarSimulationService,
     SpendingLimitService,
     SpendingLimitGuard,
+    TransactionWorker,
   ],
   exports: [TransactionService, SorobanSimulationService, StellarSimulationService, SpendingLimitService],
 })

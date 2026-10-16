@@ -32,8 +32,22 @@ export interface JobFailureRecord {
   payload?: unknown;
   /** True when retries were exhausted or the failure was unrecoverable. */
   terminal: boolean;
+  terminalFailure?: TerminalFailureOutcome;
   observedAt: string;
   trace: JobTraceContext;
+}
+
+export interface TerminalFailureOutcome {
+  type: 'job.terminal-failure';
+  jobType: string;
+  queue: string;
+  jobId: string;
+  attemptCount: number;
+  requestId?: string;
+  organizationId?: string;
+  agentId?: string;
+  reason?: string;
+  occurredAt: string;
 }
 
 /** Shape BullMQ emits for the `failed` queue event. */
@@ -159,6 +173,9 @@ export class QueueFailureListener implements OnModuleInit, OnModuleDestroy {
     const maxAttempts = job?.opts?.attempts;
     const attemptsMade = event === 'failed' ? (job?.attemptsMade ?? 0) : 0;
 
+    const terminal = event === 'failed' && job !== null && isTerminalJobFailure(job, failedReason);
+    const trace = this.extractTrace(job?.data);
+    const observedAt = new Date().toISOString();
     const record: JobFailureRecord = {
       event,
       queue,
@@ -166,14 +183,30 @@ export class QueueFailureListener implements OnModuleInit, OnModuleDestroy {
       jobName: job?.name,
       attemptsMade,
       maxAttempts,
-      failedReason,
-      stacktrace: job?.stacktrace?.length ? job.stacktrace : undefined,
-      payload: this.safeJson(job?.data),
+      failedReason: failedReason ? scrubString(failedReason) : undefined,
+      stacktrace: job?.stacktrace?.length ? job.stacktrace.map(scrubString) : undefined,
+      payload: scrubForLog(this.safeJson(job?.data)),
       // A failure is only terminal once we can see the job's retry state; if
       // the record was already cleaned up we cannot claim it exhausted retries.
-      terminal: event === 'failed' && job !== null && isTerminalJobFailure(job, failedReason),
-      observedAt: new Date().toISOString(),
-      trace: this.extractTrace(job?.data),
+      terminal,
+      ...(terminal
+        ? {
+            terminalFailure: {
+              type: 'job.terminal-failure' as const,
+              jobType: job?.name ?? queue,
+              queue,
+              jobId,
+              attemptCount: attemptsMade,
+              requestId: trace.requestId,
+              organizationId: trace.organizationId,
+              agentId: trace.agentId,
+              reason: failedReason ? scrubString(failedReason) : undefined,
+              occurredAt: observedAt,
+            },
+          }
+        : {}),
+      observedAt,
+      trace,
     };
 
     this.logRecord(record);
@@ -181,13 +214,9 @@ export class QueueFailureListener implements OnModuleInit, OnModuleDestroy {
   }
 
   private logRecord(record: JobFailureRecord): void {
-    // Only the log line is scrubbed; the dead-letter copy keeps the raw payload
-    // so an operator re-drive replays the job exactly as it was enqueued.
+    const safeReason = record.failedReason ?? 'unknown reason';
     const line = JSON.stringify({
       ...record,
-      failedReason: record.failedReason && scrubString(record.failedReason),
-      stacktrace: record.stacktrace?.map(scrubString),
-      payload: scrubForLog(record.payload),
     });
     if (record.event === 'stalled') {
       this.logger.warn(
@@ -199,8 +228,8 @@ export class QueueFailureListener implements OnModuleInit, OnModuleDestroy {
     this.logger.error(
       line,
       record.terminal
-        ? `Job ${record.jobId} on queue '${record.queue}' failed terminally after ${record.attemptsMade} attempts: ${record.failedReason ?? 'unknown reason'}`
-        : `Job ${record.jobId} on queue '${record.queue}' failed (attempt ${record.attemptsMade}/${record.maxAttempts ?? '?'}): ${record.failedReason ?? 'unknown reason'}`,
+        ? `Job ${record.jobId} on queue '${record.queue}' failed terminally after ${record.attemptsMade} attempts: ${safeReason}`
+        : `Job ${record.jobId} on queue '${record.queue}' failed (attempt ${record.attemptsMade}/${record.maxAttempts ?? '?'}): ${safeReason}`,
     );
   }
 
@@ -233,7 +262,7 @@ export class QueueFailureListener implements OnModuleInit, OnModuleDestroy {
 
       await queue.add(`dlq:${record.queue}:${record.jobId}`, data, {
         removeOnComplete: { count: 5_000 },
-        removeOnFail: { age: 7 * 24 * 3_600 },
+        removeOnFail: { age: 7 * 24 * 3_600, count: 5_000 },
       });
     } catch (error) {
       this.logger.error(

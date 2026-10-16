@@ -1,13 +1,23 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Logger, OnModuleDestroy } from '@nestjs/common';
 import type { Job } from 'bullmq';
+import { Queues } from '../../../queues/queues.constants';
+import { runWorkerJob } from '../../../workers/job-worker';
 
-@Processor('transactions')
+@Processor(Queues.Transactions)
 export class TransactionWorker extends WorkerHost implements OnModuleDestroy {
   private readonly logger = new Logger(TransactionWorker.name);
 
   async process(job: Job): Promise<void> {
-    this.logger.debug(`Processing transaction job ${job.id}`);
+    await runWorkerJob({
+      queue: Queues.Transactions,
+      job,
+      logger: this.logger,
+      defaultJobName: 'transaction-execution',
+      handler: async () => {
+        this.logger.debug(`Processing transaction job ${job.id}`);
+      },
+    });
   }
 
   async onApplicationBootstrap(): Promise<void> {

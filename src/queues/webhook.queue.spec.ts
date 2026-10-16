@@ -20,7 +20,7 @@ describe('webhook queue configuration', () => {
 
   it('keeps completed jobs bounded and failed jobs inspectable for a day', () => {
     expect(webhookJobOptions.removeOnComplete).toEqual({ count: 1_000 });
-    expect(webhookJobOptions.removeOnFail).toEqual({ age: 24 * 3_600 });
+    expect(webhookJobOptions.removeOnFail).toEqual({ age: 24 * 3_600, count: 5_000 });
   });
 
   it('registers the queue under the webhook name with the shared job options', () => {

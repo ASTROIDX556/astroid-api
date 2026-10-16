@@ -30,13 +30,25 @@ describe('WebhooksProcessor terminal failures', () => {
 
   beforeEach(() => {
     recordTerminalFailure = vi.fn().mockResolvedValue(undefined);
+    fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy);
+    const destinationPolicy = {
+      post: async (url: string, options: { headers: Record<string, string>; body: Buffer; timeoutMs: number }) => {
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: options.headers,
+          body: options.body.toString('utf8'),
+          signal: AbortSignal.timeout(options.timeoutMs),
+        });
+        return { status: response.status };
+      },
+    };
     processor = new WebhooksProcessor(
       { webhook: { findFirst: vi.fn().mockResolvedValue({ secret: 'whsec_test' }) } } as never,
       undefined,
       { recordTerminalFailure } as unknown as WebhookAuditService,
+      destinationPolicy,
     );
-    fetchSpy = vi.fn();
-    vi.stubGlobal('fetch', fetchSpy);
   });
 
   afterEach(() => {
@@ -102,7 +114,7 @@ describe('WebhooksProcessor terminal failures', () => {
     recordTerminalFailure.mockRejectedValue(new Error('audit unavailable'));
     fetchSpy.mockRejectedValue(new Error('socket hang up'));
 
-    await expect(processor.process(makeJob(4))).rejects.toThrow('socket hang up');
+    await expect(processor.process(makeJob(4))).rejects.toThrow('Webhook delivery failed');
 
     expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('Could not audit webhook'));
   });

@@ -4,6 +4,7 @@ import { Job, Queue } from 'bullmq';
 import { Queues, DlqJobData } from './queues.constants';
 import { PrismaService } from '../database/prisma.service';
 import { retryWithBackoff } from '../utils/retry.util';
+import { scrubForLog, scrubString } from '../utils/log-scrubber.util';
 
 /**
  * BullMQ worker processor for the Dead-Letter Queue (DLQ).
@@ -36,16 +37,24 @@ export class DlqProcessor extends WorkerHost {
       attemptsMade,
       failedAt,
     } = job.data;
+    const safePayload = scrubForLog(payload);
+    const safeReason = failedReason ? scrubString(failedReason) : undefined;
+    const safeStacktrace = stacktrace?.map(scrubString);
 
     this.logger.error(
-      `[DLQ-JOB-RECEIVED] Job ${originalJobId ?? job.id} from queue '${originalQueue}' (${originalJobName ?? 'unknown'}) permanently failed after ${attemptsMade} attempts. Reason: ${failedReason ?? 'Unknown'}`,
+      `[DLQ-JOB-RECEIVED] Job ${originalJobId ?? job.id} from queue '${originalQueue}' (${originalJobName ?? 'unknown'}) permanently failed after ${attemptsMade} attempts. Reason: ${safeReason ?? 'Unknown'}`,
     );
 
     this.logger.debug(
-      `[DLQ-JOB-DETAILS] Payload: ${JSON.stringify(payload)} | Stacktrace: ${JSON.stringify(stacktrace ?? [])} | FailedAt: ${failedAt}`,
+      `[DLQ-JOB-DETAILS] Payload: ${JSON.stringify(safePayload)} | Stacktrace: ${JSON.stringify(safeStacktrace ?? [])} | FailedAt: ${failedAt}`,
     );
 
-    await this.recordDeadLetterAudit(job.data);
+    await this.recordDeadLetterAudit({
+      ...job.data,
+      payload: safePayload,
+      failedReason: safeReason,
+      stacktrace: safeStacktrace,
+    });
 
     return {
       handled: true,
@@ -67,14 +76,14 @@ export class DlqProcessor extends WorkerHost {
     error: Error | string,
     originalQueue: string,
   ): Promise<Job<DlqJobData>> {
-    const failedReason = typeof error === 'string' ? error : error.message;
-    const stacktrace = typeof error === 'object' && error.stack ? [error.stack] : failedJob.stacktrace;
+    const failedReason = scrubString(typeof error === 'string' ? error : error.message);
+    const stacktrace = (typeof error === 'object' && error.stack ? [error.stack] : failedJob.stacktrace)?.map(scrubString);
 
     const dlqData: DlqJobData = {
       originalQueue,
       originalJobId: failedJob.id,
       originalJobName: failedJob.name,
-      payload: failedJob.data,
+      payload: scrubForLog(failedJob.data),
       failedReason,
       stacktrace: stacktrace ?? [],
       attemptsMade: failedJob.attemptsMade,
@@ -88,7 +97,7 @@ export class DlqProcessor extends WorkerHost {
 
     return dlqQueue.add(`dlq:${originalQueue}:${failedJob.id ?? Date.now()}`, dlqData, {
       removeOnComplete: { count: 5000 },
-      removeOnFail: { age: 7 * 24 * 3600 },
+      removeOnFail: { age: 7 * 24 * 3600, count: 5_000 },
     });
   }
 
