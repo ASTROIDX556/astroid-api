@@ -55,6 +55,7 @@ import { RequestContextInterceptor } from './common/interceptors/request-context
 import { AuditLogInterceptor } from './common/interceptors/audit-log.interceptor';
 import { MetricsInterceptor } from './common/interceptors/metrics.interceptor';
 import { RequestIdInterceptor } from './common/interceptors/request-id.interceptor';
+import { sanitizeAuditPayload, sanitizeLogArguments } from './common/helpers/audit-sanitizer';
 
 /**
  * Root application module. Wires the global infrastructure (config, logging,
@@ -84,6 +85,15 @@ import { RequestIdInterceptor } from './common/interceptors/request-id.intercept
         redact: {
           paths: ['req.headers.authorization', 'req.headers.cookie', 'req.headers["x-api-key"]'],
           remove: true,
+        },
+        formatters: {
+          log: (object: Record<string, unknown>) =>
+            sanitizeAuditPayload(object) as Record<string, unknown>,
+        },
+        hooks: {
+          logMethod(args, method) {
+            return method.apply(this, sanitizeLogArguments(args) as typeof args);
+          },
         },
         autoLogging: false,
       },

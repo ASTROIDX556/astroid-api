@@ -11,6 +11,7 @@ const eventsClose = vi.fn();
 const eventsOn = vi.fn();
 
 vi.mock('bullmq', () => ({
+  UnrecoverableError: class UnrecoverableError extends Error {},
   Queue: vi.fn().mockImplementation((name: string) => ({
     name,
     getJob,

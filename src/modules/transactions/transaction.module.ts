@@ -13,6 +13,10 @@ import { StellarSimulationService } from './services/stellar-simulation.service'
 import { StellarModule } from '../stellar/stellar.module';
 import { SpendingLimitService } from './spending-limit.service';
 import { SpendingLimitGuard } from './guards/spending-limit.guard';
+import { BullModule } from '@nestjs/bullmq';
+import { Queues } from '../../queues/queues.constants';
+import { createQueueRegistrationOptions } from '../../queues/queue-policy';
+import { TransactionWorker } from './workers/transaction.worker';
 import { TransactionIdempotencyCleanupService } from './transaction-idempotency-cleanup.service';
 
 /**
@@ -30,6 +34,7 @@ import { TransactionIdempotencyCleanupService } from './transaction-idempotency-
     RiskModule,
     BudgetModule,
     StellarModule,
+    BullModule.registerQueue(createQueueRegistrationOptions(Queues.Transactions)),
   ],
   controllers: [TransactionController],
   providers: [
@@ -39,6 +44,7 @@ import { TransactionIdempotencyCleanupService } from './transaction-idempotency-
     StellarSimulationService,
     SpendingLimitService,
     SpendingLimitGuard,
+    TransactionWorker,
     TransactionIdempotencyCleanupService,
   ],
   exports: [TransactionService, SorobanSimulationService, StellarSimulationService, SpendingLimitService],

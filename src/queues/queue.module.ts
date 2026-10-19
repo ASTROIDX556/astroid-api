@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { BullModule } from '@nestjs/bullmq';
 import { Queues } from './queues.constants';
 import { DlqProcessor } from './dlq.processor';
+export { DEFAULT_JOB_OPTIONS } from './queue-policy';
 
 /**
  * Central queue plumbing. The BullMQ connections and named queues are provisioned
@@ -18,7 +19,7 @@ import { DlqProcessor } from './dlq.processor';
       defaultJobOptions: {
         attempts: 1,
         removeOnComplete: { count: 5_000 },
-        removeOnFail: { age: 7 * 24 * 3_600 },
+        removeOnFail: { age: 7 * 24 * 3_600, count: 5_000 },
       },
     }),
   ],
@@ -38,12 +39,3 @@ export const QueueTokens = {
   RiskAnalysis: Symbol.for('queue:risk-analysis'),
   DeadLetter: Symbol.for('queue:dead-letter'),
 } as const;
-
-/** Default job options for every queue: bounded retries with backoff. */
-export const DEFAULT_JOB_OPTIONS = {
-  attempts: 3,
-  backoff: { type: 'exponential' as const, delay: 1_000 },
-  removeOnComplete: { count: 1_000 },
-  removeOnFail: { age: 24 * 3_600 },
-} as const;
-

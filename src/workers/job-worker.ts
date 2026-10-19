@@ -1,6 +1,7 @@
 import type { LoggerService } from '@nestjs/common';
 import { UnrecoverableError } from 'bullmq';
 import { DEFAULT_JOB_OPTIONS } from '../queues/queue.module';
+import { classifyJobError } from '../queues/queue-policy';
 import type { WorkerMetricsService } from '../modules/metrics/worker-metrics.service';
 import { scrubForLog, scrubString } from '../utils/log-scrubber.util';
 import { isTerminalJobFailure } from './dlq.processor';
@@ -35,7 +36,6 @@ export interface WorkerJobLogRecord {
   /** True when the job was declared `UnrecoverableError` by its handler. */
   unrecoverable?: boolean;
   error?: { name: string; message: string; stack?: string };
-  /** Scrubbed copy of the job payload; only attached to failure records. */
   payload?: unknown;
   trace?: Record<string, string>;
   timestamp: string;
@@ -106,7 +106,7 @@ export async function runWorkerJob<TData, TResult>(
   } catch (error) {
     emit(() => {
       const described = describeError(error);
-      const unrecoverable = error instanceof UnrecoverableError;
+      const unrecoverable = classifyJobError(error) === 'permanent';
       const terminal =
         unrecoverable ||
         isTerminalJobFailure(
@@ -139,6 +139,9 @@ export async function runWorkerJob<TData, TResult>(
       }
     });
 
+    if (classifyJobError(error) === 'permanent' && !(error instanceof UnrecoverableError)) {
+      throw new UnrecoverableError(describeError(error).message);
+    }
     throw error;
   }
 }

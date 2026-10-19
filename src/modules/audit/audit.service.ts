@@ -26,27 +26,32 @@ export class AuditService {
   ) {}
 
   async record(data: CreateAuditLogData) {
-    const previousHash = await this.hashService.getLatestHash(data.organizationId);
+    const safeData: CreateAuditLogData = {
+      ...data,
+      ...(data.oldValue === undefined ? {} : { oldValue: sanitizeAuditPayload(data.oldValue) }),
+      ...(data.newValue === undefined ? {} : { newValue: sanitizeAuditPayload(data.newValue) }),
+    };
+    const previousHash = await this.hashService.getLatestHash(safeData.organizationId);
     const createdAt = new Date();
 
     const hashResult = this.hashService.computeEntryHash(
       {
-        organizationId: data.organizationId,
-        userId: data.userId,
-        action: data.action,
-        entity: data.entity,
-        entityId: data.entityId,
-        oldValue: data.oldValue,
-        newValue: data.newValue,
-        ipAddress: data.ipAddress,
-        device: data.device,
+        organizationId: safeData.organizationId,
+        userId: safeData.userId,
+        action: safeData.action,
+        entity: safeData.entity,
+        entityId: safeData.entityId,
+        oldValue: safeData.oldValue,
+        newValue: safeData.newValue,
+        ipAddress: safeData.ipAddress,
+        device: safeData.device,
         createdAt,
       },
       previousHash,
     );
 
     return this.repository.create({
-      ...data,
+      ...safeData,
       requestId: data.requestId ?? null,
       previousHash: hashResult.previousHash,
       hash: hashResult.hash,

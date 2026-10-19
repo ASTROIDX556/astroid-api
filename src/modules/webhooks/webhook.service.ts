@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { WebhookRepository } from './webhook.repository';
 import { CreateWebhookInput, UpdateWebhookInput } from './webhook.dto';
@@ -10,6 +10,7 @@ import {
 } from '../../common/helpers/pagination';
 import { Paginated } from '../../common/interfaces/api-response.interface';
 import { generateToken } from '../../utils/crypto.util';
+import { WebhookDestinationPolicy, WebhookDestinationError } from './webhook-destination.policy';
 
 const SORTABLE = ['createdAt', 'url'];
 
@@ -26,9 +27,13 @@ function redact<T extends { secret?: string }>(webhook: T): Omit<T, 'secret'> {
  */
 @Injectable()
 export class WebhookService {
-  constructor(private readonly repository: WebhookRepository) {}
+  constructor(
+    private readonly repository: WebhookRepository,
+    private readonly destinationPolicy: WebhookDestinationPolicy,
+  ) {}
 
   async create(organizationId: string, input: CreateWebhookInput) {
+    await this.validateDestination(input.url);
     const secret = `whsec_${generateToken(24)}`;
     const webhook = await this.repository.create({
       organizationId,
@@ -65,6 +70,7 @@ export class WebhookService {
 
   async update(organizationId: string, id: string, input: UpdateWebhookInput) {
     await this.getOrThrow(organizationId, id);
+    if (input.url) await this.validateDestination(input.url);
     const webhook = await this.repository.update(id, {
       url: input.url,
       events: input.events,
@@ -85,5 +91,16 @@ export class WebhookService {
     await this.getOrThrow(organizationId, id);
     await this.repository.delete(id);
     return { id, deleted: true };
+  }
+
+  private async validateDestination(url: string): Promise<void> {
+    try {
+      await this.destinationPolicy.validate(url);
+    } catch (error) {
+      if (error instanceof WebhookDestinationError) {
+        throw new BadRequestException(error.message);
+      }
+      throw new BadRequestException('Webhook destination is not allowed');
+    }
   }
 }
