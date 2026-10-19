@@ -45,7 +45,7 @@ describe('WebhookDeliveryService', () => {
           delay: 2000,
         },
         removeOnComplete: { count: 1000 },
-        removeOnFail: { age: 24 * 3600 },
+        removeOnFail: { age: 24 * 3600, count: 5_000 },
       },
     );
   });
@@ -124,7 +124,7 @@ describe('WebhookDeliveryService', () => {
     await service.queueDelivery(jobData);
 
     const callArgs = vi.mocked(mockQueue.add).mock.calls[0];
-    expect(callArgs?.[2]?.removeOnFail).toEqual({ age: 24 * 3600 });
+    expect(callArgs?.[2]?.removeOnFail).toEqual({ age: 24 * 3600, count: 5_000 });
   });
 
   it('does not include the subscriber URL in queue logs', async () => {

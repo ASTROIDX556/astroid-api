@@ -71,6 +71,30 @@ describe('AuditService', () => {
     expect(repository.create).toHaveBeenCalledWith(expect.objectContaining({ requestId: null }));
   });
 
+  it('redacts metadata before hashing and before handing it to the repository', async () => {
+    const newValue = {
+      requestId: 'req-safe-3',
+      Authorization: 'Bearer fake.jwt.value',
+      nested: [{ webhookSecret: 'fake-webhook-secret', amount: 10 }],
+    };
+
+    await service.record({
+      organizationId: 'org-1',
+      action: 'WEBHOOK_UPDATED',
+      entity: 'Webhook',
+      newValue,
+    });
+
+    const expected = {
+      requestId: 'req-safe-3',
+      Authorization: '[REDACTED]',
+      nested: [{ webhookSecret: '[REDACTED]', amount: 10 }],
+    };
+    expect(hashService.computeEntryHash.mock.calls[0][0].newValue).toEqual(expected);
+    expect(repository.create.mock.calls[0][0].newValue).toEqual(expected);
+    expect(newValue.nested[0].webhookSecret).toBe('fake-webhook-secret');
+  });
+
   describe('list', () => {
     it('returns first-page results and an opaque cursor when more records exist', async () => {
       const rows = Array.from({ length: 21 }, (_, index) => ({

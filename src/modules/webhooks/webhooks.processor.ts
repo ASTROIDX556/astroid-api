@@ -1,7 +1,7 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Inject, Logger, Optional } from '@nestjs/common';
 import { Job, UnrecoverableError } from 'bullmq';
-import { ConfigService } from '@nestjs/config';
+import { PermanentJobError } from '../../queues/queue-policy';
 import { Queues } from '../../queues/queues.constants';
 import { WebhookJobData, WebhookJobResult } from './types/webhook-job.types';
 import { signWebhookPayload, WEBHOOK_SIGNATURE_VERSION } from './utils/signing';
@@ -17,6 +17,12 @@ import {
   WEBHOOK_SIGNATURE_VERSION_HEADER,
   WEBHOOK_TIMESTAMP_HEADER,
 } from '../../common/constants/headers';
+import {
+  WebhookDestinationClient,
+  WebhookDestinationError,
+  WebhookDestinationPolicy,
+  WebhookDestinationResolutionError,
+} from './webhook-destination.policy';
 
 /**
  * BullMQ job processor for webhook event delivery with exponential backoff + jitter.
@@ -65,7 +71,8 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
     @Optional() @Inject(PrismaService) private readonly prisma?: PrismaService,
     @Optional() private readonly workerMetrics?: WorkerMetricsService,
     @Optional() private readonly webhookAudit?: WebhookAuditService,
-    @Optional() configService?: ConfigService,
+    @Optional() @Inject(WebhookDestinationPolicy)
+    private readonly destinationPolicy: WebhookDestinationClient = new WebhookDestinationPolicy(),
   ) {
     super();
     this.config = configService?.get<QueueConfig>('queue') ?? queueConfig();
@@ -107,15 +114,13 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
     organizationId: string,
   ): Promise<{ secret: string; url: string }> {
     const client = this.prisma?.workerClient ?? this.prisma;
-    if (!client) throw new UnrecoverableError('Webhook subscription is unavailable');
+    if (!client) throw new PermanentJobError('Webhook signing secret is unavailable');
     const webhook = await client.webhook.findFirst({
       where: { id: webhookId, organizationId },
       select: { secret: true, url: true, enabled: true },
     });
-    if (!webhook?.secret || !webhook.enabled || !webhook.url) {
-      throw new UnrecoverableError('Webhook subscription is unavailable');
-    }
-    return { secret: webhook.secret, url: webhook.url };
+    if (!webhook?.secret) throw new PermanentJobError('Webhook signing secret is unavailable');
+    return webhook.secret;
   }
 
   async process(job: Job<WebhookJobData>): Promise<WebhookJobResult> {
@@ -139,9 +144,7 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
         endpoint = subscription.url;
         const signature = signWebhookPayload(subscription.secret, timestamp, eventId, body);
 
-        const response = await fetch(subscription.url, {
-          method: 'POST',
-          redirect: 'manual',
+        const response = await this.destinationPolicy.post(url, {
           headers: {
             'content-type': 'application/json',
             [WEBHOOK_SIGNATURE_HEADER]: signature,
@@ -153,26 +156,38 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
             'user-agent': 'Astroid-Webhook-Bot/1.0',
           },
           body,
-          signal: AbortSignal.timeout(this.config.webhookHttpTimeoutMs),
+          timeoutMs: 5000,
         });
 
         responseStatus = response.status;
-        if (!response.ok) {
-          errorMessage = `HTTP ${response.status}`;
-          const isNonTransient =
-            response.status >= 300 &&
-            response.status < 500 &&
-            response.status !== 408 &&
-            response.status !== 429;
+        if (response.status < 200 || response.status >= 300) {
+          const isRedirect = response.status >= 300 && response.status < 400;
+          errorMessage = isRedirect ? 'Webhook endpoint redirects are not supported' : `HTTP ${response.status}`;
+          isNonTransient = isRedirect || WebhooksProcessor.NON_TRANSIENT_STATUSES.has(response.status);
           this.logger.warn(`Webhook ${webhookId} responded ${response.status}${requestTrace}`);
           if (isNonTransient) {
-            throw new UnrecoverableError(errorMessage);
+            await this.persistState({
+              webhookId,
+              organizationId,
+              eventName,
+              eventId,
+              payload,
+              status: 'FAILED',
+              attempts: job.attemptsMade + 1,
+              lastError: errorMessage,
+              responseStatus,
+            });
+            // Non-transient (4xx): record the abandoned delivery before BullMQ
+            // moves it straight to the failed set.
+            await this.auditTerminalFailure(job, errorMessage ?? 'HTTP error', responseStatus);
+                    throw new PermanentJobError(errorMessage);
           }
           throw new Error(errorMessage);
         }
         this.logger.debug(`Webhook ${webhookId} delivered successfully${requestTrace}`);
       } catch (error) {
-        if (error instanceof UnrecoverableError) {
+        if (error instanceof UnrecoverableError) throw error;
+        if (error instanceof WebhookDestinationError) {
           errorMessage = error.message;
           await this.persistState({
             webhookId,
@@ -182,22 +197,17 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
             payload,
             status: 'FAILED',
             attempts: job.attemptsMade + 1,
-            lastError: errorMessage,
-            responseStatus,
           });
-          await this.auditTerminalFailure(job, errorMessage, responseStatus, endpoint);
-          throw error;
+          await this.auditTerminalFailure(job, errorMessage);
+          throw new PermanentJobError(errorMessage);
         }
-        errorMessage =
-          responseStatus !== undefined
-            ? `HTTP ${responseStatus}`
-            : error instanceof Error && ['AbortError', 'TimeoutError'].includes(error.name)
-              ? 'Webhook request timed out'
-              : 'Webhook request failed';
-        const isLastAttempt = job.attemptsMade >= maxAttempts - 1;
-        this.logger.error(
-          `Webhook ${webhookId} failed attempt ${job.attemptsMade + 1}/${maxAttempts}${requestTrace}`,
-        );
+        errorMessage = error instanceof WebhookDestinationResolutionError
+          ? error.message
+          : error instanceof Error && /^HTTP \d{3}$/.test(error.message)
+            ? error.message
+            : 'Webhook delivery failed';
+        const isLastAttempt = job.attemptsMade >= 4;
+        this.logger.error(`Webhook ${webhookId} failed attempt ${job.attemptsMade + 1}/5${requestTrace}`);
         await this.persistState({
           webhookId,
           organizationId,
@@ -215,7 +225,7 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
           // failure listener, so record it permanently in the audit trail.
           await this.auditTerminalFailure(job, errorMessage ?? 'unknown error', responseStatus, endpoint);
         }
-        throw error;
+        throw new Error(errorMessage);
       }
 
       await this.persistState({

@@ -1,9 +1,21 @@
 import { z } from 'zod';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { validateWebhookUrlSyntax } from './webhook-destination.policy';
+
+const webhookUrlSchema = z.string().url().superRefine((url, context) => {
+  try {
+    validateWebhookUrlSyntax(url);
+  } catch (error) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: error instanceof Error ? error.message : 'Webhook URL is not allowed',
+    });
+  }
+});
 
 export const createWebhookSchema = z
   .object({
-    url: z.string().url(),
+    url: webhookUrlSchema,
     events: z.array(z.string().min(1).max(80)).min(1).max(50),
     enabled: z.boolean().default(true),
   })
@@ -12,7 +24,7 @@ export type CreateWebhookInput = z.infer<typeof createWebhookSchema>;
 
 export const updateWebhookSchema = z
   .object({
-    url: z.string().url().optional(),
+    url: webhookUrlSchema.optional(),
     events: z.array(z.string().min(1).max(80)).min(1).max(50).optional(),
     enabled: z.boolean().optional(),
   })

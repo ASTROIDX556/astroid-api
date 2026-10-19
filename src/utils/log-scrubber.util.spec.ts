@@ -66,7 +66,7 @@ describe('scrubForLog', () => {
       amount: '10',
       when: '2026-01-01T00:00:00.000Z',
       fn: undefined,
-      err: { name: 'Error', message: 'seed [REDACTED]' },
+      err: { name: 'Error', message: 'seed [REDACTED]', stack: expect.any(String) },
     });
     expect(() => JSON.stringify(out)).not.toThrow();
   });

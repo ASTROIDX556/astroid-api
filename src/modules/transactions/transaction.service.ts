@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { createHash } from 'node:crypto';
 import {
   Agent,
   AgentStatus,
@@ -39,6 +40,31 @@ import { PrismaService } from '../../database/prisma.service';
 
 const SORTABLE = ['createdAt', 'amount', 'status', 'riskScore'];
 const Decimal = Prisma.Decimal;
+const IDEMPOTENCY_OPERATION = 'transactions.create';
+const IDEMPOTENCY_RETENTION_MS = 24 * 60 * 60 * 1000;
+
+function normalizeAmount(amount: string): string {
+  const [whole, fraction = ''] = amount.split('.');
+  const normalizedWhole = whole.replace(/^0+(?=\d)/, '');
+  const normalizedFraction = fraction.replace(/0+$/, '');
+  return normalizedFraction ? `${normalizedWhole}.${normalizedFraction}` : normalizedWhole;
+}
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (value !== null && typeof value === 'object') {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, nested]) => `${JSON.stringify(key)}:${canonicalJson(nested)}`);
+    return `{${entries.join(',')}}`;
+  }
+  return JSON.stringify(value) ?? 'null';
+}
+
+function transactionRequestHash(input: CreateTransactionInput): string {
+  const normalized = { ...input, amount: normalizeAmount(input.amount) };
+  return createHash('sha256').update(canonicalJson(normalized)).digest('hex');
+}
 
 /**
  * The heart of Astroid: the transaction pipeline. Every agent-initiated payment
@@ -72,7 +98,66 @@ export class TransactionService {
     private readonly spendingLimits: SpendingLimitService,
   ) {}
 
-  async create(organizationId: string, actorId: string, input: CreateTransactionInput) {
+  async create(
+    organizationId: string,
+    actorId: string,
+    input: CreateTransactionInput,
+    idempotency?: { principalId: string; key: string },
+  ) {
+    if (!idempotency) return this.createTransaction(organizationId, actorId, input);
+
+    const keyHash = createHash('sha256').update(idempotency.key).digest('hex');
+    const requestHash = transactionRequestHash(input);
+    const reservation = await this.repository.reserveIdempotencyKey({
+      principalId: idempotency.principalId,
+      operation: IDEMPOTENCY_OPERATION,
+      keyHash,
+      requestHash,
+      expiresAt: new Date(Date.now() + IDEMPOTENCY_RETENTION_MS),
+    });
+
+    if (!reservation.created) {
+      if (reservation.record.requestHash !== requestHash) {
+        throw new ConflictException(
+          'Idempotency-Key was already used with a different transaction payload',
+        );
+      }
+      if (reservation.record.status === 'COMPLETED' && reservation.record.response !== null) {
+        return reservation.record.response as unknown as Awaited<
+          ReturnType<TransactionService['createTransaction']>
+        >;
+      }
+      throw new ConflictException(
+        'A transaction submission with this Idempotency-Key is currently being processed; retry shortly',
+      );
+    }
+
+    let transactionId: string | undefined;
+    try {
+      const result = await this.createTransaction(organizationId, actorId, input, async (transaction) => {
+        transactionId = transaction.id;
+        await this.repository.attachIdempotencyTransaction(reservation.record.id, transaction.id);
+      });
+      const response = JSON.parse(JSON.stringify(result)) as Prisma.InputJsonValue;
+      await this.repository.completeIdempotencyKey(
+        reservation.record.id,
+        transactionId!,
+        response,
+        new Date(Date.now() + IDEMPOTENCY_RETENTION_MS),
+      );
+      return result;
+    } catch (error) {
+      if (!transactionId) await this.repository.releaseIdempotencyKey(reservation.record.id);
+      throw error;
+    }
+  }
+
+  private async createTransaction(
+    organizationId: string,
+    actorId: string,
+    input: CreateTransactionInput,
+    onTransactionCreated?: (transaction: Transaction) => Promise<void>,
+  ) {
     const amount = Number(input.amount);
     const memoValue = input.memoType && input.memoValue ? input.memoValue : input.memo;
     const { wallet } = await this.preflight(organizationId, input);
@@ -149,6 +234,7 @@ export class TransactionService {
       requiresApproval,
       metadata: input.metadata as Prisma.InputJsonValue,
     });
+    await onTransactionCreated?.(transaction);
     await this.eventBus.emit(
       DomainEventName.TransactionCreated,
       { transactionId: transaction.id, amount: input.amount, riskBand: assessment.band },

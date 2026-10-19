@@ -39,10 +39,20 @@ describe('WebhooksProcessor', () => {
         findFirst: vi.fn().mockResolvedValue({ secret: WEBHOOK_SECRET, url: WEBHOOK_URL, enabled: true }),
       },
     };
-    // Access private property via type assertion
-    processor = new WebhooksProcessor(mockPrisma as never);
     fetchSpy = vi.fn();
     vi.stubGlobal('fetch', fetchSpy);
+    const destinationPolicy = {
+      post: async (url: string, options: { headers: Record<string, string>; body: Buffer; timeoutMs: number }) => {
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: options.headers,
+          body: options.body.toString('utf8'),
+          signal: AbortSignal.timeout(options.timeoutMs),
+        });
+        return { status: response.status };
+      },
+    };
+    processor = new WebhooksProcessor(mockPrisma as never, undefined, undefined, destinationPolicy);
   });
 
   afterEach(() => {
@@ -208,7 +218,7 @@ describe('WebhooksProcessor', () => {
       } catch (error) {
         threw = true;
         expect(error).toBeInstanceOf(Error);
-        expect((error as Error).message).toContain('aborted');
+        expect((error as Error).message).toBe('Webhook delivery failed');
       }
       expect(threw).toBe(true);
     });
@@ -217,7 +227,7 @@ describe('WebhooksProcessor', () => {
       fetchSpy.mockRejectedValue(new Error('getaddrinfo ENOTFOUND example.com'));
 
       const job = createMockJob();
-      await expect(processor.process(job)).rejects.toThrow('ENOTFOUND');
+      await expect(processor.process(job)).rejects.toThrow('Webhook delivery failed');
     });
   });
 

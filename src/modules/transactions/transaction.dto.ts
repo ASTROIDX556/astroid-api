@@ -2,6 +2,19 @@ import { z } from 'zod';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { stellarMemoTypeSchema } from '../../common/validators/stellar-memo.schema';
 import { stellarAddressSchema } from '../../common/validators/stellar-address.schema';
+import { ValidationException } from '../../common/exceptions/domain.exception';
+
+const idempotencyKeyPattern = /^[A-Za-z0-9._~-]{1,128}$/;
+
+export function parseIdempotencyKey(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'string' || !idempotencyKeyPattern.test(value)) {
+    throw new ValidationException(
+      'Idempotency-Key must contain 1 to 128 ASCII letters, digits, dots, underscores, tildes, or hyphens',
+    );
+  }
+  return value;
+}
 
 type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
 

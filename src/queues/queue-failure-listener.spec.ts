@@ -9,6 +9,7 @@ const close = vi.fn();
 const eventsOn = vi.fn();
 
 vi.mock('bullmq', () => ({
+  UnrecoverableError: class UnrecoverableError extends Error {},
   Queue: vi.fn().mockImplementation((name: string) => ({
     name,
     getJob,
@@ -174,7 +175,10 @@ describe('QueueFailureListener', () => {
         }),
       );
 
-      await listener.handleFailed(Queues.Transactions, { jobId: 'job-123', failedReason: 'timeout' });
+      const record = await listener.handleFailed(Queues.Transactions, {
+        jobId: 'job-123',
+        failedReason: 'timeout',
+      });
 
       expect(loggedRecord(errorSpy).trace).toEqual({
         traceId: 'trace-abc',
@@ -182,6 +186,15 @@ describe('QueueFailureListener', () => {
         requestId: 'req-abc',
         organizationId: 'org-1',
         agentId: 'agent-7',
+      });
+      expect(record?.terminalFailure).toMatchObject({
+        type: 'job.terminal-failure',
+        jobType: 'webhook-delivery',
+        queue: Queues.Transactions,
+        jobId: 'job-123',
+        attemptCount: 3,
+        requestId: 'req-abc',
+        organizationId: 'org-1',
       });
     });
 
@@ -238,10 +251,10 @@ describe('QueueFailureListener', () => {
         attemptsMade: 3,
       });
       expect(data.metadata).toMatchObject({ maxAttempts: 3, organizationId: 'org-1', traceId: 'trace-9' });
-      expect(opts.removeOnFail).toEqual({ age: 7 * 24 * 3600 });
+      expect(opts.removeOnFail).toEqual({ age: 7 * 24 * 3600, count: 5_000 });
     });
 
-    it('scrubs secrets from the log line but keeps the raw payload for dead-letter re-drive', async () => {
+    it('scrubs secrets from log and dead-letter metadata', async () => {
       listener.onModuleInit();
       getJob.mockResolvedValue(
         exhaustedJob({
@@ -263,7 +276,7 @@ describe('QueueFailureListener', () => {
       const dlqAdd = add.mock.calls.find((call: unknown[]) => String(call[0]).startsWith('dlq:'));
       expect((dlqAdd?.[1] as { payload: unknown }).payload).toEqual({
         webhookId: 'wh-1',
-        secret: 'whsec_live',
+        secret: '[REDACTED]',
       });
     });
 

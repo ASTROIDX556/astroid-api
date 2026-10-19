@@ -1,9 +1,8 @@
 import type { JobsOptions } from 'bullmq';
 import type { RegisterQueueOptions } from '@nestjs/bullmq';
 
-import { createWebhookBackoffStrategy } from '../utils/backoff.util';
 import { Queues } from './queues.constants';
-import { queueConfig, QueueConfig } from '../config/queue.config';
+import { buildJobOptions, createQueueRegistrationOptions } from './queue-policy';
 
 /** BullMQ job name used for every outbound webhook delivery. */
 export const WEBHOOK_JOB_NAME = 'webhook-delivery';
@@ -29,29 +28,19 @@ export const WEBHOOK_DEAD_LETTER_QUEUE = Queues.DeadLetter;
  * - Configured failed-job retention keeps exhausted jobs inspectable
  *   long enough for an operator to act, without growing Redis forever.
  */
-export function createWebhookJobOptions(config: QueueConfig = queueConfig()): JobsOptions {
-  return {
-    attempts: config.webhookDeliveryMaxAttempts,
-    backoff: {
-      type: 'exponential',
-      delay: config.webhookRetryDelayMs,
-    },
-    removeOnComplete: { count: 1_000 },
-    removeOnFail: { age: config.webhookFailedJobRetentionSeconds },
-  };
-}
-
-export const webhookJobOptions: JobsOptions = createWebhookJobOptions();
+export const webhookJobOptions: JobsOptions = buildJobOptions({
+  attempts: WEBHOOK_MAX_ATTEMPTS,
+  backoff: {
+    type: 'exponential',
+    delay: WEBHOOK_BACKOFF_BASE_DELAY_MS,
+  },
+  removeOnComplete: { count: 1_000 },
+  removeOnFail: { age: 24 * 3_600 },
+});
 
 /**
  * Builds the BullMQ registration for the webhook queue.
  */
-export function createWebhookQueueOptions(config: QueueConfig = queueConfig()): RegisterQueueOptions {
-  return {
-    name: Queues.Webhooks,
-    defaultJobOptions: createWebhookJobOptions(config),
-    settings: {
-      backoffStrategy: createWebhookBackoffStrategy(config.webhookRetryDelayMs),
-    } as RegisterQueueOptions['settings'],
-  };
+export function createWebhookQueueOptions(): RegisterQueueOptions {
+  return createQueueRegistrationOptions(Queues.Webhooks, webhookJobOptions);
 }

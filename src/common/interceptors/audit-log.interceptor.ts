@@ -18,59 +18,16 @@ import { getClientIp } from '../../utils/ip.util';
 import { AUDIT_LOG_KEY, AuditLogOptions } from '../decorators/audit-log.decorator';
 import { IS_SKIP_AUDIT_KEY } from '../decorators/skip-audit.decorator';
 import { AuthenticatedUser } from '../interfaces/authenticated-user.interface';
+import { isSensitiveField, REDACTED, sanitizeAuditPayload } from '../helpers/audit-sanitizer';
 
-/** Value substituted for sensitive fields before an audit payload is persisted. */
-export const REDACTED_VALUE = '[REDACTED]';
+export const REDACTED_VALUE = REDACTED;
 
-/**
- * Field-name fragments (case-insensitive) considered sensitive. Matching is
- * intentionally broad so credentials never leak into the audit trail, in line
- * with the SECURITY.md redaction policy.
- */
-const SENSITIVE_KEY_FRAGMENTS = [
-  'password',
-  'passphrase',
-  'passkey',
-  'token',
-  'secret',
-  'signature',
-  'apikey',
-  'privatekey',
-  'authorization',
-  'mnemonic',
-  'seedphrase',
-];
-
-/** Returns true when a field name denotes sensitive data (e.g. `apiKey`, `accessToken`). */
 export function isSensitiveKey(key: string): boolean {
-  const normalized = key.toLowerCase().replace(/[_-]/g, '');
-  return SENSITIVE_KEY_FRAGMENTS.some((fragment) => normalized.includes(fragment));
+  return isSensitiveField(key);
 }
 
-/**
- * Deeply masks sensitive fields in a JSON-shaped value, preserving everything
- * else. Never mutates the input: plain objects and arrays are rebuilt.
- */
 export function maskSensitiveData<T>(value: T): T {
-  if (Array.isArray(value)) {
-    return value.map((item) => maskSensitiveData(item)) as unknown as T;
-  }
-  if (isPlainObject(value)) {
-    const result: Record<string, unknown> = {};
-    for (const [key, item] of Object.entries(value)) {
-      result[key] = isSensitiveKey(key) ? REDACTED_VALUE : maskSensitiveData(item);
-    }
-    return result as T;
-  }
-  return value;
-}
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    return false;
-  }
-  const proto = Object.getPrototypeOf(value);
-  return proto === Object.prototype || proto === null;
+  return sanitizeAuditPayload(value);
 }
 
 /**

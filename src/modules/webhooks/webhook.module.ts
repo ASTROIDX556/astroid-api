@@ -14,6 +14,7 @@ import { redisConfig } from '../../config/redis.config';
 import { MetricsModule } from '../metrics/metrics.module';
 import { WebhookSignatureGuard } from '../../common/guards/webhook-signature.guard';
 import { SlidingWindowThrottlerGuard } from '../../common/guards/sliding-window-throttler.guard';
+import { WebhookDestinationPolicy } from './webhook-destination.policy';
 
 /**
  * Webhooks module. The dispatcher listens to domain events and queues the
@@ -40,6 +41,7 @@ import { SlidingWindowThrottlerGuard } from '../../common/guards/sliding-window-
   controllers: [WebhookController, WebhookIngressController],
   providers: [
     WebhookService,
+    WebhookDestinationPolicy,
     WebhookRepository,
     WebhookDispatcher,
     WebhookDeliveryService,

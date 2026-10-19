@@ -38,7 +38,7 @@ const databaseConfig = {
   queryTimeoutMs: 5000,
   statementTimeoutMs: 10000,
   workerQueryTimeoutMs: 60000,
-  slowQueryThresholdMs: 1000,
+  slowQueryThresholdMs: 250,
   connectionRetryAttempts: 2,
   connectionRetryDelayMs: 1,
 };
@@ -249,6 +249,19 @@ describe('PrismaService', () => {
     const service = buildPrismaService();
     // Delegates from the extended client are copied onto the service.
     expect(service.user.findMany).toBeDefined();
+  });
+
+  it('installs the query metrics extension on both Prisma clients', () => {
+    buildPrismaService();
+
+    for (const clientResult of mockPrismaClient.mock.results) {
+      const client = clientResult.value as { $extends: ReturnType<typeof vi.fn> };
+      const [metricsExtension] = client.$extends.mock.calls[0] as [
+        { query: { $allOperations: unknown } },
+      ];
+
+      expect(metricsExtension.query.$allOperations).toBeTypeOf('function');
+    }
   });
 
   it('exposes a dedicated worker client', () => {

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { WebhookRepository } from './webhook.repository';
 import { WebhookService } from './webhook.service';
+import { WebhookDestinationError } from './webhook-destination.policy';
 
 function record(id: string, secret: string) {
   return {
@@ -20,7 +21,11 @@ describe('WebhookService signing-secret lifecycle', () => {
     const create = vi.fn(async (data: { organizationId: string; url: string; secret: string; events: string[]; enabled: boolean }) =>
       record('wh-1', data.secret),
     );
-    const service = new WebhookService({ create } as unknown as WebhookRepository);
+    const destinationPolicy = { validate: vi.fn().mockResolvedValue({}) };
+    const service = new WebhookService(
+      { create } as unknown as WebhookRepository,
+      destinationPolicy as never,
+    );
 
     const created = await service.create('org-1', {
       url: 'https://example.com/hook',
@@ -31,6 +36,7 @@ describe('WebhookService signing-secret lifecycle', () => {
     expect(created.secret).toMatch(/^whsec_[0-9a-f]{48}$/);
     expect(create).toHaveBeenCalledWith(expect.objectContaining({ organizationId: 'org-1' }));
     expect(created).not.toHaveProperty('signingSecret');
+    expect(destinationPolicy.validate).toHaveBeenCalledWith('https://example.com/hook');
   });
 
   it('rotates only the requested endpoint and redacts secrets from later reads', async () => {
@@ -43,7 +49,10 @@ describe('WebhookService signing-secret lifecycle', () => {
       id,
       secret: changes.secret ?? current.secret,
     }));
-    const service = new WebhookService({ findById, update } as unknown as WebhookRepository);
+    const service = new WebhookService(
+      { findById, update } as unknown as WebhookRepository,
+      { validate: vi.fn().mockResolvedValue({}) } as never,
+    );
 
     const rotated = await service.rotateSecret('org-1', 'wh-1');
     const nextSecret = rotated.secret;
@@ -54,5 +63,26 @@ describe('WebhookService signing-secret lifecycle', () => {
 
     const fetched = await service.get('org-1', 'wh-1');
     expect(fetched).not.toHaveProperty('secret');
+  });
+
+  it('rejects blocked destinations on create and update with a safe validation error', async () => {
+    const repository = {
+      create: vi.fn(),
+      findById: vi.fn().mockResolvedValue(record('wh-1', 'secret')),
+      update: vi.fn(),
+    } as unknown as WebhookRepository;
+    const destinationPolicy = {
+      validate: vi.fn().mockRejectedValue(new WebhookDestinationError('Webhook destination must be a public IP address')),
+    };
+    const service = new WebhookService(repository, destinationPolicy as never);
+
+    await expect(
+      service.create('org-1', { url: 'https://127.0.0.1/hook', events: ['wallet.created'], enabled: true }),
+    ).rejects.toThrow('Webhook destination must be a public IP address');
+    await expect(service.update('org-1', 'wh-1', { url: 'https://127.0.0.1/hook' })).rejects.toThrow(
+      'Webhook destination must be a public IP address',
+    );
+    expect(repository.create).not.toHaveBeenCalled();
+    expect(repository.update).not.toHaveBeenCalled();
   });
 });
