@@ -50,6 +50,30 @@ describe('assertValidEnvironment', () => {
     expect(env.REDIS_HOST).toBe('localhost');
     expect(env.STELLAR_USE_MOCK).toBe(true);
     expect(env.DATABASE_URL).toBe(REQUIRED_ENV.DATABASE_URL);
+    expect(env.WEBHOOK_DELIVERY_MAX_ATTEMPTS).toBe(5);
+    expect(env.WEBHOOK_RETRY_DELAY_MS).toBe(2_000);
+    expect(env.WEBHOOK_HTTP_TIMEOUT_MS).toBe(5_000);
+    expect(env.WEBHOOK_FAILED_JOB_RETENTION_SECONDS).toBe(86_400);
+    expect(env.WEBHOOK_DEAD_LETTER_RETENTION_SECONDS).toBe(604_800);
+  });
+
+  it('bounds webhook retries and retention to prevent unbounded work or storage', () => {
+    const error = validationError({
+      ...REQUIRED_ENV,
+      WEBHOOK_DELIVERY_MAX_ATTEMPTS: '26',
+      WEBHOOK_RETRY_DELAY_MS: '0',
+      WEBHOOK_HTTP_TIMEOUT_MS: '120001',
+      WEBHOOK_FAILED_JOB_RETENTION_SECONDS: '2592001',
+      WEBHOOK_DEAD_LETTER_RETENTION_SECONDS: '2592001',
+    });
+
+    expect(error.issues.map((issue) => issue.key).sort()).toEqual([
+      'WEBHOOK_DEAD_LETTER_RETENTION_SECONDS',
+      'WEBHOOK_DELIVERY_MAX_ATTEMPTS',
+      'WEBHOOK_FAILED_JOB_RETENTION_SECONDS',
+      'WEBHOOK_HTTP_TIMEOUT_MS',
+      'WEBHOOK_RETRY_DELAY_MS',
+    ]);
   });
 
   it('accepts the documented .env.example as-is', () => {

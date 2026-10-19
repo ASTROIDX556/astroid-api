@@ -5,6 +5,7 @@ import { redisConfig } from '../config/redis.config';
 import { isTerminalJobFailure } from '../workers/dlq.processor';
 import { RequestContext } from '../common/context/request-context';
 import { scrubForLog, scrubString } from '../utils/log-scrubber.util';
+import { queueConfig } from '../config/queue.config';
 
 /** Correlation identifiers recovered from the job payload, when present. */
 export interface JobTraceContext {
@@ -187,7 +188,8 @@ export class QueueFailureListener implements OnModuleInit, OnModuleDestroy {
       ...record,
       failedReason: record.failedReason && scrubString(record.failedReason),
       stacktrace: record.stacktrace?.map(scrubString),
-      payload: scrubForLog(record.payload),
+      payload:
+        record.queue === Queues.Webhooks ? this.webhookLogMetadata(record.payload) : scrubForLog(record.payload),
     });
     if (record.event === 'stalled') {
       this.logger.warn(
@@ -196,12 +198,24 @@ export class QueueFailureListener implements OnModuleInit, OnModuleDestroy {
       );
       return;
     }
+
     this.logger.error(
       line,
       record.terminal
         ? `Job ${record.jobId} on queue '${record.queue}' failed terminally after ${record.attemptsMade} attempts: ${record.failedReason ?? 'unknown reason'}`
         : `Job ${record.jobId} on queue '${record.queue}' failed (attempt ${record.attemptsMade}/${record.maxAttempts ?? '?'}): ${record.failedReason ?? 'unknown reason'}`,
     );
+  }
+
+  private webhookLogMetadata(payload: unknown): unknown {
+    if (!payload || typeof payload !== 'object') return '[webhook payload omitted]';
+    const data = payload as Record<string, unknown>;
+    return {
+      webhookId: data.webhookId,
+      organizationId: data.organizationId,
+      eventName: data.eventName,
+      eventId: data.eventId,
+    };
   }
 
   /**
@@ -231,9 +245,12 @@ export class QueueFailureListener implements OnModuleInit, OnModuleDestroy {
         },
       };
 
+      const webhookRetentionSeconds =
+        record.queue === Queues.Webhooks ? queueConfig().webhookDeadLetterRetentionSeconds : undefined;
+      const retentionSeconds = webhookRetentionSeconds ?? 7 * 24 * 3_600;
       await queue.add(`dlq:${record.queue}:${record.jobId}`, data, {
-        removeOnComplete: { count: 5_000 },
-        removeOnFail: { age: 7 * 24 * 3_600 },
+        removeOnComplete: { count: 5_000, age: retentionSeconds },
+        removeOnFail: { age: retentionSeconds },
       });
     } catch (error) {
       this.logger.error(

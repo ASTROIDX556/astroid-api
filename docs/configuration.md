@@ -136,10 +136,25 @@ are rejected:
 
 ### Queues (BullMQ)
 
-| Variable            | Default   | Description                   |
-| ------------------- | --------- | ----------------------------- |
-| `QUEUE_PREFIX`      | `astroid` | Key prefix for BullMQ queues. |
-| `QUEUE_CONCURRENCY` | `5`       | Default worker concurrency.   |
+| Variable                                  | Default | Description |
+| ----------------------------------------- | ------- | ----------- |
+| `QUEUE_PREFIX`                            | `astroid` | Key prefix for BullMQ queues. |
+| `QUEUE_CONCURRENCY`                       | `5` | Default worker concurrency. |
+| `WEBHOOK_DELIVERY_MAX_ATTEMPTS`           | `5` | Maximum webhook delivery attempts, including the initial delivery; bounded to 25. |
+| `WEBHOOK_RETRY_DELAY_MS`                  | `2000` | Initial exponential retry delay in milliseconds; bounded to 300000. |
+| `WEBHOOK_HTTP_TIMEOUT_MS`                 | `5000` | Outbound request timeout in milliseconds; bounded to 120000. |
+| `WEBHOOK_FAILED_JOB_RETENTION_SECONDS`     | `86400` | How long BullMQ retains failed webhook jobs before cleanup; bounded to 30 days. |
+| `WEBHOOK_DEAD_LETTER_RETENTION_SECONDS`    | `604800` | How long the dead-letter queue retains webhook failures; bounded to 30 days. |
+
+Webhook retries use BullMQ exponential backoff with 20% jitter. Permanent
+redirect and 4xx responses stop retrying; HTTP 408, 429, 5xx, and network or
+timeout failures are retried up to the configured attempt limit.
+
+### Webhook ingress
+
+| Variable | Default | Description |
+| -------- | ------- | ----------- |
+| `WEBHOOK_INGRESS_SECRET` | _(unset)_ | Dedicated secret for inbound callbacks. Must be at least 32 characters when set. Requests are rejected while unset. Never reuse an outbound subscriber secret. |
 
 ### Rate limiting
 

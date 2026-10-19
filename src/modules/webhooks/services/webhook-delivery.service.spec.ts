@@ -127,6 +127,15 @@ describe('WebhookDeliveryService', () => {
     expect(callArgs?.[2]?.removeOnFail).toEqual({ age: 24 * 3600 });
   });
 
+  it('does not include the subscriber URL in queue logs', async () => {
+    const logger = { debug: vi.fn(), error: vi.fn() };
+    Object.assign(service, { logger });
+
+    await service.queueDelivery(createJobData({ url: 'https://example.com/hook?token=secret-value' }));
+
+    expect(logger.debug.mock.calls.flat().join(' ')).not.toContain('secret-value');
+  });
+
   it('handles queueing multiple webhooks sequentially', async () => {
     const jobData1 = createJobData({ eventId: 'event-1' });
     const jobData2 = createJobData({ eventId: 'event-2' });

@@ -89,6 +89,15 @@ export const storageEnvSchema = z.object({
 export const queueEnvSchema = z.object({
   QUEUE_PREFIX: z.string().default('astroid'),
   QUEUE_CONCURRENCY: z.coerce.number().int().positive().default(5),
+  WEBHOOK_DELIVERY_MAX_ATTEMPTS: z.coerce.number().int().positive().max(25).default(5),
+  WEBHOOK_RETRY_DELAY_MS: z.coerce.number().int().positive().max(300_000).default(2_000),
+  WEBHOOK_HTTP_TIMEOUT_MS: z.coerce.number().int().positive().max(120_000).default(5_000),
+  WEBHOOK_FAILED_JOB_RETENTION_SECONDS: z.coerce.number().int().positive().max(2_592_000).default(86_400),
+  WEBHOOK_DEAD_LETTER_RETENTION_SECONDS: z.coerce.number().int().positive().max(2_592_000).default(604_800),
+});
+
+export const webhookEnvSchema = z.object({
+  WEBHOOK_INGRESS_SECRET: z.string().min(32).optional(),
 });
 
 export const throttleEnvSchema = z.object({
@@ -200,6 +209,7 @@ export const environmentSchema = z
     ...stellarEnvSchema.shape,
     ...storageEnvSchema.shape,
     ...queueEnvSchema.shape,
+    ...webhookEnvSchema.shape,
     ...throttleEnvSchema.shape,
     ...rateLimitEnvSchema.shape,
     ...metricsEnvSchema.shape,

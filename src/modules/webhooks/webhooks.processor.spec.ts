@@ -35,7 +35,9 @@ describe('WebhooksProcessor', () => {
 
   beforeEach(() => {
     mockPrisma = {
-      webhook: { findFirst: vi.fn().mockResolvedValue({ secret: WEBHOOK_SECRET }) },
+      webhook: {
+        findFirst: vi.fn().mockResolvedValue({ secret: WEBHOOK_SECRET, url: WEBHOOK_URL, enabled: true }),
+      },
     };
     // Access private property via type assertion
     processor = new WebhooksProcessor(mockPrisma as never);
@@ -163,6 +165,16 @@ describe('WebhooksProcessor', () => {
       const job = createMockJob();
       await expect(processor.process(job)).rejects.toThrow('HTTP 503');
     });
+
+    it('retries HTTP 429 responses rather than treating them as permanent', async () => {
+      fetchSpy.mockResolvedValue({
+        ok: false,
+        status: 429,
+        text: () => Promise.resolve('Too Many Requests'),
+      });
+
+      await expect(processor.process(createMockJob())).rejects.toThrow('HTTP 429');
+    });
   });
 
   describe('transient error handling (retriable)', () => {
@@ -262,6 +274,29 @@ describe('WebhooksProcessor', () => {
       await expect(processor.process(createMockJob())).rejects.toThrow('HTTP 500');
       expect(warn.mock.calls.flat().join(' ')).not.toContain(secretEcho);
       expect(error.mock.calls.flat().join(' ')).not.toContain(secretEcho);
+    });
+
+    it('uses the configured outbound HTTP timeout', async () => {
+      const timeout = vi.spyOn(AbortSignal, 'timeout').mockReturnValue(new AbortController().signal);
+      const configuredProcessor = new WebhooksProcessor(
+        mockPrisma as never,
+        undefined,
+        undefined,
+        { get: () => ({
+          prefix: 'test',
+          concurrency: 1,
+          webhookDeliveryMaxAttempts: 4,
+          webhookRetryDelayMs: 1_000,
+          webhookHttpTimeoutMs: 9_000,
+          webhookFailedJobRetentionSeconds: 3_600,
+          webhookDeadLetterRetentionSeconds: 7_200,
+        }) } as never,
+      );
+      fetchSpy.mockResolvedValue({ ok: true, status: 200 });
+
+      await configuredProcessor.process(createMockJob());
+
+      expect(timeout).toHaveBeenCalledWith(9_000);
     });
   });
 });

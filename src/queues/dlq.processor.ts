@@ -41,9 +41,16 @@ export class DlqProcessor extends WorkerHost {
       `[DLQ-JOB-RECEIVED] Job ${originalJobId ?? job.id} from queue '${originalQueue}' (${originalJobName ?? 'unknown'}) permanently failed after ${attemptsMade} attempts. Reason: ${failedReason ?? 'Unknown'}`,
     );
 
-    this.logger.debug(
-      `[DLQ-JOB-DETAILS] Payload: ${JSON.stringify(payload)} | Stacktrace: ${JSON.stringify(stacktrace ?? [])} | FailedAt: ${failedAt}`,
-    );
+    if (originalQueue === Queues.Webhooks) {
+      const delivery = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {};
+      this.logger.debug(
+        `[DLQ-JOB-DETAILS] Webhook ${String(delivery.webhookId ?? 'unknown')} event ${String(delivery.eventId ?? 'unknown')} | FailedAt: ${failedAt}`,
+      );
+    } else {
+      this.logger.debug(
+        `[DLQ-JOB-DETAILS] Payload: ${JSON.stringify(payload)} | Stacktrace: ${JSON.stringify(stacktrace ?? [])} | FailedAt: ${failedAt}`,
+      );
+    }
 
     await this.recordDeadLetterAudit(job.data);
 

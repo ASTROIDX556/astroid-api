@@ -62,7 +62,9 @@ describe('Webhook signing & delivery', () => {
 
     beforeEach(() => {
       processor = new WebhooksProcessor({
-        webhook: { findFirst: vi.fn().mockResolvedValue({ secret: SECRET }) },
+        webhook: {
+          findFirst: vi.fn().mockResolvedValue({ secret: SECRET, url: URL, enabled: true }),
+        },
       } as never);
       fetchSpy = vi.fn();
       vi.stubGlobal('fetch', fetchSpy);
@@ -142,7 +144,7 @@ describe('Webhook signing & delivery', () => {
 
     it('loads the secret by webhook and organization rather than from the job payload', async () => {
       const fallbackSecret = 'fallback-secret-123';
-      const findFirst = vi.fn().mockResolvedValue({ secret: fallbackSecret });
+      const findFirst = vi.fn().mockResolvedValue({ secret: fallbackSecret, url: URL, enabled: true });
       const processorWithDatabaseSecret = new WebhooksProcessor({ webhook: { findFirst } } as never);
       fetchSpy.mockResolvedValue({ ok: true, status: 200, text: () => Promise.resolve('OK') });
 
@@ -163,7 +165,7 @@ describe('Webhook signing & delivery', () => {
       const [, opts] = fetchSpy.mock.calls[0];
       expect(findFirst).toHaveBeenCalledWith({
         where: { id: 'wh-1', organizationId: 'org-1' },
-        select: { secret: true },
+        select: { secret: true, url: true, enabled: true },
       });
       expect(job.data).not.toHaveProperty('secret');
       expect(opts.headers['x-astroid-signature']).toMatch(/^v1=[0-9a-f]{64}$/);

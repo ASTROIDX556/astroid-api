@@ -1,4 +1,4 @@
-import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
+import { MiddlewareConsumer, Module, NestModule, RequestMethod } from '@nestjs/common';
 import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { ConfigService } from '@nestjs/config';
 import { ThrottlerModule } from '@nestjs/throttler';
@@ -16,6 +16,7 @@ import { REDIS_CLIENT } from './common/locks/locks.constants';
 import { EncryptionModule } from './common/encryption/encryption.module';
 import { RequestIdMiddleware } from './middleware/request-id.middleware';
 import { StructuredRequestLoggingMiddleware } from './middleware/structured-request-logging.middleware';
+import { RawBodyMiddleware } from './common/middleware/raw-body.middleware';
 import { REQUEST_ID_HEADER } from './common/constants/headers';
 
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
@@ -156,5 +157,9 @@ export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer): void {
     consumer.apply(RequestIdMiddleware, StructuredRequestLoggingMiddleware).forRoutes('*');
     consumer.apply(RequestMetricsMiddleware).forRoutes('*');
+    consumer.apply(RawBodyMiddleware).forRoutes({
+      path: 'webhooks/receive',
+      method: RequestMethod.POST,
+    });
   }
 }

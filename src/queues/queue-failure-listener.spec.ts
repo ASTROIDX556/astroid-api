@@ -94,6 +94,36 @@ describe('QueueFailureListener', () => {
   });
 
   describe('handleFailed', () => {
+    it('logs safe webhook metadata without the sensitive delivery payload', async () => {
+      getJob.mockResolvedValue(
+        exhaustedJob({
+          data: {
+            webhookId: 'wh-1',
+            organizationId: 'org-1',
+            eventName: 'transaction.completed',
+            eventId: 'evt-1',
+            payload: { customerEmail: 'private@example.com' },
+          },
+        }),
+      );
+
+      const record = await listener.handleFailed(Queues.Webhooks, {
+        jobId: 'job-123',
+        failedReason: 'HTTP 500',
+      });
+
+      expect(errorSpy).toHaveBeenCalledTimes(1);
+      const logged = loggedRecord(errorSpy);
+      expect(logged.payload).toEqual({
+        webhookId: 'wh-1',
+        organizationId: 'org-1',
+        eventName: 'transaction.completed',
+        eventId: 'evt-1',
+      });
+      expect(JSON.stringify(logged)).not.toContain('private@example.com');
+      expect(record).not.toBeNull();
+    });
+
     it('logs a structured error payload with the full failure context', async () => {
       getJob.mockResolvedValue(exhaustedJob());
 
@@ -228,7 +258,7 @@ describe('QueueFailureListener', () => {
       const line = String(errorSpy.mock.calls[0][0]);
       expect(line).not.toContain('whsec_live');
       expect(line).not.toContain('abc.def.ghi');
-      expect(loggedRecord(errorSpy).payload).toEqual({ webhookId: 'wh-1', secret: '[REDACTED]' });
+      expect(loggedRecord(errorSpy).payload).toEqual({ webhookId: 'wh-1' });
 
       const dlqAdd = add.mock.calls.find((call: unknown[]) => String(call[0]).startsWith('dlq:'));
       expect((dlqAdd?.[1] as { payload: unknown }).payload).toEqual({
