@@ -1,5 +1,22 @@
 import { z } from 'zod';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import {
+  stellarContractIdSchema,
+  stellarEd25519PublicKeySchema,
+} from '../../../common/validators/stellar-address.schema';
+
+type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
+
+const jsonValueSchema: z.ZodType<JsonValue> = z.lazy(() =>
+  z.union([
+    z.string(),
+    z.number().finite(),
+    z.boolean(),
+    z.null(),
+    z.array(jsonValueSchema),
+    z.record(jsonValueSchema),
+  ]),
+);
 
 /**
  * Zod schema for Soroban contract invocation parameters.
@@ -7,15 +24,13 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
  */
 export const sorobanInvocationSchema = z
   .object({
-    contractId: z
-      .string()
-      .regex(/^[a-fA-F0-9]{64}$/, 'Contract ID must be a 64-character hex string'),
+    contractId: stellarContractIdSchema,
     functionName: z
       .string()
-      .min(1)
+      .min(1, 'Function name is required')
       .max(256)
       .regex(/^[a-zA-Z0-9_]+$/, 'Function name must contain only alphanumeric characters and underscores'),
-    args: z.array(z.any()).default([]),
+    args: z.array(jsonValueSchema).max(100, 'A Soroban invocation cannot contain more than 100 arguments').default([]),
     feeLimit: z
       .number()
       .int()
@@ -24,9 +39,10 @@ export const sorobanInvocationSchema = z
       .optional(),
     auth: z
       .object({
-        sourceAccount: z.string().regex(/^G[A-Z0-9]{55}$/, 'Invalid Stellar public key').optional(),
-        signature: z.string().optional(),
+        sourceAccount: stellarEd25519PublicKeySchema.optional(),
+        signature: z.string().min(1).max(1024).optional(),
       })
+      .strict()
       .optional(),
   })
   .strict();
@@ -42,7 +58,11 @@ export const sorobanTransactionSchema = z
     xdr: z
       .string()
       .min(1, 'XDR envelope is required')
-      .regex(/^[A-Za-z0-9+/=]+$/, 'XDR must be valid base64'),
+      .regex(
+        /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/,
+        'XDR must be valid base64',
+      )
+      .refine((value) => Buffer.from(value, 'base64').length > 0, 'XDR envelope cannot be empty'),
     network: z.enum(['TESTNET', 'PUBLIC', 'FUTURENET']).optional(),
     skipSimulation: z.boolean().optional(),
   })
@@ -54,7 +74,7 @@ export type SorobanTransactionInput = z.infer<typeof sorobanTransactionSchema>;
 
 export class SorobanInvocationDto {
   @ApiProperty({
-    description: 'Soroban contract ID (64-character hex string)',
+    description: 'Soroban contract ID (56-character Stellar C-address with a valid checksum)',
     example: 'CDL3VCZ3R7J6HWAUKT4YJAQFJMXDZ25XSX2NZBY5LXYYZVP7KTCOHN7I',
   })
   contractId!: string;

@@ -1,6 +1,6 @@
 import { ArgumentMetadata, Injectable, PipeTransform } from '@nestjs/common';
 import { ZodType } from 'zod';
-import { ValidationException } from '../exceptions/domain.exception';
+import { ZodValidationException } from './zod-validation.pipe';
 import { formatZodError } from '../validators/zod-error';
 
 /**
@@ -9,7 +9,7 @@ import { formatZodError } from '../validators/zod-error';
  * and enhanced validation for Stellar contract interactions.
  *
  * This pipe provides clearer error messages for common Soroban validation failures:
- * - Invalid contract ID format (not 64-char hex)
+ * - Invalid Stellar contract ID format
  * - Invalid function name format
  * - Invalid Stellar public key format
  * - Invalid XDR envelope format
@@ -22,7 +22,7 @@ export class SorobanValidationPipe<T> implements PipeTransform<unknown, T> {
     const result = this.schema.safeParse(value);
     if (!result.success) {
       const errorDetails = formatZodError(result.error);
-      throw new ValidationException('Soroban transaction validation failed', errorDetails);
+      throw new ZodValidationException('Soroban transaction validation failed', errorDetails);
     }
     return result.data;
   }
