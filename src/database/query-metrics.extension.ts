@@ -1,20 +1,20 @@
 import { Logger } from '@nestjs/common';
+import { performance } from 'node:perf_hooks';
 
 const logger = new Logger('QueryMetrics');
 
 export interface QueryMetricsOptions {
   /**
    * Queries that take longer than this threshold will emit a warn log.
-   * Set to 0 to disable slow query logging.
    */
   slowQueryThresholdMs: number;
 }
 
 /**
  * Prisma client extension that records slow query warnings. Any query whose
- * wall time exceeds `slowQueryThresholdMs` produces a structured warn log on
+ * duration exceeds `slowQueryThresholdMs` produces a structured warn log on
  * the `QueryMetrics` logger. The extension adds no latency on the hot path
- * when `slowQueryThresholdMs` is 0.
+ * other than measuring each operation.
  */
 export function createQueryMetricsExtension(options: QueryMetricsOptions) {
   const { slowQueryThresholdMs } = options;
@@ -32,14 +32,10 @@ export function createQueryMetricsExtension(options: QueryMetricsOptions) {
         args: unknown;
         query: (args: unknown) => Promise<unknown>;
       }) {
-        if (slowQueryThresholdMs === 0) {
-          return query(args);
-        }
+        const startedAt = performance.now();
 
-        const startedAt = Date.now();
-
-        const record = (durationMs: number, error?: unknown) => {
-          if (durationMs < slowQueryThresholdMs) return;
+        const record = (durationMs: number) => {
+          if (durationMs <= slowQueryThresholdMs) return;
           logger.warn(
             JSON.stringify({
               event: 'slow_query',
@@ -47,21 +43,20 @@ export function createQueryMetricsExtension(options: QueryMetricsOptions) {
               model,
               durationMs,
               thresholdMs: slowQueryThresholdMs,
-              ...(error ? { error: error instanceof Error ? error.message : String(error) } : {}),
             }),
           );
         };
 
-        return query(args).then(
-          (result) => {
-            record(Date.now() - startedAt);
+        return (async () => {
+          try {
+            const result = await query(args);
+            record(performance.now() - startedAt);
             return result;
-          },
-          (error: unknown) => {
-            record(Date.now() - startedAt, error);
+          } catch (error) {
+            record(performance.now() - startedAt);
             throw error;
-          },
-        );
+          }
+        })();
       },
     },
   };

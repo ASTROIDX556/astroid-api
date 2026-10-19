@@ -50,6 +50,17 @@ describe('assertValidEnvironment', () => {
     expect(env.REDIS_HOST).toBe('localhost');
     expect(env.STELLAR_USE_MOCK).toBe(true);
     expect(env.DATABASE_URL).toBe(REQUIRED_ENV.DATABASE_URL);
+    expect(env.DATABASE_SLOW_QUERY_THRESHOLD_MS).toBe(250);
+  });
+
+  it('requires a positive slow query threshold', () => {
+    for (const threshold of ['0', '-1', 'invalid']) {
+      const error = validationError({
+        ...REQUIRED_ENV,
+        DATABASE_SLOW_QUERY_THRESHOLD_MS: threshold,
+      });
+      expect(error.issues.map((issue) => issue.key)).toContain('DATABASE_SLOW_QUERY_THRESHOLD_MS');
+    }
   });
 
   it('accepts the documented .env.example as-is', () => {
