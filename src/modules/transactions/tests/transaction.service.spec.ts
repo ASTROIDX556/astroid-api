@@ -16,6 +16,7 @@ import { Keypair } from '@stellar/stellar-sdk';
 import { CreateTransactionInput } from '../transaction.dto';
 import { DomainException } from '../../../common/exceptions/domain.exception';
 import { ErrorCode } from '../../../common/constants/error-codes';
+import { parseIdempotencyKey } from '../transaction.dto';
 
 describe('TransactionService', () => {
   describe('Governance simulation', () => {
@@ -128,6 +129,7 @@ describe('TransactionService', () => {
 describe('TransactionService - create', () => {
   let service: TransactionService;
   let stellarService: StellarService;
+  let transactionRepository: TransactionRepository;
 
   const wallet = {
     id: 'wallet_1',
@@ -145,6 +147,7 @@ describe('TransactionService - create', () => {
           provide: TransactionRepository,
           useValue: (() => {
             let stored: Record<string, unknown> | undefined;
+            const idempotencyRecords = new Map<string, Record<string, unknown>>();
             return {
               create: vi.fn().mockImplementation((data: Record<string, unknown>) => {
                 stored = { id: 'tx_1', ...data, status: data.status ?? TransactionStatus.DRAFT };
@@ -157,6 +160,36 @@ describe('TransactionService - create', () => {
               findById: vi.fn().mockImplementation(() => Promise.resolve(stored)),
               hasPaidRecipient: vi.fn().mockResolvedValue(false),
               recentCountForWallet: vi.fn().mockResolvedValue(0),
+              reserveIdempotencyKey: vi.fn().mockImplementation((input: Record<string, unknown>) => {
+                const recordKey = `${input.principalId}:${input.operation}:${input.keyHash}`;
+                const existing = idempotencyRecords.get(recordKey);
+                if (existing) return Promise.resolve({ record: existing, created: false });
+                const record = {
+                  id: `idempotency_${idempotencyRecords.size + 1}`,
+                  ...input,
+                  status: 'PROCESSING',
+                  transactionId: null,
+                  response: null,
+                };
+                idempotencyRecords.set(recordKey, record);
+                return Promise.resolve({ record, created: true });
+              }),
+              attachIdempotencyTransaction: vi.fn().mockImplementation((id: string, transactionId: string) => {
+                const record = [...idempotencyRecords.values()].find((item) => item.id === id);
+                if (record) record.transactionId = transactionId;
+                return Promise.resolve(record);
+              }),
+              completeIdempotencyKey: vi.fn().mockImplementation((id: string, transactionId: string, response: unknown) => {
+                const record = [...idempotencyRecords.values()].find((item) => item.id === id);
+                if (record) Object.assign(record, { transactionId, response, status: 'COMPLETED' });
+                return Promise.resolve(record);
+              }),
+              releaseIdempotencyKey: vi.fn().mockImplementation((id: string) => {
+                for (const [recordKey, record] of idempotencyRecords) {
+                  if (record.id === id) idempotencyRecords.delete(recordKey);
+                }
+                return Promise.resolve({ count: 1 });
+              }),
             };
           })(),
         },
@@ -220,6 +253,7 @@ describe('TransactionService - create', () => {
     }).compile();
 
     service = module.get<TransactionService>(TransactionService);
+    transactionRepository = module.get<TransactionRepository>(TransactionRepository);
     stellarService = module.get<StellarService>(StellarService);
   });
 
@@ -245,6 +279,54 @@ describe('TransactionService - create', () => {
     );
     expect(result.requiresApproval).toBe(false);
     expect(result.transaction.status).toBe(TransactionStatus.COMPLETED);
+  });
+
+  it('replays a matching request without creating or submitting another transaction', async () => {
+    const first = await service.create('org_1', 'user_1', input, {
+      principalId: 'principal_1',
+      key: 'transaction-key-1',
+    });
+    const replay = await service.create(
+      'org_1',
+      'user_1',
+      { ...input, amount: '50.0000000' },
+      { principalId: 'principal_1', key: 'transaction-key-1' },
+    );
+
+    expect(replay).toMatchObject({ transaction: { id: 'tx_1', status: TransactionStatus.COMPLETED } });
+    expect(first.transaction.id).toBe(replay.transaction.id);
+    expect(transactionRepository.create).toHaveBeenCalledTimes(1);
+    expect(stellarService.submitPayment).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects reuse of a key with a different payload', async () => {
+    await service.create('org_1', 'user_1', input, {
+      principalId: 'principal_1',
+      key: 'transaction-key-2',
+    });
+
+    await expect(
+      service.create('org_1', 'user_1', { ...input, amount: '51.0' }, {
+        principalId: 'principal_1',
+        key: 'transaction-key-2',
+      }),
+    ).rejects.toMatchObject({ status: 409 });
+    expect(transactionRepository.create).toHaveBeenCalledTimes(1);
+    expect(stellarService.submitPayment).toHaveBeenCalledTimes(1);
+  });
+
+  it('scopes the same key independently to each authenticated principal', async () => {
+    await service.create('org_1', 'user_1', input, {
+      principalId: 'principal_1',
+      key: 'shared-key',
+    });
+    await service.create('org_1', 'user_2', input, {
+      principalId: 'principal_2',
+      key: 'shared-key',
+    });
+
+    expect(transactionRepository.create).toHaveBeenCalledTimes(2);
+    expect(stellarService.submitPayment).toHaveBeenCalledTimes(2);
   });
 
   it('blocks a policy-violating transaction before submission', async () => {
@@ -292,4 +374,18 @@ describe('TransactionService - create', () => {
     expect((error as DomainException).code).toBe(ErrorCode.POLICY_VIOLATION);
     expect(blockedStellar.submitPayment).not.toHaveBeenCalled();
   });
+});
+
+describe('parseIdempotencyKey', () => {
+  it('accepts an absent or correctly formatted key', () => {
+    expect(parseIdempotencyKey(undefined)).toBeUndefined();
+    expect(parseIdempotencyKey('key_01.A~b-2')).toBe('key_01.A~b-2');
+  });
+
+  it.each(['', 'white space', 'non-ascii-é', 'x'.repeat(129), ['duplicate', 'header']])(
+    'rejects an invalid key format',
+    (key) => {
+      expect(() => parseIdempotencyKey(key)).toThrow(DomainException);
+    },
+  );
 });

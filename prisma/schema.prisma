@@ -120,6 +120,11 @@ enum TransactionStatus {
   FAILED
 }
 
+enum IdempotencyStatus {
+  PROCESSING
+  COMPLETED
+}
+
 enum RiskBand {
   LOW
   MEDIUM
@@ -427,6 +432,23 @@ model Transaction {
   @@index([agentId, status])
   @@index([agentId, createdAt])
   @@map("transactions")
+}
+
+model TransactionIdempotencyRecord {
+  id            String            @id @default(uuid(7))
+  principalId   String
+  operation     String
+  keyHash       String
+  requestHash   String
+  status        IdempotencyStatus @default(PROCESSING)
+  transactionId String?
+  response      Json?
+  createdAt     DateTime          @default(now())
+  expiresAt     DateTime
+
+  @@unique([principalId, operation, keyHash])
+  @@index([expiresAt])
+  @@map("transaction_idempotency_records")
 }
 
 // ---------------------------------------------------------------------------
