@@ -78,7 +78,7 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
     this.connectionRetryAttempts = database.connectionRetryAttempts;
     this.connectionRetryDelayMs = database.connectionRetryDelayMs;
 
-    // Inject the metrics + timeout-guard extensions into this (API) client.
+    // Inject the metrics + timeout-guard extensions into the API client.
     // `$extends` returns a new client; copying its delegates onto `this` keeps
     // the PrismaService identity every repository already depends on.
     Object.assign(
@@ -105,6 +105,8 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
         { level: 'error', emit: 'event' },
       ],
     }).$extends(
+      createQueryMetricsExtension({ slowQueryThresholdMs: database.slowQueryThresholdMs }),
+    ).$extends(
       createQueryTimeoutExtension({
         queryTimeoutMs: database.workerQueryTimeoutMs,
         poolTimeoutMs: database.poolTimeoutMs,

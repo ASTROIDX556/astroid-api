@@ -42,8 +42,7 @@ export const databaseEnvSchema = z.object({
   // Defaults to `<cwd>/prisma/migrations`.
   DATABASE_MIGRATIONS_DIR: z.string().min(1).optional(),
   // Slow query logging threshold (ms). Queries exceeding this emit a warn log.
-  // 0 disables slow query logging.
-  DATABASE_SLOW_QUERY_THRESHOLD_MS: z.coerce.number().int().nonnegative().default(1000),
+  DATABASE_SLOW_QUERY_THRESHOLD_MS: z.coerce.number().int().positive().default(250),
   DATABASE_CONNECT_RETRY_ATTEMPTS: z.coerce.number().int().positive().max(10).default(5),
   DATABASE_CONNECT_RETRY_DELAY_MS: z.coerce.number().int().positive().max(60000).default(1000),
   DATABASE_MIGRATION_CHECK_ENABLED: z.coerce.boolean().default(true),

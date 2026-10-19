@@ -84,10 +84,9 @@ are rejected:
 | `DATABASE_QUERY_TIMEOUT_MS`        | `5000`  | Client-side query timeout for the API pool. `0` disables it.    |
 | `DATABASE_STATEMENT_TIMEOUT_MS`    | `10000` | Server-side `statement_timeout`. `0` disables it.               |
 | `DATABASE_WORKER_QUERY_TIMEOUT_MS` | `60000` | Client-side query timeout for the worker pool. `0` disables it. |
-| `DATABASE_SLOW_QUERY_THRESHOLD_MS` | `1000`  | Queries slower than this are logged as slow queries.            |
+| `DATABASE_SLOW_QUERY_THRESHOLD_MS` | `250`   | Positive integer in milliseconds; operations above this threshold emit a warning with model/operation and duration only. Query arguments, SQL parameters, and error messages are not logged. |
 | `DATABASE_CONNECT_RETRY_ATTEMPTS`  | `5`     | Connection attempts before giving up on startup.                |
 | `DATABASE_CONNECT_RETRY_DELAY_MS`  | `1000`  | Delay between connection retry attempts.                        |
-| `DATABASE_SLOW_QUERY_THRESHOLD_MS` | `1000` | Queries slower than this are logged as slow queries. |
 | `DATABASE_CONNECT_RETRY_ATTEMPTS` | `5` | Connection attempts before giving up on startup. |
 | `DATABASE_CONNECT_RETRY_DELAY_MS` | `1000` | Delay between connection retry attempts. |
 | `DATABASE_MIGRATION_CHECK_ENABLED` | `true` | Runs a migration status check during bootstrap before the app accepts traffic. |
