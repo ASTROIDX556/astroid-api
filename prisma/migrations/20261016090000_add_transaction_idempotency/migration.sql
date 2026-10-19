@@ -15,7 +15,7 @@ CREATE TABLE "transaction_idempotency_records" (
     CONSTRAINT "transaction_idempotency_records_pkey" PRIMARY KEY ("id")
 );
 
-CREATE UNIQUE INDEX "transaction_idempotency_records_principalId_operation_keyHash_key"
+CREATE UNIQUE INDEX "transaction_idempotency_records_principalId_operation_keyHa_key"
 ON "transaction_idempotency_records"("principalId", "operation", "keyHash");
 
 CREATE INDEX "transaction_idempotency_records_expiresAt_idx"
