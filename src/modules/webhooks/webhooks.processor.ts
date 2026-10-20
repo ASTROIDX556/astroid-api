@@ -1,5 +1,6 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Inject, Logger, Optional } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { Job, UnrecoverableError } from 'bullmq';
 import { PermanentJobError } from '../../queues/queue-policy';
 import { Queues } from '../../queues/queues.constants';
@@ -73,9 +74,10 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
     @Optional() private readonly webhookAudit?: WebhookAuditService,
     @Optional() @Inject(WebhookDestinationPolicy)
     private readonly destinationPolicy: WebhookDestinationClient = new WebhookDestinationPolicy(),
+    @Optional() @Inject(ConfigService) private readonly configService?: ConfigService,
   ) {
     super();
-    this.config = configService?.get<QueueConfig>('queue') ?? queueConfig();
+    this.config = this.configService?.get<QueueConfig>('queue') ?? queueConfig();
   }
 
   /**
@@ -120,7 +122,7 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
       select: { secret: true, url: true, enabled: true },
     });
     if (!webhook?.secret) throw new PermanentJobError('Webhook signing secret is unavailable');
-    return webhook.secret;
+    return { secret: webhook.secret, url: webhook.url };
   }
 
   async process(job: Job<WebhookJobData>): Promise<WebhookJobResult> {
@@ -144,7 +146,7 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
         endpoint = subscription.url;
         const signature = signWebhookPayload(subscription.secret, timestamp, eventId, body);
 
-        const response = await this.destinationPolicy.post(url, {
+        const response = await this.destinationPolicy.post(endpoint, {
           headers: {
             'content-type': 'application/json',
             [WEBHOOK_SIGNATURE_HEADER]: signature,
@@ -156,14 +158,18 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
             'user-agent': 'Astroid-Webhook-Bot/1.0',
           },
           body,
-          timeoutMs: 5000,
+          timeoutMs: this.config.webhookHttpTimeoutMs,
         });
 
         responseStatus = response.status;
         if (response.status < 200 || response.status >= 300) {
           const isRedirect = response.status >= 300 && response.status < 400;
           errorMessage = isRedirect ? 'Webhook endpoint redirects are not supported' : `HTTP ${response.status}`;
-          isNonTransient = isRedirect || WebhooksProcessor.NON_TRANSIENT_STATUSES.has(response.status);
+          const isNonTransient =
+            isRedirect ||
+            (response.status >= 400 &&
+              response.status < 500 &&
+              ![408, 425, 429].includes(response.status));
           this.logger.warn(`Webhook ${webhookId} responded ${response.status}${requestTrace}`);
           if (isNonTransient) {
             await this.persistState({
@@ -180,7 +186,7 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
             // Non-transient (4xx): record the abandoned delivery before BullMQ
             // moves it straight to the failed set.
             await this.auditTerminalFailure(job, errorMessage ?? 'HTTP error', responseStatus);
-                    throw new PermanentJobError(errorMessage);
+                        throw new PermanentJobError(errorMessage);
           }
           throw new Error(errorMessage);
         }
@@ -206,8 +212,10 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
           : error instanceof Error && /^HTTP \d{3}$/.test(error.message)
             ? error.message
             : 'Webhook delivery failed';
-        const isLastAttempt = job.attemptsMade >= 4;
-        this.logger.error(`Webhook ${webhookId} failed attempt ${job.attemptsMade + 1}/5${requestTrace}`);
+        const isLastAttempt = job.attemptsMade >= maxAttempts - 1;
+        this.logger.error(
+          `Webhook ${webhookId} failed attempt ${job.attemptsMade + 1}/${maxAttempts}${requestTrace}`,
+        );
         await this.persistState({
           webhookId,
           organizationId,

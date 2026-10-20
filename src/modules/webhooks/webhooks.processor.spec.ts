@@ -292,6 +292,12 @@ describe('WebhooksProcessor', () => {
         mockPrisma as never,
         undefined,
         undefined,
+        {
+          post: async (_url, options) => {
+            AbortSignal.timeout(options.timeoutMs);
+            return { status: 200 };
+          },
+        },
         { get: () => ({
           prefix: 'test',
           concurrency: 1,

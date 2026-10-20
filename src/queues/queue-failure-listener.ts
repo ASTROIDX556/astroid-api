@@ -218,6 +218,10 @@ export class QueueFailureListener implements OnModuleInit, OnModuleDestroy {
     const safeReason = record.failedReason ?? 'unknown reason';
     const line = JSON.stringify({
       ...record,
+      payload:
+        record.queue === Queues.Webhooks
+          ? this.webhookLogMetadata(record.payload)
+          : record.payload,
     });
     if (record.event === 'stalled') {
       this.logger.warn(
@@ -278,7 +282,7 @@ export class QueueFailureListener implements OnModuleInit, OnModuleDestroy {
       const retentionSeconds = webhookRetentionSeconds ?? 7 * 24 * 3_600;
       await queue.add(`dlq:${record.queue}:${record.jobId}`, data, {
         removeOnComplete: { count: 5_000 },
-        removeOnFail: { age: 7 * 24 * 3_600, count: 5_000 },
+        removeOnFail: { age: retentionSeconds, count: 5_000 },
       });
     } catch (error) {
       this.logger.error(

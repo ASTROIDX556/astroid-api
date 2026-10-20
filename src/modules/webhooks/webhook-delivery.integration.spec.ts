@@ -10,6 +10,21 @@ import { verifyWebhookSignature } from './utils/signing';
 import { WebhookSignatureGuard } from '../../common/guards/webhook-signature.guard';
 import { WebhookIngressController } from './webhook-ingress.controller';
 
+const createDestinationPolicy = () => ({
+  post: async (
+    url: string,
+    options: { headers: Record<string, string>; body: Buffer; timeoutMs: number },
+  ) => {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: options.headers,
+      body: options.body,
+      signal: AbortSignal.timeout(options.timeoutMs),
+    });
+    return { status: response.status };
+  },
+});
+
 describe('webhook delivery integration', () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -35,7 +50,7 @@ describe('webhook delivery integration', () => {
       },
       webhookDelivery: { upsert: vi.fn().mockResolvedValue({}) },
     };
-    const processor = new WebhooksProcessor(prisma as never);
+    const processor = new WebhooksProcessor(prisma as never, undefined, undefined, createDestinationPolicy());
     const response = { ok: true, status: 202 };
     const fetch = vi.fn().mockResolvedValue(response);
     vi.stubGlobal('fetch', fetch);
@@ -100,11 +115,16 @@ describe('webhook delivery integration', () => {
       { findEnabledForEvent: vi.fn().mockResolvedValue([{ id: 'wh-2', organizationId: 'org-1', url: endpoint }]) } as never,
       new WebhookDeliveryService({ add: queueAdd } as never),
     );
-    const processor = new WebhooksProcessor({
-      webhook: {
-        findFirst: vi.fn().mockResolvedValue({ secret, url: endpoint, enabled: true }),
-      },
-    } as never);
+    const processor = new WebhooksProcessor(
+      {
+        webhook: {
+          findFirst: vi.fn().mockResolvedValue({ secret, url: endpoint, enabled: true }),
+        },
+      } as never,
+      undefined,
+      undefined,
+      createDestinationPolicy(),
+    );
     const fetch = vi
       .fn()
       .mockResolvedValueOnce({ ok: false, status: 503 })
@@ -185,7 +205,8 @@ describe('webhook delivery integration', () => {
     await controller.receive(JSON.parse(rawBody.toString('utf8')));
     expect(ingressService.handle).toHaveBeenCalledTimes(1);
 
-    await expect(guard.canActivate(makeContext(`${signature.slice(0, -1)}0`))).rejects.toThrow();
+    const invalidSignature = `${signature.slice(0, -1)}${signature.endsWith('0') ? '1' : '0'}`;
+    await expect(guard.canActivate(makeContext(invalidSignature))).rejects.toThrow();
     expect(ingressService.handle).toHaveBeenCalledTimes(1);
   });
 });

@@ -5,6 +5,21 @@ import { WebhooksProcessor } from './webhooks.processor';
 import { WebhookAuditService } from './services/webhook-audit.service';
 import { WebhookJobData } from './types/webhook-job.types';
 
+const createDestinationPolicy = () => ({
+  post: async (
+    url: string,
+    options: { headers: Record<string, string>; body: Buffer; timeoutMs: number },
+  ) => {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: options.headers,
+      body: options.body,
+      signal: AbortSignal.timeout(options.timeoutMs),
+    });
+    return { status: response.status };
+  },
+});
+
 /**
  * Terminal-failure behaviour of the webhook processor: retries are scheduled
  * while attempts remain, and a delivery that exhausts them (or hits a
@@ -127,6 +142,9 @@ describe('WebhooksProcessor terminal failures', () => {
           }),
         },
       } as never,
+      undefined,
+      undefined,
+      createDestinationPolicy(),
     );
     fetchSpy.mockResolvedValue({ ok: true, status: 200 });
 

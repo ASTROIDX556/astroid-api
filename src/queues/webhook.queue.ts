@@ -1,8 +1,10 @@
 import type { JobsOptions } from 'bullmq';
 import type { RegisterQueueOptions } from '@nestjs/bullmq';
 
+import { queueConfig, type QueueConfig } from '../config/queue.config';
 import { Queues } from './queues.constants';
 import { buildJobOptions, createQueueRegistrationOptions } from './queue-policy';
+import { createWebhookBackoffStrategy } from '../utils/backoff.util';
 
 /** BullMQ job name used for every outbound webhook delivery. */
 export const WEBHOOK_JOB_NAME = 'webhook-delivery';
@@ -41,6 +43,21 @@ export const webhookJobOptions: JobsOptions = buildJobOptions({
 /**
  * Builds the BullMQ registration for the webhook queue.
  */
-export function createWebhookQueueOptions(): RegisterQueueOptions {
-  return createQueueRegistrationOptions(Queues.Webhooks, webhookJobOptions);
+export function createWebhookJobOptions(config: QueueConfig = queueConfig()): JobsOptions {
+  return buildJobOptions({
+    attempts: config.webhookDeliveryMaxAttempts,
+    backoff: { type: 'exponential', delay: config.webhookRetryDelayMs },
+    removeOnFail: { age: config.webhookFailedJobRetentionSeconds },
+  });
+}
+
+export function createWebhookQueueOptions(config: QueueConfig = queueConfig()): RegisterQueueOptions {
+  const options = createQueueRegistrationOptions(Queues.Webhooks, createWebhookJobOptions(config));
+  return {
+    ...options,
+    settings: {
+      ...options.settings,
+      backoffStrategy: createWebhookBackoffStrategy(config.webhookRetryDelayMs),
+    } as RegisterQueueOptions['settings'],
+  };
 }
