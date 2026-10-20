@@ -45,7 +45,7 @@ therefore has its own circuit, persisted in `webhook_circuit_states`:
 | --- | --- |
 | `CLOSED` | Deliveries are attempted normally. Every failed attempt increments the consecutive failure counter. |
 | `OPEN` | The endpoint reached `WEBHOOK_CIRCUIT_FAILURE_THRESHOLD` consecutive failures. Deliveries are **not** attempted: the job is moved back into BullMQ's delayed set, which does not consume an attempt, and it is retried when the cooldown ends. |
-| `HALF_OPEN` | The cooldown elapsed. A single probe delivery is allowed. A successful probe closes the circuit and resets the counter; a failed probe opens it again for another cooldown. |
+| `HALF_OPEN` | The cooldown elapsed. A single probe delivery is allowed and holds a probe lease, so a second delivery waits instead of probing again. A successful probe closes the circuit and resets the counter; a failed probe opens it again for another cooldown. A lease that expires means the probe was lost, and a new one is allowed. |
 
 The state lives in PostgreSQL, so it survives a worker restart and is shared by
 every worker of a multi-instance deployment. The transitions are written with

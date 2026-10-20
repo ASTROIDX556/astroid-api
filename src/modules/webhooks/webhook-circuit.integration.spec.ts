@@ -287,6 +287,23 @@ describe('WebhooksProcessor — circuit breaker', () => {
     );
   });
 
+  it('does not consume an attempt when the delivery is deferred', async () => {
+    await openCircuit();
+    upsert.mockClear();
+
+    const job = createMockJob({ attemptsMade: 2 } as Partial<Job<WebhookJobData>>);
+    Object.assign(job, { moveToDelayed });
+
+    await expect(processor.process(job)).rejects.toBeInstanceOf(DelayedError);
+
+    // The delivery was never sent, so the attempt counter stays where it was.
+    expect(upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({ attempts: 2 }),
+      }),
+    );
+  });
+
   it('allows a probe delivery after the cooldown and closes the circuit on success', async () => {
     await openCircuit();
     post.mockResolvedValue({ status: 200 });
@@ -326,6 +343,7 @@ describe('WebhooksProcessor — circuit breaker', () => {
         responseStatus: 503,
         failureCategory: 'transient',
         failureCode: 'HTTP_503',
+        circuitStatus: WebhookCircuitStatus.CLOSED,
       }),
       expect.objectContaining({ organizationId: ORG_ID, persist: false }),
     );
