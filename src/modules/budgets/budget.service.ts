@@ -159,13 +159,43 @@ export class BudgetService {
    * Pre-flight check used by the transactions pipeline. Throws
    * BudgetExceededException when the spend would breach the limit. Does not
    * mutate state — call {@link consume} after the payment succeeds.
+   *
+   * A budget is denominated in a single currency, so when the asset of the
+   * transfer is known the budget must be denominated in that very asset.
+   * Comparing an XLM amount against a USDC budget would silently mix units, so
+   * the check fails closed instead. A budget that has been disabled is never
+   * used as headroom either.
    */
-  async assertWithinBudget(organizationId: string, budgetId: string, amount: number) {
+  async assertWithinBudget(
+    organizationId: string,
+    budgetId: string,
+    amount: number,
+    asset?: string,
+  ) {
     // Lock the budget for the duration of the check-and-consume cycle so
     // concurrent callers see a consistent view of the remaining headroom.
     const lockKey = `budget:check:${budgetId}`;
     return this.redisLock.withLock(lockKey, async () => {
       const budget = await this.getOrThrow(organizationId, budgetId);
+
+      if (!budget.enabled) {
+        throw new BudgetExceededException('The selected budget is not active', {
+          budgetId,
+          enabled: false,
+        });
+      }
+
+      if (asset && !this.budgetMatchesAsset(budget, asset)) {
+        throw new BudgetExceededException(
+          'The selected budget is denominated in a different asset than the transfer',
+          {
+            budgetId,
+            budgetCurrency: budget.currency,
+            asset,
+          },
+        );
+      }
+
       const spendAfter = new Decimal(budget.spent).plus(amount);
       if (spendAfter.greaterThan(budget.limitAmount)) {
         await this.eventBus.emit(
@@ -182,6 +212,17 @@ export class BudgetService {
       }
       return budget;
     });
+  }
+
+  /**
+   * True when the budget's currency matches the asset of the transfer. Only
+   * the asset code is compared, so `USDC` and `USDC:GA5Z…` both match a
+   * `USDC` budget.
+   */
+  private budgetMatchesAsset(budget: Budget, asset: string): boolean {
+    const separator = asset.indexOf(':');
+    const code = (separator === -1 ? asset : asset.slice(0, separator)).trim().toUpperCase();
+    return budget.currency.trim().toUpperCase() === code;
   }
 
   /** Records realised spend after a payment completes; emits warnings near cap. */

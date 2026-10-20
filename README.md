@@ -97,7 +97,14 @@ Full OpenAPI spec available at `/docs` when the server is running.
 
 ## Data Model
 
-17 Prisma models: `Organization`, `User`, `Agent`, `Wallet`, `Policy`, `Budget`, `Transaction`, `Proposal`, `Approval`, `AuditLog`, `Notification`, `ApiKey`, `Webhook`, `Session`, `MemoryRecord`, `PasskeyCredential`, `DomainEvent`. Schema in [`prisma/`](prisma).
+18 Prisma models: `Organization`, `User`, `Agent`, `Wallet`, `Policy`, `Budget`, `Transaction`, `Proposal`, `Approval`, `AuditLog`, `AuditLogArchive`, `Notification`, `ApiKey`, `Webhook`, `Session`, `MemoryRecord`, `PasskeyCredential`, `DomainEvent`. Schema in [`prisma/`](prisma).
+
+## Spending Policies and Audit Archival
+
+- [`docs/spending-policies.md`](docs/spending-policies.md) — multi-asset policy
+  validation, per-asset limits and base-currency conversion.
+- [`docs/audit-archival.md`](docs/audit-archival.md) — the scheduled archival of
+  expired audit records into the compressed archive.
 
 ## Environment Variables
 

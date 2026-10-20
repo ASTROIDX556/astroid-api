@@ -29,6 +29,7 @@ function mockBudget(
     spent: number;
     name: string;
     enabled: boolean;
+    currency: string;
   }> = {},
 ): Budget {
   return {
@@ -37,7 +38,7 @@ function mockBudget(
     parentBudgetId: overrides.parentBudgetId ?? 'budget-parent-1',
     agentId: null,
     name: overrides.name ?? 'Child Budget',
-    currency: 'USDC',
+    currency: overrides.currency ?? 'USDC',
     limitAmount: new Decimal(overrides.limitAmount ?? 5000),
     spent: new Decimal(overrides.spent ?? 0),
     period: 'MONTHLY',
@@ -305,6 +306,56 @@ describe('BudgetService — distributed locking', () => {
       await expect(service.assertWithinBudget('org-1', 'budget-1', 1000)).rejects.toThrow();
 
       expect(lockReleased).toBe(true);
+    });
+  });
+
+  describe('assertWithinBudget — asset and state guards', () => {
+    it('accepts a transfer whose asset matches the budget currency', async () => {
+      const budget = mockBudget({ id: 'budget-1', currency: 'USDC', spent: 0, limitAmount: 10000 });
+      vi.mocked(repository.findById).mockResolvedValue(budget);
+
+      await expect(
+        service.assertWithinBudget('org-1', 'budget-1', 500, 'USDC'),
+      ).resolves.toBeDefined();
+    });
+
+    it('accepts a credit asset whose code matches the budget currency', async () => {
+      const budget = mockBudget({ id: 'budget-1', currency: 'USDC', spent: 0, limitAmount: 10000 });
+      vi.mocked(repository.findById).mockResolvedValue(budget);
+
+      await expect(
+        service.assertWithinBudget(
+          'org-1',
+          'budget-1',
+          500,
+          'USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN',
+        ),
+      ).resolves.toBeDefined();
+    });
+
+    it('fails closed when the transfer asset differs from the budget currency', async () => {
+      const budget = mockBudget({ id: 'budget-1', currency: 'USDC', spent: 0, limitAmount: 10000 });
+      vi.mocked(repository.findById).mockResolvedValue(budget);
+
+      await expect(service.assertWithinBudget('org-1', 'budget-1', 500, 'XLM')).rejects.toThrow(
+        BudgetExceededException,
+      );
+    });
+
+    it('fails closed when the budget is disabled', async () => {
+      const budget = mockBudget({ id: 'budget-1', enabled: false, spent: 0, limitAmount: 10000 });
+      vi.mocked(repository.findById).mockResolvedValue(budget);
+
+      await expect(
+        service.assertWithinBudget('org-1', 'budget-1', 500, 'USDC'),
+      ).rejects.toThrow(BudgetExceededException);
+    });
+
+    it('keeps the legacy behaviour when no asset is provided', async () => {
+      const budget = mockBudget({ id: 'budget-1', currency: 'USDC', spent: 0, limitAmount: 10000 });
+      vi.mocked(repository.findById).mockResolvedValue(budget);
+
+      await expect(service.assertWithinBudget('org-1', 'budget-1', 500)).resolves.toBeDefined();
     });
   });
 });

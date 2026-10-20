@@ -1,6 +1,25 @@
 import { z } from 'zod';
 
 /**
+ * Per-asset limit overrides. A policy may declare tighter (or looser) limits
+ * for a specific asset than the policy-wide limits. Keys are upper-case asset
+ * codes (`XLM`, `USDC`); an issued asset (`USDC:GA5Z…`) matches the `USDC`
+ * entry because only the code is compared.
+ */
+export const assetLimitSchema = z
+  .object({
+    maxAmount: z.number().nonnegative().optional(),
+    minAmount: z.number().nonnegative().optional(),
+    dailyLimit: z.number().nonnegative().optional(),
+    weeklyLimit: z.number().nonnegative().optional(),
+    monthlyLimit: z.number().nonnegative().optional(),
+  })
+  .strict();
+
+/** Map of upper-case asset code to its limit overrides. */
+export const assetLimitsSchema = z.record(z.string().min(1).max(12), assetLimitSchema);
+
+/**
  * The JSONB `configuration` shape stored on a Policy. A single flexible object
  * lets us support many policy types (max/min amount, asset allow/block,
  * recipient allow/block, periodic budgets, time windows, approval) without
@@ -32,6 +51,14 @@ export const policyConfigurationSchema = z
     approvalThreshold: z.number().nonnegative().optional(),
     /** When true, blocks ALL spending (emergency lock / kill switch). */
     emergencyLock: z.boolean().optional(),
+    /** Per-asset limit overrides keyed by the upper-case asset code. */
+    assetLimits: assetLimitsSchema.optional(),
+    /**
+     * Base currency the amount limits above are denominated in (e.g. `USD`).
+     * When set, transfer amounts are converted into this currency before they
+     * are compared with the limits.
+     */
+    baseCurrency: z.string().min(1).max(12).optional(),
   })
   .strict();
 
@@ -72,6 +99,14 @@ export const policyConfigurationSchemaStrict = z
     approvalThreshold: z.number().nonnegative().optional(),
     /** When true, blocks ALL spending (emergency lock / kill switch). */
     emergencyLock: z.boolean().optional(),
+    /** Per-asset limit overrides keyed by the upper-case asset code. */
+    assetLimits: assetLimitsSchema.optional(),
+    /**
+     * Base currency the amount limits above are denominated in (e.g. `USD`).
+     * When set, transfer amounts are converted into this currency before they
+     * are compared with the limits.
+     */
+    baseCurrency: z.string().min(1).max(12).optional(),
   })
   .strict()
   .refine(
@@ -119,9 +154,48 @@ export const policyConfigurationSchemaStrict = z
       return true;
     },
     { message: 'approvalThreshold requires requiresApproval to be true' },
+  )
+  .refine(
+    (data) => {
+      // A per-asset limit must not contradict itself either.
+      if (!data.assetLimits) return true;
+      return Object.values(data.assetLimits).every((limits) => {
+        if (limits.maxAmount !== undefined && limits.minAmount !== undefined) {
+          return limits.maxAmount > limits.minAmount;
+        }
+        return true;
+      });
+    },
+    { message: 'assetLimits[].maxAmount must be greater than assetLimits[].minAmount when both are specified' },
   );
 
 export type PolicyConfiguration = z.infer<typeof policyConfigurationSchema>;
+
+/** Per-asset limit overrides stored on a policy. */
+export type AssetLimitConfiguration = z.infer<typeof assetLimitSchema>;
+
+/**
+ * One asset leg of a transaction. A single-asset transaction has exactly one
+ * leg; a multi-asset transfer has one leg per asset.
+ */
+export interface AssetTransfer {
+  /** Canonical asset identifier of the leg (`XLM` or `CODE:ISSUER`). */
+  asset: string;
+  /**
+   * Amount of the leg, expressed in the unit the limits are denominated in
+   * (the asset's own unit, or the base currency when the policy declares one).
+   */
+  amount: number;
+  /** Optional per-leg recipient; falls back to the intent recipient. */
+  recipientAddress?: string;
+}
+
+/** Spend already made in each period, for one asset. */
+export interface SpendPeriods {
+  spentToday: number;
+  spentThisWeek: number;
+  spentThisMonth: number;
+}
 
 /** The transaction intent evaluated against policies. */
 export interface TransactionIntent {
@@ -137,6 +211,22 @@ export interface TransactionIntent {
   spentToday?: number;
   spentThisWeek?: number;
   spentThisMonth?: number;
+  /**
+   * Multi-asset legs. When present they replace the single `asset`/`amount`
+   * pair: every leg is evaluated against the policy limits independently.
+   */
+  transfers?: AssetTransfer[];
+  /**
+   * Spend already made per asset, keyed by the canonical asset identifier.
+   * When present it takes precedence over the flat period fields.
+   */
+  spentByAsset?: Record<string, SpendPeriods>;
+  /**
+   * Currency the amounts in this intent are denominated in. Set by the
+   * evaluation layer when a policy declares a `baseCurrency` and the amounts
+   * had to be converted; used in violation messages.
+   */
+  limitCurrency?: string;
 }
 
 export interface PolicyViolation {
@@ -144,6 +234,8 @@ export interface PolicyViolation {
   policyName: string;
   code: string;
   message: string;
+  /** Upper-case asset code the violation was raised for, when asset-specific. */
+  asset?: string;
 }
 
 export interface PolicyEvaluationResult {

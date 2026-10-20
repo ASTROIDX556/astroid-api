@@ -2,6 +2,8 @@ import { z } from 'zod';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { PolicyType } from '@prisma/client';
 import { policyConfigurationSchemaStrict } from './policy.types';
+import { stellarAssetSchema } from '../../common/validators/stellar-asset.schema';
+import { assetTransferSchema } from './transfer-payload';
 
 export const createPolicySchema = z
   .object({
@@ -20,16 +22,39 @@ export type CreatePolicyInput = z.infer<typeof createPolicySchema>;
 export const updatePolicySchema = createPolicySchema.partial();
 export type UpdatePolicyInput = z.infer<typeof updatePolicySchema>;
 
-export const simulatePolicySchema = z.object({
-  agentId: z.string().uuid().optional(),
-  walletId: z.string().uuid().optional(),
-  asset: z.string().min(1),
-  amount: z.number().positive(),
-  recipientAddress: z.string().min(1),
-  spentToday: z.number().nonnegative().optional(),
-  spentThisWeek: z.number().nonnegative().optional(),
-  spentThisMonth: z.number().nonnegative().optional(),
-});
+export const simulatePolicySchema = z
+  .object({
+    agentId: z.string().uuid().optional(),
+    walletId: z.string().uuid().optional(),
+    asset: stellarAssetSchema.optional(),
+    amount: z.number().positive().optional(),
+    transfers: z.array(assetTransferSchema).min(1).max(10).optional(),
+    recipientAddress: z.string().min(1),
+    spentToday: z.number().nonnegative().optional(),
+    spentThisWeek: z.number().nonnegative().optional(),
+    spentThisMonth: z.number().nonnegative().optional(),
+  })
+  .superRefine((data, ctx) => {
+    const hasTransfers = data.transfers !== undefined;
+    const hasSingle = data.amount !== undefined || data.asset !== undefined;
+
+    if (hasTransfers && hasSingle) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Provide either an asset/amount pair or a transfers array, not both',
+        path: ['transfers'],
+      });
+      return;
+    }
+
+    if (!hasTransfers && data.amount === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'amount is required when transfers is not provided',
+        path: ['amount'],
+      });
+    }
+  });
 
 export type SimulatePolicyInput = z.infer<typeof simulatePolicySchema>;
 

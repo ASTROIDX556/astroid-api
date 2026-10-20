@@ -12,10 +12,16 @@ import {
 } from '@prisma/client';
 import { TransactionRepository } from './transaction.repository';
 import { SpendingLimitService } from './spending-limit.service';
-import { CreateTransactionInput } from './transaction.dto';
+import { CreateTransactionInput, SimulateTransactionInput } from './transaction.dto';
 import { TransactionsValidator } from './transactions.validator';
 import { WalletService, toNetworkName } from '../wallets/wallet.service';
 import { PolicyService } from '../policies/policy.service';
+import { AssetRegistryService } from '../policies/asset-registry.service';
+import {
+  ParsedTransfer,
+  TransferPayloadError,
+  parseTransferPayload,
+} from '../policies/transfer-payload';
 import { RiskService } from '../risk/risk.service';
 import { BudgetService } from '../budgets/budget.service';
 import { StellarService } from '../stellar/stellar.service';
@@ -27,6 +33,7 @@ import { ErrorCode } from '../../common/constants/error-codes';
 import {
   ConflictException,
   NotFoundException,
+  ValidationException,
 } from '../../common/exceptions/domain.exception';
 import {
   buildPaginationMeta,
@@ -42,6 +49,9 @@ const SORTABLE = ['createdAt', 'amount', 'status', 'riskScore'];
 const Decimal = Prisma.Decimal;
 const IDEMPOTENCY_OPERATION = 'transactions.create';
 const IDEMPOTENCY_RETENTION_MS = 24 * 60 * 60 * 1000;
+
+/** The payload shapes the transaction pipeline accepts. */
+type TransactionPayload = CreateTransactionInput | SimulateTransactionInput;
 
 function normalizeAmount(amount: string): string {
   const [whole, fraction = ''] = amount.split('.');
@@ -96,6 +106,7 @@ export class TransactionService {
     private readonly eventBus: EventBusService,
     private readonly prisma: PrismaService,
     private readonly spendingLimits: SpendingLimitService,
+    private readonly assetRegistry: AssetRegistryService,
   ) {}
 
   async create(
@@ -159,22 +170,26 @@ export class TransactionService {
     onTransactionCreated?: (transaction: Transaction) => Promise<void>,
   ) {
     const amount = Number(input.amount);
+    // Resolve the asset to its canonical identifier (`XLM`, `CODE:ISSUER`) so
+    // issued and Stellar Anchor assets are stored, aggregated and submitted
+    // under one stable identity.
+    const asset = this.assetRegistry.canonicalize(input.asset);
     const memoValue = input.memoType && input.memoValue ? input.memoValue : input.memo;
     const { wallet } = await this.preflight(organizationId, input);
 
     // 2.5. Velocity limit check for agent spending
     if (input.agentId) {
-      await this.policies.checkVelocityLimit(organizationId, input.agentId, amount, input.asset, actorId);
+      await this.policies.checkVelocityLimit(organizationId, input.agentId, amount, asset, actorId);
     }
 
     // 2.6. Spending limit evaluation — atomically fetches daily/weekly/monthly
     //      aggregates and evaluates periodic budget caps. On violation, writes
     //      an audit log entry and throws PolicyViolationException (HTTP 422).
     //      Returns the aggregates so we can reuse them in step 3 below.
-    const baseIntent = this.toIntent(organizationId, input, amount);
+    const baseIntent = this.toIntent(organizationId, input, amount, asset);
     let enrichedIntent = baseIntent;
     if (input.agentId) {
-      const aggregates = await this.spendingLimits.aggregateSpend(input.agentId, input.asset);
+      const aggregates = await this.spendingLimits.aggregateSpend(input.agentId, asset);
       enrichedIntent = {
         ...baseIntent,
         spentToday: aggregates.spentToday,
@@ -206,9 +221,10 @@ export class TransactionService {
       { actorId },
     );
 
-    // 5. Budget headroom (no mutation yet).
+    // 5. Budget headroom (no mutation yet). The budget is denominated in a
+    //    single currency, so it is only valid for a transfer of that asset.
     if (input.budgetId) {
-      await this.budgets.assertWithinBudget(organizationId, input.budgetId, amount);
+      await this.budgets.assertWithinBudget(organizationId, input.budgetId, amount, asset);
     }
 
     const requiresApproval = policyResult.requiresApproval || !assessment.canAutoExecute;
@@ -222,7 +238,7 @@ export class TransactionService {
         ? { policy: { connect: { id: policyResult.matchedPolicyId } } }
         : {}),
       ...(input.budgetId ? { budget: { connect: { id: input.budgetId } } } : {}),
-      asset: input.asset,
+      asset,
       amount: new Decimal(input.amount),
       senderAddress: wallet.stellarAddress,
       recipientAddress: input.recipientAddress,
@@ -324,15 +340,33 @@ export class TransactionService {
   }
 
   /** Dry-run: runs every governance check without persisting or moving funds. */
-  async simulate(organizationId: string, input: CreateTransactionInput) {
-    const amount = Number(input.amount);
+  async simulate(organizationId: string, input: SimulateTransactionInput) {
+    const legs = this.parseLegs(input);
     const { wallet } = await this.preflight(organizationId, input);
-    const intent = this.toIntent(organizationId, input, amount);
+    const intent = this.toMultiAssetIntent(organizationId, input, legs);
     const policyResult = await this.policies.evaluateIntent(intent);
-    const assessment = this.risk.assess(
-      await this.toRiskFactors(organizationId, wallet, input, amount, policyResult.violations.length),
+
+    // Every leg is scored on its own; the batch inherits the riskiest leg.
+    const assessments = await Promise.all(
+      legs.map(async (leg) =>
+        this.risk.assess(
+          await this.toRiskFactors(
+            organizationId,
+            wallet,
+            input,
+            leg.amount,
+            policyResult.violations.length,
+            leg.asset,
+          ),
+        ),
+      ),
     );
-    const requiresApproval = policyResult.requiresApproval || !assessment.canAutoExecute;
+    const assessment = assessments.reduce((worst, current) =>
+      current.score > worst.score ? current : worst,
+    );
+
+    const requiresApproval =
+      policyResult.requiresApproval || assessments.some((item) => !item.canAutoExecute);
     return {
       wouldPass: policyResult.passed,
       requiresApproval,
@@ -340,6 +374,7 @@ export class TransactionService {
         passed: policyResult.passed,
         violations: policyResult.violations,
       },
+      transfers: legs.map((leg) => ({ asset: leg.asset, amount: leg.amount })),
       risk: assessment,
     };
   }
@@ -391,7 +426,7 @@ export class TransactionService {
   /** Resolves and validates the sender wallet + agent before any evaluation. */
   private async preflight(
     organizationId: string,
-    input: CreateTransactionInput,
+    input: TransactionPayload,
   ): Promise<{ wallet: Wallet; agent?: Agent }> {
     const wallet = await this.wallets.getOrThrow(organizationId, input.walletId);
     this.assertWalletSpendable(wallet);
@@ -428,24 +463,73 @@ export class TransactionService {
     organizationId: string,
     input: CreateTransactionInput,
     amount: number,
+    asset: string,
   ): TransactionIntent {
     return {
       organizationId,
       agentId: input.agentId,
       walletId: input.walletId,
-      asset: input.asset,
+      asset,
       amount,
       recipientAddress: input.recipientAddress,
       at: new Date(),
     };
   }
 
+  /**
+   * Parses the legs of a transfer payload. A single-asset payload yields one
+   * leg; a multi-asset payload yields one leg per entry. The asset of every
+   * leg is resolved to its canonical identifier.
+   */
+  private parseLegs(input: CreateTransactionInput | SimulateTransactionInput): ParsedTransfer[] {
+    const payload = input as {
+      asset?: string;
+      amount?: string | number;
+      transfers?: Array<{ asset: string; amount: string | number }>;
+    };
+    try {
+      return parseTransferPayload(payload, (asset) => this.assetRegistry.canonicalize(asset));
+    } catch (error) {
+      if (error instanceof TransferPayloadError) {
+        throw new ValidationException(error.message);
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Builds the intent of a (possibly multi-asset) payload. The first leg is
+   * the primary transfer; every leg is evaluated against the policy limits.
+   */
+  private toMultiAssetIntent(
+    organizationId: string,
+    input: CreateTransactionInput | SimulateTransactionInput,
+    legs: ParsedTransfer[],
+  ): TransactionIntent {
+    const primary = legs[0];
+    return {
+      organizationId,
+      agentId: input.agentId,
+      walletId: input.walletId,
+      asset: primary.asset,
+      amount: primary.amount,
+      recipientAddress: input.recipientAddress,
+      at: new Date(),
+      transfers: legs.map((leg) => ({
+        asset: leg.asset,
+        amount: leg.amount,
+        ...(leg.recipientAddress ? { recipientAddress: leg.recipientAddress } : {}),
+      })),
+    };
+  }
+
   private async toRiskFactors(
     organizationId: string,
     wallet: Wallet,
-    input: CreateTransactionInput,
+    input: TransactionPayload,
     amount: number,
     policyViolations: number,
+    asset?: string,
   ): Promise<RiskFactorsInput> {
     const [knownRecipient, recentTransactionCount] = await Promise.all([
       this.repository.hasPaidRecipient(organizationId, input.recipientAddress),
@@ -456,7 +540,7 @@ export class TransactionService {
     );
     return {
       amount,
-      asset: input.asset,
+      asset: asset ?? input.asset ?? 'XLM',
       knownRecipient,
       recentTransactionCount,
       walletAgeDays,

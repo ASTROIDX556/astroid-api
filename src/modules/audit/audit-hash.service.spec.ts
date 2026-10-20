@@ -8,6 +8,9 @@ describe('AuditHashService', () => {
       findFirst: ReturnType<typeof vi.fn>;
       findMany: ReturnType<typeof vi.fn>;
     };
+    auditLogArchive: {
+      findFirst: ReturnType<typeof vi.fn>;
+    };
   };
 
   beforeEach(() => {
@@ -15,6 +18,9 @@ describe('AuditHashService', () => {
       auditLog: {
         findFirst: vi.fn(),
         findMany: vi.fn(),
+      },
+      auditLogArchive: {
+        findFirst: vi.fn().mockResolvedValue(null),
       },
     };
 
@@ -319,6 +325,70 @@ describe('AuditHashService', () => {
 
       expect(result.valid).toBe(true);
       expect(result.totalChecked).toBe(2);
+    });
+
+    it('anchors the chain on the archive when older entries were archived', async () => {
+      const entry: AuditHashInput = {
+        organizationId: 'org-123',
+        userId: 'user-1',
+        action: 'AGENT_PAYMENT_COMPLETED',
+        entity: 'Transaction',
+        entityId: 'tx-1',
+        oldValue: { amount: 200 },
+        newValue: { amount: 200 },
+        ipAddress: '127.0.0.1',
+        device: 'AgentRunner/1.0',
+        createdAt: new Date('2026-08-30T10:05:00Z'),
+      };
+
+      // The archived prefix ends with this hash, so the first live entry has
+      // to point at it.
+      const archiveAnchor = 'archived-boundary-hash';
+      const hash = service.computeEntryHash(entry, archiveAnchor);
+
+      mockPrisma.auditLogArchive.findFirst.mockResolvedValueOnce({
+        chainBoundaryHash: archiveAnchor,
+      });
+      mockPrisma.auditLog.findMany.mockResolvedValueOnce([
+        { id: 'entry-1', ...entry, ...hash },
+      ]);
+
+      const result = await service.verifyChainIntegrity('org-123');
+
+      expect(result.valid).toBe(true);
+      expect(result.totalChecked).toBe(1);
+    });
+
+    it('reports a broken chain when the live entries do not point at the archive', async () => {
+      const entry: AuditHashInput = {
+        organizationId: 'org-123',
+        userId: 'user-1',
+        action: 'AGENT_PAYMENT_COMPLETED',
+        entity: 'Transaction',
+        entityId: 'tx-1',
+        oldValue: { amount: 200 },
+        newValue: { amount: 200 },
+        ipAddress: '127.0.0.1',
+        device: 'AgentRunner/1.0',
+        createdAt: new Date('2026-08-30T10:05:00Z'),
+      };
+
+      mockPrisma.auditLogArchive.findFirst.mockResolvedValueOnce({
+        chainBoundaryHash: 'archived-boundary-hash',
+      });
+      mockPrisma.auditLog.findMany.mockResolvedValueOnce([
+        {
+          id: 'entry-1',
+          ...entry,
+          previousHash: null,
+          hash: service.computeEntryHash(entry, null).hash,
+        },
+      ]);
+
+      const result = await service.verifyChainIntegrity('org-123');
+
+      expect(result.valid).toBe(false);
+      expect(result.brokenAtEntryId).toBe('entry-1');
     });
   });
 

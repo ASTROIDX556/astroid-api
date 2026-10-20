@@ -25,6 +25,8 @@ export const Queues = {
   DeadLetter: 'dead-letter',
   /** Audit logs cleanup job. */
   AuditCleanup: 'audit-cleanup',
+  /** Audit log archival: moves expired audit rows into the compressed archive. */
+  AuditArchive: 'audit-archive',
 } as const;
 
 export type QueueName = (typeof Queues)[keyof typeof Queues];

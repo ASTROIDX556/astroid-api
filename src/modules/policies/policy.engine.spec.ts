@@ -87,6 +87,90 @@ describe('PolicyEngine', () => {
     expect(result.passed).toBe(true);
   });
 
+  describe('limit boundaries', () => {
+    it('allows an amount that is exactly the maximum', () => {
+      const result = engine.evaluate(baseIntent, [policy({ configuration: { maxAmount: 100 } })]);
+      expect(result.passed).toBe(true);
+    });
+
+    it('rejects an amount that is one unit above the maximum', () => {
+      const result = engine.evaluate(
+        { ...baseIntent, amount: 100.01 },
+        [policy({ configuration: { maxAmount: 100 } })],
+      );
+      expect(result.violations[0].code).toBe('MAX_AMOUNT_EXCEEDED');
+    });
+
+    it('allows an amount that is exactly the minimum', () => {
+      const result = engine.evaluate(
+        { ...baseIntent, amount: 100 },
+        [policy({ configuration: { minAmount: 100 } })],
+      );
+      expect(result.passed).toBe(true);
+    });
+
+    it('rejects an amount that is one unit below the minimum', () => {
+      const result = engine.evaluate(
+        { ...baseIntent, amount: 99.99 },
+        [policy({ configuration: { minAmount: 100 } })],
+      );
+      expect(result.violations[0].code).toBe('MIN_AMOUNT_NOT_MET');
+    });
+
+    it('allows a projected spend that is exactly the daily limit', () => {
+      const result = engine.evaluate(
+        { ...baseIntent, amount: 100, spentToday: 900 },
+        [policy({ configuration: { dailyLimit: 1000 } })],
+      );
+      expect(result.passed).toBe(true);
+    });
+
+    it('allows a projected spend that is exactly the weekly limit', () => {
+      const result = engine.evaluate(
+        { ...baseIntent, amount: 100, spentThisWeek: 900 },
+        [policy({ configuration: { weeklyLimit: 1000 } })],
+      );
+      expect(result.passed).toBe(true);
+    });
+
+    it('allows a projected spend that is exactly the monthly limit', () => {
+      const result = engine.evaluate(
+        { ...baseIntent, amount: 100, spentThisMonth: 900 },
+        [policy({ configuration: { monthlyLimit: 1000 } })],
+      );
+      expect(result.passed).toBe(true);
+    });
+
+    it('allows a leg that is exactly at its own per-asset limit', () => {
+      const result = engine.evaluate(
+        {
+          ...baseIntent,
+          transfers: [
+            { asset: 'XLM', amount: 100 },
+            { asset: 'USDC', amount: 50 },
+          ],
+        },
+        [policy({ configuration: { assetLimits: { USDC: { maxAmount: 50 } } } })],
+      );
+      expect(result.passed).toBe(true);
+    });
+
+    it('rejects the leg that exceeds its own per-asset limit', () => {
+      const result = engine.evaluate(
+        {
+          ...baseIntent,
+          transfers: [
+            { asset: 'XLM', amount: 100 },
+            { asset: 'USDC', amount: 50.01 },
+          ],
+        },
+        [policy({ configuration: { assetLimits: { USDC: { maxAmount: 50 } } } })],
+      );
+      expect(result.violations[0].code).toBe('MAX_AMOUNT_EXCEEDED');
+      expect(result.violations[0].asset).toBe('USDC');
+    });
+  });
+
   it('requires approval when configured', () => {
     const result = engine.evaluate(baseIntent, [
       policy({ configuration: { requiresApproval: true } }),
@@ -194,5 +278,117 @@ describe('PolicyEngine temporary overrides (issue #21)', () => {
     });
     expect(engine.evaluate({ ...baseIntent, amount: 50, at }, [p]).passed).toBe(true);
     expect(engine.evaluate({ ...baseIntent, amount: 200, at }, [p]).passed).toBe(false);
+  });
+});
+
+describe('PolicyEngine multi-asset evaluation (issue #444)', () => {
+  const engine = new PolicyEngine();
+  const ISSUER = 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN';
+
+  const multiAssetIntent: TransactionIntent = {
+    organizationId: 'org-1',
+    agentId: 'agent-1',
+    asset: 'XLM',
+    amount: 10,
+    recipientAddress: 'GABC',
+    transfers: [
+      { asset: 'XLM', amount: 10 },
+      { asset: 'USDC', amount: 100 },
+    ],
+  };
+
+  it('passes a valid multi-asset transfer', () => {
+    const result = engine.evaluate(multiAssetIntent, [
+      policy({ configuration: { maxAmount: 1000, dailyLimit: 5000 } }),
+    ]);
+    expect(result.passed).toBe(true);
+    expect(result.violations).toHaveLength(0);
+  });
+
+  it('reports the offending asset in the violation', () => {
+    const result = engine.evaluate(multiAssetIntent, [
+      policy({ configuration: { maxAmount: 50 } }),
+    ]);
+    expect(result.passed).toBe(false);
+    const violation = result.violations.find((v) => v.code === 'MAX_AMOUNT_EXCEEDED');
+    expect(violation?.asset).toBe('USDC');
+    expect(violation?.message).toContain('100 USDC');
+  });
+
+  it('enforces per-asset limits instead of the policy-wide limit', () => {
+    const result = engine.evaluate(multiAssetIntent, [
+      policy({
+        configuration: {
+          maxAmount: 1000,
+          assetLimits: { XLM: { maxAmount: 5 }, USDC: { maxAmount: 500 } },
+        },
+      }),
+    ]);
+    expect(result.passed).toBe(false);
+    const violation = result.violations.find((v) => v.code === 'MAX_AMOUNT_EXCEEDED');
+    expect(violation?.asset).toBe('XLM');
+  });
+
+  it('applies the per-asset daily limit to the spend of that asset only', () => {
+    const result = engine.evaluate(
+      {
+        ...multiAssetIntent,
+        spentByAsset: {
+          XLM: { spentToday: 0, spentThisWeek: 0, spentThisMonth: 0 },
+          USDC: { spentToday: 450, spentThisWeek: 450, spentThisMonth: 450 },
+        },
+      },
+      [policy({ configuration: { assetLimits: { USDC: { dailyLimit: 500 } } } })],
+    );
+    expect(result.passed).toBe(false);
+    const violation = result.violations.find((v) => v.code === 'DAILY_LIMIT_EXCEEDED');
+    expect(violation?.asset).toBe('USDC');
+    expect(violation?.message).toContain('Projected daily spend 550 USDC exceeds limit 500 USDC');
+  });
+
+  it('does not report the same policy-level violation once per leg', () => {
+    const result = engine.evaluate(multiAssetIntent, [
+      policy({ configuration: { emergencyLock: true } }),
+    ]);
+    expect(result.violations).toHaveLength(1);
+    expect(result.violations[0].code).toBe('EMERGENCY_LOCK');
+  });
+
+  it('applies the asset allow list to every leg', () => {
+    const result = engine.evaluate(multiAssetIntent, [
+      policy({ configuration: { allowedAssets: ['XLM'] } }),
+    ]);
+    expect(result.passed).toBe(false);
+    const violation = result.violations.find((v) => v.code === 'ASSET_NOT_ALLOWED');
+    expect(violation?.asset).toBe('USDC');
+  });
+
+  it('matches an issued asset against the ticker of its allow list', () => {
+    const result = engine.evaluate(
+      {
+        ...multiAssetIntent,
+        transfers: [{ asset: `USDC:${ISSUER}`, amount: 100 }],
+      },
+      [policy({ configuration: { allowedAssets: ['USDC'] } })],
+    );
+    expect(result.passed).toBe(true);
+  });
+
+  it('requires approval when a leg reaches the approval threshold', () => {
+    const result = engine.evaluate(multiAssetIntent, [
+      policy({ configuration: { requiresApproval: true, approvalThreshold: 50 } }),
+    ]);
+    expect(result.passed).toBe(true);
+    expect(result.requiresApproval).toBe(true);
+  });
+
+  it('keeps single-asset intents behaving exactly as before', () => {
+    const result = engine.evaluate(
+      { ...baseIntent, amount: 100, spentToday: 950 },
+      [policy({ configuration: { maxAmount: 1000, dailyLimit: 1000 } })],
+    );
+    expect(result.passed).toBe(false);
+    expect(result.violations.map((v) => v.code)).toEqual(['DAILY_LIMIT_EXCEEDED']);
+    expect(result.violations[0].asset).toBe('USDC');
   });
 });

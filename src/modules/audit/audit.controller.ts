@@ -11,6 +11,7 @@ import {
 import { UserRole } from '@prisma/client';
 import { Response } from 'express';
 import { AuditService } from './audit.service';
+import { AuditArchiveService } from './audit-archive.service';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
@@ -30,7 +31,10 @@ import { AuditListQuery, auditListQuerySchema } from './audit-list.dto';
 @Controller('audit')
 @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.AUDITOR)
 export class AuditController {
-  constructor(private readonly auditService: AuditService) {}
+  constructor(
+    private readonly auditService: AuditService,
+    private readonly auditArchiveService: AuditArchiveService,
+  ) {}
 
   @Get('export')
   @ApiOperation({
@@ -154,6 +158,48 @@ export class AuditController {
     @Param('id') id: string,
   ) {
     return this.auditService.verifyEntryIntegrity(id, organizationId);
+  }
+
+  @Get('archives')
+  @ApiOperation({
+    summary: 'List the audit archives of the organization',
+    description:
+      'Lists the batches of audit records that the archival job moved out of the actively queried `audit_logs` table. ' +
+      'Only the batch metadata is returned; use `GET /audit/archives/{batchId}` to read the records of a batch.',
+  })
+  @ApiQuery({ name: 'limit', required: false, type: Number, description: 'Max batches to return (default 50, max 100)' })
+  @ApiResponse({ status: 200, description: 'Archive batches, newest first' })
+  @ApiResponse({ status: 401, description: 'Not authenticated' })
+  @ApiResponse({ status: 403, description: 'Insufficient permissions' })
+  async listArchives(
+    @CurrentUser('organizationId') organizationId: string,
+    @Query('limit') limit?: string,
+  ) {
+    const parsed = Number(limit);
+    const batches = await this.auditArchiveService.listArchives(
+      organizationId,
+      Number.isFinite(parsed) && parsed > 0 ? parsed : 50,
+    );
+    return { batches, count: batches.length };
+  }
+
+  @Get('archives/:batchId')
+  @ApiOperation({
+    summary: 'Read the records of an audit archive batch',
+    description:
+      'Returns the audit records of one archived batch. The compressed payload is decompressed and its checksum verified before it is returned.',
+  })
+  @ApiParam({ name: 'batchId', description: 'Archive batch id', example: '8f1c…' })
+  @ApiResponse({ status: 200, description: 'The archived audit records' })
+  @ApiResponse({ status: 401, description: 'Not authenticated' })
+  @ApiResponse({ status: 403, description: 'Insufficient permissions' })
+  @ApiResponse({ status: 404, description: 'Audit archive batch not found' })
+  async readArchive(
+    @CurrentUser('organizationId') organizationId: string,
+    @Param('batchId') batchId: string,
+  ) {
+    const records = await this.auditArchiveService.readArchive(organizationId, batchId);
+    return { records, count: records.length };
   }
 
   @Get(':id')

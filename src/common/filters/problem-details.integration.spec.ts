@@ -17,6 +17,7 @@ import { z } from 'zod';
 import { AllExceptionsFilter } from './all-exceptions.filter';
 import { ZodValidationPipe } from '../pipes/zod-validation.pipe';
 import { PolicyViolationException } from '../exceptions/domain.exception';
+import { PriceUnavailableException } from '../../modules/policies/price-oracle.service';
 
 /**
  * Verifies over real HTTP that every error path of the API (validation,
@@ -49,6 +50,16 @@ class ItemsController {
   @Post('transfer')
   transfer() {
     throw new PolicyViolationException('Transfer exceeds the daily limit', { limit: '100' });
+  }
+
+  @Post('price')
+  price() {
+    throw new PriceUnavailableException(
+      'unavailable',
+      'XLM',
+      'USD',
+      'No price source is configured for asset XLM',
+    );
   }
 
   @Get('boom')
@@ -134,6 +145,16 @@ describe('Problem details error responses (integration)', () => {
       title: 'Policy Violation',
       detail: 'Transfer exceeds the daily limit',
       details: { limit: '100' },
+    });
+  });
+
+  it('returns an unavailable price as a 503 problem so the caller can retry', async () => {
+    const { res, body } = await call('/items/price', { method: 'POST' });
+
+    expectProblem(res, body, 503);
+    expect(body).toMatchObject({
+      code: 'PRICE_UNAVAILABLE',
+      detail: 'No price source is configured for asset XLM',
     });
   });
 

@@ -12,6 +12,8 @@ import { encryptionConfig } from './encryption.config';
 import { rateLimitConfig } from './rate-limit.config';
 import { throttlerConfig } from './throttler.config';
 import { shutdownConfig } from './shutdown.config';
+import { priceOracleConfig } from './price-oracle.config';
+import { auditConfig } from './audit.config';
 
 export * from './app.config';
 export * from './database.config';
@@ -26,6 +28,8 @@ export * from './encryption.config';
 export * from './rate-limit.config';
 export * from './throttler.config';
 export * from './shutdown.config';
+export * from './price-oracle.config';
+export * from './audit.config';
 
 /**
  * Global configuration module. Every slice is registered via `registerAs` and
@@ -49,5 +53,7 @@ export const AppConfigModule = ConfigModule.forRoot({
     rateLimitConfig,
     throttlerConfig,
     shutdownConfig,
+    priceOracleConfig,
+    auditConfig,
   ],
 });

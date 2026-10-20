@@ -3,6 +3,7 @@ import { Reflector } from '@nestjs/core';
 import { Request } from 'express';
 import { AuthenticatedUser } from '../../../common/interfaces/authenticated-user.interface';
 import { SpendingLimitService } from '../spending-limit.service';
+import { AssetRegistryService } from '../../policies/asset-registry.service';
 import { TransactionIntent } from '../../policies/policy.types';
 
 export const SPENDING_LIMIT_GUARD_KEY = 'astroid:spendingLimitGuard';
@@ -58,6 +59,7 @@ export class SpendingLimitGuard implements CanActivate {
   constructor(
     private readonly reflector: Reflector,
     private readonly spendingLimitService: SpendingLimitService,
+    private readonly assetRegistry: AssetRegistryService,
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
@@ -92,7 +94,7 @@ export class SpendingLimitGuard implements CanActivate {
 
     const actorId = request.user?.id;
     const amount = Number(body?.amount ?? 0);
-    const asset = (body?.asset as string) ?? 'XLM';
+    const asset = this.assetRegistry.canonicalize((body?.asset as string) ?? 'XLM');
     const recipientAddress = (body?.recipientAddress as string) ?? '';
     const walletId = (body?.walletId as string) ?? undefined;
 

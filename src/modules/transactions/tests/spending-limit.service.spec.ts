@@ -490,8 +490,7 @@ describe('SpendingLimitService', () => {
     });
 
     describe('intent enrichment', () => {
-      it('passes enriched intent (with aggregates) to PolicyService.evaluateIntent', async () => {
-        mockPrismaService.policy.findMany.mockResolvedValue([
+      it('passes enriched intent (with aggregates) to PolicyService.evaluateIntent', async () => {        mockPrismaService.policy.findMany.mockResolvedValue([
           { configuration: { dailyLimit: 1000, weeklyLimit: 5000, monthlyLimit: 15000 } },
         ]);
         mockPrismaService.$transaction.mockResolvedValue([
@@ -540,6 +539,108 @@ describe('SpendingLimitService', () => {
         expect(passedIntent.asset).toBe('XLM');
         expect(passedIntent.walletId).toBe('wallet-42');
         expect(passedIntent.recipientAddress).toBe(VALID_STELLAR);
+      });
+    });
+
+    describe('multi-asset transfers', () => {
+      beforeEach(() => {
+        mockPrismaService.policy.findMany.mockResolvedValue([
+          { configuration: { assetLimits: { USDC: { dailyLimit: 500 } } } },
+        ]);
+        mockPolicyService.evaluateIntent.mockResolvedValue({
+          passed: true,
+          requiresApproval: false,
+          violations: [],
+          evaluatedPolicyIds: ['policy-1'],
+        });
+      });
+
+      it('collects the spend of every asset in the payload', async () => {
+        mockPrismaService.$transaction.mockResolvedValue([
+          { _sum: { amount: makeDecimal(0) } },
+          { _sum: { amount: makeDecimal(0) } },
+          { _sum: { amount: makeDecimal(0) } },
+        ]);
+
+        const intent = makeIntent({
+          transfers: [
+            { asset: 'XLM', amount: 10 },
+            { asset: 'USDC', amount: 100 },
+          ],
+        });
+        await service.evaluateSpendingLimits(intent, 'user-1');
+
+        const passedIntent = mockPolicyService.evaluateIntent.mock.calls[0][0] as TransactionIntent;
+        expect(passedIntent.spentByAsset).toBeDefined();
+        expect(Object.keys(passedIntent.spentByAsset ?? {})).toEqual(['XLM', 'USDC']);
+      });
+
+      it('does not query the aggregates twice when they are already present', async () => {
+        const intent = makeIntent({
+          spentToday: 10,
+          spentThisWeek: 10,
+          spentThisMonth: 10,
+          spentByAsset: {
+            XLM: { spentToday: 10, spentThisWeek: 10, spentThisMonth: 10 },
+            USDC: { spentToday: 0, spentThisWeek: 0, spentThisMonth: 0 },
+          },
+          transfers: [
+            { asset: 'XLM', amount: 10 },
+            { asset: 'USDC', amount: 100 },
+          ],
+        });
+        await service.evaluateSpendingLimits(intent, 'user-1');
+
+        const passedIntent = mockPolicyService.evaluateIntent.mock.calls[0][0] as TransactionIntent;
+        expect(passedIntent.spentByAsset?.USDC.spentToday).toBe(0);
+        expect(mockPrismaService.$transaction).not.toHaveBeenCalled();
+      });
+
+      it('reports the offending asset in the violation details', async () => {
+        mockPrismaService.$transaction.mockResolvedValue([
+          { _sum: { amount: makeDecimal(0) } },
+          { _sum: { amount: makeDecimal(0) } },
+          { _sum: { amount: makeDecimal(0) } },
+        ]);
+        mockPolicyService.evaluateIntent.mockResolvedValue({
+          passed: false,
+          requiresApproval: false,
+          violations: [
+            {
+              policyId: 'policy-1',
+              policyName: 'USDC cap',
+              code: 'DAILY_LIMIT_EXCEEDED',
+              message: 'Projected daily spend 600 USDC exceeds limit 500 USDC',
+              asset: 'USDC',
+            },
+          ],
+          evaluatedPolicyIds: ['policy-1'],
+        });
+
+        const intent = makeIntent({
+          transfers: [
+            { asset: 'XLM', amount: 10 },
+            { asset: 'USDC', amount: 100 },
+          ],
+        });
+
+        let caught: PolicyViolationException | undefined;
+        try {
+          await service.evaluateSpendingLimits(intent, 'user-1');
+        } catch (error) {
+          caught = error as PolicyViolationException;
+        }
+
+        expect(caught).toBeInstanceOf(PolicyViolationException);
+        const details = caught?.details as { violations: Array<{ asset?: string }> };
+        expect(details.violations[0].asset).toBe('USDC');
+
+        const auditCall = mockAuditService.record.mock.calls[0][0] as Record<string, unknown>;
+        const newValue = auditCall.newValue as Record<string, unknown>;
+        expect(newValue.transfers).toEqual([
+          { asset: 'XLM', amount: 10 },
+          { asset: 'USDC', amount: 100 },
+        ]);
       });
     });
   });

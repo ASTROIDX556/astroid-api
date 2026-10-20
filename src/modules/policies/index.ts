@@ -8,3 +8,6 @@ export * from './policy-override-expired.event';
 export * from './services/policy-override-cleanup.service';
 export * from './guards/agent-policy.guard';
 export * from './decorators/agent-policy.decorator';
+export * from './asset-registry.service';
+export * from './price-oracle.service';
+export * from './transfer-payload';

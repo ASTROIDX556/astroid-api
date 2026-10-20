@@ -32,6 +32,8 @@ export enum ErrorCode {
   AGENT_NOT_ACTIVE = 'AGENT_NOT_ACTIVE',
   EMERGENCY_LOCK = 'EMERGENCY_LOCK',
   VELOCITY_LIMIT_EXCEEDED = 'VELOCITY_LIMIT_EXCEEDED',
+  /** A price quote required to evaluate a limit is missing, stale or invalid. */
+  PRICE_UNAVAILABLE = 'PRICE_UNAVAILABLE',
 
   // Stellar
   STELLAR_ERROR = 'STELLAR_ERROR',
@@ -69,6 +71,7 @@ export const ERROR_STATUS: Record<ErrorCode, number> = {
   [ErrorCode.AGENT_NOT_ACTIVE]: 409,
   [ErrorCode.EMERGENCY_LOCK]: 423,
   [ErrorCode.VELOCITY_LIMIT_EXCEEDED]: 422,
+  [ErrorCode.PRICE_UNAVAILABLE]: 503,
   [ErrorCode.STELLAR_ERROR]: 502,
   [ErrorCode.INVALID_STELLAR_ADDRESS]: 400,
   [ErrorCode.INVALID_STELLAR_TRANSACTION]: 400,
@@ -107,6 +110,7 @@ export const ERROR_TITLE: Record<ErrorCode, string> = {
   [ErrorCode.AGENT_NOT_ACTIVE]: 'Agent Not Active',
   [ErrorCode.EMERGENCY_LOCK]: 'Emergency Lock Active',
   [ErrorCode.VELOCITY_LIMIT_EXCEEDED]: 'Velocity Limit Exceeded',
+  [ErrorCode.PRICE_UNAVAILABLE]: 'Price Quote Unavailable',
   [ErrorCode.STELLAR_ERROR]: 'Stellar Network Error',
   [ErrorCode.INVALID_STELLAR_ADDRESS]: 'Invalid Stellar Address',
   [ErrorCode.INVALID_STELLAR_TRANSACTION]: 'Invalid Stellar Transaction',

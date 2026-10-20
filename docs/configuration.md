@@ -122,6 +122,38 @@ are rejected:
 | `STELLAR_SOROBAN_RPC_URL`      | `https://soroban-testnet.stellar.org` | Soroban RPC endpoint.                           |
 | `STELLAR_REGISTRY_CONTRACT_ID` | _(empty)_                             | Agent registry contract ID.                     |
 | `STELLAR_USE_MOCK`             | `true`                                | `true` or `false`. Use the mock Stellar client. |
+| `STELLAR_ANCHOR_ASSETS`        | _(empty)_                             | Comma-separated `CODE=ISSUER` pairs of the Stellar Anchor assets the deployment accepts as a bare ticker (e.g. `USDC=GA5Z…`). A bare ticker that is not listed is still accepted by the API but cannot be resolved to a Stellar asset, so the network client rejects it. An issued asset can always be requested explicitly as `CODE:ISSUER`. |
+
+### Price oracle
+
+Used by the spending-policy engine when a policy denominates its limits in a
+base currency (e.g. `USD`). Without a configured source every conversion fails
+closed, so a limit can never be bypassed by treating an unknown price as zero.
+
+| Variable                   | Default    | Description                                                                                                                                   |
+| -------------------------- | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PRICE_ORACLE_ENABLED`     | `false`    | Enables the HTTP price source. Static prices below are always honoured.                                                                     |
+| `PRICE_ORACLE_URL`         | _(empty)_  | Provider-neutral JSON endpoint. The oracle appends `?base=<BASE>&assets=<ASSET>` and expects `{ "quotes": { "XLM": { "price": 0.11, "asOf": "2026-01-01T00:00:00Z" } } }`. |
+| `PRICE_ORACLE_API_KEY`     | _(empty)_  | Optional bearer token sent to the price endpoint.                                                                                            |
+| `PRICE_ORACLE_TIMEOUT_MS`  | `3000`     | HTTP timeout for a single quote request.                                                                                                       |
+| `PRICE_ORACLE_MAX_AGE_MS`  | `300000`   | Quotes older than this are rejected as stale and the transaction is blocked.                                                                    |
+| `PRICE_ORACLE_STATIC_PRICES` | _(empty)_ | Operator-managed static quote table: `ASSET=PRICE,ASSET2=PRICE2`. Consulted before the HTTP source; useful for offline deployments.               |
+
+### Audit retention and archival
+
+The archival job runs hourly. It moves the audit records that are older than
+`AUDIT_ARCHIVE_RETENTION_DAYS` out of the actively queried `audit_logs` table
+into a compressed archive (`audit_log_archives`), so the hot table stays small
+while the audit history is preserved. The archived batches stay readable
+through `GET /audit/archives` and `GET /audit/archives/{batchId}`.
+
+| Variable                    | Default     | Description                                                                                                                            |
+| --------------------------- | ----------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `AUDIT_ARCHIVE_ENABLED`     | `true`      | Enables the scheduled audit archival job.                                                                                              |
+| `AUDIT_ARCHIVE_RETENTION_DAYS` | `30`     | Age (in days) at which audit records become eligible for archival. Must be lower than `AUDIT_RETENTION_DAYS`.                            |
+| `AUDIT_ARCHIVE_BATCH_SIZE`  | `500`       | Maximum number of records archived per organization and batch.                                                                         |
+| `AUDIT_ARCHIVE_MAX_BATCHES` | `20`        | Maximum number of batches processed in a single archival run.                                                                            |
+| `AUDIT_RETENTION_DAYS`      | `90`        | Hard-delete retention applied by the audit cleanup job. Records are archived before this window closes, never after.                     |
 
 ### Storage (S3-compatible)
 

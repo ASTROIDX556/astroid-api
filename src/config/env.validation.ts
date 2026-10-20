@@ -75,6 +75,11 @@ export const stellarEnvSchema = z.object({
     .enum(['true', 'false'])
     .default('true')
     .transform((value) => value === 'true'),
+  // Comma-separated `CODE=ISSUER` pairs describing the Stellar Anchor assets
+  // the platform accepts as a bare ticker (e.g. `USDC=GA5Z…`). A bare ticker
+  // that is not listed here is still accepted by the API, but it cannot be
+  // resolved to a Stellar asset and is rejected by the network client.
+  STELLAR_ANCHOR_ASSETS: z.string().default(''),
 });
 
 export const storageEnvSchema = z.object({
@@ -83,6 +88,57 @@ export const storageEnvSchema = z.object({
   STORAGE_BUCKET: z.string().default('astroid'),
   STORAGE_ACCESS_KEY: z.string().default('astroid'),
   STORAGE_SECRET_KEY: z.string().default('astroid-secret'),
+});
+
+/**
+ * Price oracle configuration used by the spending-policy engine when a policy
+ * denominates its limits in a base currency (e.g. USD) instead of the asset's
+ * own unit. Disabled by default: without a configured source every conversion
+ * fails closed, so a policy can never silently treat an unknown price as zero.
+ */
+export const priceOracleEnvSchema = z.object({
+  // Enables the HTTP price source. Static prices below are always honoured.
+  PRICE_ORACLE_ENABLED: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
+  // Provider-neutral JSON endpoint. The oracle appends `?base=<BASE>&assets=<A,B>`
+  // and expects `{ "quotes": { "XLM": { "price": 0.11, "asOf": "2026-01-01T00:00:00Z" } } }`.
+  PRICE_ORACLE_URL: z.string().default(''),
+  // Optional bearer token sent to the price endpoint.
+  PRICE_ORACLE_API_KEY: z.string().default(''),
+  // HTTP timeout for a single quote request (ms).
+  PRICE_ORACLE_TIMEOUT_MS: z.coerce.number().int().positive().max(30_000).default(3_000),
+  // Quotes older than this are rejected as stale and the transaction is blocked.
+  PRICE_ORACLE_MAX_AGE_MS: z.coerce.number().int().positive().max(86_400_000).default(300_000),
+  // Operator-managed static quote table: `ASSET=PRICE,ASSET2=PRICE2`. Consulted
+  // before the HTTP source; useful for offline deployments and deterministic tests.
+  PRICE_ORACLE_STATIC_PRICES: z.string().default(''),
+});
+
+/**
+ * Audit retention and archival configuration.
+ *
+ * `AUDIT_RETENTION_DAYS` is the hard-delete retention already applied by the
+ * audit cleanup job. `AUDIT_ARCHIVE_RETENTION_DAYS` is the (shorter) age at
+ * which records are moved out of the actively queried `audit_logs` table into
+ * the compressed archive. The archive cutoff must stay below the delete
+ * retention, otherwise records could be deleted before they were archived.
+ */
+export const auditEnvSchema = z.object({
+  // Enables the scheduled audit archival job.
+  AUDIT_ARCHIVE_ENABLED: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((value) => value === 'true'),
+  // Age (in days) at which audit records become eligible for archival.
+  AUDIT_ARCHIVE_RETENTION_DAYS: z.coerce.number().int().positive().max(3650).default(30),
+  // Maximum number of records archived per organization and batch.
+  AUDIT_ARCHIVE_BATCH_SIZE: z.coerce.number().int().positive().max(5_000).default(500),
+  // Maximum number of batches processed in a single archival run.
+  AUDIT_ARCHIVE_MAX_BATCHES: z.coerce.number().int().positive().max(1_000).default(20),
+  // Hard-delete retention applied by the audit cleanup job (days).
+  AUDIT_RETENTION_DAYS: z.coerce.number().int().positive().max(3650).default(90),
 });
 
 export const queueEnvSchema = z.object({
@@ -198,6 +254,8 @@ export const environmentSchema = z
     ...authEnvSchema.shape,
     ...stellarEnvSchema.shape,
     ...storageEnvSchema.shape,
+    ...priceOracleEnvSchema.shape,
+    ...auditEnvSchema.shape,
     ...queueEnvSchema.shape,
     ...throttleEnvSchema.shape,
     ...rateLimitEnvSchema.shape,
@@ -206,6 +264,17 @@ export const environmentSchema = z
     ...encryptionEnvSchema.shape,
   })
   .superRefine((env, ctx) => {
+    // Audit integrity: records must be archived before the cleanup job is
+    // allowed to delete them, otherwise the archive would silently lose
+    // history that the retention window promised to keep.
+    if (env.AUDIT_ARCHIVE_RETENTION_DAYS >= env.AUDIT_RETENTION_DAYS) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['AUDIT_ARCHIVE_RETENTION_DAYS'],
+        message: `must be lower than AUDIT_RETENTION_DAYS (${env.AUDIT_RETENTION_DAYS}) so records are archived before they are deleted`,
+      });
+    }
+
     if (env.NODE_ENV !== 'production') {
       return;
     }

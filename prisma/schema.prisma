@@ -798,6 +798,39 @@ model CleanupJobLog {
 }
 
 // ---------------------------------------------------------------------------
+// Audit Log Archive  (compressed cold storage for expired audit rows)
+// ---------------------------------------------------------------------------
+
+// Audit rows that left the actively queried `audit_logs` table. The rows are
+// stored as one gzip-compressed JSON document per batch, together with a
+// checksum and the hash-chain anchor of the batch, so the audit history is
+// preserved while the hot table stays small.
+model AuditLogArchive {
+  id             String   @id @default(uuid(7))
+  // Deterministic id of the batch (derived from the archived row ids) so a
+  // retried run reuses the same archive instead of creating a duplicate.
+  batchId        String   @unique
+  organizationId String
+  // Retention cutoff that selected the batch.
+  cutoff         DateTime
+  // Number of audit rows stored in this archive.
+  recordCount    Int
+  // gzip-compressed JSON array with the archived rows.
+  payload        Bytes
+  // SHA-256 of the uncompressed payload.
+  checksum       String
+  // Hash of the last archived entry: the chain anchor of the live rows.
+  chainBoundaryHash String?
+  // createdAt of the newest archived row.
+  archivedThrough   DateTime
+  createdAt      DateTime @default(now())
+
+  @@index([organizationId, archivedThrough])
+  @@index([createdAt])
+  @@map("audit_log_archives")
+}
+
+// ---------------------------------------------------------------------------
 // Risk Assessment  (historical risk scoring for compliance and analytics)
 // ---------------------------------------------------------------------------
 
