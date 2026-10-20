@@ -140,6 +140,22 @@ are rejected:
 | `QUEUE_PREFIX`      | `astroid` | Key prefix for BullMQ queues. |
 | `QUEUE_CONCURRENCY` | `5`       | Default worker concurrency.   |
 
+### Webhook delivery
+
+Retry policy and circuit breaker of the outbound webhook delivery. The
+backoff is exponential and capped, and the circuit breaker pauses the
+deliveries of a failing endpoint instead of hammering it.
+
+| Variable                             | Default | Description                                                                                       |
+| ------------------------------------ | ------- | ------------------------------------------------------------------------------------------------- |
+| `WEBHOOK_MAX_ATTEMPTS`               | `5`     | Total delivery attempts (1 initial + retries) before the delivery is dead-lettered.                 |
+| `WEBHOOK_BACKOFF_BASE_DELAY_MS`      | `2000`  | Base delay of the exponential backoff between attempts.                                            |
+| `WEBHOOK_BACKOFF_MAX_DELAY_MS`       | `60000` | Upper bound of a single backoff delay.                                                             |
+| `WEBHOOK_REQUEST_TIMEOUT_MS`         | `5000`  | Timeout of a single delivery request.                                                              |
+| `WEBHOOK_CIRCUIT_ENABLED`            | `true`  | Enables the per-endpoint circuit breaker.                                                          |
+| `WEBHOOK_CIRCUIT_FAILURE_THRESHOLD`  | `5`     | Consecutive failed attempts against one endpoint before its circuit opens.                          |
+| `WEBHOOK_CIRCUIT_COOLDOWN_MS`        | `300000`| How long the circuit stays open before a probe delivery is allowed again.                          |
+
 ### Rate limiting
 
 | Variable                           | Default | Description                                                                         |

@@ -1,7 +1,9 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { ConfigService } from '@nestjs/config';
 import { WebhookDeliveryService } from './webhook-delivery.service';
 import { Queue } from 'bullmq';
 import { WebhookJobData } from '../types/webhook-job.types';
+import { DEFAULT_WEBHOOK_CONFIG } from '../../../config/webhook.config';
 
 describe('WebhookDeliveryService', () => {
   let service: WebhookDeliveryService;
@@ -11,7 +13,10 @@ describe('WebhookDeliveryService', () => {
     mockQueue = {
       add: vi.fn().mockResolvedValue({ id: 'job-1' }),
     } as unknown as Queue<WebhookJobData>;
-    service = new WebhookDeliveryService(mockQueue);
+    const config = {
+      getOrThrow: vi.fn().mockReturnValue(DEFAULT_WEBHOOK_CONFIG),
+    } as unknown as ConfigService;
+    service = new WebhookDeliveryService(mockQueue, config);
   });
 
   const createJobData = (overrides: Partial<WebhookJobData> = {}): WebhookJobData => ({
@@ -41,7 +46,7 @@ describe('WebhookDeliveryService', () => {
       {
         attempts: 5,
         backoff: {
-          type: 'exponential',
+          type: 'custom',
           delay: 2000,
         },
         removeOnComplete: { count: 1000 },
@@ -92,13 +97,15 @@ describe('WebhookDeliveryService', () => {
     await expect(service.queueDelivery(jobData)).rejects.toThrow('Redis connection failed');
   });
 
-  it('configures exponential backoff with 2000ms base delay', async () => {
+  it('configures the custom backoff strategy with 2000ms base delay', async () => {
     const jobData = createJobData();
     await service.queueDelivery(jobData);
 
     const callArgs = vi.mocked(mockQueue.add).mock.calls[0];
+    // The `custom` type is what makes BullMQ use the registered jittered and
+    // capped backoff strategy.
     expect(callArgs?.[2]?.backoff).toEqual({
-      type: 'exponential',
+      type: 'custom',
       delay: 2000,
     });
   });

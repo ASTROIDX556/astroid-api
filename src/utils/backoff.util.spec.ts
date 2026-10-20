@@ -1,5 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { exponentialBackoffWithJitter, webhookBackoffStrategy } from './backoff.util';
+import {
+  exponentialBackoffDelay,
+  exponentialBackoffWithJitter,
+  jitteredBackoffDelay,
+  jitteredBackoffStrategy,
+} from './backoff.util';
 
 describe('backoff.util', () => {
   beforeEach(() => {
@@ -67,29 +72,25 @@ describe('backoff.util', () => {
     });
   });
 
-  describe('webhookBackoffStrategy', () => {
+  describe('jitteredBackoffStrategy', () => {
     it('returns a delay consistent with the backoff algorithm', () => {
       vi.mocked(Math.random).mockReturnValue(0);
 
-      // First retry (attemptsMade = 0 → attempt 1)
-      const delay1 = webhookBackoffStrategy(0, 'exponential', new Error('test')) as number;
-      expect(delay1).toBe(2000);
+      const strategy = jitteredBackoffStrategy(2_000);
 
-      // Second retry (attemptsMade = 1 → attempt 2)
-      const delay2 = webhookBackoffStrategy(1, 'exponential', new Error('test')) as number;
-      expect(delay2).toBe(4000);
-
-      // Third retry (attemptsMade = 2 → attempt 3)
-      const delay3 = webhookBackoffStrategy(2, 'exponential', new Error('test')) as number;
-      expect(delay3).toBe(8000);
+      // The strategy receives the 1-based attempt number BullMQ passes to it,
+      // so the first retry waits the base delay.
+      expect(strategy(1, 'custom', new Error('test')) as number).toBe(2000);
+      expect(strategy(2, 'custom', new Error('test')) as number).toBe(4000);
+      expect(strategy(3, 'custom', new Error('test')) as number).toBe(8000);
     });
 
     it('adds jitter to prevent thundering herd', () => {
-      // Simulate 10 calls with different random values
+      const strategy = jitteredBackoffStrategy(2_000);
       const delays: number[] = [];
       for (let i = 0; i < 10; i++) {
         vi.mocked(Math.random).mockReturnValue(i / 10);
-        delays.push(webhookBackoffStrategy(1, 'exponential', new Error('test')) as number);
+        delays.push(strategy(2, 'custom', new Error('test')) as number);
       }
 
       // All delays should be different (due to jitter)
@@ -103,29 +104,99 @@ describe('backoff.util', () => {
       }
     });
 
-    it('is compatible with BullMQ BackoffStrategy type', () => {
-      // Verify the function signature matches what BullMQ expects:
-      // (attemptsMade: number, type?: string, err?: Error, job?: MinimalJob) => Promise<number> | number
-      const strategy = webhookBackoffStrategy;
-      expect(typeof strategy).toBe('function');
+    it('caps the delay at the configured maximum', () => {
+      const strategy = jitteredBackoffStrategy(2_000, 5_000);
+
+      vi.mocked(Math.random).mockReturnValue(1);
+
+      expect(strategy(10, 'custom', new Error('test')) as number).toBe(5_000);
     });
 
-    it('works regardless of type parameter', () => {
-      vi.mocked(Math.random).mockReturnValue(0);
-
-      const delay1 = webhookBackoffStrategy(1, 'exponential') as number;
-      const delay2 = webhookBackoffStrategy(1, 'fixed') as number;
-      const delay3 = webhookBackoffStrategy(1, undefined) as number;
-
-      // All should produce the same base delay for same attempt
-      expect(delay1).toBe(delay2);
-      expect(delay2).toBe(delay3);
+    it('is compatible with BullMQ BackoffStrategy type', () => {
+      const strategy = jitteredBackoffStrategy(2_000);
+      expect(typeof strategy).toBe('function');
     });
 
     it('works when err and job are not provided', () => {
       vi.mocked(Math.random).mockReturnValue(0);
-      const delay = webhookBackoffStrategy(0) as number;
+      const delay = jitteredBackoffStrategy(2_000)(1) as number;
       expect(delay).toBe(2000);
     });
+  });
+});
+
+describe('exponentialBackoffDelay', () => {
+  beforeEach(() => {
+    vi.spyOn(Math, 'random');
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('doubles the base delay per attempt', () => {
+    expect(exponentialBackoffDelay(1, 2_000)).toBe(2_000);
+    expect(exponentialBackoffDelay(2, 2_000)).toBe(4_000);
+    expect(exponentialBackoffDelay(3, 2_000)).toBe(8_000);
+    expect(exponentialBackoffDelay(4, 2_000)).toBe(16_000);
+  });
+
+  it('caps the delay at the configured maximum', () => {
+    expect(exponentialBackoffDelay(4, 2_000, 10_000)).toBe(10_000);
+    expect(exponentialBackoffDelay(10, 2_000, 10_000)).toBe(10_000);
+  });
+
+  it('leaves a delay below the maximum untouched', () => {
+    expect(exponentialBackoffDelay(1, 2_000, 10_000)).toBe(2_000);
+    expect(exponentialBackoffDelay(2, 2_000, 10_000)).toBe(4_000);
+  });
+});
+
+describe('exponentialBackoffWithJitter — maximum delay', () => {
+  beforeEach(() => {
+    vi.spyOn(Math, 'random');
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('never exceeds the configured maximum delay', () => {
+    vi.mocked(Math.random).mockReturnValue(1);
+
+    expect(exponentialBackoffWithJitter(10, 2_000, 0.2, 30_000)).toBe(30_000);
+    expect(exponentialBackoffWithJitter(4, 2_000, 0.2, 5_000)).toBe(5_000);
+  });
+
+  it('is unbounded when no maximum is configured', () => {
+    vi.mocked(Math.random).mockReturnValue(0);
+
+    expect(exponentialBackoffWithJitter(10, 2_000, 0.2)).toBe(2_000 * 2 ** 9);
+  });
+});
+
+describe('jitteredBackoffDelay', () => {
+  beforeEach(() => {
+    vi.spyOn(Math, 'random');
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('is the delay of the attempt that follows the given number of failures', () => {
+    vi.mocked(Math.random).mockReturnValue(0);
+
+    // The attempt number is 1-based — the same argument BullMQ hands to a
+    // custom backoff strategy — so the first retry waits the base delay.
+    expect(jitteredBackoffDelay(1, 2_000)).toBe(2_000);
+    expect(jitteredBackoffDelay(2, 2_000)).toBe(4_000);
+    expect(jitteredBackoffDelay(3, 2_000)).toBe(8_000);
+  });
+
+  it('applies the maximum delay to the total', () => {
+    vi.mocked(Math.random).mockReturnValue(1);
+
+    expect(jitteredBackoffDelay(5, 2_000, 10_000)).toBe(10_000);
   });
 });

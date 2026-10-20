@@ -64,6 +64,11 @@ export interface DomainEventMap {
   // Risk
   'risk.evaluated': PayloadTypes.RiskEvaluatedPayload;
   'risk.alert': PayloadTypes.RiskAlertPayload;
+
+  // Webhook delivery / circuit breaker
+  'webhook.circuit_opened': PayloadTypes.WebhookCircuitOpenedPayload;
+  'webhook.circuit_closed': PayloadTypes.WebhookCircuitClosedPayload;
+  'webhook.delivery_failed': PayloadTypes.WebhookDeliveryFailedPayload;
 }
 
 /**

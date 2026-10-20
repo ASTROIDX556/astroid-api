@@ -1,6 +1,6 @@
 import { UnrecoverableError, type BackoffStrategy, type JobsOptions } from 'bullmq';
 import type { RegisterQueueOptions } from '@nestjs/bullmq';
-import { exponentialBackoffWithJitter } from '../utils/backoff.util';
+import { jitteredBackoffDelay } from '../utils/backoff.util';
 
 /** Shared bounded retry and retention defaults for background work. */
 export const DEFAULT_JOB_OPTIONS = {
@@ -68,13 +68,37 @@ export function buildJobOptions(overrides: JobsOptions = {}): JobsOptions {
   };
 }
 
-export function createJitteredBackoffStrategy(baseDelayMs = 1_000): BackoffStrategy {
-  return (attemptsMade) => exponentialBackoffWithJitter(attemptsMade + 1, baseDelayMs, 0.2);
+/**
+ * Builds a jittered backoff strategy.
+ *
+ * The strategy receives the 1-based attempt number BullMQ passes to a custom
+ * backoff strategy, so the first retry waits exactly the base delay — the same
+ * schedule BullMQ's built-in exponential backoff produces, plus the jitter and
+ * the optional maximum delay.
+ *
+ * The strategy is only used when the job options select the `custom` backoff
+ * type: BullMQ prefers its built-in `fixed` and `exponential` strategies over
+ * a registered custom strategy.
+ */
+export function createJitteredBackoffStrategy(
+  baseDelayMs = 1_000,
+  maxDelayMs?: number,
+): BackoffStrategy {
+  return (attemptsMade) => jitteredBackoffDelay(attemptsMade, baseDelayMs, maxDelayMs);
 }
 
+/**
+ * Builds the registration options of a queue.
+ *
+ * `maxDelayMs` caps the delay the jittered backoff strategy produces. It is
+ * passed separately because BullMQ's `BackoffOptions` only carries the base
+ * delay — the effective delay of the platform is always computed by the
+ * custom strategy, which is where the cap is applied.
+ */
 export function createQueueRegistrationOptions(
   name: string,
   overrides: JobsOptions = {},
+  maxDelayMs?: number,
 ): RegisterQueueOptions {
   const defaultJobOptions = buildJobOptions(overrides);
   const configuredBackoff = defaultJobOptions.backoff;
@@ -85,6 +109,8 @@ export function createQueueRegistrationOptions(
   return {
     name,
     defaultJobOptions,
-    settings: { backoffStrategy: createJitteredBackoffStrategy(baseDelay) } as RegisterQueueOptions['settings'],
+    settings: {
+      backoffStrategy: createJitteredBackoffStrategy(baseDelay, maxDelayMs),
+    } as RegisterQueueOptions['settings'],
   };
 }
