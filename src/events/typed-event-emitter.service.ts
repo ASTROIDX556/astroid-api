@@ -64,6 +64,7 @@ export interface DomainEventMap {
   // Risk
   'risk.evaluated': PayloadTypes.RiskEvaluatedPayload;
   'risk.alert': PayloadTypes.RiskAlertPayload;
+  'webhook.permanently_failed': PayloadTypes.WebhookPermanentlyFailedPayload;
 }
 
 /**

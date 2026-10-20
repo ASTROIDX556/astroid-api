@@ -35,6 +35,22 @@ interface ResolvedError {
 
 const ERROR_CODES = new Set<string>(Object.values(ErrorCode));
 
+function makeSerializable(value: unknown, seen = new WeakSet<object>()): unknown {
+  if (typeof value === 'bigint') return value.toString();
+  if (value === null || typeof value !== 'object') return value;
+  if (value instanceof Date) return value.toISOString();
+  if (seen.has(value)) return '[Circular]';
+
+  seen.add(value);
+  const result = Array.isArray(value)
+    ? value.map((item) => makeSerializable(item, seen))
+    : Object.fromEntries(
+        Object.entries(value).map(([key, item]) => [key, makeSerializable(item, seen)]),
+      );
+  seen.delete(value);
+  return result;
+}
+
 /**
  * Global exception filter. Converts any thrown error into an RFC 9457 problem
  * details body (`application/problem+json`):
@@ -98,7 +114,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
       requestId,
     };
     if (error.details !== undefined) {
-      problem.details = error.details;
+      problem.details = makeSerializable(error.details);
     }
     return problem;
   }

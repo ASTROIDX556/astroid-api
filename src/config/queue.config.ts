@@ -4,6 +4,7 @@ import { queueEnvSchema, validateEnv } from './env.validation';
 export type QueueConfig = {
   prefix: string;
   concurrency: number;
+  webhookMaxAttempts: number;
 };
 
 export const queueConfig = registerAs('queue', (): QueueConfig => {
@@ -11,5 +12,6 @@ export const queueConfig = registerAs('queue', (): QueueConfig => {
   return {
     prefix: queueEnv.QUEUE_PREFIX,
     concurrency: queueEnv.QUEUE_CONCURRENCY,
+    webhookMaxAttempts: queueEnv.WEBHOOK_MAX_ATTEMPTS,
   };
 });

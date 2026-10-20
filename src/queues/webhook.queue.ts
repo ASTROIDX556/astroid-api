@@ -3,12 +3,13 @@ import type { RegisterQueueOptions } from '@nestjs/bullmq';
 
 import { Queues } from './queues.constants';
 import { buildJobOptions, createQueueRegistrationOptions } from './queue-policy';
+import { queueConfig } from '../config/queue.config';
 
 /** BullMQ job name used for every outbound webhook delivery. */
 export const WEBHOOK_JOB_NAME = 'webhook-delivery';
 
-/** Total delivery attempts (1 initial + 4 retries) before a webhook is dead-lettered. */
-export const WEBHOOK_MAX_ATTEMPTS = 5;
+/** Total delivery attempts before a webhook is dead-lettered (default 5). */
+export const WEBHOOK_MAX_ATTEMPTS = queueConfig().webhookMaxAttempts;
 
 /** Base delay in milliseconds for the exponential backoff between attempts. */
 export const WEBHOOK_BACKOFF_BASE_DELAY_MS = 2_000;
@@ -19,7 +20,7 @@ export const WEBHOOK_DEAD_LETTER_QUEUE = Queues.DeadLetter;
 /**
  * Retry policy applied to every queued webhook delivery.
  *
- * - `attempts: 5` bounds the work spent on a dead endpoint.
+ * - `attempts` bounds the work spent on a dead endpoint (default 5).
  * - `backoff: exponential @ 2000ms` spaces retries out (2s, 4s, 8s, 16s).
  * - `removeOnFail.age: 24h` keeps exhausted jobs inspectable (and re-drivable)
  *   long enough for an operator to act, without growing Redis forever.

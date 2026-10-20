@@ -70,6 +70,42 @@ describe('RiskService', () => {
     const amountFactor = assessment.factors.find((factor) => factor.factor === 'amount');
     expect(amountFactor?.contribution).toBe(30);
   });
+
+  it('emits an assessment without persisting when no transaction id is supplied', async () => {
+    const eventBus = createEventBus();
+    const repository = {
+      createAssessmentRecord: vi.fn().mockResolvedValue(undefined),
+    } as unknown as RiskRepository;
+    const service = new RiskService(new RiskEngine(), eventBus as unknown as EventBusService, repository);
+
+    const assessment = await service.evaluate('org-1', lowRisk);
+
+    expect(eventBus.emit).toHaveBeenCalledWith(
+      DomainEventName.RiskEvaluated,
+      expect.objectContaining({ score: assessment.score, band: assessment.band }),
+      expect.objectContaining({ organizationId: 'org-1', aggregateType: 'transaction' }),
+    );
+    expect(repository.createAssessmentRecord).not.toHaveBeenCalled();
+  });
+
+  it('delegates history and statistics queries with default and explicit limits', async () => {
+    const repository = {
+      createAssessmentRecord: vi.fn(),
+      findByOrganization: vi.fn().mockResolvedValue([{ id: 'assessment-1' }]),
+      getStatistics: vi.fn().mockResolvedValue({ total: 1 }),
+    } as unknown as RiskRepository;
+    const service = new RiskService(new RiskEngine(), createEventBus() as unknown as EventBusService, repository);
+
+    await expect(service.getHistory('org-1')).resolves.toEqual([{ id: 'assessment-1' }]);
+    await expect(service.getHistory('org-2', 10)).resolves.toEqual([{ id: 'assessment-1' }]);
+    await expect(service.getStatistics('org-1')).resolves.toEqual({ total: 1 });
+    await expect(service.getStatistics('org-2', 7)).resolves.toEqual({ total: 1 });
+
+    expect(repository.findByOrganization).toHaveBeenNthCalledWith(1, 'org-1', 100);
+    expect(repository.findByOrganization).toHaveBeenNthCalledWith(2, 'org-2', 10);
+    expect(repository.getStatistics).toHaveBeenNthCalledWith(1, 'org-1', 30);
+    expect(repository.getStatistics).toHaveBeenNthCalledWith(2, 'org-2', 7);
+  });
 });
 
 describe('RiskService Event Handler', () => {
@@ -154,6 +190,41 @@ describe('RiskService Event Handler', () => {
     expect(riskRepository.createAssessmentRecord).toHaveBeenCalledTimes(1);
   });
 
+  it('ignores transaction-created events without a transaction id', async () => {
+    await riskService.handleTransactionCreated({
+      payload: {},
+      occurredAt: new Date(),
+    } as never);
+
+    expect(eventBusService.emit).not.toHaveBeenCalled();
+    expect(riskRepository.createAssessmentRecord).not.toHaveBeenCalled();
+  });
+
+  it('uses fallback input values and evicts the oldest processed event key', async () => {
+    const processedEvents = riskService['processedEvents'];
+    for (let index = 0; index < 5000; index += 1) {
+      processedEvents.add(`old-${index}`);
+    }
+
+    await riskService.handleTransactionCreated({
+      payload: { transactionId: 'tx-fallback' },
+    } as never);
+
+    expect(processedEvents.size).toBe(5000);
+    expect(processedEvents.has('old-0')).toBe(false);
+    expect(eventBusService.emit).toHaveBeenCalledWith(
+      DomainEventName.RiskEvaluated,
+      expect.objectContaining({ transactionId: 'tx-fallback' }),
+      expect.objectContaining({ organizationId: 'default-org' }),
+    );
+    const emittedPayload = vi.mocked(eventBusService.emit).mock.calls[0][1] as {
+      factors: Array<{ factor: string; contribution: number }>;
+    };
+    expect(
+      emittedPayload.factors.find((factor) => factor.factor === 'amount')?.contribution,
+    ).toBe(0);
+  });
+
   it('should handle failure resilience gracefully when evaluation throws', async () => {
     vi.spyOn(riskRepository, 'createAssessmentRecord').mockRejectedValueOnce(
       new Error('DB connection failed'),
@@ -174,5 +245,15 @@ describe('RiskService Event Handler', () => {
     await expect(riskService.handleTransactionCreated(envelope)).rejects.toThrow(
       'DB connection failed',
     );
+  });
+
+  it('rethrows non-Error failures from event processing', async () => {
+    vi.mocked(eventBusService.emit).mockRejectedValueOnce('event bus unavailable');
+
+    await expect(
+      riskService.handleTransactionCreated({
+        payload: { transactionId: 'tx-non-error' },
+      } as never),
+    ).rejects.toBe('event bus unavailable');
   });
 });

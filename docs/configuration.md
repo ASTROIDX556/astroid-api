@@ -139,6 +139,7 @@ are rejected:
 | ------------------- | --------- | ----------------------------- |
 | `QUEUE_PREFIX`      | `astroid` | Key prefix for BullMQ queues. |
 | `QUEUE_CONCURRENCY` | `5`       | Default worker concurrency.   |
+| `WEBHOOK_MAX_ATTEMPTS` | `5`    | Maximum webhook delivery attempts before dead-lettering. |
 
 ### Rate limiting
 

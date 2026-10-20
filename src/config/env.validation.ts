@@ -88,6 +88,7 @@ export const storageEnvSchema = z.object({
 export const queueEnvSchema = z.object({
   QUEUE_PREFIX: z.string().default('astroid'),
   QUEUE_CONCURRENCY: z.coerce.number().int().positive().default(5),
+  WEBHOOK_MAX_ATTEMPTS: z.coerce.number().int().positive().default(5),
 });
 
 export const throttleEnvSchema = z.object({

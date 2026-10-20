@@ -21,7 +21,7 @@ import { WebhookDestinationPolicy } from './webhook-destination.policy';
  * Webhooks module. The dispatcher listens to domain events and queues the
  * curated WEBHOOK_EVENTS set to subscribed external endpoints via BullMQ.
  *
- * Retry policy (5 attempts, exponential backoff with jitter) and the
+ * Retry policy (configurable attempts, default 5, exponential backoff with jitter) and the
  * dead-letter routing live in `@queues/webhook.queue`, so the API and the worker
  * can never drift apart. `WebhookAuditService` records deliveries that exhaust
  * their retries in the compliance audit trail.

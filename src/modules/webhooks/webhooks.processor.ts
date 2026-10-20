@@ -8,6 +8,9 @@ import { signWebhookPayload, WEBHOOK_SIGNATURE_VERSION } from './utils/signing';
 import { PrismaService } from '../../database/prisma.service';
 import { WorkerMetricsService } from '../../modules/metrics/worker-metrics.service';
 import { WebhookAuditService } from './services/webhook-audit.service';
+import { EventBusService } from '../../events/event-bus.service';
+import { DomainEventName } from '../../events/event-names';
+import { WEBHOOK_MAX_ATTEMPTS } from '../../queues/webhook.queue';
 import {
   WEBHOOK_DELIVERY_HEADER,
   WEBHOOK_EVENT_HEADER,
@@ -73,6 +76,7 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
     @Optional() private readonly webhookAudit?: WebhookAuditService,
     @Optional() @Inject(WebhookDestinationPolicy)
     private readonly destinationPolicy: WebhookDestinationClient = new WebhookDestinationPolicy(),
+    @Optional() private readonly eventBus?: EventBusService,
   ) {
     super();
   }
@@ -107,6 +111,39 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
     }
   }
 
+  private async emitPermanentFailure(
+    job: Job<WebhookJobData>,
+    failedReason: string,
+    responseStatus?: number,
+  ): Promise<void> {
+    if (!this.eventBus) return;
+    try {
+      await this.eventBus.emit(
+        DomainEventName.WebhookPermanentlyFailed,
+        {
+          webhookId: job.data.webhookId,
+          organizationId: job.data.organizationId,
+          url: job.data.url,
+          eventName: job.data.eventName,
+          eventId: job.data.eventId,
+          attemptsMade: job.attemptsMade + 1,
+          failedReason,
+          responseStatus,
+        },
+        {
+          organizationId: job.data.organizationId,
+          aggregateType: 'webhook',
+          aggregateId: job.data.webhookId,
+          requestId: job.data.metadata?.requestId,
+        },
+      );
+    } catch (error) {
+      this.logger.warn(
+        `Could not emit permanent failure event for webhook ${job.data.webhookId}: ${(error as Error).message}`,
+      );
+    }
+  }
+
   private async resolveSecret(webhookId: string, organizationId: string): Promise<string> {
     const client = this.prisma?.workerClient ?? this.prisma;
     if (!client) throw new PermanentJobError('Webhook signing secret is unavailable');
@@ -123,8 +160,9 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
 
     const execute = async (): Promise<WebhookJobResult> => {
       const { webhookId, organizationId, url, eventName, payload, eventId, metadata } = job.data;
+      const maxAttempts = job.opts?.attempts ?? WEBHOOK_MAX_ATTEMPTS;
       const requestTrace = metadata?.requestId ? ` requestId=${metadata.requestId}` : '';
-      this.logger.debug(`Processing webhook ${webhookId} event ${eventName} attempt ${job.attemptsMade + 1}/5${requestTrace}`);
+      this.logger.debug(`Processing webhook ${webhookId} event ${eventName} attempt ${job.attemptsMade + 1}/${maxAttempts}${requestTrace}`);
 
       let responseStatus: number | undefined;
       let errorMessage: string | undefined;
@@ -158,27 +196,29 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
           isNonTransient = isRedirect || WebhooksProcessor.NON_TRANSIENT_STATUSES.has(response.status);
           this.logger.warn(`Webhook ${webhookId} responded ${response.status}${requestTrace}`);
           if (isNonTransient) {
-            await this.persistState({
-              webhookId,
-              organizationId,
-              eventName,
-              eventId,
-              payload,
-              status: 'FAILED',
-              attempts: job.attemptsMade + 1,
-              lastError: errorMessage,
-              responseStatus,
-            });
-            // Non-transient (4xx): record the abandoned delivery before BullMQ
-            // moves it straight to the failed set.
-            await this.auditTerminalFailure(job, errorMessage ?? 'HTTP error', responseStatus);
-                    throw new PermanentJobError(errorMessage);
+            throw new PermanentJobError(errorMessage);
           }
           throw new Error(errorMessage);
         }
         this.logger.debug(`Webhook ${webhookId} delivered successfully${requestTrace}`);
       } catch (error) {
-        if (error instanceof UnrecoverableError) throw error;
+        if (error instanceof UnrecoverableError) {
+          errorMessage = error.message;
+          await this.persistState({
+            webhookId,
+            organizationId,
+            eventName,
+            eventId,
+            payload,
+            status: 'FAILED',
+            attempts: job.attemptsMade + 1,
+            lastError: errorMessage,
+            responseStatus,
+          });
+          await this.auditTerminalFailure(job, errorMessage, responseStatus);
+          await this.emitPermanentFailure(job, errorMessage, responseStatus);
+          throw error;
+        }
         if (error instanceof WebhookDestinationError) {
           errorMessage = error.message;
           await this.persistState({
@@ -191,6 +231,7 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
             attempts: job.attemptsMade + 1,
           });
           await this.auditTerminalFailure(job, errorMessage);
+          await this.emitPermanentFailure(job, errorMessage);
           throw new PermanentJobError(errorMessage);
         }
         errorMessage = error instanceof WebhookDestinationResolutionError
@@ -198,8 +239,8 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
           : error instanceof Error && /^HTTP \d{3}$/.test(error.message)
             ? error.message
             : 'Webhook delivery failed';
-        const isLastAttempt = job.attemptsMade >= 4;
-        this.logger.error(`Webhook ${webhookId} failed attempt ${job.attemptsMade + 1}/5${requestTrace}`);
+        const isLastAttempt = job.attemptsMade >= maxAttempts - 1;
+        this.logger.error(`Webhook ${webhookId} failed attempt ${job.attemptsMade + 1}/${maxAttempts}${requestTrace}`);
         await this.persistState({
           webhookId,
           organizationId,
@@ -216,6 +257,7 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
           // Retries are exhausted: the delivery is dead-lettered by the queue
           // failure listener, so record it permanently in the audit trail.
           await this.auditTerminalFailure(job, errorMessage ?? 'unknown error', responseStatus);
+          await this.emitPermanentFailure(job, errorMessage ?? 'unknown error', responseStatus);
         }
         throw new Error(errorMessage);
       }

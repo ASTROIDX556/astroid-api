@@ -64,6 +64,7 @@ export const DomainEventName = {
   // Notification / audit
   NotificationCreated: 'notification.created',
   AuditRecorded: 'audit.recorded',
+  WebhookPermanentlyFailed: 'webhook.permanently_failed',
 
   // Dead letter queue / background job lifecycle
   JobFailed: 'dead_letter.job_failed',
