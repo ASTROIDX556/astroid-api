@@ -5,9 +5,11 @@ import * as crypto from 'crypto';
 import { WebhookSignatureGuard } from './webhook-signature.guard';
 import type { WebhookSecretResolver } from './webhook-signature.guard';
 import {
+  WEBHOOK_EVENT_ID_HEADER,
   WEBHOOK_SIGNATURE_HEADER,
   WEBHOOK_TIMESTAMP_HEADER,
 } from '../constants/headers';
+import { signWebhookPayload } from '../../modules/webhooks/utils/signing';
 
 describe('WebhookSignatureGuard', () => {
   const secret = 'test-webhook-secret';
@@ -32,7 +34,7 @@ describe('WebhookSignatureGuard', () => {
     } as unknown as ExecutionContext;
   }
 
-  it('should accept valid signature and fresh timestamp', () => {
+  it('should accept valid legacy signature and fresh timestamp', async () => {
     const timestamp = Math.floor(Date.now() / 1000);
     const body = { event: 'soroban.contract.invoked', ledger: 12345 };
     const rawBody = JSON.stringify(body);
@@ -49,10 +51,43 @@ describe('WebhookSignatureGuard', () => {
       body,
     );
 
-    expect(guard.canActivate(context)).toBe(true);
+    await expect(guard.canActivate(context)).resolves.toBe(true);
   });
 
-  it('should reject requests with expired timestamp (> 5 minutes)', () => {
+  it('accepts the versioned signature produced for outbound webhook deliveries', async () => {
+    const timestamp = Math.floor(Date.now() / 1000).toString();
+    const eventId = 'evt-123';
+    const rawBody = Buffer.from('{"event":"transaction.completed"}');
+    const signature = signWebhookPayload(secret, timestamp, eventId, rawBody);
+    const context = createMockContext(
+      {
+        [WEBHOOK_SIGNATURE_HEADER]: signature,
+        [WEBHOOK_TIMESTAMP_HEADER]: timestamp,
+        [WEBHOOK_EVENT_ID_HEADER]: eventId,
+      },
+      rawBody.toString('utf8'),
+    );
+
+    await expect(guard.canActivate(context)).resolves.toBe(true);
+  });
+
+  it('rejects a tampered versioned webhook payload', async () => {
+    const timestamp = Math.floor(Date.now() / 1000).toString();
+    const eventId = 'evt-123';
+    const signature = signWebhookPayload(secret, timestamp, eventId, Buffer.from('{"amount":1}'));
+    const context = createMockContext(
+      {
+        [WEBHOOK_SIGNATURE_HEADER]: signature,
+        [WEBHOOK_TIMESTAMP_HEADER]: timestamp,
+        [WEBHOOK_EVENT_ID_HEADER]: eventId,
+      },
+      '{"amount":2}',
+    );
+
+    await expect(guard.canActivate(context)).rejects.toThrow(UnauthorizedException);
+  });
+
+  it('should reject requests with expired timestamp (> 5 minutes)', async () => {
     const timestamp = Math.floor(Date.now() / 1000) - 400; // ~6.6 minutes ago
     const body = { event: 'soroban.contract.invoked' };
     const rawBody = JSON.stringify(body);
@@ -69,10 +104,10 @@ describe('WebhookSignatureGuard', () => {
       body,
     );
 
-    expect(() => guard.canActivate(context)).toThrow(UnauthorizedException);
+    await expect(guard.canActivate(context)).rejects.toThrow(UnauthorizedException);
   });
 
-  it('should reject requests with modified body / invalid signature', () => {
+  it('should reject requests with modified body / invalid signature', async () => {
     const timestamp = Math.floor(Date.now() / 1000);
     const body = { event: 'soroban.contract.invoked', amount: 100 };
     const tamperedBody = { event: 'soroban.contract.invoked', amount: 999 };
@@ -89,26 +124,26 @@ describe('WebhookSignatureGuard', () => {
       tamperedBody,
     );
 
-    expect(() => guard.canActivate(context)).toThrow(UnauthorizedException);
+    await expect(guard.canActivate(context)).rejects.toThrow(UnauthorizedException);
   });
 
-  it('should reject requests with missing signature header', () => {
+  it('should reject requests with missing signature header', async () => {
     const context = createMockContext(
       { [WEBHOOK_TIMESTAMP_HEADER]: Math.floor(Date.now() / 1000).toString() },
       { foo: 'bar' },
     );
-    expect(() => guard.canActivate(context)).toThrow(UnauthorizedException);
+    await expect(guard.canActivate(context)).rejects.toThrow(UnauthorizedException);
   });
 
-  it('should reject requests with missing timestamp header', () => {
+  it('should reject requests with missing timestamp header', async () => {
     const context = createMockContext(
       { [WEBHOOK_SIGNATURE_HEADER]: 'abc123' },
       { foo: 'bar' },
     );
-    expect(() => guard.canActivate(context)).toThrow(UnauthorizedException);
+    await expect(guard.canActivate(context)).rejects.toThrow(UnauthorizedException);
   });
 
-  it('should reject requests with non-numeric timestamp', () => {
+  it('should reject requests with non-numeric timestamp', async () => {
     const context = createMockContext(
       {
         [WEBHOOK_SIGNATURE_HEADER]: 'abc123',
@@ -116,10 +151,10 @@ describe('WebhookSignatureGuard', () => {
       },
       { foo: 'bar' },
     );
-    expect(() => guard.canActivate(context)).toThrow(UnauthorizedException);
+    await expect(guard.canActivate(context)).rejects.toThrow(UnauthorizedException);
   });
 
-  it('should reject when no secret is configured', () => {
+  it('should reject when no secret is configured', async () => {
     const noSecretConfig = {
       get: () => null,
     } as unknown as ConfigService;
@@ -134,11 +169,11 @@ describe('WebhookSignatureGuard', () => {
       { foo: 'bar' },
     );
 
-    expect(() => guardNoSecret.canActivate(context)).toThrow(UnauthorizedException);
+    await expect(guardNoSecret.canActivate(context)).rejects.toThrow(UnauthorizedException);
   });
 
   describe('per-integration secret resolver', () => {
-    it('should use custom secret resolver when provided', () => {
+    it('should use custom secret resolver when provided', async () => {
       const customSecret = 'integration-specific-secret';
       const secretResolver: WebhookSecretResolver = vi.fn().mockReturnValue(customSecret);
 
@@ -163,14 +198,14 @@ describe('WebhookSignatureGuard', () => {
         body,
       );
 
-      expect(guardWithResolver.canActivate(context)).toBe(true);
+      await expect(guardWithResolver.canActivate(context)).resolves.toBe(true);
       expect(secretResolver).toHaveBeenCalledWith(
         expect.objectContaining({ headers: expect.any(Object) }),
         'integration-123',
       );
     });
 
-    it('should fall back to global secret when resolver returns undefined', () => {
+    it('should fall back to global secret when resolver returns undefined', async () => {
       const secretResolver: WebhookSecretResolver = vi.fn().mockReturnValue(undefined);
 
       const guardWithResolver = new WebhookSignatureGuard(mockConfigService, {
@@ -193,10 +228,28 @@ describe('WebhookSignatureGuard', () => {
         body,
       );
 
-      expect(guardWithResolver.canActivate(context)).toBe(true);
+      await expect(guardWithResolver.canActivate(context)).resolves.toBe(true);
     });
 
-    it('should reject with custom secret when signature does not match', () => {
+    it('resolves asynchronous integration secrets', async () => {
+      const customSecret = 'integration-specific-secret';
+      const secretResolver: WebhookSecretResolver = vi.fn().mockResolvedValue(customSecret);
+      const guardWithResolver = new WebhookSignatureGuard(mockConfigService, { secretResolver });
+      const timestamp = Math.floor(Date.now() / 1000);
+      const rawBody = JSON.stringify({ event: 'test' });
+      const hmac = crypto.createHmac('sha256', customSecret).update(`${timestamp}.${rawBody}`);
+      const context = createMockContext(
+        {
+          [WEBHOOK_SIGNATURE_HEADER]: hmac.digest('hex'),
+          [WEBHOOK_TIMESTAMP_HEADER]: timestamp.toString(),
+        },
+        rawBody,
+      );
+
+      await expect(guardWithResolver.canActivate(context)).resolves.toBe(true);
+    });
+
+    it('should reject with custom secret when signature does not match', async () => {
       const customSecret = 'integration-specific-secret';
       const secretResolver: WebhookSecretResolver = vi.fn().mockReturnValue(customSecret);
 
@@ -221,12 +274,12 @@ describe('WebhookSignatureGuard', () => {
         body,
       );
 
-      expect(() => guardWithResolver.canActivate(context)).toThrow(UnauthorizedException);
+      await expect(guardWithResolver.canActivate(context)).rejects.toThrow(UnauthorizedException);
     });
   });
 
   describe('custom tolerance', () => {
-    it('should respect custom tolerance window', () => {
+    it('should respect custom tolerance window', async () => {
       const guardShortTolerance = new WebhookSignatureGuard(mockConfigService, {
         toleranceSeconds: 60, // 1 minute
       });
@@ -247,12 +300,12 @@ describe('WebhookSignatureGuard', () => {
         body,
       );
 
-      expect(() => guardShortTolerance.canActivate(context)).toThrow(UnauthorizedException);
+      await expect(guardShortTolerance.canActivate(context)).rejects.toThrow(UnauthorizedException);
     });
   });
 
   describe('raw body extraction', () => {
-    it('should prefer rawBody over parsed body for HMAC computation', () => {
+    it('should prefer rawBody over parsed body for HMAC computation', async () => {
       const timestamp = Math.floor(Date.now() / 1000);
       const rawBody = '{"event":"test","data":{"a":1}}';
 
@@ -275,10 +328,10 @@ describe('WebhookSignatureGuard', () => {
         }),
       } as unknown as ExecutionContext;
 
-      expect(guard.canActivate(context)).toBe(true);
+      await expect(guard.canActivate(context)).resolves.toBe(true);
     });
 
-    it('should fall back to JSON.stringify when rawBody is not set', () => {
+    it('should fall back to JSON.stringify when rawBody is not set', async () => {
       const timestamp = Math.floor(Date.now() / 1000);
       const body = { event: 'test' };
       const rawBody = JSON.stringify(body);
@@ -301,7 +354,7 @@ describe('WebhookSignatureGuard', () => {
         }),
       } as unknown as ExecutionContext;
 
-      expect(guard.canActivate(context)).toBe(true);
+      await expect(guard.canActivate(context)).resolves.toBe(true);
     });
   });
 });

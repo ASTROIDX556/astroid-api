@@ -31,6 +31,13 @@ export interface RiskAssessment {
   canAutoExecute: boolean;
 }
 
+export interface RiskAnalysisJobData {
+  organizationId: string;
+  transactionId: string;
+  actorId?: string;
+  input: RiskFactorsInput;
+}
+
 /** Weight each factor contributes to the 0-100 composite score. */
 export const RISK_WEIGHTS = {
   amount: 30,

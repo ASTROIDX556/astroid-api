@@ -10,9 +10,11 @@ import { ConfigService } from '@nestjs/config';
 import * as crypto from 'crypto';
 import { Request } from 'express';
 import {
+  WEBHOOK_EVENT_ID_HEADER,
   WEBHOOK_SIGNATURE_HEADER,
   WEBHOOK_TIMESTAMP_HEADER,
 } from '../constants/headers';
+import { verifyWebhookSignature } from '../../modules/webhooks/utils/signing';
 
 /**
  * Resolves the HMAC secret for a given webhook integration.
@@ -77,7 +79,7 @@ export class WebhookSignatureGuard implements CanActivate {
     this.secretResolver = options?.secretResolver;
   }
 
-  canActivate(context: ExecutionContext): boolean {
+  async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest<Request>();
 
     const signature = request.headers[WEBHOOK_SIGNATURE_HEADER] as string;
@@ -91,10 +93,10 @@ export class WebhookSignatureGuard implements CanActivate {
       throw new UnauthorizedException('Missing webhook timestamp header');
     }
 
-    const timestamp = parseInt(timestampStr, 10);
-    if (isNaN(timestamp)) {
+    if (!/^\d{1,12}$/.test(timestampStr)) {
       throw new UnauthorizedException('Invalid webhook timestamp');
     }
+    const timestamp = Number(timestampStr);
 
     const now = Math.floor(Date.now() / 1000);
     if (Math.abs(now - timestamp) > this.toleranceSeconds) {
@@ -102,26 +104,20 @@ export class WebhookSignatureGuard implements CanActivate {
     }
 
     // Resolve the secret: try per-integration resolver first, then fall back to global env vars.
-    const secret = this.resolveSecret(request);
+    const secret = await this.resolveSecret(request);
     if (!secret) {
       this.logger.warn('No webhook secret configured; rejecting request');
       throw new UnauthorizedException('No webhook signing secret configured');
     }
 
     const payload = this.extractPayload(request);
+    const eventId = request.headers[WEBHOOK_EVENT_ID_HEADER] as string | undefined;
+    const validVersionedSignature =
+      signature.startsWith('v1=') &&
+      verifyWebhookSignature(secret, timestampStr, eventId ?? '', payload, signature);
+    const validLegacySignature = this.verifyLegacySignature(secret, timestampStr, payload, signature);
 
-    const expectedPayloadToSign = `${timestamp}.${payload}`;
-    const hmac = crypto.createHmac('sha256', secret);
-    hmac.update(expectedPayloadToSign);
-    const expectedSignature = hmac.digest('hex');
-
-    const signatureBuffer = Buffer.from(signature, 'utf8');
-    const expectedBuffer = Buffer.from(expectedSignature, 'utf8');
-
-    if (
-      signatureBuffer.length !== expectedBuffer.length ||
-      !crypto.timingSafeEqual(signatureBuffer, expectedBuffer)
-    ) {
+    if (!validVersionedSignature && !validLegacySignature) {
       throw new UnauthorizedException('Invalid webhook cryptographic signature');
     }
 
@@ -132,22 +128,12 @@ export class WebhookSignatureGuard implements CanActivate {
    * Resolves the HMAC signing secret for the incoming request.
    * Priority: per-integration resolver → WEBHOOK_SECRET → STELLAR_WEBHOOK_SECRET.
    */
-  private resolveSecret(request: Request): string | undefined {
+  private async resolveSecret(request: Request): Promise<string | undefined> {
     // Per-integration secret resolver (synchronous or async)
     const integrationId = request.headers['x-integration-id'] as string | undefined;
     if (this.secretResolver) {
-      const resolved = this.secretResolver(request, integrationId);
-      // Handle both sync and async resolvers
-      if (resolved && typeof (resolved as Promise<string | undefined>).then === 'function') {
-        // Async resolver — store the promise for later use
-        // Note: canActivate doesn't support async in sync mode, so we
-        // log a warning. For async secret resolution, use the async guard variant.
-        this.logger.warn(
-          'Async secret resolver returned a Promise; use the async canActivate variant for async secret resolution',
-        );
-      } else if (resolved) {
-        return resolved as string;
-      }
+      const resolved = await this.secretResolver(request, integrationId);
+      if (resolved) return resolved;
     }
 
     // Global env-var fallback
@@ -164,16 +150,32 @@ export class WebhookSignatureGuard implements CanActivate {
    * Prefers the raw body captured by `RawBodyMiddleware`, falling back to
    * the parsed body if raw body is not available.
    */
-  private extractPayload(request: Request): string {
+  private extractPayload(request: Request): Buffer {
     const rawBody = (request as Request & { rawBody?: Buffer | string }).rawBody;
     if (rawBody !== undefined) {
-      return Buffer.isBuffer(rawBody) ? rawBody.toString('utf8') : rawBody;
+      return Buffer.isBuffer(rawBody) ? rawBody : Buffer.from(rawBody, 'utf8');
     }
 
     if (typeof request.body === 'string') {
-      return request.body;
+      return Buffer.from(request.body, 'utf8');
     }
 
-    return JSON.stringify(request.body ?? {});
+    return Buffer.from(JSON.stringify(request.body ?? {}), 'utf8');
+  }
+
+  private verifyLegacySignature(
+    secret: string,
+    timestamp: string,
+    payload: Buffer,
+    signature: string,
+  ): boolean {
+    if (!/^[0-9a-f]{64}$/.test(signature)) return false;
+
+    const expected = crypto
+      .createHmac('sha256', secret)
+      .update(Buffer.concat([Buffer.from(`${timestamp}.`, 'utf8'), payload]))
+      .digest();
+    const received = Buffer.from(signature, 'hex');
+    return expected.length === received.length && crypto.timingSafeEqual(expected, received);
   }
 }

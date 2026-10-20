@@ -7,6 +7,7 @@ import { DatabaseModule } from '../../database/database.module';
 import { BullModule } from '@nestjs/bullmq';
 import { Queues } from '../../queues/queues.constants';
 import { createQueueRegistrationOptions } from '../../queues/queue-policy';
+import { RiskProcessor } from '../../workers/risk.processor';
 
 @Module({
   imports: [
@@ -14,7 +15,7 @@ import { createQueueRegistrationOptions } from '../../queues/queue-policy';
     BullModule.registerQueue(createQueueRegistrationOptions(Queues.RiskAnalysis)),
   ],
   controllers: [RiskController],
-  providers: [RiskService, RiskEngine, RiskRepository],
+  providers: [RiskService, RiskEngine, RiskRepository, RiskProcessor],
   exports: [RiskService, RiskEngine, RiskRepository],
 })
 export class RiskModule {}
