@@ -18,6 +18,7 @@
     "lint": "eslint \"{src,apps,libs,test}/**/*.ts\"",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "docs:check": "vitest run src/openapi.spec.ts",
     "test:watch": "vitest",
     "test:cov": "vitest run --coverage",
     "prisma:generate": "prisma generate",

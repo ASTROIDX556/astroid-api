@@ -13,7 +13,6 @@ import {
   ApiOperation,
   ApiTags,
   ApiBearerAuth,
-  ApiResponse,
   ApiParam,
   ApiBody,
   ApiQuery,
@@ -39,7 +38,8 @@ import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 import { AuthenticatedUser } from '../../common/interfaces/authenticated-user.interface';
 import { PaginationQuery, paginationQuerySchema } from '../../common/helpers/pagination';
 import { ApiPaginationQuery } from '../../common/decorators/api-pagination-query.decorator';
-import { ApiEnvelope } from '../../common/decorators/api-envelope.decorator';
+import { ApiEnvelope, ApiPaginatedEnvelope } from '../../common/decorators/api-envelope.decorator';
+import { ApiErrorResponses } from '../../common/decorators/api-error-responses.decorator';
 import { AstroidThrottlerGuard } from '../../common/guards/throttler.guard';
 
 @ApiTags('wallets')
@@ -59,9 +59,8 @@ export class WalletController {
   @ApiPaginationQuery()
   @ApiQuery({ name: 'status', required: false, enum: ['ACTIVE', 'FROZEN', 'ARCHIVED'], description: 'Filter by wallet status' })
   @ApiQuery({ name: 'network', required: false, enum: ['TESTNET', 'PUBLIC'], description: 'Filter by Stellar network' })
-  @ApiEnvelope(WalletResponseDto as never, { isArray: true })
-  @ApiResponse({ status: 200, description: 'Paginated list of wallets' })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
+  @ApiPaginatedEnvelope(WalletResponseDto, { description: 'Paginated list of wallets' })
+  @ApiErrorResponses({ unauthorized: true, serverError: true })
   list(
     @CurrentUser('organizationId') organizationId: string,
     @Query(new ZodValidationPipe(paginationQuerySchema)) query: PaginationQuery,
@@ -80,10 +79,16 @@ export class WalletController {
       'When importing, only the public address is recorded for balance tracking.',
   })
   @ApiBody({ type: CreateWalletDto })
-  @ApiResponse({ status: 201, description: 'Wallet created successfully (secret key included on generation)', type: WalletResponseDto })
-  @ApiResponse({ status: 400, description: 'Validation error' })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
-  @ApiResponse({ status: 403, description: 'Insufficient permissions' })
+  @ApiEnvelope(WalletResponseDto, {
+    status: 201,
+    description: 'Wallet created successfully (secret key included on generation)',
+  })
+  @ApiErrorResponses({
+    validation: true,
+    unauthorized: true,
+    forbidden: true,
+    serverError: true,
+  })
   create(
     @CurrentUser() user: AuthenticatedUser,
     @Body(new ZodValidationPipe(createWalletSchema)) body: CreateWalletInput,
@@ -97,9 +102,8 @@ export class WalletController {
     description: 'Returns full details of a single wallet by ID.',
   })
   @ApiParam({ name: 'id', description: 'Wallet UUID', example: '018f0a1b-...' })
-  @ApiResponse({ status: 200, description: 'Wallet details', type: WalletResponseDto })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
-  @ApiResponse({ status: 404, description: 'Wallet not found' })
+  @ApiEnvelope(WalletResponseDto, { description: 'Wallet details' })
+  @ApiErrorResponses({ unauthorized: true, notFound: true, serverError: true })
   findOne(@CurrentUser('organizationId') organizationId: string, @Param('id') id: string) {
     return this.walletService.getOrThrow(organizationId, id);
   }
@@ -112,10 +116,11 @@ export class WalletController {
       'For generated wallets, this includes XLM and all trustline assets.',
   })
   @ApiParam({ name: 'id', description: 'Wallet UUID', example: '018f0a1b-...' })
-  @ApiResponse({ status: 200, description: 'Current on-chain balances', type: [WalletBalanceDto] })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
-  @ApiResponse({ status: 404, description: 'Wallet not found' })
-  @ApiResponse({ status: 502, description: 'Stellar network error' })
+  @ApiEnvelope(WalletBalanceDto, {
+    isArray: true,
+    description: 'Current on-chain balances',
+  })
+  @ApiErrorResponses({ unauthorized: true, notFound: true, serverError: true })
   balances(@CurrentUser('organizationId') organizationId: string, @Param('id') id: string) {
     return this.walletService.getBalances(organizationId, id);
   }
@@ -130,11 +135,14 @@ export class WalletController {
   })
   @ApiParam({ name: 'id', description: 'Wallet UUID', example: '018f0a1b-...' })
   @ApiBody({ type: UpdateWalletDto })
-  @ApiResponse({ status: 200, description: 'Wallet updated successfully', type: WalletResponseDto })
-  @ApiResponse({ status: 400, description: 'Validation error' })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
-  @ApiResponse({ status: 403, description: 'Insufficient permissions' })
-  @ApiResponse({ status: 404, description: 'Wallet not found' })
+  @ApiEnvelope(WalletResponseDto, { description: 'Wallet updated successfully' })
+  @ApiErrorResponses({
+    validation: true,
+    unauthorized: true,
+    forbidden: true,
+    notFound: true,
+    serverError: true,
+  })
   update(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id') id: string,
@@ -153,11 +161,14 @@ export class WalletController {
       'Places the wallet in FROZEN status. All outgoing transactions will be blocked until the wallet is unfrozen.',
   })
   @ApiParam({ name: 'id', description: 'Wallet UUID', example: '018f0a1b-...' })
-  @ApiResponse({ status: 200, description: 'Wallet frozen successfully', type: WalletResponseDto })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
-  @ApiResponse({ status: 403, description: 'Insufficient permissions' })
-  @ApiResponse({ status: 404, description: 'Wallet not found' })
-  @ApiResponse({ status: 409, description: 'Wallet is already frozen' })
+  @ApiEnvelope(WalletResponseDto, { description: 'Wallet frozen successfully' })
+  @ApiErrorResponses({
+    unauthorized: true,
+    forbidden: true,
+    notFound: true,
+    conflict: 'Wallet is already frozen',
+    serverError: true,
+  })
   freeze(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
     return this.walletService.setStatus(user.organizationId, user.id, id, WalletStatus.FROZEN);
   }
@@ -171,11 +182,14 @@ export class WalletController {
     description: 'Restores a frozen wallet to ACTIVE status, allowing outgoing transactions again.',
   })
   @ApiParam({ name: 'id', description: 'Wallet UUID', example: '018f0a1b-...' })
-  @ApiResponse({ status: 200, description: 'Wallet unfrozen successfully', type: WalletResponseDto })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
-  @ApiResponse({ status: 403, description: 'Insufficient permissions' })
-  @ApiResponse({ status: 404, description: 'Wallet not found' })
-  @ApiResponse({ status: 409, description: 'Wallet is not frozen' })
+  @ApiEnvelope(WalletResponseDto, { description: 'Wallet unfrozen successfully' })
+  @ApiErrorResponses({
+    unauthorized: true,
+    forbidden: true,
+    notFound: true,
+    conflict: 'Wallet is not frozen',
+    serverError: true,
+  })
   unfreeze(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
     return this.walletService.setStatus(user.organizationId, user.id, id, WalletStatus.ACTIVE);
   }
@@ -191,10 +205,13 @@ export class WalletController {
       'Associated Stellar keys are securely wiped.',
   })
   @ApiParam({ name: 'id', description: 'Wallet UUID', example: '018f0a1b-...' })
-  @ApiResponse({ status: 200, description: 'Wallet archived successfully' })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
-  @ApiResponse({ status: 403, description: 'Insufficient permissions (requires OWNER or ADMIN)' })
-  @ApiResponse({ status: 404, description: 'Wallet not found' })
+  @ApiEnvelope(WalletResponseDto, { description: 'Wallet archived successfully' })
+  @ApiErrorResponses({
+    unauthorized: true,
+    forbidden: 'Insufficient permissions (requires OWNER or ADMIN)',
+    notFound: true,
+    serverError: true,
+  })
   remove(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
     return this.walletService.remove(user.organizationId, user.id, id);
   }
