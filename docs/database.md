@@ -121,3 +121,25 @@ npx prisma migrate diff   --from-schema-datamodel prisma/schema.prisma   --to-sc
 ```
 
 Review the generated SQL by hand before relying on it. `down` refuses to run for a migration without a `down.sql`.
+
+## Migration verification CI troubleshooting (#437)
+
+The `verify-migrations` job in `.github/workflows/ci.yml` runs `npm run db:verify` against a **disposable** PostgreSQL service. It sets `MIGRATION_BASE_REF` to compare committed migration history and `SHADOW_DATABASE_URL` for migration replay and schema-drift checks. **Never point `SHADOW_DATABASE_URL` at a database containing valuable data**: the verification script resets it.
+
+For a local reproduction, start an isolated PostgreSQL database, install dependencies, and run:
+
+```bash
+npm ci
+MIGRATION_BASE_REF=origin/main \
+SHADOW_DATABASE_URL='postgresql://postgres:password@localhost:5432/astroid_shadow?schema=public' \
+npm run db:verify
+```
+
+If verification fails, inspect the first reported error and follow the corresponding action:
+
+- **Prisma connection failure:** confirm PostgreSQL is running, the supplied credentials and database name are correct, and the database is disposable.
+- **Unapplied or failing migration:** review the failing `prisma/migrations/<migration>/migration.sql`, correct it in a new migration if already deployed, and rerun verification against a fresh disposable database.
+- **Schema drift:** generate and review a Prisma migration for the intended `schema.prisma` change; do not silently bypass the drift check.
+- **Migration-history mismatch:** restore any migration already merged to `main` and add a forward migration instead of rewriting published history.
+
+A run without `SHADOW_DATABASE_URL` performs only the applicable static/history checks; it **does not** prove that migrations replay successfully or that the database schema has no drift.
