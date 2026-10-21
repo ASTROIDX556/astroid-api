@@ -6,6 +6,8 @@ import {
   ApiResponse,
   ApiBody,
 } from '@nestjs/swagger';
+import { ApiErrorResponses } from '../../common/decorators/api-error-responses.decorator';
+import { ApiEnvelope } from '../../common/decorators/api-envelope.decorator';
 import { ConfigService } from '@nestjs/config';
 import { StellarConfig } from '../../config/stellar.config';
 import { SorobanValidationPipe } from '../../common/pipes/soroban-validation.pipe';
@@ -46,7 +48,7 @@ export class StellarController {
       },
     },
   })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
+  @ApiErrorResponses({ unauthorized: true, serverError: true })
   getNetwork(): { network: string; horizonUrl: string; mock: boolean } {
     const stellar = this.config.getOrThrow<StellarConfig>('stellar');
     return {
@@ -64,10 +66,12 @@ export class StellarController {
       'The contract ID, function name, and arguments are validated against strict schemas.',
   })
   @ApiBody({ type: SorobanInvocationDto })
-  @ApiResponse({ status: 200, description: 'Contract invocation prepared successfully', type: SorobanResponseDto })
-  @ApiResponse({ status: 400, description: 'Validation error - invalid contract ID, function name, or arguments' })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
-  @ApiResponse({ status: 500, description: 'Stellar network error' })
+  @ApiEnvelope(SorobanResponseDto, { description: 'Contract invocation prepared successfully' })
+  @ApiErrorResponses({
+    validation: 'Validation error - invalid contract ID, function name, or arguments',
+    unauthorized: true,
+    serverError: 'Stellar network error',
+  })
   async invokeContract(
     @Body(new SorobanValidationPipe(sorobanInvocationSchema)) _body: SorobanInvocationDto,
   ): Promise<SorobanResponseDto> {
@@ -87,10 +91,12 @@ export class StellarController {
       'The XDR envelope is validated for format and structure before submission.',
   })
   @ApiBody({ type: SorobanTransactionDto })
-  @ApiResponse({ status: 200, description: 'Transaction submitted successfully', type: SorobanResponseDto })
-  @ApiResponse({ status: 400, description: 'Validation error - invalid XDR format' })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
-  @ApiResponse({ status: 500, description: 'Stellar network error' })
+  @ApiEnvelope(SorobanResponseDto, { description: 'Transaction submitted successfully' })
+  @ApiErrorResponses({
+    validation: 'Validation error - invalid XDR format',
+    unauthorized: true,
+    serverError: 'Stellar network error',
+  })
   async submitTransaction(
     @Body(new SorobanValidationPipe(sorobanTransactionSchema)) _body: SorobanTransactionDto,
   ): Promise<SorobanResponseDto> {

@@ -43,15 +43,17 @@ export class CreateWalletDto {
 
   @ApiPropertyOptional({
     enum: WalletType,
-    description: 'Type of wallet (determines usage context)',
     enumName: 'WalletType',
+    description: 'Type of wallet (determines usage context)',
+    example: 'AGENT',
   })
   walletType?: WalletType;
 
   @ApiPropertyOptional({
     enum: StellarNetwork,
-    description: 'Stellar network the wallet operates on',
     enumName: 'StellarNetwork',
+    description: 'Stellar network the wallet operates on',
+    example: 'TESTNET',
   })
   network?: StellarNetwork;
 
