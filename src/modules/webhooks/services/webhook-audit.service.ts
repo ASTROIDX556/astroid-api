@@ -18,6 +18,14 @@ export interface WebhookDeliveryFailure {
 /** Audit action recorded for a webhook that exhausted every retry attempt. */
 export const WEBHOOK_DELIVERY_FAILED_ACTION = 'WEBHOOK_DELIVERY_FAILED';
 
+function safeEndpointOrigin(endpoint: string): string {
+  try {
+    return new URL(endpoint).origin;
+  } catch {
+    return '[invalid endpoint]';
+  }
+}
+
 /**
  * Writes permanently failed webhook deliveries into the compliance audit trail.
  *
@@ -47,7 +55,7 @@ export class WebhookAuditService {
         entity: 'Webhook',
         entityId: failure.webhookId,
         newValue: {
-          url: failure.url,
+          endpointOrigin: safeEndpointOrigin(failure.url),
           eventName: failure.eventName ?? null,
           eventId: failure.eventId ?? null,
           attemptsMade: failure.attemptsMade,

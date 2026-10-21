@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { Budget, Prisma } from '@prisma/client';
+import { Budget, Prisma, TransactionStatus } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { PrismaPagination } from '../../common/helpers/pagination';
 
@@ -96,9 +96,49 @@ export class BudgetRepository {
     });
   }
 
-  findEnabledByAgentId(agentId: string, client: BudgetQueryClient = this.prisma): Promise<Budget[]> {
+  findEnabledByAgentId(
+    agentId: string,
+    client: BudgetQueryClient = this.prisma,
+    organizationId?: string,
+  ): Promise<Budget[]> {
     return client.budget.findMany({
-      where: { agentId, enabled: true, deletedAt: null },
+      where: { agentId, ...(organizationId ? { organizationId } : {}), enabled: true, deletedAt: null },
     });
+  }
+
+  async sumUnaccountedSpendByAgent(
+    agentId: string,
+    organizationId: string,
+    asset: string,
+    accountedBudgetIds: string[],
+  ) {
+    const result = await this.prisma.transaction.aggregate({
+      where: {
+        agentId,
+        organizationId,
+        asset,
+        deletedAt: null,
+        OR: [
+          {
+            status: {
+              in: [
+                TransactionStatus.DRAFT,
+                TransactionStatus.PENDING,
+                TransactionStatus.APPROVED,
+                TransactionStatus.SUBMITTED,
+                TransactionStatus.CONFIRMED,
+              ],
+            },
+          },
+          { status: TransactionStatus.COMPLETED, budgetId: null },
+          {
+            status: TransactionStatus.COMPLETED,
+            budgetId: { notIn: accountedBudgetIds },
+          },
+        ],
+      },
+      _sum: { amount: true },
+    });
+    return result._sum.amount ?? new Prisma.Decimal(0);
   }
 }

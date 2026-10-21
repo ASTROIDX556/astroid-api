@@ -96,6 +96,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
       instance: this.instanceFor(request),
       code: error.code,
       requestId,
+      timestamp: new Date().toISOString(),
     };
     if (error.details !== undefined) {
       problem.details = error.details;
