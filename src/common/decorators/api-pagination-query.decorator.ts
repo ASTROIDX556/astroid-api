@@ -1,11 +1,14 @@
 import { applyDecorators } from '@nestjs/common';
-import { ApiQuery, ApiResponse } from '@nestjs/swagger';
+import { ApiQuery } from '@nestjs/swagger';
 import { DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT } from '../helpers/pagination';
 
 /**
  * Documents the standard list query parameters parsed by
- * `paginationQuerySchema` (`offset`/`page`, `limit`, `sort`, `order`), the
- * `X-Total-Count` response header, and the 400 returned for invalid bounds.
+ * `paginationQuerySchema` (`offset`/`page`, `limit`, `sort`, `order`) and the
+ * 400 returned for invalid bounds.
+ *
+ * The `X-Total-Count` response header is documented by the success response
+ * itself (see `ApiEnvelope`), so this decorator never overwrites it.
  */
 export function ApiPaginationQuery() {
   return applyDecorators(
@@ -29,16 +32,5 @@ export function ApiPaginationQuery() {
     }),
     ApiQuery({ name: 'sort', required: false, type: String, description: 'Sort field (default: createdAt).' }),
     ApiQuery({ name: 'order', required: false, enum: ['asc', 'desc'], description: 'Sort direction (default: desc).' }),
-    ApiResponse({
-      status: 200,
-      description: 'Paginated list. `meta` carries offset, page, limit, total, totalPages, hasNext and hasPrev.',
-      headers: {
-        'X-Total-Count': { description: 'Total number of matching rows', schema: { type: 'integer' } },
-      },
-    }),
-    ApiResponse({
-      status: 400,
-      description: 'Invalid pagination parameters (negative, non-integer, limit above max, or both offset and page).',
-    }),
   );
 }

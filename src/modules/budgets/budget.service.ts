@@ -5,6 +5,7 @@ import { AllocateBudgetInput, CreateBudgetInput, UpdateBudgetInput } from './bud
 import {
   BudgetExceededException,
   ConflictException,
+  ForbiddenException,
   NotFoundException,
 } from '../../common/exceptions/domain.exception';
 import {
@@ -182,6 +183,64 @@ export class BudgetService {
       }
       return budget;
     });
+  }
+
+  /** Checks every active agent allocation against settled and in-flight spend. */
+  async assertAgentBudgetWithinLimit(
+    organizationId: string,
+    agentId: string,
+    asset: string,
+    amount: number,
+  ): Promise<void> {
+    await this.redisLock.withLock(`agent-budget:${agentId}`, async () => {
+      await this.checkAgentBudgetWithinLimit(organizationId, agentId, asset, amount);
+    });
+  }
+
+  /** Keeps the budget check and transaction insert in one agent-scoped critical section. */
+  async withAgentBudgetLimit<T>(
+    organizationId: string,
+    agentId: string,
+    asset: string,
+    amount: number,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    return this.redisLock.withLock(`agent-budget:${agentId}`, async () => {
+      await this.checkAgentBudgetWithinLimit(organizationId, agentId, asset, amount);
+      return operation();
+    });
+  }
+
+  private async checkAgentBudgetWithinLimit(
+    organizationId: string,
+    agentId: string,
+    asset: string,
+    amount: number,
+  ): Promise<void> {
+    const budgets = await this.repository.findEnabledByAgentId(
+      agentId,
+      undefined,
+      organizationId,
+    );
+    const matchingBudgets = budgets.filter(
+      (budget) => budget.currency.toUpperCase() === asset.toUpperCase(),
+    );
+    if (matchingBudgets.length === 0) return;
+
+    const unaccountedSpend = await this.repository.sumUnaccountedSpendByAgent(
+      agentId,
+      organizationId,
+      asset,
+      matchingBudgets.map((budget) => budget.id),
+    );
+    for (const budget of matchingBudgets) {
+      const projected = new Decimal(budget.spent).plus(unaccountedSpend).plus(amount);
+      if (projected.greaterThan(budget.limitAmount)) {
+        throw new ForbiddenException(
+          `Transaction would exceed the active budget '${budget.name}'`,
+        );
+      }
+    }
   }
 
   /** Records realised spend after a payment completes; emits warnings near cap. */

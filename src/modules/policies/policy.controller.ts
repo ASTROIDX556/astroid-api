@@ -3,7 +3,6 @@ import {
   ApiOperation,
   ApiTags,
   ApiBearerAuth,
-  ApiResponse,
   ApiParam,
   ApiBody,
   ApiQuery,
@@ -17,6 +16,7 @@ import {
   simulatePolicySchema,
   SimulatePolicyInput,
   SimulatePolicyDto,
+  PolicySimulationDto,
   updatePolicySchema,
   UpdatePolicyInput,
 } from './policy.dto';
@@ -31,7 +31,8 @@ import {
   paginationQuerySchema,
 } from '../../common/helpers/pagination';
 import { ApiPaginationQuery } from '../../common/decorators/api-pagination-query.decorator';
-import { ApiEnvelope } from '../../common/decorators/api-envelope.decorator';
+import { ApiEnvelope, ApiPaginatedEnvelope } from '../../common/decorators/api-envelope.decorator';
+import { ApiErrorResponses } from '../../common/decorators/api-error-responses.decorator';
 
 @ApiTags('policies')
 @ApiBearerAuth('access-token')
@@ -49,9 +50,8 @@ export class PolicyController {
   @ApiPaginationQuery()
   @ApiQuery({ name: 'type', required: false, enum: ['SPENDING_LIMIT', 'APPROVAL_REQUIRED', 'ALLOWLIST', 'TIME_WINDOW'], description: 'Filter by policy type' })
   @ApiQuery({ name: 'enabled', required: false, type: Boolean, description: 'Filter by enabled status' })
-  @ApiEnvelope(CreatePolicyDto as never, { isArray: true })
-  @ApiResponse({ status: 200, description: 'Paginated list of policies' })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
+  @ApiPaginatedEnvelope(CreatePolicyDto, { description: 'Paginated list of policies' })
+  @ApiErrorResponses({ unauthorized: true, serverError: true })
   list(
     @CurrentUser('organizationId') organizationId: string,
     @Query(new ZodValidationPipe(paginationQuerySchema)) query: PaginationQuery,
@@ -69,11 +69,13 @@ export class PolicyController {
       'Creates a new governance policy. Policies evaluate transaction intents and enforce spending rules.',
   })
   @ApiBody({ type: CreatePolicyDto })
-  @ApiEnvelope(CreatePolicyDto as never)
-  @ApiResponse({ status: 201, description: 'Policy created successfully' })
-  @ApiResponse({ status: 400, description: 'Validation error' })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
-  @ApiResponse({ status: 403, description: 'Insufficient permissions (requires OWNER, ADMIN, or FINANCE)' })
+  @ApiEnvelope(CreatePolicyDto, { status: 201, description: 'Policy created successfully' })
+  @ApiErrorResponses({
+    validation: true,
+    unauthorized: true,
+    forbidden: 'Insufficient permissions (requires OWNER, ADMIN, or FINANCE)',
+    serverError: true,
+  })
   create(
     @CurrentUser() user: AuthenticatedUser,
     @Body(new ZodValidationPipe(createPolicySchema)) body: CreatePolicyInput,
@@ -89,9 +91,12 @@ export class PolicyController {
       'Returns which policies would match and their enforcement actions.',
   })
   @ApiBody({ type: SimulatePolicyDto })
-  @ApiResponse({ status: 200, description: 'Simulation results with matching policies' })
-  @ApiResponse({ status: 400, description: 'Validation error' })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
+  @ApiEnvelope(PolicySimulationDto, { description: 'Simulation results with matching policies' })
+  @ApiErrorResponses({
+    validation: true,
+    unauthorized: true,
+    serverError: true,
+  })
   simulate(
     @CurrentUser('organizationId') organizationId: string,
     @Body(new ZodValidationPipe(simulatePolicySchema)) body: SimulatePolicyInput,
@@ -105,10 +110,8 @@ export class PolicyController {
     description: 'Returns full details of a single policy by ID.',
   })
   @ApiParam({ name: 'id', description: 'Policy UUID', example: '018f0a1b-...' })
-  @ApiEnvelope(CreatePolicyDto as never)
-  @ApiResponse({ status: 200, description: 'Policy details' })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
-  @ApiResponse({ status: 404, description: 'Policy not found' })
+  @ApiEnvelope(CreatePolicyDto, { description: 'Policy details' })
+  @ApiErrorResponses({ unauthorized: true, notFound: true, serverError: true })
   findOne(@CurrentUser('organizationId') organizationId: string, @Param('id') id: string) {
     return this.policyService.getOrThrow(organizationId, id);
   }
@@ -124,11 +127,14 @@ export class PolicyController {
   })
   @ApiParam({ name: 'id', description: 'Policy UUID', example: '018f0a1b-...' })
   @ApiBody({ type: CreatePolicyDto })
-  @ApiResponse({ status: 200, description: 'Policy updated successfully' })
-  @ApiResponse({ status: 400, description: 'Validation error' })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
-  @ApiResponse({ status: 403, description: 'Insufficient permissions' })
-  @ApiResponse({ status: 404, description: 'Policy not found' })
+  @ApiEnvelope(CreatePolicyDto, { description: 'Policy updated successfully' })
+  @ApiErrorResponses({
+    validation: true,
+    unauthorized: true,
+    forbidden: true,
+    notFound: true,
+    serverError: true,
+  })
   update(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id') id: string,
@@ -147,10 +153,13 @@ export class PolicyController {
       'Soft-deletes the policy. The policy record is retained for audit purposes but is excluded from active queries.',
   })
   @ApiParam({ name: 'id', description: 'Policy UUID', example: '018f0a1b-...' })
-  @ApiResponse({ status: 200, description: 'Policy deleted successfully' })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
-  @ApiResponse({ status: 403, description: 'Insufficient permissions (requires OWNER or ADMIN)' })
-  @ApiResponse({ status: 404, description: 'Policy not found' })
+  @ApiEnvelope(CreatePolicyDto, { description: 'Policy deleted successfully' })
+  @ApiErrorResponses({
+    unauthorized: true,
+    forbidden: 'Insufficient permissions (requires OWNER or ADMIN)',
+    notFound: true,
+    serverError: true,
+  })
   remove(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
     return this.policyService.remove(user.organizationId, user.id, id);
   }

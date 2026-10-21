@@ -39,7 +39,7 @@ describe('WebhookAuditService', () => {
         entity: 'Webhook',
         entityId: 'wh-1',
         newValue: expect.objectContaining({
-          url: 'https://example.com/hook',
+          endpointOrigin: 'https://example.com',
           eventName: 'transaction.completed',
           eventId: 'event-1',
           attemptsMade: 5,

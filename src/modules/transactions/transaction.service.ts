@@ -214,7 +214,7 @@ export class TransactionService {
     const requiresApproval = policyResult.requiresApproval || !assessment.canAutoExecute;
 
     // 6. Persist the transaction row.
-    const transaction = await this.repository.create({
+    const createTransactionRow = () => this.repository.create({
       organization: { connect: { id: organizationId } },
       wallet: { connect: { id: wallet.id } },
       ...(input.agentId ? { agent: { connect: { id: input.agentId } } } : {}),
@@ -234,6 +234,15 @@ export class TransactionService {
       requiresApproval,
       metadata: input.metadata as Prisma.InputJsonValue,
     });
+    const transaction = input.agentId
+      ? await this.budgets.withAgentBudgetLimit(
+          organizationId,
+          input.agentId,
+          input.asset,
+          amount,
+          createTransactionRow,
+        )
+      : await createTransactionRow();
     await onTransactionCreated?.(transaction);
     await this.eventBus.emit(
       DomainEventName.TransactionCreated,
