@@ -71,17 +71,17 @@ describe('backoff.util', () => {
     it('returns a delay consistent with the backoff algorithm', () => {
       vi.mocked(Math.random).mockReturnValue(0);
 
-      // First retry (attemptsMade = 0 → attempt 1)
-      const delay1 = webhookBackoffStrategy(0, 'exponential', new Error('test')) as number;
+      // BullMQ passes 1 for the first failure that schedules a retry.
+      const delay1 = webhookBackoffStrategy(1, 'exponential', new Error('test')) as number;
       expect(delay1).toBe(2000);
 
-      // Second retry (attemptsMade = 1 → attempt 2)
-      const delay2 = webhookBackoffStrategy(1, 'exponential', new Error('test')) as number;
+      // BullMQ passes 2 for the second retry.
+      const delay2 = webhookBackoffStrategy(2, 'exponential', new Error('test')) as number;
       expect(delay2).toBe(4000);
 
-      // Third retry (attemptsMade = 2 → attempt 3)
-      const delay3 = webhookBackoffStrategy(2, 'exponential', new Error('test')) as number;
-      expect(delay3).toBe(8000);
+      // Third retry.
+      const thirdRetryDelay = webhookBackoffStrategy(3, 'exponential', new Error('test')) as number;
+      expect(thirdRetryDelay).toBe(8000);
     });
 
     it('adds jitter to prevent thundering herd', () => {
@@ -96,10 +96,10 @@ describe('backoff.util', () => {
       const uniqueDelays = new Set(delays);
       expect(uniqueDelays.size).toBeGreaterThan(1);
 
-      // All delays should be in the range [4000, 4800)
+      // BullMQ's attemptsMade = 1 is the first retry: [2000, 2400).
       for (const delay of delays) {
-        expect(delay).toBeGreaterThanOrEqual(4000);
-        expect(delay).toBeLessThanOrEqual(4800);
+        expect(delay).toBeGreaterThanOrEqual(2000);
+        expect(delay).toBeLessThanOrEqual(2400);
       }
     });
 
@@ -124,7 +124,7 @@ describe('backoff.util', () => {
 
     it('works when err and job are not provided', () => {
       vi.mocked(Math.random).mockReturnValue(0);
-      const delay = webhookBackoffStrategy(0) as number;
+      const delay = webhookBackoffStrategy(1) as number;
       expect(delay).toBe(2000);
     });
   });
