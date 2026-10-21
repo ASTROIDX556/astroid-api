@@ -55,7 +55,7 @@ export class AstroidThrottlerGuard extends ThrottlerGuard {
       user?: AuthenticatedUser;
       apiKey?: { id: string };
     };
-    const verifiedId = request.apiKey?.id ?? (request.user?.isApiKey ? request.user.keyId : undefined);
+    const verifiedId = request.apiKey?.id ?? (request.user?.isApiKey ? (request.user.apiKeyId ?? request.user.id) : undefined);
     if (verifiedId) {
       return `apikey:${verifiedId}`;
     }
