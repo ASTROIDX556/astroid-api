@@ -52,7 +52,7 @@ describe('API key rate limiting', () => {
       })),
       get: vi.fn(() => ({ apiPrefix: 'api/v1' })),
     } as unknown as ConfigService;
-    const guard = new PublicRateLimitGuard(new Reflector(), config, { status: 'end' } as Redis);
+    const guard = new PublicRateLimitGuard(new Reflector(), config, { status: 'end' } as unknown as Redis);
     const responseHeaders: Record<string, unknown> = {};
     const handler = () => undefined;
     Reflect.defineMetadata('astroid:isPublic', true, handler);
