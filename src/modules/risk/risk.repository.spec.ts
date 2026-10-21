@@ -11,9 +11,13 @@ describe('RiskRepository', () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     prisma = {
       riskAssessment: {
-        create: vi.fn(),
+        upsert: vi.fn(),
         findMany: vi.fn(),
         findUnique: vi.fn(),
+      },
+      transaction: {
+        count: vi.fn(),
+        aggregate: vi.fn(),
       },
     } as unknown as PrismaService;
     repository = new RiskRepository(prisma);
@@ -33,7 +37,7 @@ describe('RiskRepository', () => {
       };
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      vi.mocked((prisma as any).riskAssessment.create).mockResolvedValue(mockAssessment);
+      vi.mocked((prisma as any).riskAssessment.upsert).mockResolvedValue(mockAssessment);
 
       const result = await repository.createAssessmentRecord({
         organizationId: 'org-1',
@@ -45,10 +49,17 @@ describe('RiskRepository', () => {
       });
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      expect((prisma as any).riskAssessment.create).toHaveBeenCalledWith({
-        data: {
+      expect((prisma as any).riskAssessment.upsert).toHaveBeenCalledWith({
+        where: { transactionId: 'tx-1' },
+        create: {
           organizationId: 'org-1',
           transactionId: 'tx-1',
+          score: 25,
+          band: RiskBand.LOW,
+          factors: { factors: [] },
+          canAutoExecute: true,
+        },
+        update: {
           score: 25,
           band: RiskBand.LOW,
           factors: { factors: [] },
@@ -182,6 +193,77 @@ describe('RiskRepository', () => {
       expect(result.total).toBe(0);
       expect(result.averageScore).toBe(0);
       expect(result.autoExecuteRate).toBe(0);
+    });
+  });
+
+  describe('risk signals', () => {
+    it('counts successful and failed payments to a destination', async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const count = vi.mocked((prisma as any).transaction.count);
+      count.mockResolvedValueOnce(3).mockResolvedValueOnce(1);
+
+      const history = await repository.getDestinationHistory('org-1', 'GADDRESS');
+
+      expect(history).toEqual({ successful: 3, failed: 1 });
+      expect(count).toHaveBeenCalledWith({
+        where: {
+          organizationId: 'org-1',
+          recipientAddress: 'GADDRESS',
+          status: { in: ['COMPLETED', 'CONFIRMED', 'SUBMITTED'] },
+        },
+      });
+      expect(count).toHaveBeenCalledWith({
+        where: {
+          organizationId: 'org-1',
+          recipientAddress: 'GADDRESS',
+          status: 'FAILED',
+        },
+      });
+    });
+
+    it('sums the value moved by a wallet inside the velocity window', async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      vi.mocked((prisma as any).transaction.count).mockResolvedValue(4);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      vi.mocked((prisma as any).transaction.aggregate).mockResolvedValue({
+        _sum: { amount: { toString: () => '1234.5000000' } },
+      });
+
+      const velocity = await repository.getWalletVelocity('wallet-1', 12);
+
+      expect(velocity).toEqual({ count: 4, totalAmount: 1234.5 });
+    });
+
+    it('returns zero value when the wallet did not move anything', async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      vi.mocked((prisma as any).transaction.count).mockResolvedValue(0);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      vi.mocked((prisma as any).transaction.aggregate).mockResolvedValue({
+        _sum: { amount: null },
+      });
+
+      await expect(repository.getWalletVelocity('wallet-1')).resolves.toEqual({
+        count: 0,
+        totalAmount: 0,
+      });
+    });
+
+    it('returns the average amount as the anomaly baseline', async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      vi.mocked((prisma as any).transaction.aggregate).mockResolvedValue({
+        _avg: { amount: { toString: () => '250.0000000' } },
+      });
+
+      await expect(repository.getAmountBaseline('wallet-1')).resolves.toBe(250);
+    });
+
+    it('returns null when the wallet has no amount history', async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      vi.mocked((prisma as any).transaction.aggregate).mockResolvedValue({
+        _avg: { amount: null },
+      });
+
+      await expect(repository.getAmountBaseline('wallet-1')).resolves.toBeNull();
     });
   });
 });

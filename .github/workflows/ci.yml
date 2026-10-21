@@ -6,9 +6,15 @@ on:
   pull_request:
     branches: [ main ]
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   verify-migrations:
+    name: Verify migrations and schema drift
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     services:
       # Disposable database: the verification script resets it, replays the
@@ -44,16 +50,54 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Resolve the base ref for the history checks
+        id: base
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "ref=origin/${{ github.base_ref }}" >> "$GITHUB_OUTPUT"
+          else
+            before="${{ github.event.before }}"
+            # The first push to a branch reports an all-zero "before" commit.
+            if [ -z "$before" ] || [ "$before" = "0000000000000000000000000000000000000000" ]; then
+              echo "ref=" >> "$GITHUB_OUTPUT"
+            else
+              echo "ref=$before" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
       - name: Verify migrations, SQL validity and schema drift
-        run: bash scripts/verify-migrations.sh
         env:
           # Pull requests compare against their target branch; pushes compare
           # against the previous tip (skipped with a warning for new branches).
-          MIGRATION_BASE_REF: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event.before }}
+          MIGRATION_BASE_REF: ${{ steps.base.outputs.ref }}
+          # Disposable database. The script resets it; it must never point at
+          # a database that holds data.
           SHADOW_DATABASE_URL: postgresql://postgres:password@localhost:5432/astroid_shadow?schema=public
+        run: |
+          set -euo pipefail
+          log_file="${RUNNER_TEMP}/migration-verification.log"
+          if bash scripts/verify-migrations.sh 2>&1 | tee "$log_file"; then
+            echo "Migration verification passed."
+          else
+            echo "::error::Migration verification failed. Every problem and its fix is listed below."
+            cat "$log_file"
+            exit 1
+          fi
+
+      - name: Upload the migration verification log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: migration-verification-log
+          path: ${{ runner.temp }}/migration-verification.log
+          if-no-files-found: ignore
+          retention-days: 7
 
   build-and-test:
+    name: Typecheck, lint and test
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     services:
       postgres:
@@ -100,3 +144,6 @@ jobs:
 
       - name: Run tests
         run: npm run test
+
+      - name: Build
+        run: npm run build

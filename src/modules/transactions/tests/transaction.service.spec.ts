@@ -5,7 +5,7 @@ import { TransactionRepository } from '../transaction.repository';
 import { WalletService } from '../../wallets/wallet.service';
 import { AgentService } from '../../agents/agent.service';
 import { PolicyService } from '../../policies/policy.service';
-import { RiskService } from '../../risk/risk.service';
+import { RiskAggregatorService } from '../../risk/risk-aggregator.service';
 import { BudgetService } from '../../budgets/budget.service';
 import { StellarService } from '../../stellar/stellar.service';
 import { SpendingLimitService } from '../spending-limit.service';
@@ -22,12 +22,10 @@ describe('TransactionService', () => {
   describe('Governance simulation', () => {
     let service: TransactionService;
     let repository: {
-      hasPaidRecipient: ReturnType<typeof vi.fn>;
-      recentCountForWallet: ReturnType<typeof vi.fn>;
       create: ReturnType<typeof vi.fn>;
     };
     let policyService: { evaluateIntent: ReturnType<typeof vi.fn> };
-    let riskService: { assess: ReturnType<typeof vi.fn> };
+    let riskAggregator: { assess: ReturnType<typeof vi.fn> };
     let eventBus: { emit: ReturnType<typeof vi.fn> };
     let stellarService: { submitPayment: ReturnType<typeof vi.fn> };
 
@@ -41,8 +39,6 @@ describe('TransactionService', () => {
 
     beforeEach(() => {
       repository = {
-        hasPaidRecipient: vi.fn().mockResolvedValue(false),
-        recentCountForWallet: vi.fn().mockResolvedValue(0),
         create: vi.fn(),
       };
       policyService = {
@@ -52,12 +48,20 @@ describe('TransactionService', () => {
           violations: [],
         }),
       };
-      riskService = {
-        assess: vi.fn().mockReturnValue({
+      riskAggregator = {
+        assess: vi.fn().mockResolvedValue({
           score: 10,
           band: RiskBand.LOW,
           factors: [],
           canAutoExecute: true,
+          requiresApproval: false,
+          signals: {
+            recentTransactionCount: 0,
+            recentTransactionAmount: 0,
+            destinationSuccessfulPayments: 0,
+            destinationFailedPayments: 0,
+            amountBaseline: null,
+          },
         }),
       };
       eventBus = { emit: vi.fn().mockResolvedValue(undefined) };
@@ -76,7 +80,7 @@ describe('TransactionService', () => {
         } as unknown as WalletService,
         { getOrThrow: vi.fn() } as unknown as AgentService,
         policyService as unknown as PolicyService,
-        riskService as unknown as RiskService,
+        riskAggregator as unknown as RiskAggregatorService,
         {} as BudgetService,
         stellarService as unknown as StellarService,
         eventBus as unknown as EventBusService,
@@ -101,19 +105,33 @@ describe('TransactionService', () => {
         policy: { passed: true, violations: [] },
         risk: { score: 10, band: RiskBand.LOW },
       });
-      expect(repository.hasPaidRecipient).toHaveBeenCalledWith('org_1', input.recipientAddress);
-      expect(repository.recentCountForWallet).toHaveBeenCalledWith('wallet_1');
+      expect(riskAggregator.assess).toHaveBeenCalledWith(
+        expect.objectContaining({
+          organizationId: 'org_1',
+          walletId: 'wallet_1',
+          recipientAddress: input.recipientAddress,
+          amount: 50,
+        }),
+      );
       expect(repository.create).not.toHaveBeenCalled();
       expect(eventBus.emit).not.toHaveBeenCalled();
       expect(stellarService.submitPayment).not.toHaveBeenCalled();
     });
 
     it('flags high-risk assessments for approval during a dry run', async () => {
-      riskService.assess.mockReturnValueOnce({
-        score: 45,
-        band: RiskBand.MEDIUM,
+      riskAggregator.assess.mockResolvedValueOnce({
+        score: 65,
+        band: RiskBand.HIGH,
         factors: [],
-        canAutoExecute: false,
+        canAutoExecute: true,
+        requiresApproval: true,
+        signals: {
+          recentTransactionCount: 20,
+          recentTransactionAmount: 0,
+          destinationSuccessfulPayments: 0,
+          destinationFailedPayments: 0,
+          amountBaseline: null,
+        },
       });
 
       const result = await service.simulate('org_1', input);
@@ -158,8 +176,6 @@ describe('TransactionService - create', () => {
                 return Promise.resolve(stored);
               }),
               findById: vi.fn().mockImplementation(() => Promise.resolve(stored)),
-              hasPaidRecipient: vi.fn().mockResolvedValue(false),
-              recentCountForWallet: vi.fn().mockResolvedValue(0),
               reserveIdempotencyKey: vi.fn().mockImplementation((input: Record<string, unknown>) => {
                 const recordKey = `${input.principalId}:${input.operation}:${input.keyHash}`;
                 const existing = idempotencyRecords.get(recordKey);
@@ -213,14 +229,23 @@ describe('TransactionService - create', () => {
           },
         },
         {
-          provide: RiskService,
+          provide: RiskAggregatorService,
           useValue: {
-            evaluate: vi.fn().mockResolvedValue({
+            assess: vi.fn().mockResolvedValue({
               score: 10,
               band: RiskBand.LOW,
               factors: [],
               canAutoExecute: true,
+              requiresApproval: false,
+              signals: {
+                recentTransactionCount: 0,
+                recentTransactionAmount: 0,
+                destinationSuccessfulPayments: 0,
+                destinationFailedPayments: 0,
+                amountBaseline: null,
+              },
             }),
+            record: vi.fn().mockResolvedValue(undefined),
           },
         },
         {
@@ -279,6 +304,104 @@ describe('TransactionService - create', () => {
     );
     expect(result.requiresApproval).toBe(false);
     expect(result.transaction.status).toBe(TransactionStatus.COMPLETED);
+  });
+
+  it('routes a high-risk transaction into the approval workflow instead of executing it', async () => {
+    const proposal = { id: 'proposal_1', requiredApprovals: 2 };
+    const highRiskModule: TestingModule = await Test.createTestingModule({
+      providers: [
+        TransactionService,
+        {
+          provide: TransactionRepository,
+          useValue: {
+            create: vi.fn().mockResolvedValue({
+              id: 'tx_1',
+              amount: { toFixed: () => '50.0000000' },
+              asset: 'XLM',
+              status: TransactionStatus.DRAFT,
+            }),
+            update: vi.fn().mockResolvedValue({ id: 'tx_1' }),
+            findById: vi.fn().mockResolvedValue(null),
+          },
+        },
+        { provide: WalletService, useValue: { getOrThrow: vi.fn().mockResolvedValue(wallet) } },
+        {
+          provide: AgentService,
+          useValue: {
+            getOrThrow: vi.fn().mockResolvedValue({ id: 'agent_1', status: AgentStatus.ACTIVE }),
+          },
+        },
+        {
+          provide: PolicyService,
+          useValue: {
+            checkVelocityLimit: vi.fn().mockResolvedValue(undefined),
+            evaluateIntent: vi.fn().mockResolvedValue({
+              passed: true,
+              requiresApproval: false,
+              violations: [],
+              evaluatedPolicyIds: [],
+            }),
+          },
+        },
+        {
+          provide: RiskAggregatorService,
+          useValue: {
+            assess: vi.fn().mockResolvedValue({
+              score: 65,
+              band: RiskBand.HIGH,
+              factors: [],
+              canAutoExecute: true,
+              requiresApproval: true,
+              signals: {
+                recentTransactionCount: 20,
+                recentTransactionAmount: 0,
+                destinationSuccessfulPayments: 0,
+                destinationFailedPayments: 0,
+                amountBaseline: null,
+              },
+            }),
+            record: vi.fn().mockResolvedValue(undefined),
+          },
+        },
+        { provide: BudgetService, useValue: { assertWithinBudget: vi.fn(), consume: vi.fn() } },
+        { provide: StellarService, useValue: { submitPayment: vi.fn() } },
+        { provide: EventBusService, useValue: { emit: vi.fn().mockResolvedValue(undefined) } },
+        {
+          provide: PrismaService,
+          useValue: { proposal: { create: vi.fn().mockResolvedValue(proposal) } },
+        },
+        {
+          provide: SpendingLimitService,
+          useValue: {
+            aggregateSpend: vi.fn().mockResolvedValue({ spentToday: 0, spentThisWeek: 0, spentThisMonth: 0 }),
+            evaluateSpendingLimits: vi.fn().mockResolvedValue(undefined),
+          },
+        },
+      ],
+    }).compile();
+    const highRiskService = highRiskModule.get<TransactionService>(TransactionService);
+    const highRiskStellar = highRiskModule.get<StellarService>(StellarService);
+    const highRiskRepository = highRiskModule.get<TransactionRepository>(TransactionRepository);
+    const highRiskAggregator = highRiskModule.get<RiskAggregatorService>(RiskAggregatorService);
+
+    const result = await highRiskService.create('org_1', 'user_1', input);
+
+    expect(result.requiresApproval).toBe(true);
+    expect(result.transaction.status).toBe(TransactionStatus.PENDING);
+    expect(highRiskStellar.submitPayment).not.toHaveBeenCalled();
+    expect(highRiskRepository.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        riskScore: 65,
+        riskBand: RiskBand.HIGH,
+        requiresApproval: true,
+      }),
+    );
+    expect(highRiskAggregator.record).toHaveBeenCalledWith(
+      'org_1',
+      'tx_1',
+      expect.objectContaining({ score: 65, requiresApproval: true }),
+      { actorId: 'user_1' },
+    );
   });
 
   it('replays a matching request without creating or submitting another transaction', async () => {
@@ -349,7 +472,7 @@ describe('TransactionService - create', () => {
           useValue: { getOrThrow: vi.fn().mockResolvedValue({ id: 'agent_1', status: AgentStatus.ACTIVE }) },
         },
         { provide: PolicyService, useValue: blockedPolicy },
-        { provide: RiskService, useValue: { evaluate: vi.fn() } },
+        { provide: RiskAggregatorService, useValue: { assess: vi.fn(), record: vi.fn() } },
         { provide: BudgetService, useValue: { assertWithinBudget: vi.fn(), consume: vi.fn() } },
         { provide: StellarService, useValue: { submitPayment: vi.fn() } },
         { provide: EventBusService, useValue: { emit: vi.fn().mockResolvedValue(undefined) } },

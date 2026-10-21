@@ -84,6 +84,87 @@ describe.skipIf(!hasBash)('scripts/verify-migrations.sh', () => {
     expect(status).toBe(0);
   });
 
+  // ── Schema coverage (drift detection without a database) ─────────────────
+
+  it('reports a model that no migration creates', () => {
+    writeFileSync(
+      join(root, 'prisma', 'schema.prisma'),
+      `${SCHEMA}\nmodel Widget {\n  id String @id\n\n  @@map("widgets")\n}\n`,
+    );
+
+    const { status, output } = run();
+
+    expect(status).toBe(1);
+    expect(output).toContain('Model \'Widget\' (table "widgets") is declared in the schema');
+    expect(output).toContain('no migration creates it');
+  });
+
+  it('reports a column that no migration creates', () => {
+    writeFileSync(
+      join(root, 'prisma', 'schema.prisma'),
+      SCHEMA.replace('  id String @id', '  id   String @id\n  size Int'),
+    );
+
+    const { status, output } = run();
+
+    expect(status).toBe(1);
+    expect(output).toContain('Column "Thing"."size" of model \'Thing\' is declared in the schema');
+  });
+
+  it('reports an enum that no migration creates', () => {
+    writeFileSync(
+      join(root, 'prisma', 'schema.prisma'),
+      `${SCHEMA}\nenum Colour {\n  RED\n  BLUE\n}\n`,
+    );
+
+    const { status, output } = run();
+
+    expect(status).toBe(1);
+    expect(output).toContain('Enum \'Colour\' is declared in the schema but no migration creates it');
+  });
+
+  it('accepts a schema that the migration history covers completely', () => {
+    writeFileSync(
+      join(root, 'prisma', 'schema.prisma'),
+      `${SCHEMA}\nmodel Widget {\n  id   String @id\n  name String\n\n  @@map("widgets")\n}\n`,
+    );
+    write(
+      '20260102000000_add_widget/migration.sql',
+      'CREATE TABLE "widgets" (\n    "id" TEXT NOT NULL,\n    "name" TEXT NOT NULL,\n\n    CONSTRAINT "widgets_pkey" PRIMARY KEY ("id")\n);\n',
+    );
+
+    const { status, output } = run();
+
+    expect(output).toContain('Every model, enum and column of the schema is covered by the migration history.');
+    expect(status).toBe(0);
+  });
+
+  it('ignores relation fields, which do not declare a column', () => {
+    writeFileSync(
+      join(root, 'prisma', 'schema.prisma'),
+      `${SCHEMA}\nmodel Widget {\n  id      String  @id\n  thingId String\n  thing   Thing   @relation(fields: [thingId], references: [id])\n\n  @@map("widgets")\n}\n`,
+    );
+    write(
+      '20260102000000_add_widget/migration.sql',
+      'CREATE TABLE "widgets" (\n    "id" TEXT NOT NULL,\n    "thingId" TEXT NOT NULL,\n\n    CONSTRAINT "widgets_pkey" PRIMARY KEY ("id")\n);\n',
+    );
+
+    const { status, output } = run();
+
+    expect(output).toContain('Every model, enum and column of the schema is covered by the migration history.');
+    expect(status).toBe(0);
+  });
+
+  // ── Safety guards ────────────────────────────────────────────────────────
+
+  it('refuses to reset a database that is also the configured application database', () => {
+    const url = 'postgresql://postgres:password@localhost:5432/astroid';
+    const { status, output } = run({ DATABASE_URL: url, SHADOW_DATABASE_URL: url });
+
+    expect(status).toBe(1);
+    expect(output).toContain('SHADOW_DATABASE_URL is identical to DATABASE_URL');
+  });
+
   it('accepts comments, strings and dollar-quoted bodies containing SQL punctuation', () => {
     write(
       '20260102000000_trigger/migration.sql',
