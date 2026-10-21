@@ -4,3 +4,4 @@ export * from './stellar-memo.pipe';
 export * from './stellar-address.schema';
 export * from './stellar-address.pipe';
 export * from './zod-error';
+export * from './stellar-asset.schema';
