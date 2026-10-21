@@ -8,7 +8,7 @@ import { z } from 'zod';
 export const stellarAssetCodeSchema = z
   .string({ invalid_type_error: 'Asset code must be a string' })
   .min(1, 'Asset code is required')
-  .max(12, 'Asset code must be at most 12 characters')
-  .regex(/^[a-zA-Z0-9]+$/, 'Asset code must contain only ASCII letters and digits');
+  .regex(/^[a-zA-Z0-9]+$/, 'Asset code must contain only ASCII letters and digits')
+  .max(12, 'Asset code must be at most 12 characters');
 
 export type StellarAssetCode = z.infer<typeof stellarAssetCodeSchema>;
