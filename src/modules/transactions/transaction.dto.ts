@@ -1,7 +1,8 @@
 import { z } from 'zod';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { stellarMemoTypeSchema } from '../../common/validators/stellar-memo.schema';
-import { stellarAddressSchema } from '../../common/validators/stellar-address.schema';
+import { stellarPublicKeySchema } from '../../common/validators/stellar-address.schema';
+import { stellarAssetCodeSchema } from '../../common/validators/stellar-asset.schema';
 import { ValidationException } from '../../common/exceptions/domain.exception';
 
 const idempotencyKeyPattern = /^[A-Za-z0-9._~-]{1,128}$/;
@@ -39,9 +40,9 @@ export const createTransactionSchema = z
     walletId: z.string().uuid(),
     agentId: z.string().uuid().optional(),
     budgetId: z.string().uuid().optional(),
-    asset: z.string().min(1).max(24).default('XLM'),
+    asset: stellarAssetCodeSchema.default('XLM'),
     amount: amountString,
-    recipientAddress: stellarAddressSchema,
+    recipientAddress: stellarPublicKeySchema,
     memo: z.string().max(128).optional(),
     memoType: stellarMemoTypeSchema.optional(),
     memoValue: z.string().optional(),
