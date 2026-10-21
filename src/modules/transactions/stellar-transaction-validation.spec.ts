@@ -22,7 +22,7 @@ describe('Stellar transaction payload validation', () => {
   it.each([
     ['', 'Asset code is required'],
     ['ASSET-WITH-DASH', 'Asset code must contain only ASCII letters and digits'],
-    ['ASSET_WITH_UNDERSCORE', 'Asset code must be at most 12 characters'],
+    ['ASSET_WITH_UNDERSCORE', 'Asset code must contain only ASCII letters and digits'],
     ['TOOLONGASSET123', 'Asset code must be at most 12 characters'],
     ['USD$', 'Asset code must contain only ASCII letters and digits'],
   ])('rejects invalid asset code %s with a useful validation message', (asset, message) => {
