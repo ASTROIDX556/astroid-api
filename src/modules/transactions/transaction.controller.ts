@@ -11,6 +11,7 @@ import {
 } from '@nestjs/swagger';
 import { UserRole } from '@prisma/client';
 import { TransactionService } from './transaction.service';
+import { AgentBudgetGuard } from '../budgets/guards/agent-budget.guard';
 import {
   createTransactionSchema,
   CreateTransactionInput,
@@ -66,7 +67,7 @@ export class TransactionController {
 
   @Post()
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.FINANCE, UserRole.DEVELOPER)
-  @UseGuards(SlidingWindowThrottlerGuard, SpendingLimitGuard)
+  @UseGuards(SlidingWindowThrottlerGuard, SpendingLimitGuard, AgentBudgetGuard)
   @SlidingWindowLimit(30, 60)
   @RequireSpendingLimitCheck()
   @UseWalletLock()

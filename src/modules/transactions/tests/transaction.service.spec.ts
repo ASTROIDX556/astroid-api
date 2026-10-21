@@ -252,6 +252,10 @@ describe('TransactionService - create', () => {
           provide: BudgetService,
           useValue: {
             assertWithinBudget: vi.fn().mockResolvedValue(undefined),
+            assertAgentBudgetWithinLimit: vi.fn().mockResolvedValue(undefined),
+            withAgentBudgetLimit: vi.fn(
+              (_organizationId, _agentId, _asset, _amount, operation) => operation(),
+            ),
             consume: vi.fn().mockResolvedValue(undefined),
           },
         },
