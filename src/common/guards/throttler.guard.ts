@@ -1,7 +1,9 @@
+import { createHash } from 'node:crypto';
 import { Injectable } from '@nestjs/common';
 import { ThrottlerGuard, ThrottlerRequest } from '@nestjs/throttler';
 import { Request } from 'express';
 import { AuthenticatedUser } from '../interfaces/authenticated-user.interface';
+import { extractApiKeyFromRequest } from '../helpers/extract-api-key';
 import { THROTTLE_TIER_KEY, ThrottleTier } from '../decorators/throttle-tier.decorator';
 
 /**
@@ -53,12 +55,15 @@ export class AstroidThrottlerGuard extends ThrottlerGuard {
       user?: AuthenticatedUser;
       apiKey?: { id: string };
     };
-    const apiKeyHeader = request.headers['x-api-key'];
-    const apiKeyId =
-      request.apiKey?.id ??
-      (Array.isArray(apiKeyHeader) ? apiKeyHeader[0] : apiKeyHeader);
-    if (apiKeyId) {
-      return `apikey:${apiKeyId}`;
+    const verifiedId = request.apiKey?.id ?? (request.user?.isApiKey ? request.user.keyId : undefined);
+    if (verifiedId) {
+      return `apikey:${verifiedId}`;
+    }
+    // This guard can also run without an authenticated principal (e.g. public
+    // routes). Hash any presented key so Redis never stores raw credentials.
+    const rawKey = extractApiKeyFromRequest(request);
+    if (rawKey) {
+      return `apikey-sha256:${createHash('sha256').update(rawKey).digest('hex')}`;
     }
     const sub = request.user?.sub ?? request.user?.id;
     if (sub) {
