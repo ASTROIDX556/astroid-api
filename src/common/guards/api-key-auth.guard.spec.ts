@@ -46,7 +46,7 @@ describe('ApiKeyAuthGuard', () => {
     const guard = new ApiKeyAuthGuard(reflector, {
       verify: vi.fn().mockResolvedValue(null),
     } as unknown as ApiKeyService);
-    await expect(guard.canActivate(execution)).rejects.toMatchObject({ status: 401 });
+    await expect(guard.canActivate(execution)).rejects.toThrow('Invalid or expired API key');
   });
 
   it('rejects requests without an API key', async () => {
