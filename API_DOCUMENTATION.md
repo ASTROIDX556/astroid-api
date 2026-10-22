@@ -556,7 +556,9 @@ All endpoints return errors as [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457
 | `requestId` | Correlation id, matching the `x-request-id` header |
 | `details` | Optional structured context, e.g. field-level validation errors |
 
-Unhandled server errors always return `500` with `code: "INTERNAL_ERROR"` and a generic `detail`; internal information is only written to the server logs under the `requestId`.
+Unhandled server errors always return `500` with `code: "INTERNAL_ERROR"` and a generic `detail`; internal information is only written to the server logs under the `requestId`. Stack traces are never included in a response.
+
+The same envelope is used for requests rejected before they reach a controller — a malformed JSON body returns `400`, and a body above the parser limit returns `413` — so clients only ever parse one error shape.
 
 ### Authentication
 Most endpoints require Bearer token authentication in the format:
