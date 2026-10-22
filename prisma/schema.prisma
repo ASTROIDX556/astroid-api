@@ -244,6 +244,7 @@ model User {
   @@index([organizationId])
   @@index([status])
   @@index([organizationId, createdAt])
+  @@index([organizationId, status, createdAt])
   @@map("users")
 }
 
@@ -278,6 +279,7 @@ model Agent {
   @@index([organizationId])
   @@index([status])
   @@index([organizationId, status])
+  @@index([organizationId, status, createdAt])
   @@map("agents")
 }
 
@@ -308,6 +310,7 @@ model Wallet {
   @@index([status])
   @@index([stellarAddress])
   @@index([organizationId, createdAt])
+  @@index([organizationId, status, createdAt])
   @@map("wallets")
 }
 
@@ -431,6 +434,8 @@ model Transaction {
   @@index([walletId, status])
   @@index([agentId, status])
   @@index([agentId, createdAt])
+  @@index([organizationId, status, createdAt])
+  @@index([agentId, status, createdAt])
   @@map("transactions")
 }
 
