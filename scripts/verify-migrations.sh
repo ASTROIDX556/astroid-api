@@ -16,7 +16,9 @@
 #          and privilege management, ALTER SYSTEM, ...)
 #        - destructive statements (DROP TABLE/COLUMN, TRUNCATE, DELETE FROM,
 #          column type changes, renames, ...) are rejected, not warned about,
-#          unless the migration opts in with `-- astroid:allow-destructive`
+#          unless the migration opts in with `-- astroid:allow-destructive`.
+#          A migration that is already merged cannot be changed any more, so it
+#          is only reported as a warning.
 #        - statements that cannot succeed on a populated table are rejected
 #          (ADD COLUMN ... NOT NULL without DEFAULT)
 #        - CREATE INDEX CONCURRENTLY follows docs/concurrent-indexes.md
@@ -144,40 +146,54 @@ lint_sql() {
       return s
     }
 
-    # Returns the table of a CREATE TABLE / ALTER TABLE statement.
-    function table_name(text, verb,   rest, name) {
-      if (match(text, ("^" verb "[ \t]+TABLE[ \t]+")) == 0) return ""
-      rest = substr(text, RLENGTH + 1)
-      if (match(rest, /^IF[ \t]+NOT[ \t]+EXISTS[ \t]+/)) rest = substr(rest, RLENGTH + 1)
-      if (match(rest, /^("[^"]+"|[A-Za-z0-9_]+)/) == 0) return ""
-      name = substr(rest, RSTART, RLENGTH)
-      gsub(/"/, "", name)
+    # Key used to compare table names. Prisma always quotes identifiers, so
+    # the comparison is case-insensitive.
+    function table_key(name) {
       return tolower(name)
     }
 
-    # Returns the table an index is created on ("CREATE INDEX ... ON <table>").
-    function index_table(text,   rest, name) {
-      if (match(text, /[ \t]ON[ \t]+/) == 0) return ""
-      rest = substr(text, RSTART + RLENGTH)
-      if (match(rest, /^("[^"]+"|[A-Za-z0-9_]+)/) == 0) return ""
+    # Returns the table of a CREATE TABLE / ALTER TABLE statement, as written.
+    # uptext is text upper-cased: it has the same length as text, so a match
+    # position found in uptext points at the same character in text.
+    function table_name(text, uptext, verb,   rest, uprest, name) {
+      if (match(uptext, ("^" verb "[ \t]+TABLE[ \t]+")) == 0) return ""
+      rest = substr(text, RLENGTH + 1)
+      uprest = toupper(rest)
+      if (match(uprest, /^IF[ \t]+NOT[ \t]+EXISTS[ \t]+/)) {
+        rest = substr(text, RLENGTH + 1)
+        uprest = toupper(rest)
+      }
+      if (match(uprest, /^("[^"]+"|[A-Za-z0-9_]+)/) == 0) return ""
       name = substr(rest, RSTART, RLENGTH)
       gsub(/"/, "", name)
-      return tolower(name)
+      return name
+    }
+
+    # Returns the table an index is created on ("CREATE INDEX ... ON <table>").
+    function index_table(text, uptext,   rest, uprest, name) {
+      if (match(uptext, /[ \t]ON[ \t]+/) == 0) return ""
+      rest = substr(text, RSTART + RLENGTH)
+      uprest = toupper(rest)
+      if (match(uprest, /^("[^"]+"|[A-Za-z0-9_]+)/) == 0) return ""
+      name = substr(rest, RSTART, RLENGTH)
+      gsub(/"/, "", name)
+      return name
     }
 
     # Classifies one complete statement. up is the upper-cased statement with
     # comments removed and string literals masked; raw is the original text and
-    # is only used for the message shown to the reviewer.
-    function analyse(up, raw,   disp, tbl, upraw, clauses, clause_count, clause, clause_index) {
-      disp = shorten(collapse(raw))
+    # is only used for the message shown to the reviewer and for the names of
+    # the objects the statement touches.
+    function analyse(up, raw,   disp, tbl, upraw, flagged, clauses, clause_count, clause, clause_index) {
+      disp = shorten(raw)
       upraw = toupper(raw)
 
       # --- forbidden: never acceptable in an application migration ----------
-      if (up ~ /DROP[ \t]+DATABASE/ ||
-          up ~ /DROP[ \t]+SCHEMA/ ||
-          up ~ /(^|[^A-Z0-9_])(CREATE|ALTER|DROP)[ \t]+(ROLE|USER|GROUP)/ ||
+      if (up ~ /DROP[ \t]+DATABASE([^A-Z0-9_]|$)/ ||
+          up ~ /DROP[ \t]+SCHEMA([^A-Z0-9_]|$)/ ||
+          up ~ /(^|[^A-Z0-9_])(CREATE|ALTER|DROP)[ \t]+(ROLE|USER|GROUP)([^A-Z0-9_]|$)/ ||
           up ~ /(^|[^A-Z0-9_])(GRANT|REVOKE)[ \t]+/ ||
-          up ~ /ALTER[ \t]+SYSTEM/ ||
+          up ~ /ALTER[ \t]+SYSTEM([^A-Z0-9_]|$)/ ||
           up ~ /PG_TERMINATE_BACKEND/ ||
           up ~ /PG_CANCEL_BACKEND/ ||
           up ~ /REASSIGN[ \t]+OWNED/ ||
@@ -186,7 +202,7 @@ lint_sql() {
       }
 
       # --- destructive: rejected unless the migration opts in ---------------
-      if (up ~ /DROP[ \t]+(TABLE|COLUMN|TYPE|VIEW|MATERIALIZED|INDEX|SEQUENCE|FUNCTION|PROCEDURE|TRIGGER|EXTENSION|CONSTRAINT|DOMAIN|RULE|POLICY)/ ||
+      if (up ~ /DROP[ \t]+(TABLE|COLUMN|TYPE|VIEW|MATERIALIZED|INDEX|SEQUENCE|FUNCTION|PROCEDURE|TRIGGER|EXTENSION|CONSTRAINT|DOMAIN|RULE|POLICY)([^A-Z0-9_]|$)/ ||
           up ~ /TRUNCATE[ \t]/ ||
           up ~ /DELETE[ \t]+FROM/ ||
           (up ~ /^UPDATE[ \t]+/ && up !~ /[ \t]WHERE[ \t]/) ||
@@ -197,24 +213,36 @@ lint_sql() {
       }
 
       # --- unsafe: cannot succeed on a table that already holds rows -------
-      if (up ~ /ADD[ \t]+COLUMN/) {
-        clause_count = split(up, clauses, ",")
-        for (clause_index = 1; clause_index <= clause_count; clause_index++) {
-          clause = clauses[clause_index]
-          if (clause ~ /ADD[ \t]+COLUMN/ && clause ~ /NOT[ \t]+NULL/ && clause !~ /DEFAULT/) {
-            tbl = table_name(upraw, "ALTER")
-            if (tbl != "" && !(tbl in created)) {
-              printf "S\t%d\t%s\n", stmt_line, "ADD COLUMN ... NOT NULL without DEFAULT on table \"" tbl "\" fails as soon as the table holds rows"
+      if (up ~ /ADD[ \t]+COLUMN/ && up ~ /NOT[ \t]+NULL/) {
+        flagged = 0
+        if (up !~ /DEFAULT/) {
+          # No DEFAULT anywhere: the statement cannot succeed on a populated
+          # table, whatever the column type is.
+          flagged = 1
+        } else {
+          # A DEFAULT may belong to another column of the same statement, so
+          # every ADD COLUMN clause is checked on its own.
+          clause_count = split(up, clauses, ",")
+          for (clause_index = 1; clause_index <= clause_count; clause_index++) {
+            clause = clauses[clause_index]
+            if (clause ~ /ADD[ \t]+COLUMN/ && clause ~ /NOT[ \t]+NULL/ && clause !~ /DEFAULT/) {
+              flagged = 1
+              break
             }
-            break
+          }
+        }
+        if (flagged) {
+          tbl = table_name(raw, upraw, "ALTER")
+          if (tbl != "" && !(table_key(tbl) in created)) {
+            printf "S\t%d\t%s\n", stmt_line, "ADD COLUMN ... NOT NULL without DEFAULT on table \"" tbl "\" fails as soon as the table holds rows"
           }
         }
       }
 
       # --- advisory: index creation conventions -----------------------------
       if (up ~ /CREATE[ \t]+(UNIQUE[ \t]+)?INDEX[ \t]+/ && up !~ /INDEX[ \t]+CONCURRENTLY/) {
-        tbl = index_table(up)
-        if (tbl != "" && !(tbl in created)) {
+        tbl = index_table(raw, upraw)
+        if (tbl != "" && !(table_key(tbl) in created)) {
           printf "W\t%d\t%s\n", stmt_line, disp
         }
       }
@@ -298,16 +326,21 @@ lint_sql() {
             depth = 0
           }
           if (has_code) {
-            up = toupper(stmt)
+            # Statements are matched as a whole: leading whitespace and the
+            # line breaks of a multi-line statement are collapsed first.
+            stmt_text = collapse(stmt)
+            raw_text = collapse(raw)
+            up = toupper(stmt_text)
+            upraw = toupper(raw_text)
             if (up ~ /CREATE[ \t]+(UNIQUE[ \t]+)?INDEX[ \t]+CONCURRENTLY/) {
               concurrent_count++
               if (concurrent_line == 0) concurrent_line = stmt_line
               if (up ~ /CONCURRENTLY[ \t]+IF[ \t]+NOT[ \t]+EXISTS/) concurrent_if_not_exists = 1
             }
             if (up ~ /^CREATE[ \t]+TABLE[ \t]+/) {
-              created[table_name(toupper(raw), "CREATE")] = 1
+              created[table_key(table_name(raw_text, upraw, "CREATE"))] = 1
             }
-            analyse(up, raw)
+            analyse(up, raw_text)
             stmt_count++
           }
           stmt = ""; raw = ""; has_code = 0
@@ -502,11 +535,18 @@ else
       destructive_allowed=true
     fi
 
-    # The advisory checks only apply to migrations that are not on the base ref:
-    # the ones already merged cannot be changed any more. Without a base ref
-    # there is no way to tell them apart, so the advisories are skipped.
+    # A migration that already exists on the base ref is applied on every
+    # deployed database and cannot be changed any more: this pull request
+    # cannot fix it. The advisories and the destructive-statement check
+    # therefore only apply to migrations that are new relative to the base
+    # ref. Without a base ref there is no way to tell them apart, so the
+    # advisories are skipped and every destructive statement is rejected.
+    already_merged=false
+    if [ "$base_ref_state" = "resolved" ] && is_base_migration "$name"; then
+      already_merged=true
+    fi
     report_advisories=false
-    if [ "$base_ref_state" = "resolved" ] && ! is_base_migration "$name"; then
+    if [ "$base_ref_state" = "resolved" ] && [ "$already_merged" = false ]; then
       report_advisories=true
     fi
 
@@ -521,6 +561,8 @@ else
         D)
           if [ "$destructive_allowed" = true ]; then
             warn "Destructive statement: ${message}" "$sql_file" "$line"
+          elif [ "$already_merged" = true ]; then
+            warn "Destructive statement in an already merged migration: ${message}. It is applied on deployed databases and cannot be changed any more; add a new migration instead" "$sql_file" "$line"
           else
             error "Destructive statement is not allowed: ${message}. Add the comment '-- ${DESTRUCTIVE_OPT_IN} <reason>' to ${sql_file} if the change is intentional and data-safe, or export ALLOW_DESTRUCTIVE_MIGRATIONS=true to accept it locally" "$sql_file" "$line"
           fi
