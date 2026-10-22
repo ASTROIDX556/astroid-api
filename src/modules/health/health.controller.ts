@@ -9,7 +9,7 @@ import { PrismaHealthIndicator } from './indicators/prisma.health';
 import { RedisHealthIndicator } from './indicators/redis.health';
 import { StellarHealthIndicator } from './indicators/stellar.health';
 import { DatabaseMigrationHealthIndicator } from './indicators/database-migration.health';
-import { HealthStatusDto } from './health.dto';
+import { HealthStatusDto, StellarHealthDto } from './health.dto';
 
 /** Per-dependency report shape returned under `services` in the readiness body. */
 interface ReadinessServiceReport {
@@ -171,6 +171,31 @@ export class HealthController {
     const statusCode = isUp ? HttpStatus.OK : HttpStatus.SERVICE_UNAVAILABLE;
 
     return res.status(statusCode).json(redis);
+  }
+
+  @Get('stellar')
+  @ApiOperation({
+    summary: 'Stellar network connectivity check',
+    description:
+      'Probes the configured Horizon server and Soroban RPC node in parallel, each bounded ' +
+      'by a timeout. Returns 200 when both endpoints are healthy and 503 when one of them ' +
+      'is down or degraded.',
+  })
+  @ApiResponse({ status: 200, description: 'Horizon and Soroban RPC are reachable', type: StellarHealthDto })
+  @ApiResponse({
+    status: 503,
+    description: 'Horizon or the Soroban RPC is unreachable or degraded',
+    type: StellarHealthDto,
+  })
+  async getStellar(@Res() res: Response) {
+    const stellar = await this.stellarIndicator.checkHealth();
+
+    // A degraded endpoint is not healthy: monitoring must be able to tell the
+    // difference between "reachable" and "usable", so only `up` answers 200.
+    const isUp = stellar.status === 'up';
+    const statusCode = isUp ? HttpStatus.OK : HttpStatus.SERVICE_UNAVAILABLE;
+
+    return res.status(statusCode).json(stellar);
   }
 
   @Get()

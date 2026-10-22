@@ -10,6 +10,7 @@ import { PrismaService } from '../../database/prisma.service';
 import { WorkerMetricsService } from '../../modules/metrics/worker-metrics.service';
 import { WebhookAuditService } from './services/webhook-audit.service';
 import { queueConfig, QueueConfig } from '../../config/queue.config';
+import { scrubString } from '../../utils/log-scrubber.util';
 import {
   WEBHOOK_DELIVERY_HEADER,
   WEBHOOK_EVENT_HEADER,
@@ -58,15 +59,62 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
   async onApplicationBootstrap(): Promise<void> {
     if (this.worker) {
       this.worker.on('failed', (job, err) => {
-        this.logger.error(`Job ${job?.id} failed: ${err.message}`);
+        this.logJobFailure(job, err);
       });
       this.worker.on('error', (err) => {
-        this.logger.error(`Worker error: ${err.message}`);
+        this.logger.error(`Worker error: ${scrubString(err.message)}`);
       });
       this.worker.on('stalled', (jobId) => {
         this.logger.warn(`Job ${jobId} stalled`);
       });
     }
+  }
+
+  /**
+   * Structured, redacted log of a failed delivery.
+   *
+   * The worker-level `failed` event fires for **every** attempt, so the record
+   * states whether the retries were exhausted — in which case the job has been
+   * dead-lettered by the queue failure listener — or the delivery will be
+   * retried. The failure reason is scrubbed before it is logged, so a
+   * downstream response, a signing secret or a credential can never reach the
+   * log sink.
+   */
+  private logJobFailure(
+    job: Job<WebhookJobData> | undefined,
+    error: Error | undefined,
+  ): void {
+    const maxAttempts = job?.opts?.attempts ?? this.config.webhookDeliveryMaxAttempts;
+    const attemptsMade = (job?.attemptsMade ?? 0) + 1;
+    const terminal = attemptsMade >= maxAttempts;
+
+    const record = {
+      event: terminal ? 'webhook.delivery.dead-lettered' : 'webhook.delivery.failed',
+      queue: Queues.Webhooks,
+      jobId: job?.id ?? null,
+      webhookId: job?.data?.webhookId ?? null,
+      organizationId: job?.data?.organizationId ?? null,
+      eventName: job?.data?.eventName ?? null,
+      eventId: job?.data?.eventId ?? null,
+      attemptsMade,
+      maxAttempts,
+      terminal,
+      failedReason: error?.message ? scrubString(error.message) : 'unknown error',
+      observedAt: new Date().toISOString(),
+    };
+
+    if (terminal) {
+      this.logger.error(
+        JSON.stringify(record),
+        `Webhook ${record.webhookId} exhausted all retry attempts (${attemptsMade}/${maxAttempts}) and was dead-lettered`,
+      );
+      return;
+    }
+
+    this.logger.warn(
+      JSON.stringify(record),
+      `Webhook ${record.webhookId} delivery failed on attempt ${attemptsMade}/${maxAttempts}; it will be retried`,
+    );
   }
   constructor(
     @Optional() @Inject(PrismaService) private readonly prisma?: PrismaService,

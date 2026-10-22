@@ -503,6 +503,39 @@ Richer diagnostics (including Stellar and migration status) remain available
 under the API prefix at `GET /{API_PREFIX}/health/readiness`,
 `GET /{API_PREFIX}/health/liveness` and `GET /{API_PREFIX}/health/database`.
 
+### GET `/{API_PREFIX}/health/stellar`
+Stellar network connectivity check. Probes the configured Horizon server and
+the Soroban RPC node in parallel, each bounded by a 2 second timeout. Returns
+`200` when both endpoints are healthy and `503` when one of them is `down` or
+`degraded` — an endpoint that answers but needs more than half of the budget is
+reported as `degraded`.
+
+**Authentication:** Public
+
+**Response (503 example):**
+```json
+{
+  "status": "down",
+  "timestamp": "2026-09-28T10:00:00.000Z",
+  "network": "testnet",
+  "horizon": { "status": "up", "latencyMs": 42, "url": "https://horizon-testnet.stellar.org" },
+  "sorobanRpc": {
+    "status": "down",
+    "latencyMs": 2001,
+    "url": "https://soroban-testnet.stellar.org",
+    "error": "The operation was aborted"
+  }
+}
+```
+
+### GET `/{API_PREFIX}/health/redis`
+Redis connectivity check. Issues a `PING` on the application's shared Redis
+client, bounded by a 2 second timeout, so the check exercises the exact
+connection the API depends on. Returns `200` when the ping is answered and
+`503` when Redis is unreachable or the probe times out.
+
+**Authentication:** Public
+
 ---
 
 ## Common Types

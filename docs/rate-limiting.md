@@ -65,6 +65,29 @@ switch on `error.code` like for every other failure.
 If Redis is unreachable the limiter **fails open** (the request is allowed and
 the failure is logged) so an outage of the cache cannot take the API down.
 
+## Tiers and API key scopes
+
+`AstroidThrottlerGuard` enforces one tier per request. The tier is normally
+declared by the route with `@ThrottleTierDecorator('auth' | 'api' | 'agent' |
+'webhook')` and defaults to `api`.
+
+An API key additionally carries **permission scopes**, and those scopes select a
+tier of their own. The effective tier is the **most restrictive** of the two —
+the one with the smaller configured limit — so a key can never use its scopes
+to escape a stricter route tier:
+
+| Scope | Tier | Why |
+| --- | --- | --- |
+| `auth:*`, `session*`, `apikey*`, `credential*`, `token*` | `auth` | A key that can mint or rotate credentials is the most valuable one to protect. |
+| `webhook*` | `webhook` | A key that can re-point a destination can redirect every event a tenant emits. |
+| `agent*`, `transactions:execute`, `transactions:submit`, `transactions:sign` | `agent` | Autonomous-agent control traffic, which the platform expects to be high volume. |
+| anything else (`transactions:read`, `wallets:read`, `*`, …) | — | The route-declared tier stays in force. |
+
+The mapping lives in `src/common/throttler/api-key-scope-tier.ts` and applies to
+the steady-state **and** the burst throttler of the selected tier. The counter
+is keyed by the verified API key id (`apikey:<id>`), so one key can never
+exhaust the budget of another.
+
 ## Configuration
 
 | Variable | Default | Meaning |
@@ -93,3 +116,6 @@ caches it in Redis for five minutes.
   limiter, including concurrent requests.
 - `src/common/guards/agent-throttler.guard.spec.ts` — the tier routing and the
   agent-aware tracker.
+- `src/common/guards/throttler.guard.spec.ts` — the tier routing, the API key
+  scope tier and the rate-limit exhaustion of a scope-derived tier.
+- `src/common/throttler/api-key-scope-tier.spec.ts` — the scope → tier table.
