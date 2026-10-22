@@ -7,9 +7,9 @@ database schema by hand, and never edit a migration after it has been merged.
 
 `scripts/verify-migrations.sh` (`npm run db:verify`) enforces the rules below.
 CI runs it in the `verify-migrations` job on every pull request and push to
-`main`, with full git history and a disposable PostgreSQL database, so all
-three tiers of checks run there. Locally, tiers 2 and 3 run when you opt in
-through the environment variables shown.
+`main`, with full git history and a disposable PostgreSQL database, so the
+static, history and replay tiers all run there. Locally, the history and replay
+tiers run when you opt in through the environment variables shown.
 
 ### 1. Structure and SQL (always)
 
@@ -27,6 +27,53 @@ through the environment variables shown.
   final statement that ends with `;`. Comments, quoted strings and
   dollar-quoted function bodies are understood, so punctuation inside them is
   not flagged.
+- A migration folder must not contain leftovers of an interrupted merge
+  (`*.orig`, `*.rej`, `*.bak`, `*~`) or a file with unresolved conflict
+  markers. Prisma only applies `migration.sql`, so such a file can silently
+  replace the real content of the migration.
+
+Statements are classified as a whole, not line by line, so a multi-line
+statement is judged as one statement.
+
+#### Forbidden statements (never allowed)
+
+`DROP DATABASE`, `DROP SCHEMA`, role and privilege management
+(`CREATE`/`ALTER`/`DROP ROLE|USER|GROUP`, `GRANT`, `REVOKE`), `ALTER SYSTEM`,
+`pg_terminate_backend`, `pg_cancel_backend`, `REASSIGN OWNED` and
+`COPY ... PROGRAM` fail the run. They must never appear in an application
+migration, not even with an opt-in.
+
+#### Destructive statements (rejected unless the migration opts in)
+
+`DROP TABLE`/`COLUMN`/`TYPE`/`VIEW`/`INDEX`/…, `TRUNCATE`, `DELETE FROM`,
+`UPDATE` without `WHERE`, column type changes, `SET NOT NULL` and renames
+**fail the run**. A migration that needs one has to say so explicitly:
+
+```sql
+-- astroid:allow-destructive the column is unused and holds no data
+ALTER TABLE "Thing" DROP COLUMN "name";
+```
+
+The opt-in is per file and applies to the whole file; the reason after the
+marker is required to be readable by the reviewer. `ALLOW_DESTRUCTIVE_MIGRATIONS=true`
+accepts every destructive statement, which is useful locally but must not be
+used in CI. A migration that is already merged cannot be changed any more, so
+a destructive statement in one is only reported as a warning.
+
+#### Unsafe statements (rejected)
+
+- `ADD COLUMN ... NOT NULL` without a `DEFAULT` fails as soon as the table
+  holds rows. Add a `DEFAULT`, or add the column as nullable and backfill it
+  in a second migration. A column that is added to a table created by the same
+  migration is fine.
+- `CREATE INDEX CONCURRENTLY` must be the only statement of its migration
+  (PostgreSQL refuses it inside a transaction block, and Prisma sends a
+  multi-statement migration as one) and must not use `IF NOT EXISTS` (a failed
+  concurrent build leaves an invalid index behind). See
+  [`concurrent-indexes.md`](concurrent-indexes.md).
+- An index that is created without `CONCURRENTLY` on a table that is not
+  created by the same migration is reported as a warning: on a live table it
+  blocks writes.
 
 ### 2. History (`MIGRATION_BASE_REF`)
 
@@ -39,10 +86,8 @@ MIGRATION_BASE_REF=origin/main npm run db:verify
   any edit breaks `prisma migrate deploy`. Add a new migration instead.
 - New migrations must sort after the newest migration on the base branch. If
   another migration was merged first, regenerate yours with a current timestamp.
-- Destructive statements in new migrations (`DROP TABLE`/`COLUMN`/`TYPE`,
-  `TRUNCATE`, `DELETE FROM`, column type changes, `SET NOT NULL`, renames) are
-  reported as warnings. They are allowed, but the pull request should explain
-  how existing data is handled.
+- The index advisories are only reported for migrations that are new relative
+  to the base branch; the ones already merged cannot be changed any more.
 
 ### 3. Replay and drift (`SHADOW_DATABASE_URL`)
 
@@ -59,6 +104,14 @@ SHADOW_DATABASE_URL=postgresql://postgres:password@localhost:5432/astroid_shadow
 - The replayed schema is compared with `prisma/schema.prisma`. Any difference
   means a schema change was committed without its migration; generate one with
   `npx prisma migrate dev --name <change>`.
+
+### 4. Working tree (`CHECK_GIT_DIRTY`)
+
+```bash
+CHECK_GIT_DIRTY=true npm run db:verify
+```
+
+Fails when the working tree contains uncommitted schema or migration changes.
 
 ## Reading failures
 
