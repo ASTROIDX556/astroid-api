@@ -267,13 +267,6 @@ export interface RiskThresholdExceededPayload extends Record<string, unknown> {
   walletFrozen: boolean;
 }
 
-export interface RiskThresholdExceededPayload extends Record<string, unknown> {
-  transactionId: string;
-  score: number;
-  riskLevel: string;
-  requiresApproval: boolean;
-  walletFrozen: boolean;
-}
 
 export interface RiskAlertPayload extends Record<string, unknown> {
   transactionId?: string;
