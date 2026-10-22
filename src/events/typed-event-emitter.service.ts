@@ -64,6 +64,13 @@ export interface DomainEventMap {
   // Risk
   'risk.evaluated': PayloadTypes.RiskEvaluatedPayload;
   'risk.alert': PayloadTypes.RiskAlertPayload;
+
+  // Audit
+  'audit.recorded': PayloadTypes.AuditRecordedPayload;
+
+  // Dead letter queue / background job lifecycle
+  'dead_letter.job_failed': PayloadTypes.JobFailedPayload;
+  'dead_letter.job_requeued': PayloadTypes.JobRequeuedPayload;
 }
 
 /**

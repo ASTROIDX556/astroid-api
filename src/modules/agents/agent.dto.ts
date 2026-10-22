@@ -1,23 +1,77 @@
 import { z } from 'zod';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { AgentRole, AgentStatus } from '@prisma/client';
+import { stellarEd25519PublicKeySchema } from '../../common/validators/stellar-address.schema';
 
-export const createAgentSchema = z.object({
-  name: z.string().min(1).max(120),
-  description: z.string().max(500).optional(),
-  provider: z.string().max(80).optional(),
-  model: z.string().max(80).optional(),
-  role: z.nativeEnum(AgentRole).default(AgentRole.CUSTOM),
-  capabilities: z.array(z.string().max(80)).max(50).default([]),
-  metadata: z.record(z.unknown()).default({}),
-});
+/** Maximum number of capabilities an agent may declare. */
+export const MAX_AGENT_CAPABILITIES = 50;
+
+/**
+ * The agent's display name. It doubles as the agent handle inside an
+ * organization — handles are unique per organization — so the value is
+ * normalized (trimmed) and must not be empty.
+ */
+export const agentNameSchema = z
+  .string({
+    required_error: 'Agent name is required',
+    invalid_type_error: 'Agent name must be a string',
+  })
+  .trim()
+  .min(1, 'Agent name must not be empty')
+  .max(120, 'Agent name must be at most 120 characters');
+
+/** A single capability label. */
+export const agentCapabilitySchema = z
+  .string({
+    invalid_type_error: 'Capability must be a string',
+  })
+  .trim()
+  .min(1, 'Capability must not be empty')
+  .max(80, 'Capability must be at most 80 characters');
+
+/** The declared capabilities of an agent: bounded, trimmed and unique. */
+export const agentCapabilitiesSchema = z
+  .array(agentCapabilitySchema)
+  .max(MAX_AGENT_CAPABILITIES, `An agent may declare at most ${MAX_AGENT_CAPABILITIES} capabilities`)
+  .refine((capabilities) => new Set(capabilities).size === capabilities.length, {
+    message: 'Capabilities must be unique',
+  })
+  .default(() => []);
+
+/** Free-form metadata attached to an agent. */
+export const agentMetadataSchema = z.record(z.unknown()).default(() => ({}));
+
+/**
+ * Creation payload of an agent.
+ *
+ * The schema is strict: unknown keys are rejected so a typo in a payload
+ * never reaches the Prisma repository silently.
+ */
+export const createAgentSchema = z
+  .object({
+    name: agentNameSchema,
+    description: z.string().trim().max(500, 'Description must be at most 500 characters').optional(),
+    provider: z.string().trim().max(80, 'Provider must be at most 80 characters').optional(),
+    model: z.string().trim().max(80, 'Model must be at most 80 characters').optional(),
+    role: z.nativeEnum(AgentRole).default(AgentRole.CUSTOM),
+    capabilities: agentCapabilitiesSchema,
+    metadata: agentMetadataSchema,
+    /**
+     * Optional Stellar Ed25519 public key the agent signs with. Validated
+     * against the Stellar strkey checksum so a malformed key is rejected at
+     * the API boundary instead of failing later on-chain.
+     */
+    publicKey: stellarEd25519PublicKeySchema.optional(),
+  })
+  .strict();
 export type CreateAgentInput = z.infer<typeof createAgentSchema>;
 
+/** Partial update payload of an agent. */
 export const updateAgentSchema = createAgentSchema.partial();
 export type UpdateAgentInput = z.infer<typeof updateAgentSchema>;
 
 export const assignWalletSchema = z.object({
-  walletId: z.string().uuid(),
+  walletId: z.string().uuid('Wallet id must be a valid UUID'),
 });
 export type AssignWalletInput = z.infer<typeof assignWalletSchema>;
 
@@ -73,6 +127,13 @@ export class CreateAgentDto {
     description: 'Additional metadata as key-value pairs',
   })
   metadata?: Record<string, unknown>;
+
+  @ApiPropertyOptional({
+    description:
+      'Stellar Ed25519 public key (G…) the agent signs with. Validated against the Stellar checksum.',
+    example: 'GA7QYNF7SOWQ3GLR2BGMZEHXAVIRZA4KVWLTJJFC7MGXUA74P7UJVSGZ',
+  })
+  publicKey?: string;
 }
 
 export class AssignWalletDto {

@@ -3,6 +3,7 @@ import { OnEvent } from '@nestjs/event-emitter';
 import { Prisma } from '@prisma/client';
 import { AuditService } from './audit.service';
 import { DomainEventEnvelope } from '../../events/domain-event.types';
+import { DomainEventName } from '../../events/event-names';
 import { RequestContext } from '../../common/context/request-context';
 
 const MAX_AUDIT_EVENT_BYTES = 16_384;
@@ -22,6 +23,11 @@ export class AuditListener {
   @OnEvent(DOMAIN_EVENT_ENVELOPE)
   async handleDomainEvent(envelope: DomainEventEnvelope): Promise<void> {
     if (!envelope?.eventId) {
+      return;
+    }
+    // `audit.recorded` events are materialized by the dedicated
+    // `AuditRecordedListener`, which knows how to keep the semantic action.
+    if (envelope.name === DomainEventName.AuditRecorded) {
       return;
     }
     try {
