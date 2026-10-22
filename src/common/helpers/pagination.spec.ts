@@ -78,6 +78,12 @@ describe('toPrismaPagination', () => {
 
     expect(toPrismaPagination(query, ['name', 'createdAt']).orderBy).toEqual({ name: 'asc' });
   });
+
+  it('falls back to the first allowed field when createdAt is not sortable', () => {
+    const query = paginationQuerySchema.parse({});
+
+    expect(toPrismaPagination(query, ['occurredAt']).orderBy).toEqual({ occurredAt: 'desc' });
+  });
 });
 
 describe('buildPaginationMeta', () => {

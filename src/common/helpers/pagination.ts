@@ -52,7 +52,10 @@ export function toPrismaPagination(
   query: Pick<PaginationQuery, 'offset' | 'limit' | 'sort' | 'order'>,
   allowedSortFields: string[],
 ): PrismaPagination {
-  const sort = allowedSortFields.includes(query.sort) ? query.sort : 'createdAt';
+  const fallback = allowedSortFields.includes('createdAt')
+    ? 'createdAt'
+    : (allowedSortFields[0] ?? 'createdAt');
+  const sort = allowedSortFields.includes(query.sort) ? query.sort : fallback;
   return {
     skip: query.offset,
     take: query.limit,

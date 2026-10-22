@@ -6,6 +6,12 @@ import { PrismaService } from '../../database/prisma.service';
 import { DomainEventName } from '../../events/event-names';
 import { isTerminalJobFailure } from '../../workers/dlq.processor';
 import type { Prisma } from '@prisma/client';
+import { Paginated } from '../../common/interfaces/api-response.interface';
+import {
+  buildPaginationMeta,
+  PaginationQuery,
+  toPrismaPagination,
+} from '../../common/helpers/pagination';
 
 /**
  * Structured context captured whenever a BullMQ job fails terminally (i.e. the
@@ -199,13 +205,15 @@ export class DeadLetterService implements OnModuleInit, OnModuleDestroy {
 
   /**
    * Lists DLQ events (terminal failures and re-drives) for an organization,
-   * optionally restricted to a single queue, newest first.
+   * optionally restricted to a single queue, newest first. Pagination is applied
+   * server-side with the shared offset/limit contract so large ledgers are never
+   * loaded into memory at once.
    */
-  listForOrganization(
+  async listForOrganization(
     organizationId: string,
-    queue?: string,
-    take = 50,
-  ): Promise<Array<Record<string, unknown>>> {
+    queue: string | undefined,
+    query: PaginationQuery,
+  ): Promise<Paginated<Record<string, unknown>>> {
     const where: Prisma.DomainEventWhereInput = {
       organizationId,
       name: { in: DLQ_EVENT_NAMES as string[] },
@@ -213,12 +221,26 @@ export class DeadLetterService implements OnModuleInit, OnModuleDestroy {
     if (queue) {
       where.payload = { path: ['queue'], equals: this.normalizeQueue(queue) };
     }
-    return this.prisma.domainEvent.findMany({
-      where,
-      orderBy: { occurredAt: 'desc' },
-      take: Math.min(Math.max(take, 1), 200),
-      select: { id: true, name: true, aggregateId: true, payload: true, occurredAt: true },
-    });
+
+    // `domain_events` sorts by `occurredAt`, not the shared default `createdAt`.
+    const sort = query.sort === 'createdAt' ? 'occurredAt' : query.sort;
+    const { skip, take, orderBy } = toPrismaPagination({ ...query, sort }, ['occurredAt']);
+
+    const [items, total] = await Promise.all([
+      this.prisma.domainEvent.findMany({
+        where,
+        orderBy,
+        skip,
+        take,
+        select: { id: true, name: true, aggregateId: true, payload: true, occurredAt: true },
+      }),
+      this.prisma.domainEvent.count({ where }),
+    ]);
+
+    return new Paginated(
+      items as Array<Record<string, unknown>>,
+      buildPaginationMeta(total, query),
+    );
   }
 
   /** Resolves a job from the queue's handle, tolerating missing/stale records. */
