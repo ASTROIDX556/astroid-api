@@ -56,6 +56,18 @@ export class RiskAnalysisWorker extends WorkerHost {
     });
     if (result.band === RiskBand.HIGH || result.band === RiskBand.CRITICAL) {
       await this.repository.enforceRiskControls(data.organizationId, data.transactionId, result.band === RiskBand.CRITICAL);
+      await this.events.emit(DomainEventName.RiskThresholdExceeded, {
+        transactionId: data.transactionId,
+        score: result.score,
+        riskLevel: result.band,
+        requiresApproval: true,
+        walletFrozen: result.band === RiskBand.CRITICAL,
+      }, {
+        organizationId: data.organizationId,
+        actorId: data.actorId,
+        aggregateType: 'transaction',
+        aggregateId: data.transactionId,
+      });
       await this.events.emit(DomainEventName.RiskAlert, {
         transactionId: data.transactionId,
         riskLevel: result.band,
