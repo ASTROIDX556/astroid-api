@@ -29,6 +29,15 @@ export const simulatePolicySchema = z.object({
   spentToday: z.number().nonnegative().optional(),
   spentThisWeek: z.number().nonnegative().optional(),
   spentThisMonth: z.number().nonnegative().optional(),
+  /** Transactions already executed in the velocity window. */
+  transactionCount: z.number().int().nonnegative().optional(),
+  /** Transactions already executed per velocity window. */
+  transactionCounts: z
+    .record(
+      z.enum(['minute', 'hour', 'day', 'week', 'month']),
+      z.number().int().nonnegative(),
+    )
+    .optional(),
 });
 
 export type SimulatePolicyInput = z.infer<typeof simulatePolicySchema>;
