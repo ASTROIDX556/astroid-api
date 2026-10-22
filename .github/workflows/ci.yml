@@ -44,10 +44,13 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Create separate verification database
+        run: PGPASSWORD=password psql -h localhost -U postgres -d postgres -v ON_ERROR_STOP=1 -c 'CREATE DATABASE astroid_verify;'
+
       - name: Apply migrations to disposable PostgreSQL
         run: npm run prisma:deploy
         env:
-          DATABASE_URL: postgresql://postgres:password@localhost:5432/astroid_shadow?schema=public
+          DATABASE_URL: postgresql://postgres:password@localhost:5432/astroid_verify?schema=public
 
       - name: Verify migrations, SQL validity and schema drift
         run: npm run db:verify
