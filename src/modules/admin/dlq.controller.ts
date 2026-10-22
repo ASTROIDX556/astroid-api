@@ -8,7 +8,9 @@ import {
   HttpCode,
   HttpStatus,
 } from '@nestjs/common';
-import { ApiOperation, ApiTags, ApiResponse, ApiParam, ApiQuery, ApiBearerAuth } from '@nestjs/swagger';
+import { ApiOperation, ApiTags, ApiParam, ApiQuery, ApiBearerAuth } from '@nestjs/swagger';
+import { ApiErrorResponses } from '../../common/decorators/api-error-responses.decorator';
+import { ApiEnvelope } from '../../common/decorators/api-envelope.decorator';
 import { UserRole } from '@prisma/client';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
@@ -51,7 +53,8 @@ export class DlqController {
   @ApiQuery({ name: 'queue', required: false, type: String, description: 'Restrict to a single queue' })
   @ApiQuery({ name: 'page', required: false, type: Number, description: 'Page number (default 1)' })
   @ApiQuery({ name: 'limit', required: false, type: Number, description: 'Items per page, max 100 (default 20)' })
-  @ApiResponse({ status: 200, description: 'Paginated list of failed / dead-lettered jobs', type: PaginatedDlqJobsDto })
+  @ApiEnvelope(PaginatedDlqJobsDto, { description: 'Paginated list of failed / dead-lettered jobs' })
+  @ApiErrorResponses({ unauthorized: true, forbidden: true, serverError: true })
   async listFailedJobs(
     @Query(new ZodValidationPipe(listDlqJobsQuerySchema)) query: ListDlqJobsQuery,
   ) {
@@ -63,7 +66,11 @@ export class DlqController {
     summary: 'Get queue job counts and DLQ health stats',
     description: 'Returns per-queue BullMQ job counts (failed, active, waiting, delayed, completed, paused).',
   })
-  @ApiResponse({ status: 200, description: 'Summary counts across all BullMQ queues', type: [QueueJobCountsDto] })
+  @ApiEnvelope(QueueJobCountsDto, {
+    isArray: true,
+    description: 'Summary counts across all BullMQ queues',
+  })
+  @ApiErrorResponses({ unauthorized: true, forbidden: true, serverError: true })
   async getQueueStats(): Promise<QueueJobCounts[]> {
     return this.dlqService.getQueueStats();
   }
@@ -75,7 +82,8 @@ export class DlqController {
     description: 'Moves every failed job (optionally scoped to one queue) back onto its waiting list.',
   })
   @ApiQuery({ name: 'queue', required: false, type: String, description: 'Restrict the batch retry to one queue' })
-  @ApiResponse({ status: 200, description: 'Results of batch retry operation', type: RetryAllResultDto })
+  @ApiEnvelope(RetryAllResultDto, { description: 'Results of batch retry operation' })
+  @ApiErrorResponses({ unauthorized: true, forbidden: true, serverError: true })
   async retryAllJobs(@Query('queue') queue?: string) {
     return this.dlqService.retryAllFailedJobs(queue);
   }
@@ -86,7 +94,8 @@ export class DlqController {
     summary: 'Purge failed jobs across all queues or a specified queue',
     description: 'Permanently removes failed jobs after an optional grace period. Destructive operation.',
   })
-  @ApiResponse({ status: 200, description: 'Results of purge operation', type: PurgeResultDto })
+  @ApiEnvelope(PurgeResultDto, { description: 'Results of purge operation' })
+  @ApiErrorResponses({ unauthorized: true, forbidden: true, serverError: true })
   async purgeQueue(
     @Query(new ZodValidationPipe(purgeDlqSchema)) query: PurgeDlqDto,
   ) {
@@ -100,7 +109,8 @@ export class DlqController {
     description: 'Moves every failed job in the named queue back onto its waiting list.',
   })
   @ApiParam({ name: 'queue', description: 'Target queue name', example: 'webhooks' })
-  @ApiResponse({ status: 200, description: 'Results of batch retry operation', type: RetryAllResultDto })
+  @ApiEnvelope(RetryAllResultDto, { description: 'Results of batch retry operation' })
+  @ApiErrorResponses({ unauthorized: true, forbidden: true, serverError: true })
   async retryQueueAllJobs(@Param('queue') queue: string) {
     return this.dlqService.retryAllFailedJobs(queue);
   }
@@ -112,7 +122,8 @@ export class DlqController {
     description: 'Permanently removes failed jobs in the named queue. Destructive operation.',
   })
   @ApiParam({ name: 'queue', description: 'Target queue name', example: 'webhooks' })
-  @ApiResponse({ status: 200, description: 'Results of purge operation', type: PurgeResultDto })
+  @ApiEnvelope(PurgeResultDto, { description: 'Results of purge operation' })
+  @ApiErrorResponses({ unauthorized: true, forbidden: true, serverError: true })
   async purgeSpecificQueue(
     @Param('queue') queue: string,
     @Query(new ZodValidationPipe(purgeDlqSchema)) query: PurgeDlqDto,
@@ -127,8 +138,8 @@ export class DlqController {
   })
   @ApiParam({ name: 'queue', description: 'Queue to inspect', example: 'webhooks' })
   @ApiParam({ name: 'id', description: 'BullMQ job id', example: '42' })
-  @ApiResponse({ status: 200, description: 'Job inspection details', type: DlqJobDetailsDto })
-  @ApiResponse({ status: 404, description: 'Job not found' })
+  @ApiEnvelope(DlqJobDetailsDto, { description: 'Job inspection details' })
+  @ApiErrorResponses({ unauthorized: true, forbidden: true, notFound: true, serverError: true })
   async getJobDetails(
     @Param('queue') queue: string,
     @Param('id') id: string,
@@ -143,8 +154,8 @@ export class DlqController {
   })
   @ApiParam({ name: 'id', description: 'BullMQ job id', example: '42' })
   @ApiQuery({ name: 'queue', required: false, type: String, description: 'Optional queue override (defaults to dead-letter)' })
-  @ApiResponse({ status: 200, description: 'Job inspection details', type: DlqJobDetailsDto })
-  @ApiResponse({ status: 404, description: 'Job not found' })
+  @ApiEnvelope(DlqJobDetailsDto, { description: 'Job inspection details' })
+  @ApiErrorResponses({ unauthorized: true, forbidden: true, notFound: true, serverError: true })
   async getDlqJobDetails(
     @Param('id') id: string,
     @Query('queue') queue?: string,
@@ -160,9 +171,14 @@ export class DlqController {
   })
   @ApiParam({ name: 'queue', description: 'Queue to retry from', example: 'webhooks' })
   @ApiParam({ name: 'id', description: 'BullMQ job id', example: '42' })
-  @ApiResponse({ status: 200, description: 'Job retry confirmation', type: RetryJobResultDto })
-  @ApiResponse({ status: 400, description: 'Job is not in the failed state' })
-  @ApiResponse({ status: 404, description: 'Job not found' })
+  @ApiEnvelope(RetryJobResultDto, { description: 'Job retry confirmation' })
+  @ApiErrorResponses({
+    validation: 'Job is not in the failed state',
+    unauthorized: true,
+    forbidden: true,
+    notFound: true,
+    serverError: true,
+  })
   async retryJob(
     @Param('queue') queue: string,
     @Param('id') id: string,
@@ -178,9 +194,14 @@ export class DlqController {
   })
   @ApiParam({ name: 'id', description: 'BullMQ job id', example: '42' })
   @ApiQuery({ name: 'queue', required: false, type: String, description: 'Optional queue override (defaults to dead-letter)' })
-  @ApiResponse({ status: 200, description: 'Job retry confirmation', type: RetryJobResultDto })
-  @ApiResponse({ status: 400, description: 'Job is not in the failed state' })
-  @ApiResponse({ status: 404, description: 'Job not found' })
+  @ApiEnvelope(RetryJobResultDto, { description: 'Job retry confirmation' })
+  @ApiErrorResponses({
+    validation: 'Job is not in the failed state',
+    unauthorized: true,
+    forbidden: true,
+    notFound: true,
+    serverError: true,
+  })
   async retryDlqJob(
     @Param('id') id: string,
     @Query('queue') queue?: string,
@@ -196,8 +217,8 @@ export class DlqController {
   })
   @ApiParam({ name: 'queue', description: 'Queue to remove from', example: 'webhooks' })
   @ApiParam({ name: 'id', description: 'BullMQ job id', example: '42' })
-  @ApiResponse({ status: 200, description: 'Job removal confirmation', type: RemoveJobResultDto })
-  @ApiResponse({ status: 404, description: 'Job not found' })
+  @ApiEnvelope(RemoveJobResultDto, { description: 'Job removal confirmation' })
+  @ApiErrorResponses({ unauthorized: true, forbidden: true, notFound: true, serverError: true })
   async removeJob(
     @Param('queue') queue: string,
     @Param('id') id: string,
@@ -213,8 +234,8 @@ export class DlqController {
   })
   @ApiParam({ name: 'id', description: 'BullMQ job id', example: '42' })
   @ApiQuery({ name: 'queue', required: false, type: String, description: 'Optional queue override (defaults to dead-letter)' })
-  @ApiResponse({ status: 200, description: 'Job removal confirmation', type: RemoveJobResultDto })
-  @ApiResponse({ status: 404, description: 'Job not found' })
+  @ApiEnvelope(RemoveJobResultDto, { description: 'Job removal confirmation' })
+  @ApiErrorResponses({ unauthorized: true, forbidden: true, notFound: true, serverError: true })
   async removeDlqJob(
     @Param('id') id: string,
     @Query('queue') queue?: string,

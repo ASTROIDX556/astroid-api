@@ -35,15 +35,23 @@ its own microservice.
 - **Conventional Commits.** `feat:`, `fix:`, `docs:`, `test:`, `refactor:`, `chore:`, etc.
 - **Tests are required** for new behaviour. Unit tests use vitest. Never call external services in unit tests.
 - **Audit trail.** Every important action must be logged to the audit module.
+- **API documentation.** Every endpoint documents its success schema and its
+  error responses with the shared decorators; `npm run docs:check` verifies
+  the generated OpenAPI document. See
+  [`docs/api-documentation.md`](docs/api-documentation.md).
+- **Rate limiting.** New high-frequency routes use the Redis-backed sliding
+  window limiter. See [`docs/rate-limiting.md`](docs/rate-limiting.md).
 
 ## Pull request checklist
 
 1. `npm run typecheck && npm run lint && npm run test` all pass.
 2. `npm run db:verify` passes (`scripts/verify-migrations.sh`). See
    [Database migrations](#database-migrations) below.
-3. Database schema changes include a valid Prisma migration folder containing `migration.sql`.
-4. New endpoints are documented with OpenAPI/Swagger decorators.
-5. Cross-repo contracts (response envelope, entity/enum names) still match `astroid-web` and `astroid-sdk`.
+3. `npm run docs:check` passes (the OpenAPI document is complete and every
+   schema resolves). See [`docs/api-documentation.md`](docs/api-documentation.md).
+4. Database schema changes include a valid Prisma migration folder containing `migration.sql`.
+5. New endpoints are documented with OpenAPI/Swagger decorators.
+6. Cross-repo contracts (response envelope, entity/enum names) still match `astroid-web` and `astroid-sdk`.
 
 ## Database migrations
 

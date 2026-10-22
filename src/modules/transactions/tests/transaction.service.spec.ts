@@ -227,6 +227,10 @@ describe('TransactionService - create', () => {
           provide: BudgetService,
           useValue: {
             assertWithinBudget: vi.fn().mockResolvedValue(undefined),
+            assertAgentBudgetWithinLimit: vi.fn().mockResolvedValue(undefined),
+            withAgentBudgetLimit: vi.fn(
+              (_organizationId, _agentId, _asset, _amount, operation) => operation(),
+            ),
             consume: vi.fn().mockResolvedValue(undefined),
           },
         },
@@ -350,7 +354,17 @@ describe('TransactionService - create', () => {
         },
         { provide: PolicyService, useValue: blockedPolicy },
         { provide: RiskService, useValue: { evaluate: vi.fn() } },
-        { provide: BudgetService, useValue: { assertWithinBudget: vi.fn(), consume: vi.fn() } },
+        {
+          provide: BudgetService,
+          useValue: {
+            assertWithinBudget: vi.fn(),
+            assertAgentBudgetWithinLimit: vi.fn(),
+            withAgentBudgetLimit: vi.fn(
+              (_organizationId, _agentId, _asset, _amount, operation) => operation(),
+            ),
+            consume: vi.fn(),
+          },
+        },
         { provide: StellarService, useValue: { submitPayment: vi.fn() } },
         { provide: EventBusService, useValue: { emit: vi.fn().mockResolvedValue(undefined) } },
         { provide: PrismaService, useValue: {} },

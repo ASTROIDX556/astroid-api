@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { ApiPropertyOptional } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 export const createMemorySchema = z
   .object({
@@ -19,30 +19,87 @@ export type CreateMemoryInput = z.infer<typeof createMemorySchema>;
 // ── Swagger DTOs ──
 
 export class CreateMemoryDto {
-  @ApiPropertyOptional()
+  @ApiPropertyOptional({
+    description: 'Agent the record belongs to',
+    example: '018f0a1b-2c3d-4e5f-8a9b-0c1d2e3f4a5b',
+  })
   agentId?: string;
 
-  @ApiPropertyOptional()
+  @ApiPropertyOptional({
+    description: 'Transaction the record was written for',
+    example: '018f0a1b-2c3d-4e5f-8a9b-0c1d2e3f4a5b',
+  })
   transactionId?: string;
 
-  @ApiPropertyOptional({ example: 'Pay invoice #4521' })
+  @ApiPropertyOptional({ example: 'Pay invoice #4521', description: 'Task the agent was working on' })
   task?: string;
 
-  @ApiPropertyOptional({ example: 'Vendor is a known recipient; amount within monthly budget.' })
+  @ApiPropertyOptional({
+    example: 'Vendor is a known recipient; amount within monthly budget.',
+    description: 'Why the agent acted',
+  })
   reason?: string;
 
-  @ApiPropertyOptional()
+  @ApiPropertyOptional({
+    description: 'Conversation the record belongs to',
+    example: 'conv_018f...',
+  })
   conversationId?: string;
 
-  @ApiPropertyOptional()
+  @ApiPropertyOptional({
+    description: 'Policy that was applied',
+    example: 'Max 1000 USDC per transaction',
+  })
   policyUsed?: string;
 
-  @ApiPropertyOptional({ minimum: 0, maximum: 100 })
+  @ApiPropertyOptional({
+    description: 'Risk score at the time of the decision',
+    minimum: 0,
+    maximum: 100,
+    example: 24,
+  })
   risk?: number;
 
-  @ApiPropertyOptional()
+  @ApiPropertyOptional({
+    description: 'Short summary of the record',
+    example: 'Invoice paid after review',
+  })
   summary?: string;
 
-  @ApiPropertyOptional({ type: Object })
+  @ApiPropertyOptional({ type: Object, description: 'Free-form metadata stored with the record' })
   metadata?: Record<string, unknown>;
+}
+
+
+/** A financial memory record as returned by the API. */
+export class MemoryRecordDto {
+  @ApiProperty({ description: 'Memory record id', format: 'uuid', example: '018f0a1b-6666-4000-8000-000000000000' })
+  id!: string;
+
+  @ApiPropertyOptional({ description: 'Agent the record belongs to', format: 'uuid' })
+  agentId?: string;
+
+  @ApiPropertyOptional({ description: 'Transaction the record was written for', format: 'uuid' })
+  transactionId?: string;
+
+  @ApiPropertyOptional({ description: 'Task the agent was working on', example: 'Reconcile supplier invoice' })
+  task?: string;
+
+  @ApiPropertyOptional({ description: 'Why the agent acted', example: 'Invoice exceeded the agreed amount' })
+  reason?: string;
+
+  @ApiPropertyOptional({ description: 'Conversation the record belongs to', example: 'conv_018f...' })
+  conversationId?: string;
+
+  @ApiPropertyOptional({ description: 'Policy that was applied', example: 'Max 1000 USDC per transaction' })
+  policyUsed?: string;
+
+  @ApiPropertyOptional({ description: 'Risk score recorded with the memory', example: 24 })
+  risk?: number;
+
+  @ApiPropertyOptional({ description: 'Short summary of the record', example: 'Invoice paid after review' })
+  summary?: string;
+
+  @ApiProperty({ description: 'Creation timestamp', example: '2026-01-15T10:30:00.000Z' })
+  createdAt!: string;
 }

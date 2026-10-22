@@ -3,10 +3,11 @@ import {
   ApiOperation,
   ApiTags,
   ApiBearerAuth,
-  ApiResponse,
   ApiParam,
   ApiBody,
 } from '@nestjs/swagger';
+import { ApiErrorResponses } from '../../../common/decorators/api-error-responses.decorator';
+import { ApiEnvelope } from '../../../common/decorators/api-envelope.decorator';
 import { Request } from 'express';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import { ThrottleTierDecorator } from '../../../common/decorators/throttle-tier.decorator';
@@ -63,13 +64,11 @@ export class PasskeyController {
       'Returns a challenge and relying party configuration for the client ' +
       'to pass to navigator.credentials.create().',
   })
-  @ApiResponse({
+  @ApiEnvelope(RegistrationOptionsDto, {
     status: 201,
     description: 'Registration options generated successfully',
-    type: RegistrationOptionsDto,
   })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
-  @ApiResponse({ status: 429, description: 'Rate limit exceeded' })
+  @ApiErrorResponses({ unauthorized: true, tooManyRequests: true, serverError: true })
   async generateRegistrationOptions(
     @CurrentUser() user: AuthenticatedUser,
   ): Promise<RegistrationOptionsDto> {
@@ -93,14 +92,16 @@ export class PasskeyController {
       'persists the public key and credential ID, and invalidates the challenge.',
   })
   @ApiBody({ type: VerifyPasskeyRegistrationDto })
-  @ApiResponse({
+  @ApiEnvelope(PasskeyCredentialDto, {
     status: 201,
     description: 'Passkey credential created successfully',
-    type: PasskeyCredentialDto,
   })
-  @ApiResponse({ status: 400, description: 'Invalid or expired registration challenge' })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
-  @ApiResponse({ status: 429, description: 'Rate limit exceeded' })
+  @ApiErrorResponses({
+    validation: 'Invalid or expired registration challenge',
+    unauthorized: true,
+    tooManyRequests: true,
+    serverError: true,
+  })
   verifyRegistration(
     @CurrentUser() user: AuthenticatedUser,
     @Body(new ZodValidationPipe(verifyPasskeyRegistrationSchema))
@@ -130,13 +131,11 @@ export class PasskeyController {
       'Returns a challenge and allowed credentials for the client ' +
       'to pass to navigator.credentials.get().',
   })
-  @ApiResponse({
+  @ApiEnvelope(AuthenticationOptionsDto, {
     status: 201,
     description: 'Authentication options generated successfully',
-    type: AuthenticationOptionsDto,
   })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
-  @ApiResponse({ status: 429, description: 'Rate limit exceeded' })
+  @ApiErrorResponses({ unauthorized: true, tooManyRequests: true, serverError: true })
   async generateAuthenticationOptions(
     @CurrentUser() user: AuthenticatedUser,
   ): Promise<AuthenticationOptionsDto> {
@@ -159,14 +158,15 @@ export class PasskeyController {
       'updates the signature counter, and returns the authenticated user.',
   })
   @ApiBody({ type: VerifyPasskeyAuthenticationDto })
-  @ApiResponse({
-    status: 200,
+  @ApiEnvelope(PasskeyAuthenticationResultDto, {
     description: 'Authentication successful',
-    type: PasskeyAuthenticationResultDto,
   })
-  @ApiResponse({ status: 400, description: 'Invalid or expired authentication challenge' })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
-  @ApiResponse({ status: 429, description: 'Rate limit exceeded' })
+  @ApiErrorResponses({
+    validation: 'Invalid or expired authentication challenge',
+    unauthorized: true,
+    tooManyRequests: true,
+    serverError: true,
+  })
   async verifyAuthentication(
     @Body(new ZodValidationPipe(verifyPasskeyAuthenticationSchema))
     body: VerifyPasskeyAuthenticationInput,
@@ -189,12 +189,11 @@ export class PasskeyController {
     summary: 'List registered passkey credentials',
     description: 'Returns all passkey credentials for the authenticated user.',
   })
-  @ApiResponse({
-    status: 200,
+  @ApiEnvelope(PasskeyCredentialDto, {
+    isArray: true,
     description: 'List of registered passkey credentials',
-    type: [PasskeyCredentialDto],
   })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
+  @ApiErrorResponses({ unauthorized: true, serverError: true })
   listCredentials(@CurrentUser() user: AuthenticatedUser) {
     return this.passkeyService.listCredentials(user.id);
   }
@@ -215,9 +214,8 @@ export class PasskeyController {
     description: 'The unique identifier of the passkey credential to revoke',
     example: 'cred_018f...',
   })
-  @ApiResponse({ status: 200, description: 'Credential revoked successfully' })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
-  @ApiResponse({ status: 404, description: 'Credential not found' })
+  @ApiEnvelope(PasskeyCredentialDto, { description: 'Credential revoked successfully' })
+  @ApiErrorResponses({ unauthorized: true, notFound: true, serverError: true })
   revokeCredential(
     @CurrentUser() user: AuthenticatedUser,
     @Param('credentialId') credentialId: string,
