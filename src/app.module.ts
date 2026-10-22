@@ -49,7 +49,6 @@ import { AiModule } from './modules/ai/ai.module';
 import { HealthModule } from './modules/health/health.module';
 import { MetricsModule } from './modules/metrics/metrics.module';
 import { AdminModule } from './modules/admin/admin.module';
-import { RequestMetricsMiddleware } from './modules/metrics/metrics.middleware';
 import { DeadLetterModule } from './modules/dead-letter/dead-letter.module';
 import { AgentTraceInterceptor } from './common/interceptors/agent-trace.interceptor';
 import { RequestContextInterceptor } from './common/interceptors/request-context.interceptor';
@@ -166,7 +165,6 @@ import { sanitizeAuditPayload, sanitizeLogArguments } from './common/helpers/aud
 export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer): void {
     consumer.apply(RequestIdMiddleware, StructuredRequestLoggingMiddleware).forRoutes('*');
-    consumer.apply(RequestMetricsMiddleware).forRoutes('*');
     consumer.apply(RawBodyMiddleware).forRoutes({
       path: 'webhooks/receive',
       method: RequestMethod.POST,
