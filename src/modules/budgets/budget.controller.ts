@@ -77,7 +77,7 @@ export class BudgetController {
       'Creates a new budget with spending limits. Budgets can be hierarchical with parent-child relationships.',
   })
   @ApiBody({ type: CreateBudgetDto })
-  @ApiEnvelope(CreateBudgetDto as never)
+  @ApiEnvelope(CreateBudgetDto as never, { status: 201 })
   @ApiResponse({ status: 201, description: 'Budget created successfully' })
   @ApiErrorResponses(400)
   @ApiErrorResponses(401)
