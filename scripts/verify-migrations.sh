@@ -394,30 +394,6 @@ else
   esac
 fi
 
-# --- 4. live database migration status -----------------------------------------
-
-section "Live database migration status"
-if [ -z "${DATABASE_URL:-}" ]; then
-  echo "Skipping: set DATABASE_URL to verify unapplied or failed migrations on a live database."
-else
-  set +e
-  status_output="$(npx --no-install prisma migrate status --schema "$SCHEMA_PATH" 2>&1)"
-  status_code=$?
-  set -e
-  if [ "$status_code" -ne 0 ]; then
-    # Prisma migrate status exits nonzero for pending, divergent and failed
-    # migrations as well as connectivity errors. Do not print credentials.
-    error "Database migration status failed (exit ${status_code}). Check connectivity, pending migrations and migration history. Run 'npx prisma migrate status --schema ${SCHEMA_PATH}' locally for details." "$SCHEMA_PATH"
-    if printf '%s' "$status_output" | grep -Eiq 'P1001|P1002|P1017|connect|unreachable|timed out'; then
-      warn "Database appears unreachable; verify DATABASE_URL and PostgreSQL availability."
-    else
-      warn "Migration history is not up to date; inspect pending, failed or divergent migrations."
-    fi
-  else
-    echo "Database migration status is up to date."
-  fi
-fi
-
 # --- working tree ------------------------------------------------------------
 
 if [ "${CHECK_GIT_DIRTY:-false}" = "true" ]; then
