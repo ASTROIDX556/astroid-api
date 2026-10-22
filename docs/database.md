@@ -121,3 +121,29 @@ npx prisma migrate diff   --from-schema-datamodel prisma/schema.prisma   --to-sc
 ```
 
 Review the generated SQL by hand before relying on it. `down` refuses to run for a migration without a `down.sql`.
+
+
+## Live migration status and CI diagnostics (issue #437)
+
+`npm run db:verify` performs static checks, optional Git history validation,
+optional live database migration status verification when `DATABASE_URL` is set,
+and optional replay/drift checks when `SHADOW_DATABASE_URL` is set. A live
+status check detects unapplied, failed, and divergent migration histories;
+Prisma connection errors also cause a nonzero exit. GitHub Actions emits
+error/warning annotations and groups diagnostic output.
+
+For a full local check, use **two disposable PostgreSQL databases**:
+
+```bash
+export DATABASE_URL='postgresql://postgres:password@localhost:5432/astroid_verify'
+export SHADOW_DATABASE_URL='postgresql://postgres:password@localhost:5432/astroid_shadow'
+npm run prisma:deploy
+npm run db:verify
+```
+
+The shadow database is reset by the drift comparison. Never point
+`SHADOW_DATABASE_URL` at production. If status reports pending migrations,
+run `npm run prisma:deploy` against the intended test database; if it reports
+divergence or a failed migration, inspect `npx prisma migrate status` and the
+`_prisma_migrations` table before resolving history. For connection failures,
+verify PostgreSQL is reachable and `DATABASE_URL` credentials are correct.
