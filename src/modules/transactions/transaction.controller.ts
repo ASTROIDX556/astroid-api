@@ -31,6 +31,7 @@ import { AuthenticatedUser } from '../../common/interfaces/authenticated-user.in
 import { PaginationQuery, paginationQuerySchema } from '../../common/helpers/pagination';
 import { ApiPaginationQuery } from '../../common/decorators/api-pagination-query.decorator';
 import { ApiEnvelope } from '../../common/decorators/api-envelope.decorator';
+import { ApiErrorResponses } from '../../common/decorators/api-error-response.decorator';
 import { IDEMPOTENCY_KEY_HEADER } from '../../common/constants/headers';
 import {
   SlidingWindowThrottlerGuard,
@@ -56,7 +57,7 @@ export class TransactionController {
   @ApiQuery({ name: 'walletId', required: false, type: String, description: 'Filter by wallet UUID' })
   @ApiEnvelope(CreateTransactionDto as never, { isArray: true })
   @ApiResponse({ status: 200, description: 'Paginated list of transactions' })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
+  @ApiErrorResponses(401)
   list(
     @CurrentUser('organizationId') organizationId: string,
     @Query(new ZodValidationPipe(paginationQuerySchema)) query: PaginationQuery,
@@ -88,15 +89,12 @@ export class TransactionController {
   })
   @ApiEnvelope(CreateTransactionDto as never)
   @ApiResponse({ status: 201, description: 'Transaction created (may require approval)' })
-  @ApiResponse({ status: 400, description: 'Validation error or policy violation' })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
-  @ApiResponse({ status: 403, description: 'Insufficient permissions' })
-  @ApiResponse({ status: 409, description: 'Insufficient budget or risk threshold exceeded' })
-  @ApiResponse({ status: 409, description: 'Idempotency key is in use or was reused with a different payload' })
-  @ApiResponse({
-    status: 422,
-    description: 'Transaction blocked by spending limit policy (POLICY_VIOLATION)',
-  })
+  @ApiErrorResponses(400)
+  @ApiErrorResponses(401)
+  @ApiErrorResponses(403)
+  @ApiErrorResponses(409)
+  @ApiErrorResponses(409)
+  @ApiErrorResponses(422)
   create(
     @CurrentUser() user: AuthenticatedUser,
     @Body(new ZodValidationPipe(createTransactionSchema)) body: CreateTransactionInput,
@@ -123,8 +121,8 @@ export class TransactionController {
   })
   @ApiBody({ type: CreateTransactionDto })
   @ApiResponse({ status: 200, description: 'Simulation results with policy/risk/budget outcomes' })
-  @ApiResponse({ status: 400, description: 'Validation error' })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
+  @ApiErrorResponses(400)
+  @ApiErrorResponses(401)
   simulate(
     @CurrentUser('organizationId') organizationId: string,
     @Body(new ZodValidationPipe(simulateTransactionSchema)) body: SimulateTransactionInput,
@@ -140,8 +138,8 @@ export class TransactionController {
   @ApiParam({ name: 'id', description: 'Transaction UUID', example: '018f0a1b-...' })
   @ApiEnvelope(CreateTransactionDto as never)
   @ApiResponse({ status: 200, description: 'Transaction details' })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
-  @ApiResponse({ status: 404, description: 'Transaction not found' })
+  @ApiErrorResponses(401)
+  @ApiErrorResponses(404)
   findOne(@CurrentUser('organizationId') organizationId: string, @Param('id') id: string) {
     return this.transactionService.getOrThrow(organizationId, id);
   }
@@ -157,10 +155,10 @@ export class TransactionController {
   })
   @ApiParam({ name: 'id', description: 'Transaction UUID', example: '018f0a1b-...' })
   @ApiResponse({ status: 200, description: 'Transaction cancelled successfully' })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
-  @ApiResponse({ status: 403, description: 'Insufficient permissions' })
-  @ApiResponse({ status: 404, description: 'Transaction not found' })
-  @ApiResponse({ status: 409, description: 'Transaction cannot be cancelled (wrong status)' })
+  @ApiErrorResponses(401)
+  @ApiErrorResponses(403)
+  @ApiErrorResponses(404)
+  @ApiErrorResponses(409)
   cancel(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
     return this.transactionService.cancel(user.organizationId, user.id, id);
   }
