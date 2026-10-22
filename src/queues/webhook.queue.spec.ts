@@ -76,6 +76,36 @@ describe('webhook queue configuration', () => {
     expect(WEBHOOK_DEAD_LETTER_QUEUE).toBe(Queues.DeadLetter);
   });
 
+  it('spaces the retries out with a monotonically increasing delay', () => {
+    const settings = createWebhookQueueOptions().settings as unknown as {
+      backoffStrategy: (attemptsMade: number) => number;
+    };
+
+    const delays = [1, 2, 3, 4].map((attempt) => settings.backoffStrategy(attempt));
+
+    for (let i = 1; i < delays.length; i++) {
+      expect(delays[i]).toBeGreaterThan(delays[i - 1]);
+    }
+  });
+
+  it('caps the attempts at the ceiling the processor treats as the last attempt', () => {
+    const config = {
+      prefix: 'test',
+      concurrency: 1,
+      webhookDeliveryMaxAttempts: 4,
+      webhookRetryDelayMs: 1_500,
+      webhookHttpTimeoutMs: 8_000,
+      webhookFailedJobRetentionSeconds: 3_600,
+      webhookDeadLetterRetentionSeconds: 7_200,
+    };
+
+    // The processor reads `job.opts.attempts` to decide whether a failure is
+    // terminal, so the queue registration and the processor must agree.
+    const options = createWebhookJobOptions(config);
+    expect(options.attempts).toBe(config.webhookDeliveryMaxAttempts);
+    expect(options.attempts).toBe(createWebhookQueueOptions(config).defaultJobOptions?.attempts);
+  });
+
   it('uses a single well-known job name for every delivery', () => {
     expect(WEBHOOK_JOB_NAME).toBe('webhook-delivery');
   });
