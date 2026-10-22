@@ -78,7 +78,6 @@ export class BudgetController {
   })
   @ApiBody({ type: CreateBudgetDto })
   @ApiEnvelope(CreateBudgetDto as never, { status: 201 })
-  @ApiResponse({ status: 201, description: 'Budget created successfully' })
   @ApiErrorResponses(400)
   @ApiErrorResponses(401)
   @ApiErrorResponses(403)
