@@ -46,6 +46,7 @@ SHADOW_DATABASE_URL="${SHADOW_DATABASE_URL:-}"
 
 errors=0
 warnings=0
+checks_failed=0
 
 # --- reporting ---------------------------------------------------------------
 
@@ -69,6 +70,7 @@ annotate() {
 
 error() {
   errors=$((errors + 1))
+  checks_failed=1
   annotate error "${2:-}" "${3:-}" "$1" >&2
 }
 
@@ -78,6 +80,9 @@ warn() {
 }
 
 section() {
+  if [ "${GITHUB_ACTIONS:-}" = "true" ]; then
+    echo "::group::$1"
+  fi
   echo
   echo "==> $1"
 }
@@ -389,6 +394,30 @@ else
   esac
 fi
 
+# --- 4. live database migration status -----------------------------------------
+
+section "Live database migration status"
+if [ -z "${DATABASE_URL:-}" ]; then
+  echo "Skipping: set DATABASE_URL to verify unapplied or failed migrations on a live database."
+else
+  set +e
+  status_output="$(npx --no-install prisma migrate status --schema "$SCHEMA_PATH" 2>&1)"
+  status_code=$?
+  set -e
+  if [ "$status_code" -ne 0 ]; then
+    # Prisma migrate status exits nonzero for pending, divergent and failed
+    # migrations as well as connectivity errors. Do not print credentials.
+    error "Database migration status failed (exit ${status_code}). Check connectivity, pending migrations and migration history. Run 'npx prisma migrate status --schema ${SCHEMA_PATH}' locally for details." "$SCHEMA_PATH"
+    if printf '%s' "$status_output" | grep -Eiq 'P1001|P1002|P1017|connect|unreachable|timed out'; then
+      warn "Database appears unreachable; verify DATABASE_URL and PostgreSQL availability."
+    else
+      warn "Migration history is not up to date; inspect pending, failed or divergent migrations."
+    fi
+  else
+    echo "Database migration status is up to date."
+  fi
+fi
+
 # --- working tree ------------------------------------------------------------
 
 if [ "${CHECK_GIT_DIRTY:-false}" = "true" ]; then
@@ -406,6 +435,9 @@ fi
 echo
 if [ "$errors" -gt 0 ]; then
   echo "Migration verification FAILED: ${errors} error(s), ${warnings} warning(s)."
+  if [ "${GITHUB_ACTIONS:-}" = "true" ]; then
+    echo "::error title=Migration verification failed::${errors} error(s), ${warnings} warning(s); inspect grouped diagnostics above."
+  fi
   exit 1
 fi
 echo "Migration verification passed with ${warnings} warning(s)."
