@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Mock } from 'vitest';
 import { Queues } from '../../queues/queues.constants';
 import { DomainEventName } from '../../events/event-names';
+import { paginationQuerySchema } from '../../common/helpers/pagination';
 
 const getJob = vi.fn();
 const add = vi.fn();
@@ -41,6 +42,7 @@ function buildMockPrisma() {
   const domainEvent = {
     create: vi.fn().mockResolvedValue({ id: 'evt-1' }),
     findMany: vi.fn().mockResolvedValue([]),
+    count: vi.fn().mockResolvedValue(0),
   };
   return {
     domainEvent,
@@ -230,8 +232,10 @@ describe('DeadLetterService', () => {
   describe('listForOrganization', () => {
     it('queries the ledger scoped to DLQ events and an organization', async () => {
       prismaMock.domainEvent.findMany.mockResolvedValue([{ id: 'evt-1' }]);
+      prismaMock.domainEvent.count.mockResolvedValue(1);
+      const query = paginationQuerySchema.parse({});
 
-      const result = await service.listForOrganization('org-1', Queues.Webhooks);
+      const result = await service.listForOrganization('org-1', Queues.Webhooks, query);
 
       expect(prismaMock.domainEvent.findMany).toHaveBeenCalled();
       const where = (prismaMock.domainEvent.findMany as Mock).mock.calls[0][0].where;
@@ -242,7 +246,48 @@ describe('DeadLetterService', () => {
         DomainEventName.JobPurged,
       ]);
       expect(where.payload).toEqual({ path: ['queue'], equals: 'webhooks' });
-      expect(result).toHaveLength(1);
+      expect(result.items).toHaveLength(1);
+      expect(result.meta).toMatchObject({ offset: 0, limit: 50, total: 1 });
+    });
+
+    it('slices the ledger with the requested offset/limit and occurredAt sort', async () => {
+      prismaMock.domainEvent.findMany.mockResolvedValue([{ id: 'evt-11' }]);
+      prismaMock.domainEvent.count.mockResolvedValue(35);
+      const query = paginationQuerySchema.parse({ offset: '10', limit: '10' });
+
+      const result = await service.listForOrganization('org-1', undefined, query);
+
+      expect(prismaMock.domainEvent.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          skip: 10,
+          take: 10,
+          orderBy: { occurredAt: 'desc' },
+        }),
+      );
+      expect(prismaMock.domainEvent.count).toHaveBeenCalledWith({
+        where: expect.objectContaining({ organizationId: 'org-1' }),
+      });
+      expect(result.items).toEqual([{ id: 'evt-11' }]);
+      expect(result.meta).toEqual({
+        offset: 10,
+        page: 2,
+        limit: 10,
+        total: 35,
+        totalPages: 4,
+        hasNext: true,
+        hasPrev: true,
+      });
+    });
+
+    it('uses occurredAt when a caller requests an unsupported sort field', async () => {
+      prismaMock.domainEvent.count.mockResolvedValue(0);
+      const query = paginationQuerySchema.parse({ sort: 'payload' });
+
+      await service.listForOrganization('org-1', undefined, query);
+
+      expect(prismaMock.domainEvent.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ orderBy: { occurredAt: 'desc' } }),
+      );
     });
   });
 

@@ -17,6 +17,16 @@ import { CreateTransactionInput } from '../transaction.dto';
 import { DomainException } from '../../../common/exceptions/domain.exception';
 import { ErrorCode } from '../../../common/constants/error-codes';
 import { parseIdempotencyKey } from '../transaction.dto';
+import { PrismaTransactionService } from '../../../database/prisma-transaction.service';
+
+/**
+ * Stand-in transaction manager that runs the callback straight through with a
+ * stand-in client, so the specs keep exercising real TransactionService logic
+ * without a live database (same pattern as budget.service-lock.spec.ts).
+ */
+const passthroughTxService = {
+  runWithRetry: (fn: (tx: never) => Promise<unknown>) => fn({} as never),
+} as unknown as PrismaTransactionService;
 
 describe('TransactionService', () => {
   describe('Governance simulation', () => {
@@ -89,6 +99,7 @@ describe('TransactionService', () => {
           }),
           evaluateSpendingLimits: vi.fn().mockResolvedValue(undefined),
         } as unknown as SpendingLimitService,
+        passthroughTxService,
       );
     });
 
@@ -227,6 +238,10 @@ describe('TransactionService - create', () => {
           provide: BudgetService,
           useValue: {
             assertWithinBudget: vi.fn().mockResolvedValue(undefined),
+            assertAgentBudgetWithinLimit: vi.fn().mockResolvedValue(undefined),
+            withAgentBudgetLimit: vi.fn(
+              (_organizationId, _agentId, _asset, _amount, operation) => operation(),
+            ),
             consume: vi.fn().mockResolvedValue(undefined),
           },
         },
@@ -242,6 +257,7 @@ describe('TransactionService - create', () => {
         },
         { provide: EventBusService, useValue: { emit: vi.fn().mockResolvedValue(undefined) } },
         { provide: PrismaService, useValue: {} },
+        { provide: PrismaTransactionService, useValue: passthroughTxService },
         {
           provide: SpendingLimitService,
           useValue: {
@@ -350,10 +366,21 @@ describe('TransactionService - create', () => {
         },
         { provide: PolicyService, useValue: blockedPolicy },
         { provide: RiskService, useValue: { evaluate: vi.fn() } },
-        { provide: BudgetService, useValue: { assertWithinBudget: vi.fn(), consume: vi.fn() } },
+        {
+          provide: BudgetService,
+          useValue: {
+            assertWithinBudget: vi.fn(),
+            assertAgentBudgetWithinLimit: vi.fn(),
+            withAgentBudgetLimit: vi.fn(
+              (_organizationId, _agentId, _asset, _amount, operation) => operation(),
+            ),
+            consume: vi.fn(),
+          },
+        },
         { provide: StellarService, useValue: { submitPayment: vi.fn() } },
         { provide: EventBusService, useValue: { emit: vi.fn().mockResolvedValue(undefined) } },
         { provide: PrismaService, useValue: {} },
+        { provide: PrismaTransactionService, useValue: passthroughTxService },
         {
           provide: SpendingLimitService,
           useValue: {

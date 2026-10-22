@@ -17,7 +17,7 @@ type MockPrisma = {
     update: ReturnType<typeof vi.fn>;
     count: ReturnType<typeof vi.fn>;
   };
-  transaction: { findMany: ReturnType<typeof vi.fn> };
+  transaction: { findMany: ReturnType<typeof vi.fn>; count: ReturnType<typeof vi.fn> };
   auditLog: { create: ReturnType<typeof vi.fn> };
   $transaction: ReturnType<typeof vi.fn>;
 };
@@ -32,7 +32,10 @@ function makePrisma(): MockPrisma {
       update: vi.fn().mockResolvedValue({ id: 'policy-1' }),
       count: vi.fn().mockResolvedValue(0),
     },
-    transaction: { findMany: vi.fn().mockResolvedValue([]) },
+    transaction: {
+      findMany: vi.fn().mockResolvedValue([]),
+      count: vi.fn().mockResolvedValue(0),
+    },
     auditLog: { create: vi.fn().mockResolvedValue({ id: 'audit-1' }) },
     $transaction: vi.fn((arg: unknown) =>
       typeof arg === 'function'
@@ -152,6 +155,24 @@ describe('SpendingPolicyRepository', () => {
 
       const args = prisma.transaction.findMany.mock.calls[0][0];
       expect(args.where.status).toEqual({ in: [TransactionStatus.PENDING] });
+    });
+
+    it('counts the transactions executed inside a velocity window', async () => {
+      prisma.transaction.count.mockResolvedValue(7);
+
+      const count = await repository.countTransactionsInWindow({
+        agentId: 'agent-1',
+        since: new Date('2026-01-01T00:00:00Z'),
+      });
+
+      expect(count).toBe(7);
+      expect(prisma.transaction.count).toHaveBeenCalledWith({
+        where: {
+          agentId: 'agent-1',
+          status: { in: [...SETTLED_TRANSACTION_STATUSES] },
+          createdAt: { gte: new Date('2026-01-01T00:00:00Z') },
+        },
+      });
     });
   });
 

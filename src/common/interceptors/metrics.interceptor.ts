@@ -2,11 +2,11 @@ import {
   CallHandler,
   ExecutionContext,
   Injectable,
-  NestInterceptor,
   Logger,
+  NestInterceptor,
 } from '@nestjs/common';
+import { finalize } from 'rxjs/operators';
 import { Observable } from 'rxjs';
-import { tap } from 'rxjs/operators';
 import { Request, Response } from 'express';
 import { MetricsService } from '../../modules/metrics/metrics.service';
 import { normalizeRoutePath } from '../../utils/route-normalizer.util';
@@ -41,17 +41,13 @@ export class MetricsInterceptor implements NestInterceptor {
     const startTime = process.hrtime.bigint();
     this.activeRequests++;
 
+    // `finalize` emits exactly once per request, whether the handler
+    // completed successfully or errored, so the duration histogram and counter
+    // always observe the final outcome of the request.
     return next.handle().pipe(
-      tap({
-        next: () => {
-          this.recordMetrics(req, res, startTime);
-        },
-        error: () => {
-          this.recordMetrics(req, res, startTime);
-        },
-        finalize: () => {
-          this.activeRequests--;
-        },
+      finalize(() => {
+        this.recordMetrics(req, res, startTime);
+        this.activeRequests--;
       }),
     );
   }
@@ -60,7 +56,7 @@ export class MetricsInterceptor implements NestInterceptor {
     try {
       const durationSeconds = Number(process.hrtime.bigint() - startTime) / 1e9;
       const route = normalizeRoutePath(req.path);
-      
+
       this.metricsService.observeHttpRequest(
         req.method,
         route,

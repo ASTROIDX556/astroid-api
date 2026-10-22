@@ -3,11 +3,12 @@ import {
   ApiOperation,
   ApiTags,
   ApiBearerAuth,
-  ApiResponse,
   ApiParam,
   ApiQuery,
   ApiProduces,
 } from '@nestjs/swagger';
+import { ApiErrorResponses } from '../../common/decorators/api-error-responses.decorator';
+import { ApiEnvelope } from '../../common/decorators/api-envelope.decorator';
 import { UserRole } from '@prisma/client';
 import { Response } from 'express';
 import { AuditService } from './audit.service';
@@ -23,6 +24,7 @@ import {
   StreamAuditLogsQueryDto,
 } from './audit-export.dto';
 import { AuditListQuery, auditListQuerySchema } from './audit-list.dto';
+import { AuditLogEntryDto, AuditExportDto, AuditIntegrityDto } from './audit-list.dto';
 
 /** Read-only access to the append-only audit trail. Restricted to auditors/admins. */
 @ApiTags('audit')
@@ -40,9 +42,12 @@ export class AuditController {
   })
   @ApiQuery({ type: ExportAuditLogsQueryDto })
   @ApiProduces('text/csv', 'application/json')
-  @ApiResponse({ status: 200, description: 'Audit log export (CSV or JSON)' })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
-  @ApiResponse({ status: 403, description: 'Insufficient permissions (requires OWNER, ADMIN, or AUDITOR)' })
+  @ApiEnvelope(AuditExportDto, { description: 'Audit log export (CSV or JSON)' })
+  @ApiErrorResponses({
+    unauthorized: true,
+    forbidden: 'Insufficient permissions (requires OWNER, ADMIN, or AUDITOR)',
+    serverError: true,
+  })
   async export(
     @CurrentUser('organizationId') organizationId: string,
     @Query(new ZodValidationPipe(exportAuditLogsQuerySchema)) query: ExportAuditLogsQuery,
@@ -82,9 +87,15 @@ export class AuditController {
   @ApiQuery({ name: 'resourceId', required: false, type: String, description: 'Filter by affected entity UUID' })
   @ApiQuery({ name: 'from', required: false, type: String, description: 'ISO 8601 start of the date range' })
   @ApiQuery({ name: 'to', required: false, type: String, description: 'ISO 8601 end of the date range' })
-  @ApiResponse({ status: 200, description: 'Cursor-paginated list of audit log entries' })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
-  @ApiResponse({ status: 403, description: 'Insufficient permissions' })
+  @ApiEnvelope(AuditLogEntryDto, {
+    isArray: true,
+    description: 'Cursor-paginated list of audit log entries',
+  })
+  @ApiErrorResponses({
+    unauthorized: true,
+    forbidden: true,
+    serverError: true,
+  })
   list(
     @CurrentUser('organizationId') organizationId: string,
     @Query(new ZodValidationPipe(auditListQuerySchema)) query: AuditListQuery,
@@ -100,9 +111,12 @@ export class AuditController {
   })
   @ApiQuery({ type: StreamAuditLogsQueryDto })
   @ApiProduces('text/csv', 'application/json')
-  @ApiResponse({ status: 200, description: 'Streamed audit log export (CSV or JSON)' })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
-  @ApiResponse({ status: 403, description: 'Insufficient permissions (requires OWNER, ADMIN, or AUDITOR)' })
+  @ApiEnvelope(AuditExportDto, { description: 'Streamed audit log export (CSV or JSON)' })
+  @ApiErrorResponses({
+    unauthorized: true,
+    forbidden: 'Insufficient permissions (requires OWNER, ADMIN, or AUDITOR)',
+    serverError: true,
+  })
   async streamExport(
     @CurrentUser('organizationId') organizationId: string,
     @Query(new ZodValidationPipe(streamAuditLogsQuerySchema)) query: StreamAuditLogsQuery,
@@ -131,9 +145,14 @@ export class AuditController {
       'Performs a cryptographic verification of the entire audit chain to detect any tampering. ' +
       'This operation may be slow for large audit logs.',
   })
-  @ApiResponse({ status: 200, description: 'Integrity verification result (valid/invalid with details)' })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
-  @ApiResponse({ status: 403, description: 'Insufficient permissions' })
+  @ApiEnvelope(AuditIntegrityDto, {
+    description: 'Integrity verification result (valid/invalid with details)',
+  })
+  @ApiErrorResponses({
+    unauthorized: true,
+    forbidden: true,
+    serverError: true,
+  })
   verifyIntegrity(@CurrentUser('organizationId') organizationId: string) {
     return this.auditService.verifyIntegrity(organizationId);
   }
@@ -145,10 +164,13 @@ export class AuditController {
       'Verifies that a specific audit log entry has not been tampered with by checking its cryptographic hash.',
   })
   @ApiParam({ name: 'id', description: 'Audit log entry UUID', example: '018f0a1b-...' })
-  @ApiResponse({ status: 200, description: 'Entry integrity verification result' })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
-  @ApiResponse({ status: 403, description: 'Insufficient permissions' })
-  @ApiResponse({ status: 404, description: 'Audit log entry not found' })
+  @ApiEnvelope(AuditIntegrityDto, { description: 'Entry integrity verification result' })
+  @ApiErrorResponses({
+    unauthorized: true,
+    forbidden: true,
+    notFound: true,
+    serverError: true,
+  })
   verifyEntryIntegrity(
     @CurrentUser('organizationId') organizationId: string,
     @Param('id') id: string,
@@ -162,10 +184,13 @@ export class AuditController {
     description: 'Returns full details of a single audit log entry by ID.',
   })
   @ApiParam({ name: 'id', description: 'Audit log entry UUID', example: '018f0a1b-...' })
-  @ApiResponse({ status: 200, description: 'Audit log entry details' })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
-  @ApiResponse({ status: 403, description: 'Insufficient permissions' })
-  @ApiResponse({ status: 404, description: 'Audit log entry not found' })
+  @ApiEnvelope(AuditLogEntryDto, { description: 'Audit log entry details' })
+  @ApiErrorResponses({
+    unauthorized: true,
+    forbidden: true,
+    notFound: true,
+    serverError: true,
+  })
   findOne(@CurrentUser('organizationId') organizationId: string, @Param('id') id: string) {
     return this.auditService.findById(organizationId, id);
   }

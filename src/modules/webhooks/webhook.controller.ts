@@ -12,11 +12,12 @@ import {
   ApiOperation,
   ApiTags,
   ApiBearerAuth,
-  ApiResponse,
   ApiParam,
   ApiBody,
   ApiQuery,
 } from '@nestjs/swagger';
+import { ApiErrorResponses } from '../../common/decorators/api-error-responses.decorator';
+import { ApiEnvelope, ApiPaginatedEnvelope } from '../../common/decorators/api-envelope.decorator';
 import { UserRole } from '@prisma/client';
 import { WebhookService } from './webhook.service';
 import {
@@ -33,6 +34,7 @@ import { AuditAction } from '../../common/decorators/audit-action.decorator';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 import { PaginationQuery, paginationQuerySchema } from '../../common/helpers/pagination';
 import { ApiPaginationQuery } from '../../common/decorators/api-pagination-query.decorator';
+import { WebhookResponseDto } from './webhook.dto';
 
 @ApiTags('webhooks')
 @ApiBearerAuth('access-token')
@@ -50,9 +52,8 @@ export class WebhookController {
   })
   @ApiPaginationQuery()
   @ApiQuery({ name: 'events', required: false, type: String, description: 'Filter by event type' })
-  @ApiResponse({ status: 200, description: 'Paginated list of webhooks' })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
-  @ApiResponse({ status: 403, description: 'Insufficient permissions' })
+  @ApiPaginatedEnvelope(WebhookResponseDto, { description: 'Paginated list of webhooks' })
+  @ApiErrorResponses({ unauthorized: true, forbidden: true, serverError: true })
   list(
     @CurrentUser('organizationId') organizationId: string,
     @Query(new ZodValidationPipe(paginationQuerySchema)) query: PaginationQuery,
@@ -70,15 +71,17 @@ export class WebhookController {
       'Store it securely — it cannot be retrieved later.',
   })
   @ApiBody({ type: CreateWebhookDto })
-  @ApiResponse({
+  @ApiEnvelope(WebhookSecretDto, {
     status: 201,
     description: 'Webhook created successfully (includes signing secret)',
-    type: WebhookSecretDto,
   })
-  @ApiResponse({ status: 400, description: 'Validation error' })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
-  @ApiResponse({ status: 403, description: 'Insufficient permissions' })
-  @ApiResponse({ status: 422, description: 'Invalid URL or event types' })
+  @ApiErrorResponses({
+    validation: true,
+    unauthorized: true,
+    forbidden: true,
+    unprocessable: 'Invalid URL or event types',
+    serverError: true,
+  })
   create(
     @CurrentUser('organizationId') organizationId: string,
     @Body(new ZodValidationPipe(createWebhookSchema)) body: CreateWebhookInput,
@@ -93,10 +96,13 @@ export class WebhookController {
     description: 'Returns full details of a single webhook by ID.',
   })
   @ApiParam({ name: 'id', description: 'Webhook UUID', example: '018f0a1b-...' })
-  @ApiResponse({ status: 200, description: 'Webhook details' })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
-  @ApiResponse({ status: 403, description: 'Insufficient permissions' })
-  @ApiResponse({ status: 404, description: 'Webhook not found' })
+  @ApiEnvelope(WebhookResponseDto, { description: 'Webhook details' })
+  @ApiErrorResponses({
+    unauthorized: true,
+    forbidden: true,
+    notFound: true,
+    serverError: true,
+  })
   findOne(@CurrentUser('organizationId') organizationId: string, @Param('id') id: string) {
     return this.webhookService.get(organizationId, id);
   }
@@ -110,11 +116,14 @@ export class WebhookController {
   })
   @ApiParam({ name: 'id', description: 'Webhook UUID', example: '018f0a1b-...' })
   @ApiBody({ type: CreateWebhookDto })
-  @ApiResponse({ status: 200, description: 'Webhook updated successfully' })
-  @ApiResponse({ status: 400, description: 'Validation error' })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
-  @ApiResponse({ status: 403, description: 'Insufficient permissions' })
-  @ApiResponse({ status: 404, description: 'Webhook not found' })
+  @ApiEnvelope(WebhookResponseDto, { description: 'Webhook updated successfully' })
+  @ApiErrorResponses({
+    validation: true,
+    unauthorized: true,
+    forbidden: true,
+    notFound: true,
+    serverError: true,
+  })
   update(
     @CurrentUser('organizationId') organizationId: string,
     @Param('id') id: string,
@@ -133,14 +142,13 @@ export class WebhookController {
       'The new secret is returned exactly once.',
   })
   @ApiParam({ name: 'id', description: 'Webhook UUID', example: '018f0a1b-...' })
-  @ApiResponse({
-    status: 200,
-    description: 'New signing secret generated',
-    type: WebhookSecretDto,
+  @ApiEnvelope(WebhookSecretDto, { description: 'New signing secret generated' })
+  @ApiErrorResponses({
+    unauthorized: true,
+    forbidden: true,
+    notFound: true,
+    serverError: true,
   })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
-  @ApiResponse({ status: 403, description: 'Insufficient permissions' })
-  @ApiResponse({ status: 404, description: 'Webhook not found' })
   rotate(@CurrentUser('organizationId') organizationId: string, @Param('id') id: string) {
     return this.webhookService.rotateSecret(organizationId, id);
   }
@@ -154,10 +162,13 @@ export class WebhookController {
       'Permanently deletes the webhook and invalidates its signing secret. This action cannot be undone.',
   })
   @ApiParam({ name: 'id', description: 'Webhook UUID', example: '018f0a1b-...' })
-  @ApiResponse({ status: 200, description: 'Webhook deleted successfully' })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
-  @ApiResponse({ status: 403, description: 'Insufficient permissions' })
-  @ApiResponse({ status: 404, description: 'Webhook not found' })
+  @ApiEnvelope(WebhookResponseDto, { description: 'Webhook deleted successfully' })
+  @ApiErrorResponses({
+    unauthorized: true,
+    forbidden: true,
+    notFound: true,
+    serverError: true,
+  })
   remove(@CurrentUser('organizationId') organizationId: string, @Param('id') id: string) {
     return this.webhookService.remove(organizationId, id);
   }

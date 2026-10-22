@@ -68,6 +68,7 @@ describe('BudgetService — distributed locking', () => {
       findChildren: vi.fn(),
       softDelete: vi.fn(),
       findEnabledByAgentId: vi.fn(),
+      sumUnaccountedSpendByAgent: vi.fn().mockResolvedValue(new Decimal(0)),
     } as unknown as BudgetRepository;
 
     redisLock = {
@@ -305,6 +306,41 @@ describe('BudgetService — distributed locking', () => {
       await expect(service.assertWithinBudget('org-1', 'budget-1', 1000)).rejects.toThrow();
 
       expect(lockReleased).toBe(true);
+    });
+  });
+
+  describe('assertAgentBudgetWithinLimit', () => {
+    it('allows an amount exactly at the active agent budget limit', async () => {
+      vi.mocked(repository.findEnabledByAgentId).mockResolvedValue([
+        mockBudget({ organizationId: 'org-1', limitAmount: 100, spent: 40 }) as Budget,
+      ]);
+      vi.mocked(repository.sumUnaccountedSpendByAgent).mockResolvedValue(new Decimal(10));
+
+      await expect(
+        service.assertAgentBudgetWithinLimit('org-1', 'agent-1', 'USDC', 50),
+      ).resolves.toBeUndefined();
+    });
+
+    it('rejects when settled, pending, and requested spend exceed the active budget', async () => {
+      vi.mocked(repository.findEnabledByAgentId).mockResolvedValue([
+        mockBudget({ organizationId: 'org-1', limitAmount: 100, spent: 40 }) as Budget,
+      ]);
+      vi.mocked(repository.sumUnaccountedSpendByAgent).mockResolvedValue(new Decimal(11));
+
+      await expect(
+        service.assertAgentBudgetWithinLimit('org-1', 'agent-1', 'USDC', 50),
+      ).rejects.toMatchObject({ status: 403 });
+    });
+
+    it('allows agents without an active budget for the transaction asset', async () => {
+      vi.mocked(repository.findEnabledByAgentId).mockResolvedValue([
+        mockBudget({ organizationId: 'org-1', limitAmount: 100, spent: 99 }) as Budget,
+      ]);
+
+      await expect(
+        service.assertAgentBudgetWithinLimit('org-1', 'agent-1', 'XLM', 500),
+      ).resolves.toBeUndefined();
+      expect(repository.sumUnaccountedSpendByAgent).not.toHaveBeenCalled();
     });
   });
 });

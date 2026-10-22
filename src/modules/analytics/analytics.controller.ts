@@ -3,10 +3,12 @@ import {
   ApiOperation,
   ApiTags,
   ApiBearerAuth,
-  ApiResponse,
 } from '@nestjs/swagger';
+import { ApiErrorResponses } from '../../common/decorators/api-error-responses.decorator';
+import { ApiEnvelope } from '../../common/decorators/api-envelope.decorator';
 import { AnalyticsService } from './analytics.service';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { AnalyticsOverviewDto, AgentSpendDto } from './analytics.dto';
 
 @ApiTags('analytics')
 @ApiBearerAuth('access-token')
@@ -21,8 +23,8 @@ export class AnalyticsController {
       'Returns a high-level overview of the organization including agent counts, ' +
       'total spend, transaction counts, and policy compliance metrics.',
   })
-  @ApiResponse({ status: 200, description: 'Dashboard overview with aggregated metrics' })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
+  @ApiEnvelope(AnalyticsOverviewDto, { description: 'Dashboard overview with aggregated metrics' })
+  @ApiErrorResponses({ unauthorized: true, serverError: true })
   overview(@CurrentUser('organizationId') organizationId: string) {
     return this.analyticsService.overview(organizationId);
   }
@@ -34,8 +36,11 @@ export class AnalyticsController {
       'Returns spending data broken down by agent, including total spend, ' +
       'transaction count, and average transaction size.',
   })
-  @ApiResponse({ status: 200, description: 'Spend data grouped by agent' })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
+  @ApiEnvelope(AgentSpendDto, {
+    isArray: true,
+    description: 'Spend data grouped by agent',
+  })
+  @ApiErrorResponses({ unauthorized: true, serverError: true })
   spendByAgent(@CurrentUser('organizationId') organizationId: string) {
     return this.analyticsService.spendByAgent(organizationId);
   }

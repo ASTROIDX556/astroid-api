@@ -16,6 +16,7 @@ import { CreateAuditLogData } from '../../modules/audit/audit.repository';
 import { AuditService } from '../../modules/audit/audit.service';
 import { getClientIp } from '../../utils/ip.util';
 import { AUDIT_LOG_KEY, AuditLogOptions } from '../decorators/audit-log.decorator';
+import { AUDIT_ACTION_KEY, normalizeAuditAction } from '../decorators/audit-action.decorator';
 import { IS_SKIP_AUDIT_KEY } from '../decorators/skip-audit.decorator';
 import { AuthenticatedUser } from '../interfaces/authenticated-user.interface';
 import { isSensitiveField, REDACTED, sanitizeAuditPayload } from '../helpers/audit-sanitizer';
@@ -102,6 +103,13 @@ export class AuditLogInterceptor implements NestInterceptor {
       return next.handle();
     }
 
+    // Routes that also declare a semantic @AuditAction() are audited through
+    // the internal event bus by the StructuredAuditInterceptor, which owns the
+    // semantic action name. Skipping them here keeps one audit row per action.
+    if (this.hasStructuredAuditAction(context)) {
+      return next.handle();
+    }
+
     const http = context.switchToHttp();
     const request = http.getRequest<Request & { user?: AuthenticatedUser }>();
     const response = http.getResponse<Response>();
@@ -160,6 +168,17 @@ export class AuditLogInterceptor implements NestInterceptor {
         context.getClass(),
       ]) === true
     );
+  }
+
+  /** True when the route is audited through the event bus (`@AuditAction()`). */
+  private hasStructuredAuditAction(context: ExecutionContext): boolean {
+    const action = normalizeAuditAction(
+      this.reflector.getAllAndOverride<unknown>(AUDIT_ACTION_KEY, [
+        context.getHandler(),
+        context.getClass(),
+      ]),
+    );
+    return action !== undefined;
   }
 
   /** Resolves the client IP, honouring `x-forwarded-for` only when proxies are trusted. */

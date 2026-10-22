@@ -18,6 +18,7 @@
     "lint": "eslint \"{src,apps,libs,test}/**/*.ts\"",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "docs:check": "vitest run src/openapi.spec.ts",
     "test:watch": "vitest",
     "test:cov": "vitest run --coverage",
     "prisma:generate": "prisma generate",
@@ -25,6 +26,7 @@
     "prisma:deploy": "prisma migrate deploy",
     "prisma:seed": "ts-node prisma/seed.ts",
     "db:seed": "ts-node prisma/seed.ts",
+      "db:seed:verify": "ts-node prisma/verify-seed.ts",
     "db:verify": "bash scripts/verify-migrations.sh",
     "db:migrate": "ts-node src/database/migrate.cli.ts"
   },

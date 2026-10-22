@@ -55,7 +55,14 @@ function throttlerNamed(name: string): ThrottlerOptions {
   return { name, ttl: 60_000, limit: 10 };
 }
 
-async function prepare(opts: { tier?: ThrottleTier; increment?: ReturnType<typeof vi.fn> } = {}) {
+async function prepare(
+  opts: {
+    tier?: ThrottleTier;
+    increment?: ReturnType<typeof vi.fn>;
+    apiKeyScopes?: string[];
+    isApiKey?: boolean;
+  } = {},
+) {
   const increment = opts.increment ?? vi.fn().mockResolvedValue(UNBLOCKED);
   const reflector = {
     getAllAndOverride: vi.fn((key: string) => (key === THROTTLE_TIER_KEY ? opts.tier : undefined)),
@@ -68,7 +75,16 @@ async function prepare(opts: { tier?: ThrottleTier; increment?: ReturnType<typeo
   await guard.onModuleInit();
 
   const response: MockResponse = { header: vi.fn() };
-  const context = buildContext({ ip: '203.0.113.7', headers: {} }, response);
+  const request: Record<string, unknown> = { ip: '203.0.113.7', headers: {} };
+  if (opts.apiKeyScopes) {
+    request.user = {
+      id: 'key-1',
+      organizationId: 'org-1',
+      isApiKey: opts.isApiKey ?? true,
+      scopes: opts.apiKeyScopes,
+    };
+  }
+  const context = buildContext(request, response);
   const { getTracker, generateKey } = (
     guard as unknown as {
       commonOptions: Pick<ThrottlerRequest, 'getTracker' | 'generateKey'>;
@@ -184,6 +200,110 @@ describe('AstroidThrottlerGuard', () => {
       const { increment, call } = await prepare(); // api tier
 
       await expect(call(throttlerNamed('webhook-burst'))).resolves.toBe(true);
+
+      expect(increment).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('tier routing — API key scopes', () => {
+    it('tightens a generic api route to the auth tier for a key holding credential scopes', async () => {
+      const { increment, call } = await prepare({ apiKeyScopes: ['auth:write'] });
+
+      await expect(call(throttlerNamed('api'))).resolves.toBe(true);
+      expect(increment).not.toHaveBeenCalled();
+
+      await expect(call(throttlerNamed('auth'))).resolves.toBe(true);
+      expect(increment).toHaveBeenCalledTimes(1);
+    });
+
+    it('tightens a generic api route to the webhook tier for a key holding webhook scopes', async () => {
+      const { increment, call } = await prepare({ apiKeyScopes: ['webhooks:write'] });
+
+      await expect(call(throttlerNamed('api'))).resolves.toBe(true);
+      expect(increment).not.toHaveBeenCalled();
+
+      await expect(call(throttlerNamed('webhook'))).resolves.toBe(true);
+      expect(increment).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps the route tier when the scope tier is the looser one', async () => {
+      // The agent tier (300/min) is looser than the api tier (120/min), so a
+      // high-volume agent key must not be allowed to escape the api budget.
+      const { increment, call } = await prepare({ apiKeyScopes: ['agents:execute'] });
+
+      await expect(call(throttlerNamed('agent'))).resolves.toBe(true);
+      expect(increment).not.toHaveBeenCalled();
+
+      await expect(call(throttlerNamed('api'))).resolves.toBe(true);
+      expect(increment).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps the auth route tier even when the key holds a looser scope tier', async () => {
+      const { increment, call } = await prepare({
+        tier: 'auth',
+        apiKeyScopes: ['agents:execute'],
+      });
+
+      await expect(call(throttlerNamed('agent'))).resolves.toBe(true);
+      expect(increment).not.toHaveBeenCalled();
+
+      await expect(call(throttlerNamed('auth'))).resolves.toBe(true);
+      expect(increment).toHaveBeenCalledTimes(1);
+    });
+
+    it('leaves the route tier in force for scopes that map to no tier', async () => {
+      const { increment, call } = await prepare({ apiKeyScopes: ['transactions:read'] });
+
+      await expect(call(throttlerNamed('api'))).resolves.toBe(true);
+      expect(increment).toHaveBeenCalledTimes(1);
+
+      await expect(call(throttlerNamed('auth'))).resolves.toBe(true);
+      expect(increment).toHaveBeenCalledTimes(1);
+    });
+
+    it('ignores scopes carried by a non API-key principal', async () => {
+      const { increment, call } = await prepare({
+        apiKeyScopes: ['auth:write'],
+        isApiKey: false,
+      });
+
+      await expect(call(throttlerNamed('api'))).resolves.toBe(true);
+      expect(increment).toHaveBeenCalledTimes(1);
+
+      await expect(call(throttlerNamed('auth'))).resolves.toBe(true);
+      expect(increment).toHaveBeenCalledTimes(1);
+    });
+
+    it('applies the scope tier to the burst throttler as well', async () => {
+      const { increment, call } = await prepare({ apiKeyScopes: ['auth:write'] });
+
+      await expect(call(throttlerNamed('api-burst'))).resolves.toBe(true);
+      expect(increment).not.toHaveBeenCalled();
+
+      await expect(call(throttlerNamed('auth-burst'))).resolves.toBe(true);
+      expect(increment).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('rate-limit exhaustion on a scope-derived tier', () => {
+    it('rejects the request with 429 once the scope tier budget is spent', async () => {
+      const { response, call } = await prepare({
+        apiKeyScopes: ['auth:write'],
+        increment: vi.fn().mockResolvedValue(BLOCKED),
+      });
+
+      await expect(call(throttlerNamed('auth'))).rejects.toMatchObject({ status: 429 });
+
+      expect(response.header).toHaveBeenCalledWith('Retry-After-auth', 30);
+    });
+
+    it('does not count the request against the looser route tier', async () => {
+      const { increment, call } = await prepare({
+        apiKeyScopes: ['auth:write'],
+        increment: vi.fn().mockResolvedValue(UNBLOCKED),
+      });
+
+      await expect(call(throttlerNamed('api'))).resolves.toBe(true);
 
       expect(increment).not.toHaveBeenCalled();
     });

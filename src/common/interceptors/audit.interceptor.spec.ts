@@ -150,10 +150,10 @@ describe('AuditInterceptor', () => {
     );
   });
 
-  it('should use the @AuditAction() name instead of METHOD /url when present', async () => {
+  it('should defer @AuditAction() routes to the StructuredAuditInterceptor', async () => {
     vi.spyOn(reflector, 'getAllAndOverride').mockImplementation((key: unknown) => {
       if (key === IS_SKIP_AUDIT_KEY) return false;
-      if (key === AUDIT_ACTION_KEY) return 'TRANSFER_FUNDS';
+      if (key === AUDIT_ACTION_KEY) return { action: 'TRANSFER_FUNDS' };
       return undefined;
     });
 
@@ -162,9 +162,7 @@ describe('AuditInterceptor', () => {
 
     await interceptor.intercept(ctx, next).toPromise();
 
-    expect(auditService.record).toHaveBeenCalledWith(
-      expect.objectContaining({ action: 'TRANSFER_FUNDS' }),
-    );
+    expect(auditService.record).not.toHaveBeenCalled();
   });
 
   it('should capture the request id from TraceContext (AsyncLocalStorage)', async () => {

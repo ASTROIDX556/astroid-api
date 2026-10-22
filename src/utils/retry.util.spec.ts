@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { retryWithBackoff } from './retry.util';
+import { isTransientNetworkError, retryWithBackoff } from './retry.util';
 
 vi.mock('./backoff.util', () => ({
   exponentialBackoffWithJitter: vi.fn().mockReturnValue(10),
@@ -103,5 +103,50 @@ describe('retryWithBackoff', () => {
 
     // onRetry is called before sleeping: once after attempt 1, not after attempt 2.
     expect(onRetry).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('isTransientNetworkError', () => {
+  it('classifies 5xx responses as transient', () => {
+    expect(isTransientNetworkError(Object.assign(new Error('Bad Gateway'), { status: 502 }))).toBe(true);
+    expect(
+      isTransientNetworkError(Object.assign(new Error('Service Unavailable'), { statusCode: 503 })),
+    ).toBe(true);
+  });
+
+  it('classifies 4xx responses as non-transient so they fail fast', () => {
+    expect(isTransientNetworkError(Object.assign(new Error('Bad Request'), { status: 400 }))).toBe(false);
+    expect(isTransientNetworkError(Object.assign(new Error('Not Found'), { status: 404 }))).toBe(false);
+  });
+
+  it('classifies transport-level network errors as transient', () => {
+    expect(isTransientNetworkError(Object.assign(new Error('Connection reset by peer'), { code: 'ECONNRESET' }))).toBe(
+      true,
+    );
+    expect(isTransientNetworkError(Object.assign(new Error('Request timed out'), { code: 'ETIMEDOUT' }))).toBe(
+      true,
+    );
+    expect(
+      isTransientNetworkError(
+        Object.assign(new Error('connect ECONNREFUSED 1.2.3.4:443'), {
+          cause: Object.assign(new Error('fetch failed'), { code: 'ECONNREFUSED' }),
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it('does not retry deterministic errors that carry no transient signals', () => {
+    expect(isTransientNetworkError(new Error('NOT NULL constraint failed'))).toBe(false);
+  });
+
+  it('does not retry errors explicitly marked as permanent', () => {
+    expect(isTransientNetworkError(Object.assign(new Error('Invalid GraphQL query'), { retryable: false }))).toBe(
+      false,
+    );
+  });
+
+  it('reads the status through getStatus when plain fields are absent', () => {
+    expect(isTransientNetworkError({ getStatus: () => 400, message: 'Bad Request' })).toBe(false);
+    expect(isTransientNetworkError({ getStatus: () => 503, message: 'Service Unavailable' })).toBe(true);
   });
 });

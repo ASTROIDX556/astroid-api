@@ -421,6 +421,41 @@ export function verifyAstroidWebhook({ secret, headers, rawBody }) {
 }
 ```
 
+### Delivery retries and failures
+
+Outgoing deliveries are asynchronous and provide **at-least-once**, not
+exactly-once, semantics. The event ID remains stable across retries; consumers
+should use it as an idempotency key. By default, BullMQ makes five total
+attempts with exponential backoff starting at 2 seconds and 20% jitter. Operators
+can configure the attempt limit, base delay, HTTP timeout, and failed-job
+retention with `WEBHOOK_DELIVERY_MAX_ATTEMPTS`, `WEBHOOK_RETRY_DELAY_MS`,
+`WEBHOOK_HTTP_TIMEOUT_MS`, and `WEBHOOK_FAILED_JOB_RETENTION_SECONDS`.
+
+Network errors, timeouts, HTTP 408, HTTP 429, and 5xx responses are retried.
+Other 3xx/4xx responses are treated as permanent and stop immediately. Redirects
+are not followed. Exhausted jobs are routed to the shared dead-letter queue and
+recorded in the webhook delivery audit trail. Failed BullMQ jobs are retained
+for 24 hours by default; the dead-letter queue retains failed records for seven
+days by default. `WEBHOOK_DEAD_LETTER_RETENTION_SECONDS` configures that
+retention. Operators can inspect and re-drive dead-letter jobs through the
+existing queue administration tools.
+
+### Inbound signature verification
+
+`POST /{API_PREFIX}/webhooks/receive` requires both
+`x-astroid-timestamp` and `x-astroid-signature`. The inbound signature is the
+lowercase 64-character hex HMAC-SHA256 digest of UTF-8
+`<timestamp>.` concatenated with the exact raw request body bytes. The request
+timestamp must be within five minutes of server time. Verification uses a
+constant-time comparison; missing, malformed, stale, or invalid signatures are
+rejected before the ingress handler runs.
+
+The route uses the dedicated `WEBHOOK_INGRESS_SECRET`, which must contain at
+least 32 characters. It is separate from each outbound subscription's
+`whsec_...` secret; when unset, inbound requests are rejected. Deployments
+should provide it through a secret manager. Nest captures raw request bytes
+before JSON parsing so whitespace and key order are preserved for verification.
+
 ## Health Probes (`/health`)
 
 The liveness and readiness probes are served **outside** the API prefix, so
@@ -467,6 +502,39 @@ dependency is up and `503` when any is down.
 Richer diagnostics (including Stellar and migration status) remain available
 under the API prefix at `GET /{API_PREFIX}/health/readiness`,
 `GET /{API_PREFIX}/health/liveness` and `GET /{API_PREFIX}/health/database`.
+
+### GET `/{API_PREFIX}/health/stellar`
+Stellar network connectivity check. Probes the configured Horizon server and
+the Soroban RPC node in parallel, each bounded by a 2 second timeout. Returns
+`200` when both endpoints are healthy and `503` when one of them is `down` or
+`degraded` — an endpoint that answers but needs more than half of the budget is
+reported as `degraded`.
+
+**Authentication:** Public
+
+**Response (503 example):**
+```json
+{
+  "status": "down",
+  "timestamp": "2026-09-28T10:00:00.000Z",
+  "network": "testnet",
+  "horizon": { "status": "up", "latencyMs": 42, "url": "https://horizon-testnet.stellar.org" },
+  "sorobanRpc": {
+    "status": "down",
+    "latencyMs": 2001,
+    "url": "https://soroban-testnet.stellar.org",
+    "error": "The operation was aborted"
+  }
+}
+```
+
+### GET `/{API_PREFIX}/health/redis`
+Redis connectivity check. Issues a `PING` on the application's shared Redis
+client, bounded by a 2 second timeout, so the check exercises the exact
+connection the API depends on. Returns `200` when the ping is answered and
+`503` when Redis is unreachable or the probe times out.
+
+**Authentication:** Public
 
 ---
 
@@ -521,7 +589,9 @@ All endpoints return errors as [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457
 | `requestId` | Correlation id, matching the `x-request-id` header |
 | `details` | Optional structured context, e.g. field-level validation errors |
 
-Unhandled server errors always return `500` with `code: "INTERNAL_ERROR"` and a generic `detail`; internal information is only written to the server logs under the `requestId`.
+Unhandled server errors always return `500` with `code: "INTERNAL_ERROR"` and a generic `detail`; internal information is only written to the server logs under the `requestId`. Stack traces are never included in a response.
+
+The same envelope is used for requests rejected before they reach a controller — a malformed JSON body returns `400`, and a body above the parser limit returns `413` — so clients only ever parse one error shape.
 
 ### Authentication
 Most endpoints require Bearer token authentication in the format:

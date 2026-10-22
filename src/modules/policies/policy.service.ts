@@ -1,9 +1,15 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { Policy } from '@prisma/client';
 import { SpendingPolicyService } from './spending-policy.service';
 import { PolicyEngine } from './policy.engine';
 import { CreatePolicyInput, SimulatePolicyInput, UpdatePolicyInput } from './policy.dto';
-import { EvaluablePolicy, PolicyConfiguration, PolicyEvaluationResult, TransactionIntent } from './policy.types';
+import {
+  EvaluablePolicy,
+  PolicyConfiguration,
+  PolicyEvaluationResult,
+  PolicyVelocityWindow,
+  TransactionIntent,
+} from './policy.types';
 import { PaginationQuery } from '../../common/helpers/pagination';
 import { EventBusService } from '../../events/event-bus.service';
 import { DomainEventName } from '../../events/event-names';
@@ -15,6 +21,8 @@ import { DomainEventName } from '../../events/event-names';
  */
 @Injectable()
 export class PolicyService {
+  private readonly logger = new Logger(PolicyService.name);
+
   constructor(
     private readonly spendingPolicyService: SpendingPolicyService,
     private readonly engine: PolicyEngine,
@@ -72,7 +80,9 @@ export class PolicyService {
       intent.organizationId,
       intent.agentId,
     );
-    const result = this.engine.evaluate(intent, policies.map(toEvaluable));
+    const evaluable = policies.map(toEvaluable);
+    const enrichedIntent = await this.withVelocityCounts(intent, evaluable);
+    const result = this.engine.evaluate(enrichedIntent, evaluable);
 
     await this.eventBus.emit(
       DomainEventName.PolicyEvaluated,
@@ -124,6 +134,8 @@ export class PolicyService {
       spentToday: input.spentToday,
       spentThisWeek: input.spentThisWeek,
       spentThisMonth: input.spentThisMonth,
+      transactionCount: input.transactionCount,
+      transactionCounts: input.transactionCounts,
     };
     const policies = await this.spendingPolicyService.listActiveForEvaluation(organizationId, input.agentId);
     const result = this.engine.evaluate(intent, policies.map(toEvaluable));
@@ -133,6 +145,51 @@ export class PolicyService {
       violations: result.violations,
       evaluatedPolicies: result.evaluatedPolicyIds.length,
     };
+  }
+
+  /**
+   * Resolves how many transactions the agent already executed inside every
+   * velocity window declared by the applicable policies.
+   *
+   * The lookup is best-effort: a failure never blocks the evaluation, it only
+   * leaves the count at zero (i.e. the rule is not enforced for that call).
+   */
+  private async withVelocityCounts(
+    intent: TransactionIntent,
+    policies: EvaluablePolicy[],
+  ): Promise<TransactionIntent> {
+    if (!intent.agentId) {
+      return intent;
+    }
+
+    const windows = new Set<PolicyVelocityWindow>();
+    for (const policy of policies) {
+      const window = policy.configuration?.velocity?.window;
+      if (window) {
+        windows.add(window);
+      }
+    }
+    if (windows.size === 0) {
+      return intent;
+    }
+
+    const transactionCounts: Partial<Record<PolicyVelocityWindow, number>> = {
+      ...intent.transactionCounts,
+    };
+    for (const window of windows) {
+      try {
+        transactionCounts[window] = await this.spendingPolicyService.countTransactionsForVelocity(
+          intent.agentId,
+          window,
+        );
+      } catch (error) {
+        this.logger.error(
+          `Failed to count transactions for the '${window}' velocity window: ${(error as Error).message}`,
+        );
+      }
+    }
+
+    return { ...intent, transactionCounts };
   }
 
   /**

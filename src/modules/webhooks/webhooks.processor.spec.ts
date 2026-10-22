@@ -35,7 +35,9 @@ describe('WebhooksProcessor', () => {
 
   beforeEach(() => {
     mockPrisma = {
-      webhook: { findFirst: vi.fn().mockResolvedValue({ secret: WEBHOOK_SECRET }) },
+      webhook: {
+        findFirst: vi.fn().mockResolvedValue({ secret: WEBHOOK_SECRET, url: WEBHOOK_URL, enabled: true }),
+      },
     };
     fetchSpy = vi.fn();
     vi.stubGlobal('fetch', fetchSpy);
@@ -173,6 +175,16 @@ describe('WebhooksProcessor', () => {
       const job = createMockJob();
       await expect(processor.process(job)).rejects.toThrow('HTTP 503');
     });
+
+    it('retries HTTP 429 responses rather than treating them as permanent', async () => {
+      fetchSpy.mockResolvedValue({
+        ok: false,
+        status: 429,
+        text: () => Promise.resolve('Too Many Requests'),
+      });
+
+      await expect(processor.process(createMockJob())).rejects.toThrow('HTTP 429');
+    });
   });
 
   describe('transient error handling (retriable)', () => {
@@ -272,6 +284,200 @@ describe('WebhooksProcessor', () => {
       await expect(processor.process(createMockJob())).rejects.toThrow('HTTP 500');
       expect(warn.mock.calls.flat().join(' ')).not.toContain(secretEcho);
       expect(error.mock.calls.flat().join(' ')).not.toContain(secretEcho);
+    });
+
+    it('uses the configured outbound HTTP timeout', async () => {
+      const timeout = vi.spyOn(AbortSignal, 'timeout').mockReturnValue(new AbortController().signal);
+      const configuredProcessor = new WebhooksProcessor(
+        mockPrisma as never,
+        undefined,
+        undefined,
+        {
+          post: async (_url, options) => {
+            AbortSignal.timeout(options.timeoutMs);
+            return { status: 200 };
+          },
+        },
+        { get: () => ({
+          prefix: 'test',
+          concurrency: 1,
+          webhookDeliveryMaxAttempts: 4,
+          webhookRetryDelayMs: 1_000,
+          webhookHttpTimeoutMs: 9_000,
+          webhookFailedJobRetentionSeconds: 3_600,
+          webhookDeadLetterRetentionSeconds: 7_200,
+        }) } as never,
+      );
+      fetchSpy.mockResolvedValue({ ok: true, status: 200 });
+
+      await configuredProcessor.process(createMockJob());
+
+      expect(timeout).toHaveBeenCalledWith(9_000);
+    });
+  });
+
+  describe('retry lifecycle', () => {
+    it('marks the delivery RETRYING while attempts remain and FAILED on the last attempt', async () => {
+      const upsert = vi.fn().mockResolvedValue({});
+      mockPrisma.webhookDelivery = { upsert };
+      fetchSpy.mockResolvedValue({ ok: false, status: 503, text: () => Promise.resolve('nope') });
+
+      const maxAttempts = 5;
+      for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        const job = createMockJob({ attemptsMade: attempt } as Partial<Job<WebhookJobData>>);
+        await expect(processor.process(job)).rejects.toThrow('HTTP 503');
+      }
+
+      const writes = upsert.mock.calls.map((call) => call[0] as {
+        update: { status: string; attempts: number };
+      });
+
+      expect(writes.map((write) => write.update.status)).toEqual([
+        'RETRYING',
+        'RETRYING',
+        'RETRYING',
+        'RETRYING',
+        'FAILED',
+      ]);
+      expect(writes.map((write) => write.update.attempts)).toEqual([1, 2, 3, 4, 5]);
+    });
+
+    it('records the terminal failure in the audit trail exactly once', async () => {
+      const recordTerminalFailure = vi.fn().mockResolvedValue(undefined);
+      const auditedProcessor = new WebhooksProcessor(
+        mockPrisma as never,
+        undefined,
+        { recordTerminalFailure } as never,
+        {
+          post: async () => ({ status: 503 }),
+        },
+      );
+      fetchSpy.mockResolvedValue({ ok: false, status: 503, text: () => Promise.resolve('nope') });
+
+      const maxAttempts = 5;
+      for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        const job = createMockJob({ attemptsMade: attempt } as Partial<Job<WebhookJobData>>);
+        await expect(auditedProcessor.process(job)).rejects.toThrow('HTTP 503');
+      }
+
+      expect(recordTerminalFailure).toHaveBeenCalledTimes(1);
+      expect(recordTerminalFailure).toHaveBeenCalledWith(
+        expect.objectContaining({
+          webhookId: WEBHOOK_ID,
+          organizationId: ORG_ID,
+          eventId: EVENT_ID,
+          attemptsMade: maxAttempts,
+          responseStatus: 503,
+        }),
+      );
+    });
+
+    it('does not audit a delivery that still has retries left', async () => {
+      const recordTerminalFailure = vi.fn().mockResolvedValue(undefined);
+      const auditedProcessor = new WebhooksProcessor(
+        mockPrisma as never,
+        undefined,
+        { recordTerminalFailure } as never,
+        {
+          post: async () => ({ status: 503 }),
+        },
+      );
+      fetchSpy.mockResolvedValue({ ok: false, status: 503, text: () => Promise.resolve('nope') });
+
+      await expect(auditedProcessor.process(createMockJob())).rejects.toThrow('HTTP 503');
+
+      expect(recordTerminalFailure).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('failure logging', () => {
+    /** Attaches a fake worker and returns the registered event handlers. */
+    async function attachWorker(): Promise<Record<string, (...args: unknown[]) => void>> {
+      const handlers: Record<string, (...args: unknown[]) => void> = {};
+      const fakeWorker = {
+        on: vi.fn((event: string, handler: (...args: unknown[]) => void) => {
+          handlers[event] = handler;
+        }),
+        close: vi.fn().mockResolvedValue(undefined),
+      };
+      // `WorkerHost.worker` is a getter, so the fake is installed as an own
+      // property of the instance.
+      Object.defineProperty(processor, 'worker', { value: fakeWorker, configurable: true });
+      await processor.onApplicationBootstrap();
+      return handlers;
+    }
+
+    it('scrubs the failure reason before it reaches the log sink', async () => {
+      const errorSpy = vi.spyOn(processor['logger'], 'error').mockImplementation(() => undefined);
+      const warnSpy = vi.spyOn(processor['logger'], 'warn').mockImplementation(() => undefined);
+      const handlers = await attachWorker();
+
+      handlers['failed'](
+        createMockJob({ id: 'job-9', attemptsMade: 0 } as Partial<Job<WebhookJobData>>),
+        new Error('auth failed with Bearer abc.def.ghi for whsec_live'),
+      );
+
+      const logged = String(warnSpy.mock.calls[0][0]);
+      expect(logged).not.toContain('abc.def.ghi');
+      expect(logged).not.toContain('whsec_live');
+      expect(errorSpy).not.toHaveBeenCalled();
+    });
+
+    it('logs a structured record for a delivery that will be retried', async () => {
+      const warnSpy = vi.spyOn(processor['logger'], 'warn').mockImplementation(() => undefined);
+      const handlers = await attachWorker();
+
+      handlers['failed'](
+        createMockJob({ id: 'job-9', attemptsMade: 1 } as Partial<Job<WebhookJobData>>),
+        new Error('HTTP 503'),
+      );
+
+      const record = JSON.parse(String(warnSpy.mock.calls[0][0]));
+      expect(record).toMatchObject({
+        event: 'webhook.delivery.failed',
+        queue: 'webhooks',
+        jobId: 'job-9',
+        webhookId: WEBHOOK_ID,
+        organizationId: ORG_ID,
+        eventName: 'transaction.completed',
+        eventId: EVENT_ID,
+        attemptsMade: 2,
+        maxAttempts: 5,
+        terminal: false,
+        failedReason: 'HTTP 503',
+      });
+    });
+
+    it('marks the failure as terminal once the retries are exhausted', async () => {
+      const errorSpy = vi.spyOn(processor['logger'], 'error').mockImplementation(() => undefined);
+      const handlers = await attachWorker();
+
+      handlers['failed'](
+        createMockJob({
+          id: 'job-9',
+          attemptsMade: 4,
+          opts: { attempts: 5 },
+        } as Partial<Job<WebhookJobData>>),
+        new Error('HTTP 503'),
+      );
+
+      const record = JSON.parse(String(errorSpy.mock.calls[0][0]));
+      expect(record).toMatchObject({
+        event: 'webhook.delivery.dead-lettered',
+        attemptsMade: 5,
+        maxAttempts: 5,
+        terminal: true,
+      });
+      expect(String(errorSpy.mock.calls[0][1])).toContain('dead-lettered');
+    });
+
+    it('scrubs the reason of a worker-level error', async () => {
+      const errorSpy = vi.spyOn(processor['logger'], 'error').mockImplementation(() => undefined);
+      const handlers = await attachWorker();
+
+      handlers['error'](new Error('redis unavailable for Bearer abc.def.ghi'));
+
+      expect(String(errorSpy.mock.calls[0][0])).not.toContain('abc.def.ghi');
     });
   });
 });

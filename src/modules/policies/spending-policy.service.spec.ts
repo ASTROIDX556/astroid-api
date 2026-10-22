@@ -21,6 +21,7 @@ type MockRepository = {
   update: ReturnType<typeof vi.fn>;
   softDelete: ReturnType<typeof vi.fn>;
   sumSpentInWindow: ReturnType<typeof vi.fn>;
+  countTransactionsInWindow: ReturnType<typeof vi.fn>;
   recordEvaluationAudit: ReturnType<typeof vi.fn>;
 };
 
@@ -34,6 +35,7 @@ function makeRepository(): MockRepository {
     update: vi.fn().mockResolvedValue({ id: 'policy-1' }),
     softDelete: vi.fn().mockResolvedValue({ id: 'policy-1' }),
     sumSpentInWindow: vi.fn().mockResolvedValue(0),
+    countTransactionsInWindow: vi.fn().mockResolvedValue(0),
     recordEvaluationAudit: vi.fn().mockResolvedValue({ id: 'audit-1' }),
   };
 }
@@ -184,6 +186,18 @@ describe('SpendingPolicyService', () => {
 
       await expect(service.checkVelocityLimit('agent-1', 1_000, 'USDC')).resolves.toBeUndefined();
       expect(repository.sumSpentInWindow).not.toHaveBeenCalled();
+    });
+
+    it('counts the transactions of a velocity window', async () => {
+      repository.countTransactionsInWindow.mockResolvedValue(4);
+
+      const count = await service.countTransactionsForVelocity('agent-1', 'hour');
+
+      expect(count).toBe(4);
+      expect(repository.countTransactionsInWindow).toHaveBeenCalledWith({
+        agentId: 'agent-1',
+        since: expect.any(Date),
+      });
     });
   });
 
