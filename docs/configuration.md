@@ -122,6 +122,10 @@ are rejected:
 | `STELLAR_SOROBAN_RPC_URL`      | `https://soroban-testnet.stellar.org` | Soroban RPC endpoint.                           |
 | `STELLAR_REGISTRY_CONTRACT_ID` | _(empty)_                             | Agent registry contract ID.                     |
 | `STELLAR_USE_MOCK`             | `true`                                | `true` or `false`. Use the mock Stellar client. |
+| `STELLAR_GAS_SAFETY_BUFFER_PERCENT` | `25` | Percentage added to simulated gas limits for congestion headroom (`0`–`100`). |
+| `STELLAR_MAX_GAS_LIMIT` | `100000000` | Network block gas limit in Soroban CPU instructions. Estimates are capped at this ceiling. |
+| `STELLAR_FALLBACK_GAS_LIMIT` | `1000000` | Static gas limit used when simulation fails or omits a gas estimate. |
+| `STELLAR_FALLBACK_FEE_STROOPS` | `100000` | Static fee limit in stroops paired with the fallback gas limit. |
 
 ### Storage (S3-compatible)
 
