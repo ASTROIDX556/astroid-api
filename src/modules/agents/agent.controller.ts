@@ -69,7 +69,7 @@ export class AgentController {
       'Creates a new agent under the current organization. The agent starts in ACTIVE status.',
   })
   @ApiBody({ type: CreateAgentDto })
-  @ApiResponse({ status: 201, description: 'Agent created successfully', type: AgentResponseDto })
+  @ApiEnvelope(AgentResponseDto as never, { status: 201 })
   @ApiErrorResponses(400)
   @ApiErrorResponses(401)
   @ApiErrorResponses(403)
