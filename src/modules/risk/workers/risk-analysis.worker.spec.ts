@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { RiskBand } from '@prisma/client';
 import { RiskAnalysisWorker } from './risk-analysis.worker';
 import { RiskService } from '../risk.service';
+import { RiskRepository } from '../risk.repository';
 import { EventBusService } from '../../../events/event-bus.service';
 import { DomainEventName } from '../../../events/event-names';
 import type { Job } from 'bullmq';
@@ -20,12 +21,15 @@ function setup(band: RiskBand) {
   const assessment = { score: band === RiskBand.CRITICAL ? 81 : 80, band, factors: [], canAutoExecute: band !== RiskBand.CRITICAL };
   const evaluate = vi.fn().mockResolvedValue(assessment);
   const emit = vi.fn().mockResolvedValue(undefined);
+  const baseline = vi.fn().mockResolvedValue({ knownRecipient: true, recentTransactionCount: 2, baselineTransactionCount: 1, baselineAmount: 10 });
+  const enforceRiskControls = vi.fn().mockResolvedValue(undefined);
   const worker = new RiskAnalysisWorker(
     { evaluate } as unknown as RiskService,
     { emit } as unknown as EventBusService,
+    { getTransactionBaseline: baseline, enforceRiskControls } as unknown as RiskRepository,
   );
   const job = { data: { organizationId: 'org', transactionId: 'tx', factors } } as Job<RiskAnalysisJob>;
-  return { worker, job, evaluate, emit };
+  return { worker, job, evaluate, emit, enforceRiskControls };
 }
 
 describe('RiskAnalysisWorker', () => {
@@ -37,8 +41,9 @@ describe('RiskAnalysisWorker', () => {
   });
 
   it.each([RiskBand.HIGH, RiskBand.CRITICAL])('alerts on %s', async (band) => {
-    const { worker, job, emit } = setup(band);
+    const { worker, job, emit, enforceRiskControls } = setup(band);
     await worker.process(job);
+    expect(enforceRiskControls).toHaveBeenCalledWith('org', 'tx', band === RiskBand.CRITICAL);
     expect(emit).toHaveBeenCalledWith(
       DomainEventName.RiskAlert,
       expect.objectContaining({ transactionId: 'tx', riskLevel: band }),
