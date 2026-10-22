@@ -86,7 +86,7 @@ export class AgentController {
     description: 'Returns full details of a single agent by ID.',
   })
   @ApiParam({ name: 'id', description: 'Agent UUID', example: '018f0a1b-...' })
-  @ApiResponse({ status: 200, description: 'Agent details', type: AgentResponseDto })
+  @ApiEnvelope(AgentResponseDto as never)
   @ApiErrorResponses(401)
   @ApiErrorResponses(404)
   findOne(@CurrentUser('organizationId') organizationId: string, @Param('id') id: string) {
