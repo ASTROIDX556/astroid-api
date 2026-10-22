@@ -29,6 +29,7 @@ import { AuthenticatedUser } from '../../common/interfaces/authenticated-user.in
 import { PaginationQuery, paginationQuerySchema } from '../../common/helpers/pagination';
 import { ApiPaginationQuery } from '../../common/decorators/api-pagination-query.decorator';
 import { ApiEnvelope } from '../../common/decorators/api-envelope.decorator';
+import { ApiErrorResponses } from '../../common/decorators/api-error-response.decorator';
 import {
   SlidingWindowThrottlerGuard,
   SlidingWindowLimit,
@@ -49,7 +50,7 @@ export class AgentController {
   @ApiPaginationQuery()
   @ApiEnvelope(AgentResponseDto as never, { isArray: true })
   @ApiResponse({ status: 200, description: 'Paginated list of agents' })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
+  @ApiErrorResponses(401)
   list(
     @CurrentUser('organizationId') organizationId: string,
     @Query(new ZodValidationPipe(paginationQuerySchema)) query: PaginationQuery,
@@ -69,9 +70,9 @@ export class AgentController {
   })
   @ApiBody({ type: CreateAgentDto })
   @ApiResponse({ status: 201, description: 'Agent created successfully', type: AgentResponseDto })
-  @ApiResponse({ status: 400, description: 'Validation error' })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
-  @ApiResponse({ status: 403, description: 'Insufficient permissions (requires OWNER, ADMIN, or DEVELOPER)' })
+  @ApiErrorResponses(400)
+  @ApiErrorResponses(401)
+  @ApiErrorResponses(403)
   create(
     @CurrentUser() user: AuthenticatedUser,
     @Body(new ZodValidationPipe(createAgentSchema)) body: CreateAgentInput,
@@ -86,8 +87,8 @@ export class AgentController {
   })
   @ApiParam({ name: 'id', description: 'Agent UUID', example: '018f0a1b-...' })
   @ApiResponse({ status: 200, description: 'Agent details', type: AgentResponseDto })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
-  @ApiResponse({ status: 404, description: 'Agent not found' })
+  @ApiErrorResponses(401)
+  @ApiErrorResponses(404)
   findOne(@CurrentUser('organizationId') organizationId: string, @Param('id') id: string) {
     return this.agentService.getOrThrow(organizationId, id);
   }
@@ -103,10 +104,10 @@ export class AgentController {
   @ApiParam({ name: 'id', description: 'Agent UUID', example: '018f0a1b-...' })
   @ApiBody({ type: CreateAgentDto })
   @ApiResponse({ status: 200, description: 'Agent updated successfully', type: AgentResponseDto })
-  @ApiResponse({ status: 400, description: 'Validation error' })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
-  @ApiResponse({ status: 403, description: 'Insufficient permissions' })
-  @ApiResponse({ status: 404, description: 'Agent not found' })
+  @ApiErrorResponses(400)
+  @ApiErrorResponses(401)
+  @ApiErrorResponses(403)
+  @ApiErrorResponses(404)
   update(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id') id: string,
@@ -125,9 +126,9 @@ export class AgentController {
   })
   @ApiParam({ name: 'id', description: 'Agent UUID', example: '018f0a1b-...' })
   @ApiResponse({ status: 200, description: 'Agent paused successfully', type: AgentResponseDto })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
-  @ApiResponse({ status: 403, description: 'Insufficient permissions' })
-  @ApiResponse({ status: 404, description: 'Agent not found' })
+  @ApiErrorResponses(401)
+  @ApiErrorResponses(403)
+  @ApiErrorResponses(404)
   pause(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
     return this.agentService.setStatus(user.organizationId, user.id, id, AgentStatus.PAUSED);
   }
@@ -142,9 +143,9 @@ export class AgentController {
   })
   @ApiParam({ name: 'id', description: 'Agent UUID', example: '018f0a1b-...' })
   @ApiResponse({ status: 200, description: 'Agent resumed successfully', type: AgentResponseDto })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
-  @ApiResponse({ status: 403, description: 'Insufficient permissions' })
-  @ApiResponse({ status: 404, description: 'Agent not found' })
+  @ApiErrorResponses(401)
+  @ApiErrorResponses(403)
+  @ApiErrorResponses(404)
   resume(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
     return this.agentService.setStatus(user.organizationId, user.id, id, AgentStatus.ACTIVE);
   }
@@ -160,9 +161,9 @@ export class AgentController {
   })
   @ApiParam({ name: 'id', description: 'Agent UUID', example: '018f0a1b-...' })
   @ApiResponse({ status: 200, description: 'Agent suspended successfully', type: AgentResponseDto })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
-  @ApiResponse({ status: 403, description: 'Insufficient permissions (requires OWNER or ADMIN)' })
-  @ApiResponse({ status: 404, description: 'Agent not found' })
+  @ApiErrorResponses(401)
+  @ApiErrorResponses(403)
+  @ApiErrorResponses(404)
   suspend(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
     return this.agentService.setStatus(user.organizationId, user.id, id, AgentStatus.SUSPENDED);
   }
@@ -179,10 +180,10 @@ export class AgentController {
   @ApiParam({ name: 'id', description: 'Agent UUID', example: '018f0a1b-...' })
   @ApiBody({ type: AssignWalletDto })
   @ApiResponse({ status: 200, description: 'Wallet assigned successfully', type: AgentResponseDto })
-  @ApiResponse({ status: 400, description: 'Validation error (invalid wallet UUID)' })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
-  @ApiResponse({ status: 403, description: 'Insufficient permissions' })
-  @ApiResponse({ status: 404, description: 'Agent or wallet not found' })
+  @ApiErrorResponses(400)
+  @ApiErrorResponses(401)
+  @ApiErrorResponses(403)
+  @ApiErrorResponses(404)
   assignWallet(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id') id: string,
@@ -202,9 +203,9 @@ export class AgentController {
   })
   @ApiParam({ name: 'id', description: 'Agent UUID', example: '018f0a1b-...' })
   @ApiResponse({ status: 200, description: 'Agent archived successfully' })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
-  @ApiResponse({ status: 403, description: 'Insufficient permissions (requires OWNER or ADMIN)' })
-  @ApiResponse({ status: 404, description: 'Agent not found' })
+  @ApiErrorResponses(401)
+  @ApiErrorResponses(403)
+  @ApiErrorResponses(404)
   remove(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
     return this.agentService.remove(user.organizationId, user.id, id);
   }
@@ -213,7 +214,7 @@ export class AgentController {
   @UseGuards(AgentRateLimiterGuard)
   @ApiOperation({ summary: 'Trigger an execution for the agent' })
   @ApiResponse({ status: 200, description: 'Execution triggered' })
-  @ApiResponse({ status: 429, description: 'Rate limit exceeded' })
+  @ApiErrorResponses(429)
   async execute(@CurrentUser('organizationId') _organizationId: string, @Param('id') _id: string) {
     return { success: true, message: 'Execution triggered' };
   }
