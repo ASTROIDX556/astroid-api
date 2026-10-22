@@ -1,4 +1,8 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
+import { getQueueToken } from '@nestjs/bullmq';
+import type { Queue } from 'bullmq';
+import { Queues } from '../../queues/queues.constants';
+import type { RiskAnalysisJob } from './workers/risk-analysis.worker';
 import { RiskEngine } from './risk.engine';
 import { RiskAssessment, RiskConfig, RiskFactorsInput, RiskRule } from './risk.types';
 import { EventBusService } from '../../events/event-bus.service';
@@ -21,6 +25,7 @@ export class RiskService {
     private readonly engine: RiskEngine,
     private readonly eventBus: EventBusService,
     private readonly repository: RiskRepository,
+    @Optional() @Inject(getQueueToken(Queues.RiskAnalysis)) private readonly riskQueue?: Queue<RiskAnalysisJob>,
   ) {}
 
   /**
@@ -124,6 +129,14 @@ export class RiskService {
         walletAgeDays: 0,
         policyViolations: 0,
       };
+
+      if (this.riskQueue) {
+        await this.riskQueue.add('evaluate-transaction', {
+          organizationId, transactionId, actorId: envelope.actorId, factors: riskInput,
+        }, { jobId: `risk-${transactionId}`, removeOnComplete: true });
+        this.logger.log(`Queued risk analysis for transaction ${transactionId}`);
+        return;
+      }
 
       await this.evaluate(organizationId, riskInput, {
         transactionId,
