@@ -50,19 +50,19 @@ export class CreateBudgetDto {
   @ApiProperty({ example: '10000.0000000' })
   limitAmount!: string;
 
-  @ApiPropertyOptional({ enum: BudgetPeriod })
+  @ApiPropertyOptional({ enum: BudgetPeriod, example: BudgetPeriod.MONTHLY })
   period?: BudgetPeriod;
 
-  @ApiPropertyOptional()
+  @ApiPropertyOptional({ type: Boolean, example: false })
   rollover?: boolean;
 
-  @ApiPropertyOptional({ description: 'Parent budget for hierarchical allocation' })
+  @ApiPropertyOptional({ description: 'Parent budget UUID for hierarchical allocation', format: 'uuid' })
   parentBudgetId?: string;
 
-  @ApiPropertyOptional()
+  @ApiPropertyOptional({ description: 'Agent UUID', format: 'uuid' })
   agentId?: string;
 
-  @ApiPropertyOptional()
+  @ApiPropertyOptional({ type: Boolean, example: true })
   enabled?: boolean;
 }
 
