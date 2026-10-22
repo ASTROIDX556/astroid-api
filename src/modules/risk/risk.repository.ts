@@ -45,6 +45,24 @@ export class RiskRepository {
     });
   }
 
+  /** Require human approval and freeze the originating wallet on critical risk. */
+  async enforceRiskControls(organizationId: string, transactionId: string, critical: boolean) {
+    const tx = await this.prisma.transaction.findFirst({
+      where: { id: transactionId, organizationId }, select: { walletId: true },
+    });
+    if (!tx) throw new Error('Transaction not found for risk controls');
+    await this.prisma.$transaction(async (db) => {
+      await db.transaction.update({
+        where: { id: transactionId }, data: { requiresApproval: true },
+      });
+      if (critical) {
+        await db.wallet.update({
+          where: { id: tx.walletId }, data: { status: 'FROZEN' },
+        });
+      }
+    });
+  }
+
   /** Derive a 24-hour baseline from prior transactions for this wallet. */
   async getTransactionBaseline(organizationId: string, transactionId: string) {
     const current = await this.prisma.transaction.findFirst({
