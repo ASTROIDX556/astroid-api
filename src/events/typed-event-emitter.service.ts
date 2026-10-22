@@ -65,7 +65,6 @@ export interface DomainEventMap {
   'risk.evaluated': PayloadTypes.RiskEvaluatedPayload;
   'risk.alert': PayloadTypes.RiskAlertPayload;
   'risk.threshold_exceeded': PayloadTypes.RiskThresholdExceededPayload;
-  'risk.threshold_exceeded': PayloadTypes.RiskThresholdExceededPayload;
 
   // Audit
   'audit.recorded': PayloadTypes.AuditRecordedPayload;
