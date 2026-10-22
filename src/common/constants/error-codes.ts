@@ -37,6 +37,8 @@ export enum ErrorCode {
   STELLAR_ERROR = 'STELLAR_ERROR',
   INVALID_STELLAR_ADDRESS = 'INVALID_STELLAR_ADDRESS',
   INVALID_STELLAR_TRANSACTION = 'INVALID_STELLAR_TRANSACTION',
+  CONTRACT_REVERTED = 'CONTRACT_REVERTED',
+  CONTRACT_PANIC = 'CONTRACT_PANIC',
 
   // Resilience
   CIRCUIT_OPEN = 'CIRCUIT_OPEN',
@@ -72,6 +74,8 @@ export const ERROR_STATUS: Record<ErrorCode, number> = {
   [ErrorCode.STELLAR_ERROR]: 502,
   [ErrorCode.INVALID_STELLAR_ADDRESS]: 400,
   [ErrorCode.INVALID_STELLAR_TRANSACTION]: 400,
+  [ErrorCode.CONTRACT_REVERTED]: 422,
+  [ErrorCode.CONTRACT_PANIC]: 422,
   [ErrorCode.CIRCUIT_OPEN]: 503,
   [ErrorCode.LOCK_ACQUISITION_FAILED]: 409,
 };
@@ -110,6 +114,8 @@ export const ERROR_TITLE: Record<ErrorCode, string> = {
   [ErrorCode.STELLAR_ERROR]: 'Stellar Network Error',
   [ErrorCode.INVALID_STELLAR_ADDRESS]: 'Invalid Stellar Address',
   [ErrorCode.INVALID_STELLAR_TRANSACTION]: 'Invalid Stellar Transaction',
+  [ErrorCode.CONTRACT_REVERTED]: 'Smart Contract Reverted',
+  [ErrorCode.CONTRACT_PANIC]: 'Smart Contract Panicked',
   [ErrorCode.CIRCUIT_OPEN]: 'Service Temporarily Unavailable',
   [ErrorCode.LOCK_ACQUISITION_FAILED]: 'Resource Locked',
 };

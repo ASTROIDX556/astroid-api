@@ -30,8 +30,8 @@ export class ValidationException extends DomainException {
 }
 
 export class ConflictException extends DomainException {
-  constructor(message: string) {
-    super(ErrorCode.CONFLICT, message);
+  constructor(message: string, details?: unknown) {
+    super(ErrorCode.CONFLICT, message, details);
   }
 }
 
@@ -42,8 +42,8 @@ export class UnauthorizedException extends DomainException {
 }
 
 export class ForbiddenException extends DomainException {
-  constructor(message = 'Insufficient permissions') {
-    super(ErrorCode.FORBIDDEN, message);
+  constructor(message = 'Insufficient permissions', details?: unknown) {
+    super(ErrorCode.FORBIDDEN, message, details);
   }
 }
 
@@ -74,6 +74,33 @@ export class RiskTooHighException extends DomainException {
 export class NotImplementedException extends DomainException {
   constructor(message = 'This endpoint is not implemented yet') {
     super(ErrorCode.NOT_IMPLEMENTED, message);
+  }
+}
+
+/**
+ * Thrown when a smart contract rejects an invocation with a revert reason the
+ * API could not map onto a more specific code. The decoded payload — kind,
+ * contract id, error code, selector/signature and the raw revert bytes — is
+ * carried in `details.contractError` (see `contract-revert.decoder.ts`), so
+ * unrecognised failures stay debuggable instead of being flattened to a
+ * generic network error.
+ */
+export class ContractRevertedException extends DomainException {
+  constructor(message: string, details?: unknown) {
+    super(ErrorCode.CONTRACT_REVERTED, message, details);
+  }
+}
+
+/** Thrown when a contract execution panics (e.g. `Panic(uint256)` 0x11 overflow). */
+export class ContractPanicException extends DomainException {
+  constructor(message: string, details?: unknown) {
+    super(ErrorCode.CONTRACT_PANIC, message, details);
+  }
+}
+
+export class InsufficientFundsException extends DomainException {
+  constructor(message: string, details?: unknown) {
+    super(ErrorCode.INSUFFICIENT_FUNDS, message, details);
   }
 }
 

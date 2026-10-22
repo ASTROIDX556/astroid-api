@@ -92,8 +92,15 @@ describe('StellarService - Transaction Simulation', () => {
       (reason: unknown) => reason as DomainException,
     );
     expect(error).toBeInstanceOf(DomainException);
-    expect((error as DomainException).code).toBe(ErrorCode.STELLAR_ERROR);
-    expect((error as DomainException).message).toContain('HostError: Error(Contract, #4)');
+    expect((error as DomainException).code).toBe(ErrorCode.CONTRACT_REVERTED);
+    expect((error as DomainException).message).toContain('Contract execution failed with Contract error #4');
+    expect((error as DomainException).details).toMatchObject({
+      contractError: {
+        kind: 'contract',
+        errorCode: 4,
+        raw: { format: 'text', data: 'HostError: Error(Contract, #4)' },
+      },
+    });
   });
 
   it('should handle RPC network timeouts and errors robustly', async () => {
