@@ -279,6 +279,85 @@ describe('HealthController', () => {
     });
   });
 
+  describe('GET /health/stellar', () => {
+    it('returns 200 with the per-endpoint status when both Stellar endpoints answer', async () => {
+      await controller.getStellar(res as Response);
+
+      expect(stellarHealth.checkHealth).toHaveBeenCalledTimes(1);
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          status: 'up',
+          network: 'testnet',
+          horizon: expect.objectContaining({ status: 'up' }),
+          sorobanRpc: expect.objectContaining({ status: 'up' }),
+        }),
+      );
+    });
+
+    it('returns 503 with the failure detail when the Soroban RPC is unreachable', async () => {
+      stellarHealth.checkHealth.mockResolvedValue({
+        status: 'down',
+        timestamp: new Date().toISOString(),
+        network: 'testnet',
+        horizon: { status: 'up', latencyMs: 50, url: 'https://horizon' },
+        sorobanRpc: {
+          status: 'down',
+          latencyMs: 2000,
+          url: 'https://soroban',
+          error: 'The operation was aborted',
+        },
+      });
+
+      await controller.getStellar(res as Response);
+
+      expect(res.status).toHaveBeenCalledWith(503);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          status: 'down',
+          sorobanRpc: expect.objectContaining({
+            status: 'down',
+            error: 'The operation was aborted',
+          }),
+        }),
+      );
+    });
+
+    it('returns 503 when an endpoint is only degraded', async () => {
+      stellarHealth.checkHealth.mockResolvedValue({
+        status: 'degraded',
+        timestamp: new Date().toISOString(),
+        network: 'testnet',
+        horizon: { status: 'degraded', latencyMs: 1500, url: 'https://horizon' },
+        sorobanRpc: { status: 'up', latencyMs: 40, url: 'https://soroban' },
+      });
+
+      await controller.getStellar(res as Response);
+
+      expect(res.status).toHaveBeenCalledWith(503);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'degraded' }),
+      );
+    });
+
+    it('reports only Stellar, so a broken database cannot mask a Stellar outage', async () => {
+      stellarHealth.checkHealth.mockResolvedValue({
+        status: 'down',
+        timestamp: new Date().toISOString(),
+        network: 'testnet',
+        horizon: { status: 'down', latencyMs: 10, url: 'https://horizon', error: 'ECONNREFUSED' },
+        sorobanRpc: { status: 'up', latencyMs: 40, url: 'https://soroban' },
+      });
+      dbHealth.check.mockResolvedValue(terminus({ status: 'down', message: 'pool exhausted' }));
+
+      await controller.getStellar(res as Response);
+
+      expect(dbHealth.check).not.toHaveBeenCalled();
+      expect(redisHealth.checkHealth).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(503);
+    });
+  });
+
   it('returns 200 OK when all services are healthy', async () => {
     await controller.getReadiness(res as Response);
 
