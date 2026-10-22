@@ -1,5 +1,5 @@
 import { applyDecorators, Type } from '@nestjs/common';
-import { ApiExtraModels, ApiOkResponse, ApiProperty, getSchemaPath } from '@nestjs/swagger';
+import { ApiExtraModels, ApiResponse, ApiProperty, getSchemaPath } from '@nestjs/swagger';
 
 /** Generic OpenAPI model describing the success envelope for a given data type. */
 export class ApiEnvelopeDto {
@@ -22,7 +22,7 @@ export class ApiEnvelopeDto {
  */
 export function ApiEnvelope<TModel extends Type<unknown>>(
   model: TModel,
-  options: { isArray?: boolean } = {},
+  options: { isArray?: boolean; status?: number } = {},
 ) {
   const dataSchema = options.isArray
     ? { type: 'array', items: { $ref: getSchemaPath(model) } }
@@ -30,7 +30,8 @@ export function ApiEnvelope<TModel extends Type<unknown>>(
 
   return applyDecorators(
     ApiExtraModels(ApiEnvelopeDto, model),
-    ApiOkResponse({
+    ApiResponse({
+      status: options.status ?? 200,
       schema: {
         allOf: [
           { $ref: getSchemaPath(ApiEnvelopeDto) },
