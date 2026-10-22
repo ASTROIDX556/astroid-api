@@ -88,7 +88,6 @@ export class TransactionController {
     description: 'Optional key for replay-safe transaction submission (1-128 allowed ASCII characters).',
   })
   @ApiEnvelope(CreateTransactionDto as never, { status: 201 })
-  @ApiResponse({ status: 201, description: 'Transaction created (may require approval)' })
   @ApiErrorResponses(400)
   @ApiErrorResponses(401)
   @ApiErrorResponses(403)
