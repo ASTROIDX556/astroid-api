@@ -1,11 +1,15 @@
-import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import { describe, expect, it, beforeAll, afterAll, vi } from 'vitest';
 import { Test, TestingModule } from '@nestjs/testing';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { PrismaService } from './database/prisma.service';
 import { AppModule } from './app.module';
 import { INestApplication } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { PathItemObject, OperationObject } from '@nestjs/swagger/dist/interfaces/open-api-spec.interface';
+import {
+  OpenAPIObject,
+  PathItemObject,
+  OperationObject,
+} from '@nestjs/swagger/dist/interfaces/open-api-spec.interface';
 
 // Set up environment variables before importing modules that depend on them
 process.env.NODE_ENV = 'test';
@@ -60,9 +64,43 @@ process.env.AI_PROVIDER_KEY = 'test-key';
 process.env.AI_BASE_URL = 'https://integrate.api.nvidia.com/v1';
 process.env.AI_MODEL = 'meta/llama-3.1-70b-instruct';
 
+/**
+ * The liveness probes only ever answer 200 — they are not part of the
+ * authenticated surface and have no error to report.
+ */
+const LIVENESS_PROBES = ['/api/v1/health/live', '/api/v1/health/liveness'];
+
+const METHODS: Array<keyof PathItemObject> = [
+  'get',
+  'post',
+  'put',
+  'patch',
+  'delete',
+  'options',
+  'head',
+  'trace',
+];
+
+/** Collects every `$ref` of the document. */
+function collectRefs(node: unknown, refs = new Set<string>()): Set<string> {
+  if (Array.isArray(node)) {
+    node.forEach((entry) => collectRefs(entry, refs));
+  } else if (node && typeof node === 'object') {
+    for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
+      if (key === '$ref' && typeof value === 'string') {
+        refs.add(value);
+      } else {
+        collectRefs(value, refs);
+      }
+    }
+  }
+  return refs;
+}
+
 describe('OpenAPI Documentation', () => {
   let app: INestApplication;
   let moduleFixture: TestingModule;
+  let document: OpenAPIObject;
 
   beforeAll(async () => {
     moduleFixture = await Test.createTestingModule({
@@ -83,13 +121,25 @@ describe('OpenAPI Documentation', () => {
       .compile();
 
     app = moduleFixture.createNestApplication();
-    
+
     // Apply global prefix like in main.ts
     const configService = app.get(ConfigService);
     const appConfig = configService.getOrThrow('app');
     app.setGlobalPrefix(appConfig.apiPrefix);
-    
+
     await app.init();
+
+    const swaggerConfig = new DocumentBuilder()
+      .setTitle('Astroid API')
+      .setDescription(
+        'The intelligence layer for the Financial Operating System for autonomous AI agents on Stellar.',
+      )
+      .setVersion('1.0')
+      .addBearerAuth({ type: 'http', scheme: 'bearer', bearerFormat: 'JWT' }, 'access-token')
+      .addApiKey({ type: 'apiKey', in: 'header', name: 'x-api-key' }, 'api-key')
+      .build();
+
+    document = SwaggerModule.createDocument(app, swaggerConfig);
   }, 60_000);
 
   afterAll(async () => {
@@ -106,18 +156,6 @@ describe('OpenAPI Documentation', () => {
   }, 15_000);
 
   it('should generate a valid OpenAPI document', () => {
-    const swaggerConfig = new DocumentBuilder()
-      .setTitle('Astroid API')
-      .setDescription(
-        'The intelligence layer for the Financial Operating System for autonomous AI agents on Stellar.',
-      )
-      .setVersion('1.0')
-      .addBearerAuth({ type: 'http', scheme: 'bearer', bearerFormat: 'JWT' }, 'access-token')
-      .addApiKey({ type: 'apiKey', in: 'header', name: 'x-api-key' }, 'api-key')
-      .build();
-
-    const document = SwaggerModule.createDocument(app, swaggerConfig);
-
     expect(document).toBeDefined();
     expect(document.openapi).toMatch(/^3\.0\./);
     expect(document.info.title).toBe('Astroid API');
@@ -127,33 +165,19 @@ describe('OpenAPI Documentation', () => {
   });
 
   it('should have all paths with proper operations', () => {
-    const swaggerConfig = new DocumentBuilder()
-      .setTitle('Astroid API')
-      .setDescription(
-        'The intelligence layer for the Financial Operating System for autonomous AI agents on Stellar.',
-      )
-      .setVersion('1.0')
-      .addBearerAuth({ type: 'http', scheme: 'bearer', bearerFormat: 'JWT' }, 'access-token')
-      .addApiKey({ type: 'apiKey', in: 'header', name: 'x-api-key' }, 'api-key')
-      .build();
-
-    const document = SwaggerModule.createDocument(app, swaggerConfig);
-
     for (const [path, pathItem] of Object.entries(document.paths)) {
       expect(path).toMatch(/^\/api\/v1\//);
-      
-      const operations: (keyof PathItemObject)[] = ['get', 'post', 'put', 'patch', 'delete', 'options', 'head', 'trace'];
-      
-      for (const method of operations) {
+
+      for (const method of METHODS) {
         const operation = pathItem[method] as OperationObject | undefined;
         if (operation) {
           expect(operation.summary || operation.description).toBeDefined();
           expect(operation.responses).toBeDefined();
           expect(Object.keys(operation.responses).length).toBeGreaterThan(0);
-          
+
           // Verify at least one success response (2xx) is documented
           const hasSuccessResponse = Object.keys(operation.responses).some(
-            (code) => code.startsWith('2')
+            (code) => code.startsWith('2'),
           );
           expect(hasSuccessResponse).toBe(true);
         }
@@ -162,45 +186,95 @@ describe('OpenAPI Documentation', () => {
   });
 
   it('should have security schemes defined', () => {
-    const swaggerConfig = new DocumentBuilder()
-      .setTitle('Astroid API')
-      .setDescription(
-        'The intelligence layer for the Financial Operating System for autonomous AI agents on Stellar.',
-      )
-      .setVersion('1.0')
-      .addBearerAuth({ type: 'http', scheme: 'bearer', bearerFormat: 'JWT' }, 'access-token')
-      .addApiKey({ type: 'apiKey', in: 'header', name: 'x-api-key' }, 'api-key')
-      .build();
-
-    const document = SwaggerModule.createDocument(app, swaggerConfig);
-
     expect(document.components?.securitySchemes).toBeDefined();
     expect(document.components?.securitySchemes?.['access-token']).toBeDefined();
     expect(document.components?.securitySchemes?.['api-key']).toBeDefined();
   });
 
   it('should have tags for all endpoints', () => {
-    const swaggerConfig = new DocumentBuilder()
-      .setTitle('Astroid API')
-      .setDescription(
-        'The intelligence layer for the Financial Operating System for autonomous AI agents on Stellar.',
-      )
-      .setVersion('1.0')
-      .addBearerAuth({ type: 'http', scheme: 'bearer', bearerFormat: 'JWT' }, 'access-token')
-      .addApiKey({ type: 'apiKey', in: 'header', name: 'x-api-key' }, 'api-key')
-      .build();
-
-    const document = SwaggerModule.createDocument(app, swaggerConfig);
-
     for (const [, pathItem] of Object.entries(document.paths)) {
-      const operations: (keyof PathItemObject)[] = ['get', 'post', 'put', 'patch', 'delete', 'options', 'head', 'trace'];
-      
-      for (const method of operations) {
+      for (const method of METHODS) {
         const operation = pathItem[method] as OperationObject | undefined;
         if (operation) {
           expect(operation.tags).toBeDefined();
           expect(Array.isArray(operation.tags)).toBe(true);
           expect((operation.tags || []).length).toBeGreaterThan(0);
+        }
+      }
+    }
+  });
+
+  // ── Documentation validity ───────────────────────────────────────────────
+
+  it('documents a response schema for every success response', () => {
+    for (const [path, pathItem] of Object.entries(document.paths)) {
+      for (const method of METHODS) {
+        const operation = pathItem[method] as OperationObject | undefined;
+        if (!operation) continue;
+
+        for (const [status, response] of Object.entries(operation.responses)) {
+          if (!status.startsWith('2')) continue;
+          const content = (response as { content?: Record<string, unknown> }).content;
+          expect(content, `${method.toUpperCase()} ${path} (${status})`).toBeDefined();
+          expect(
+            Object.keys(content ?? {}).length,
+            `${method.toUpperCase()} ${path} (${status})`,
+          ).toBeGreaterThan(0);
+        }
+      }
+    }
+  });
+
+  it('resolves every schema reference (no missing type definitions)', () => {
+    const schemas = document.components?.schemas ?? {};
+    const refs = collectRefs(document);
+    const dangling = [...refs].filter(
+      (ref) =>
+        ref.startsWith('#/components/schemas/') &&
+        !schemas[ref.split('/').pop() as string],
+    );
+
+    expect(dangling).toEqual([]);
+  });
+
+  it('documents every property of every schema', () => {
+    const schemas = document.components?.schemas ?? {};
+
+    for (const [name, schema] of Object.entries(schemas)) {
+      const properties = (schema as { properties?: Record<string, Record<string, unknown>> })
+        .properties;
+      if (!properties) continue;
+
+      for (const [property, definition] of Object.entries(properties)) {
+        const ref = definition.$ref as string | undefined;
+        const referenced = ref ? schemas[ref.split('/').pop() as string] : undefined;
+        const description =
+          definition.description ??
+          (referenced as { description?: string } | undefined)?.description;
+
+        expect(description, `${name}.${property}`).toBeDefined();
+      }
+    }
+  });
+
+  it('documents the shared error envelope for every error response', () => {
+    for (const [path, pathItem] of Object.entries(document.paths)) {
+      for (const method of METHODS) {
+        const operation = pathItem[method] as OperationObject | undefined;
+        if (!operation) continue;
+
+        const errorResponses = Object.entries(operation.responses).filter(([status]) =>
+          status.startsWith('4') || status.startsWith('5'),
+        );
+        if (LIVENESS_PROBES.includes(path)) {
+          expect(errorResponses.length, `${method.toUpperCase()} ${path}`).toBe(0);
+          continue;
+        }
+        expect(errorResponses.length, `${method.toUpperCase()} ${path}`).toBeGreaterThan(0);
+
+        for (const [status, response] of errorResponses) {
+          const content = (response as { content?: Record<string, unknown> }).content;
+          expect(content, `${method.toUpperCase()} ${path} (${status})`).toBeDefined();
         }
       }
     }

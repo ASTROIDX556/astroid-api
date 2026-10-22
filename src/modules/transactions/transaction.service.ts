@@ -37,8 +37,22 @@ import { Paginated } from '../../common/interfaces/api-response.interface';
 import { EventBusService } from '../../events/event-bus.service';
 import { DomainEventName } from '../../events/event-names';
 import { PrismaService } from '../../database/prisma.service';
+import { PrismaTransactionService } from '../../database/prisma-transaction.service';
 
 const SORTABLE = ['createdAt', 'amount', 'status', 'riskScore'];
+
+/** Statuses that may never leave the execution pipeline once they got there. */
+const EXECUTED_STATUSES: readonly TransactionStatus[] = [
+  TransactionStatus.COMPLETED,
+  TransactionStatus.SUBMITTED,
+  TransactionStatus.CONFIRMED,
+];
+
+/** Statuses a cancellation is still allowed to consume. */
+const CANCELLABLE_STATUSES: readonly TransactionStatus[] = [
+  TransactionStatus.DRAFT,
+  TransactionStatus.PENDING,
+];
 const Decimal = Prisma.Decimal;
 const IDEMPOTENCY_OPERATION = 'transactions.create';
 const IDEMPOTENCY_RETENTION_MS = 24 * 60 * 60 * 1000;
@@ -96,6 +110,7 @@ export class TransactionService {
     private readonly eventBus: EventBusService,
     private readonly prisma: PrismaService,
     private readonly spendingLimits: SpendingLimitService,
+    private readonly transactions: PrismaTransactionService,
   ) {}
 
   async create(
@@ -214,7 +229,7 @@ export class TransactionService {
     const requiresApproval = policyResult.requiresApproval || !assessment.canAutoExecute;
 
     // 6. Persist the transaction row.
-    const transaction = await this.repository.create({
+    const createTransactionRow = () => this.repository.create({
       organization: { connect: { id: organizationId } },
       wallet: { connect: { id: wallet.id } },
       ...(input.agentId ? { agent: { connect: { id: input.agentId } } } : {}),
@@ -234,6 +249,15 @@ export class TransactionService {
       requiresApproval,
       metadata: input.metadata as Prisma.InputJsonValue,
     });
+    const transaction = input.agentId
+      ? await this.budgets.withAgentBudgetLimit(
+          organizationId,
+          input.agentId,
+          input.asset,
+          amount,
+          createTransactionRow,
+        )
+      : await createTransactionRow();
     await onTransactionCreated?.(transaction);
     await this.eventBus.emit(
       DomainEventName.TransactionCreated,
@@ -264,17 +288,35 @@ export class TransactionService {
    */
   async execute(organizationId: string, transactionId: string, actorId?: string): Promise<Transaction> {
     const tx = await this.getOrThrow(organizationId, transactionId);
-    if (
-      tx.status === TransactionStatus.COMPLETED ||
-      tx.status === TransactionStatus.SUBMITTED ||
-      tx.status === TransactionStatus.CONFIRMED
-    ) {
+    if (EXECUTED_STATUSES.includes(tx.status)) {
       throw new ConflictException(`Transaction '${transactionId}' has already been executed`);
     }
     const wallet = await this.wallets.getOrThrow(organizationId, tx.walletId);
     this.assertWalletSpendable(wallet);
 
-    await this.repository.update(tx.id, { status: TransactionStatus.SUBMITTED });
+    // Guarded DRAFT/PENDING -> SUBMITTED transition. Concurrent workers racing
+    // on the same transaction (fee-bump retries, approvals landing while an
+    // execute is in flight) previously clobbered each other's status writes;
+    // running the re-read + update as one SERIALIZABLE unit of work makes
+    // Postgres abort the loser with a serialization conflict (P2034), which
+    // runWithRetry replays — the replay re-reads the row, sees SUBMITTED and
+    // surfaces a ConflictException *before* any funds move on-chain.
+    await this.transactions.runWithRetry(
+      async (client) => {
+        const current = await this.repository.findById(organizationId, transactionId, client);
+        if (!current) {
+          throw new NotFoundException('Transaction', transactionId);
+        }
+        if (EXECUTED_STATUSES.includes(current.status)) {
+          throw new ConflictException(`Transaction '${transactionId}' has already been executed`);
+        }
+        return this.repository.update(transactionId, { status: TransactionStatus.SUBMITTED }, client);
+      },
+      {
+        name: 'transaction.status->submitted',
+        isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+      },
+    );
     await this.eventBus.emit(
       DomainEventName.TransactionSubmitted,
       { transactionId: tx.id },
@@ -370,14 +412,26 @@ export class TransactionService {
   }
 
   async cancel(organizationId: string, actorId: string, id: string) {
-    const tx = await this.getOrThrow(organizationId, id);
-    if (
-      tx.status !== TransactionStatus.DRAFT &&
-      tx.status !== TransactionStatus.PENDING
-    ) {
-      throw new ConflictException('Only draft or pending transactions can be cancelled');
-    }
-    const cancelled = await this.repository.update(id, { status: TransactionStatus.CANCELLED });
+    // Same guarded-transition pattern as execute(): the status check and the
+    // CANCELLED write run inside one SERIALIZABLE transaction that is replayed
+    // on P2034, so a cancel can never overwrite a transaction that a
+    // concurrent worker has just submitted or completed.
+    const cancelled = await this.transactions.runWithRetry(
+      async (client) => {
+        const current = await this.repository.findById(organizationId, id, client);
+        if (!current) {
+          throw new NotFoundException('Transaction', id);
+        }
+        if (!CANCELLABLE_STATUSES.includes(current.status)) {
+          throw new ConflictException('Only draft or pending transactions can be cancelled');
+        }
+        return this.repository.update(id, { status: TransactionStatus.CANCELLED }, client);
+      },
+      {
+        name: 'transaction.status->cancelled',
+        isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+      },
+    );
     await this.eventBus.emit(
       DomainEventName.TransactionCancelled,
       { transactionId: id },

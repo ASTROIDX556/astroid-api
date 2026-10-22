@@ -17,6 +17,7 @@ import { CreatePolicyInput, UpdatePolicyInput } from './policy.dto';
 import {
   PolicyConfiguration,
   PolicyEvaluationResult,
+  PolicyVelocityWindow,
   TransactionIntent,
   policyConfigurationSchemaStrict,
 } from './policy.types';
@@ -27,6 +28,15 @@ const SORTABLE = ['createdAt', 'priority', 'name', 'type'];
 
 /** Rolling window used by the velocity (drain-prevention) check. */
 const VELOCITY_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+/** Duration of every supported velocity window, in milliseconds. */
+export const VELOCITY_WINDOW_DURATIONS: Record<PolicyVelocityWindow, number> = {
+  minute: 60 * 1_000,
+  hour: 60 * 60 * 1_000,
+  day: 24 * 60 * 60 * 1_000,
+  week: 7 * 24 * 60 * 60 * 1_000,
+  month: 30 * 24 * 60 * 60 * 1_000,
+};
 
 /**
  * Owns the agent spending-policy domain: validation, persistence orchestration
@@ -151,6 +161,19 @@ export class SpendingPolicyService {
         { spentInWindow, pendingAmount: amount, limit: dailyLimit, assetCode },
       );
     }
+  }
+
+  /**
+   * Counts the transactions an agent executed inside a velocity window. The
+   * count feeds the velocity rule of the policy engine, which caps how many
+   * transactions may be executed inside a rolling period.
+   */
+  async countTransactionsForVelocity(
+    agentId: string,
+    window: PolicyVelocityWindow,
+  ): Promise<number> {
+    const since = new Date(Date.now() - VELOCITY_WINDOW_DURATIONS[window]);
+    return this.repository.countTransactionsInWindow({ agentId, since });
   }
 
   /** Highest-priority agent policy that declares a positive `dailyLimit`, if any. */

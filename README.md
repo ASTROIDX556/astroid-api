@@ -55,6 +55,8 @@ cp .env.example .env            # then edit secrets (JWT_*, DATABASE_URL, …)
 
 npm run prisma:generate         # generate the Prisma client
 npm run prisma:migrate          # apply migrations to your database
+npm run db:seed                  # create development fixtures
+npm run db:seed:verify           # validate fixture integrity
 
 npm run start:dev               # http://localhost:3000
 ```
@@ -82,6 +84,27 @@ npm run start:dev               # http://localhost:3000
 
 Full OpenAPI spec available at `/docs` when the server is running.
 
+### Development database fixtures
+
+With PostgreSQL available and `DATABASE_URL` set in `.env`, apply migrations
+before creating fixtures:
+
+```bash
+npm run prisma:deploy
+npm run db:seed
+npm run db:seed:verify
+```
+
+The seed creates the `astroid-labs` organization, owner and finance users,
+paused test agents with public-only testnet wallet placeholders, three spending
+policies, a parent/agent budget pair, and a disabled sample webhook. Roles are
+represented by the existing `UserRole` enum; the schema has no standalone role
+or governance-configuration model. Fixture commands reject production and
+require an explicit opt-in for remote database hosts. Stable fixture IDs and
+natural keys make repeated runs update the same records without deleting other
+data. CI applies migrations, runs the seed twice, and verifies the fixtures
+against its disposable PostgreSQL service.
+
 ## Scripts
 
 | Script | Purpose |
@@ -94,6 +117,8 @@ Full OpenAPI spec available at `/docs` when the server is running.
 | `npm test` | Vitest unit tests |
 | `npm run prisma:migrate` | Create/apply a dev migration |
 | `npm run prisma:deploy` | Apply migrations in production |
+| `npm run db:seed` | Idempotently seed local development or test fixtures |
+| `npm run db:seed:verify` | Validate fixture fields and relationships |
 
 ## Data Model
 

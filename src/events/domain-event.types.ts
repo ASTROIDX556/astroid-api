@@ -263,3 +263,95 @@ export interface RiskAlertPayload extends Record<string, unknown> {
   transactionId?: string;
   riskLevel?: string;
 }
+
+/**
+ * Payload of the `audit.recorded` event published by the
+ * `StructuredAuditInterceptor` for every route marked with `@AuditAction()`.
+ *
+ * It carries the immutable "who / what / when / where / result" record of a
+ * sensitive operation. Payloads are sanitized before they reach this shape,
+ * so no private key, secret or JWT token is ever part of the event.
+ */
+export interface AuditRecordedPayload extends Record<string, unknown> {
+  /** Semantic action, e.g. `AGENT_KEY_ROTATED`. */
+  action: string;
+  /** Organization the audited operation belongs to. */
+  organizationId?: string;
+  /** Domain entity the action applies to, e.g. `ApiKey`. */
+  entity?: string;
+  /** Identifier of the affected entity, when the route exposes one. */
+  entityId?: string | null;
+  /** Human-readable description of the audited operation. */
+  description?: string;
+  /** HTTP method of the audited request. */
+  method: string;
+  /** Request path (query string excluded). */
+  url: string;
+  /** Final HTTP status code of the response. */
+  statusCode: number;
+  /** True when the operation completed without an error. */
+  success: boolean;
+  /** Authenticated human user that triggered the operation. */
+  userId?: string | null;
+  /** Acting autonomous agent, when the request was made by an agent. */
+  agentId?: string | null;
+  /** Client IP address. */
+  ipAddress?: string | null;
+  /** User agent of the caller. */
+  userAgent?: string | null;
+  /** Correlation id of the request. */
+  requestId?: string | null;
+  /** Distributed trace id of the request. */
+  traceId?: string | null;
+  /** Handler execution time in milliseconds. */
+  durationMs: number;
+  /** ISO timestamp of the moment the operation was observed. */
+  occurredAt: string;
+  /** Sanitized request body. */
+  body?: unknown;
+  /** Sanitized route parameters. */
+  params?: unknown;
+  /** Sanitized query string. */
+  query?: unknown;
+}
+
+/**
+ * Payload of the `dead_letter.job_failed` event emitted when a background job
+ * exhausts its retries (or fails unrecoverably) and is routed to the
+ * dead-letter queue.
+ */
+export interface JobFailedPayload extends Record<string, unknown> {
+  /** Queue the job originated from. */
+  queue: string;
+  /** Identifier of the failed job. */
+  jobId?: string | null;
+  /** Name of the failed job. */
+  jobName?: string;
+  /** Number of attempts consumed before the job was dead-lettered. */
+  attemptsMade: number;
+  /** Retry ceiling configured for the job. */
+  maxAttempts: number;
+  /** Failure reason (scrubbed). */
+  reason?: string;
+  /** Organization the job belonged to, when known. */
+  organizationId?: string;
+  /** Agent that triggered the job, when known. */
+  agentId?: string;
+  /** Transaction the job was executing, when known. */
+  transactionId?: string;
+}
+
+/**
+ * Payload of the `dead_letter.job_requeued` event emitted when a
+ * dead-lettered job is re-driven by an operator.
+ */
+export interface JobRequeuedPayload extends Record<string, unknown> {
+  /** Queue the job originated from. */
+  queue: string;
+  /** Identifier of the re-queued job. */
+  jobId?: string | null;
+  /** Organization the job belonged to, when known. */
+  organizationId?: string;
+  /** Reason the job was re-queued. */
+  reason?: string;
+}

@@ -2,7 +2,7 @@
  * The canonical API response shapes used across every Astroid repo.
  * Success: { success: true, data, meta, requestId }
  * Error:   RFC 9457 problem details, served as `application/problem+json`:
- *          { type, title, status, detail, instance, code, requestId, details? }
+ *          { type, title, status, detail, instance, code, requestId, timestamp, details? }
  */
 
 export interface ApiMeta {
@@ -53,6 +53,8 @@ export interface ProblemDetails {
   code: string;
   /** Correlation id, also sent as the `x-request-id` header. */
   requestId: string;
+  /** ISO 8601 timestamp for when the error response was generated. */
+  timestamp: string;
   /** Structured context, e.g. field-level validation errors. */
   details?: unknown;
 }

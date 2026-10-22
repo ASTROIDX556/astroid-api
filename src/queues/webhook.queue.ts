@@ -1,17 +1,23 @@
 import type { JobsOptions } from 'bullmq';
 import type { RegisterQueueOptions } from '@nestjs/bullmq';
 
+import { queueConfig, type QueueConfig } from '../config/queue.config';
 import { Queues } from './queues.constants';
 import { buildJobOptions, createQueueRegistrationOptions } from './queue-policy';
+import { createWebhookBackoffStrategy } from '../utils/backoff.util';
 
 /** BullMQ job name used for every outbound webhook delivery. */
 export const WEBHOOK_JOB_NAME = 'webhook-delivery';
 
-/** Total delivery attempts (1 initial + 4 retries) before a webhook is dead-lettered. */
+/** Default total delivery attempts (1 initial + 4 retries). */
 export const WEBHOOK_MAX_ATTEMPTS = 5;
 
-/** Base delay in milliseconds for the exponential backoff between attempts. */
+/** Default base delay in milliseconds for exponential backoff. */
 export const WEBHOOK_BACKOFF_BASE_DELAY_MS = 2_000;
+/** Default HTTP request timeout in milliseconds. */
+export const WEBHOOK_HTTP_TIMEOUT_MS = 5_000;
+/** Default retention for exhausted webhook jobs, in seconds. */
+export const WEBHOOK_FAILED_JOB_RETENTION_SECONDS = 24 * 3_600;
 
 /** Queue that permanently failed webhook deliveries are routed to for inspection. */
 export const WEBHOOK_DEAD_LETTER_QUEUE = Queues.DeadLetter;
@@ -19,9 +25,9 @@ export const WEBHOOK_DEAD_LETTER_QUEUE = Queues.DeadLetter;
 /**
  * Retry policy applied to every queued webhook delivery.
  *
- * - `attempts: 5` bounds the work spent on a dead endpoint.
- * - `backoff: exponential @ 2000ms` spaces retries out (2s, 4s, 8s, 16s).
- * - `removeOnFail.age: 24h` keeps exhausted jobs inspectable (and re-drivable)
+ * - A configured attempt limit bounds the work spent on a dead endpoint.
+ * - Exponential backoff spaces retries out using a configured base delay.
+ * - Configured failed-job retention keeps exhausted jobs inspectable
  *   long enough for an operator to act, without growing Redis forever.
  */
 export const webhookJobOptions: JobsOptions = buildJobOptions({
@@ -36,13 +42,22 @@ export const webhookJobOptions: JobsOptions = buildJobOptions({
 
 /**
  * Builds the BullMQ registration for the webhook queue.
- *
- * The custom `backoffStrategy` adds ±20% randomized jitter on top of the
- * exponential delay so a fleet of failing subscribers is not retried in
- * lockstep (thundering herd). BullMQ reads the strategy from
- * `queue.opts.settings.backoffStrategy` at retry time; `@nestjs/bullmq` does not
- * surface that field on `RegisterQueueOptions`, hence the narrow cast.
  */
-export function createWebhookQueueOptions(): RegisterQueueOptions {
-  return createQueueRegistrationOptions(Queues.Webhooks, webhookJobOptions);
+export function createWebhookJobOptions(config: QueueConfig = queueConfig()): JobsOptions {
+  return buildJobOptions({
+    attempts: config.webhookDeliveryMaxAttempts,
+    backoff: { type: 'exponential', delay: config.webhookRetryDelayMs },
+    removeOnFail: { age: config.webhookFailedJobRetentionSeconds },
+  });
+}
+
+export function createWebhookQueueOptions(config: QueueConfig = queueConfig()): RegisterQueueOptions {
+  const options = createQueueRegistrationOptions(Queues.Webhooks, createWebhookJobOptions(config));
+  return {
+    ...options,
+    settings: {
+      ...options.settings,
+      backoffStrategy: createWebhookBackoffStrategy(config.webhookRetryDelayMs),
+    } as RegisterQueueOptions['settings'],
+  };
 }

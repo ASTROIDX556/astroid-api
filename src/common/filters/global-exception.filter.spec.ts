@@ -102,6 +102,7 @@ describe('GlobalExceptionFilter', () => {
         instance: '/api/v1/transactions',
         code: ErrorCode.NOT_FOUND,
         requestId: 'req-1',
+        timestamp: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
       });
     });
 

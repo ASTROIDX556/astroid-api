@@ -12,6 +12,7 @@ import {
   RiskTooHighException,
 } from '../../../common/exceptions/domain.exception';
 import { CircuitBreaker, isRpcFailure } from '../../../common/circuit-breaker/circuit-breaker';
+import { parseContractEventLogs } from '../../../integrations/stellar/contract-event.parser';
 import { EventBusService } from '../../../events/event-bus.service';
 import { DomainEventName } from '../../../events/event-names';
 
@@ -135,8 +136,12 @@ export class StellarSimulationService {
       );
     }
 
+    // Parse event logs defensively: a malformed log is skipped with a warning
+    // instead of aborting the batch or crashing the simulation.
+    const events = parseContractEventLogs(result.events, this.logger);
+
     // Risk scoring
-    const riskInput = input.riskFactors ?? this.buildDefaultRiskFactors(result);
+    const riskInput = input.riskFactors ?? this.buildDefaultRiskFactors(result, events.length);
     const risk = this.riskEngine.assess(riskInput);
     const maxRiskScore = input.maxRiskScore ?? 80;
     const requiresApproval = risk.score > 20 || risk.band !== 'LOW';
@@ -174,7 +179,7 @@ export class StellarSimulationService {
       feeEstimate: result.minResourceFee,
       cost: result.cost,
       footprint: result.footprint,
-      events: result.events,
+      events,
       risk,
       requiresApproval,
       transactionHash: result.transactionHash,
@@ -248,9 +253,13 @@ export class StellarSimulationService {
     }
   }
 
-  private buildDefaultRiskFactors(result: SorobanSimulationResult): RiskFactorsInput {
-    // Build risk factors from simulation result when not explicitly provided
-    const eventCount = result.events.length;
+  private buildDefaultRiskFactors(
+    result: SorobanSimulationResult,
+    eventCount: number,
+  ): RiskFactorsInput {
+    // Build risk factors from simulation result when not explicitly provided.
+    // `eventCount` counts only well-formed logs (malformed entries are skipped
+    // by parseContractEventLogs before scoring).
     const hasWriteFootprint = result.footprint.readWrite.length > 0;
     const feeStroops = parseInt(result.minResourceFee, 10);
 

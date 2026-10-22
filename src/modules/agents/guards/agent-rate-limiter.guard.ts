@@ -72,20 +72,25 @@ export class AgentRateLimiterGuard implements CanActivate {
 
     try {
       const member = `${now}:${Math.random().toString(36).slice(2)}`;
+      // One atomic transaction: prune the expired members, count what is left,
+      // record the new request and read the oldest member (the one whose slot
+      // frees up first).
       const result = await this.redis
         .multi()
         .zremrangebyscore(key, 0, windowStart)
         .zcard(key)
         .zadd(key, now, member)
         .expire(key, windowSeconds)
+        .zrange(key, 0, 0, 'WITHSCORES')
         .exec();
-        
-      const count = Number(result?.[1]?.[1] ?? 0);
+
+      const entries = (result ?? []) as unknown as Array<[Error | null, unknown]>;
+      const count = Number(entries[1]?.[1] ?? 0);
       const remaining = Math.max(0, limit - count - 1);
       response.setHeader('X-RateLimit-Remaining', remaining);
-      
+
       if (count >= limit) {
-        response.setHeader('Retry-After', Math.max(1, Math.ceil((windowStart + windowSeconds * 1000 - now) / 1000)));
+        response.setHeader('Retry-After', this.retryAfterSeconds(entries[4]?.[1], now, windowSeconds));
         throw new DomainException(ErrorCode.RATE_LIMITED, 'Agent rate limit exceeded', { limit, windowSeconds });
       }
       return true;
@@ -95,5 +100,17 @@ export class AgentRateLimiterGuard implements CanActivate {
       response.setHeader('X-RateLimit-Remaining', limit);
       return true;
     }
+  }
+
+  /**
+   * Seconds until the next request is accepted: the oldest member of the
+   * window leaves it after `windowSeconds`, at which point a slot frees up.
+   */
+  private retryAfterSeconds(oldestScore: unknown, now: number, windowSeconds: number): number {
+    const oldest = Number(oldestScore ?? 0);
+    if (!Number.isFinite(oldest) || oldest <= 0) {
+      return Math.max(1, windowSeconds);
+    }
+    return Math.max(1, Math.ceil((oldest + windowSeconds * 1000 - now) / 1000));
   }
 }

@@ -24,7 +24,7 @@ async function bootstrap() {
   // that every migration shipped with this build has been applied — a
   // pending or failed migration throws there, so `create` rejects and the
   // process exits before accepting any traffic.
-  const app = await NestFactory.create(AppModule, { bufferLogs: true });
+  const app = await NestFactory.create(AppModule, { bufferLogs: true, rawBody: true });
   const config = app.get(ConfigService);
   const appConfig = config.getOrThrow<AppConfig>('app');
   const prisma = app.get(PrismaService);

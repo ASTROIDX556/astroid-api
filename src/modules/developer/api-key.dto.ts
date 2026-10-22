@@ -14,10 +14,14 @@ export type CreateApiKeyInput = z.infer<typeof createApiKeySchema>;
 // ── Swagger DTOs ──
 
 export class CreateApiKeyDto {
-  @ApiProperty({ example: 'CI pipeline' })
+  @ApiProperty({ example: 'CI pipeline', description: 'Human-readable name of the key' })
   name!: string;
 
-  @ApiPropertyOptional({ type: [String], example: ['transactions:read', 'wallets:read'] })
+  @ApiPropertyOptional({
+    type: [String],
+    example: ['transactions:read', 'wallets:read'],
+    description: 'Permissions the key grants',
+  })
   permissions?: string[];
 
   @ApiPropertyOptional({
@@ -32,7 +36,7 @@ export class CreateApiKeyDto {
 }
 
 export class ApiKeyCreatedDto {
-  @ApiProperty()
+  @ApiProperty({ description: 'API key id', example: '018f0a1b-4444-4000-8000-000000000000' })
   id!: string;
 
   @ApiProperty({ description: 'Short identifying prefix, safe to display' })
@@ -43,4 +47,49 @@ export class ApiKeyCreatedDto {
       'The full API key. Returned exactly once — it is hashed before storage and can never be retrieved again.',
   })
   key!: string;
+}
+
+
+/** An API key as returned by the API — the secret itself is never returned. */
+export class ApiKeyResponseDto {
+  @ApiProperty({ description: 'API key id', format: 'uuid', example: '018f0a1b-4444-4000-8000-000000000000' })
+  id!: string;
+
+  @ApiProperty({ description: 'Human-readable name of the key', example: 'CI pipeline' })
+  name!: string;
+
+  @ApiProperty({ description: 'Public prefix of the key, used to identify it in logs', example: 'ast_live_ab12' })
+  prefix!: string;
+
+  @ApiProperty({
+    type: [String],
+    description: 'Permissions granted to the key',
+    example: ['transactions:read', 'transactions:write'],
+  })
+  permissions!: string[];
+
+  @ApiPropertyOptional({
+    type: [String],
+    description: 'Client addresses the key may be used from',
+    example: ['203.0.113.7'],
+  })
+  allowedIps?: string[];
+
+  @ApiPropertyOptional({ description: 'Moment the key was last used', example: '2026-01-15T10:30:00.000Z' })
+  lastUsedAt?: string;
+
+  @ApiPropertyOptional({ description: 'Moment the key expires', example: '2026-04-15T10:30:00.000Z' })
+  expiresAt?: string;
+
+  @ApiProperty({ description: 'Creation timestamp', example: '2026-01-15T10:30:00.000Z' })
+  createdAt!: string;
+}
+
+/** The acknowledgement returned when an API key was revoked. */
+export class ApiKeyRevokedDto {
+  @ApiProperty({ description: 'Id of the revoked key', format: 'uuid' })
+  id!: string;
+
+  @ApiProperty({ description: 'Whether the key was revoked', example: true })
+  revoked!: boolean;
 }
