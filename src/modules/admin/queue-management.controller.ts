@@ -8,7 +8,9 @@ import {
   HttpCode,
   HttpStatus,
 } from '@nestjs/common';
-import { ApiOperation, ApiTags, ApiResponse, ApiParam, ApiQuery, ApiBearerAuth } from '@nestjs/swagger';
+import { ApiOperation, ApiTags, ApiParam, ApiQuery, ApiBearerAuth } from '@nestjs/swagger';
+import { ApiErrorResponses } from '../../common/decorators/api-error-responses.decorator';
+import { ApiEnvelope } from '../../common/decorators/api-envelope.decorator';
 import { UserRole } from '@prisma/client';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
@@ -23,6 +25,13 @@ import {
   ListFailedJobsFilterDtoSwagger,
   BatchOperationFilterDtoSwagger,
 } from './queue-management.dto';
+import {
+  FailedJobDto,
+  BatchRetryResultDto,
+  BatchPurgeResultDto,
+  QueueHealthDto,
+} from './queue-management.dto';
+import { DlqJobDetailsDto } from './dto/dlq.dto';
 import {
   FailedJobInspection,
   BatchRetryResult,
@@ -61,7 +70,11 @@ export class QueueManagementController {
       'Supports filtering by failed reason substring, job name, and time range.',
   })
   @ApiQuery({ type: ListFailedJobsFilterDtoSwagger })
-  @ApiResponse({ status: 200, description: 'Paginated list of failed jobs' })
+  @ApiEnvelope(FailedJobDto, {
+    isArray: true,
+    description: 'Paginated list of failed jobs',
+  })
+  @ApiErrorResponses({ unauthorized: true, forbidden: true, serverError: true })
   async listFailedJobs(
     @Query(new ZodValidationPipe(listFailedJobsFilterSchema)) query: ListFailedJobsFilterDto,
   ) {
@@ -77,8 +90,8 @@ export class QueueManagementController {
   })
   @ApiParam({ name: 'queue', description: 'Queue to inspect', example: 'webhooks' })
   @ApiParam({ name: 'id', description: 'BullMQ job id', example: '42' })
-  @ApiResponse({ status: 200, description: 'Job inspection details' })
-  @ApiResponse({ status: 404, description: 'Job not found' })
+  @ApiEnvelope(DlqJobDetailsDto, { description: 'Job inspection details' })
+  @ApiErrorResponses({ unauthorized: true, forbidden: true, notFound: true, serverError: true })
   async inspectJob(
     @Param('queue') queue: string,
     @Param('id') id: string,
@@ -97,7 +110,11 @@ export class QueueManagementController {
       'Returns health metrics for every registered queue including job counts, ' +
       'total processed jobs, and timestamps of oldest/newest failed jobs.',
   })
-  @ApiResponse({ status: 200, description: 'Queue health metrics' })
+  @ApiEnvelope(QueueHealthDto, {
+    isArray: true,
+    description: 'Queue health metrics',
+  })
+  @ApiErrorResponses({ unauthorized: true, forbidden: true, serverError: true })
   async getQueueHealth(): Promise<QueueHealthSnapshot[]> {
     return this.queueManagement.getQueueHealth();
   }
@@ -115,7 +132,8 @@ export class QueueManagementController {
       'Returns granular results including per-job success/failure counts.',
   })
   @ApiQuery({ type: BatchOperationFilterDtoSwagger })
-  @ApiResponse({ status: 200, description: 'Batch retry results' })
+  @ApiEnvelope(BatchRetryResultDto, { description: 'Batch retry results' })
+  @ApiErrorResponses({ unauthorized: true, forbidden: true, serverError: true })
   async batchRetry(
     @Query(new ZodValidationPipe(batchRetryFilterSchema)) query: BatchRetryFilterDto,
   ): Promise<BatchRetryResult> {
@@ -132,7 +150,8 @@ export class QueueManagementController {
   })
   @ApiParam({ name: 'queue', description: 'Target queue name', example: 'webhooks' })
   @ApiQuery({ type: BatchOperationFilterDtoSwagger })
-  @ApiResponse({ status: 200, description: 'Batch retry results' })
+  @ApiEnvelope(BatchRetryResultDto, { description: 'Batch retry results' })
+  @ApiErrorResponses({ unauthorized: true, forbidden: true, serverError: true })
   async batchRetryInQueue(
     @Param('queue') queue: string,
     @Query(new ZodValidationPipe(batchRetryFilterSchema)) query: BatchRetryFilterDto,
@@ -149,10 +168,8 @@ export class QueueManagementController {
       'This is a destructive operation — purged jobs cannot be recovered.',
   })
   @ApiQuery({ type: BatchOperationFilterDtoSwagger })
-  @ApiResponse({
-    status: 200,
-    description: 'Batch purge results',
-  })
+  @ApiEnvelope(BatchPurgeResultDto, { description: 'Batch purge results' })
+  @ApiErrorResponses({ unauthorized: true, forbidden: true, serverError: true })
   async batchPurge(
     @Query(new ZodValidationPipe(batchPurgeFilterSchema)) query: BatchPurgeFilterDto,
   ): Promise<BatchPurgeResult> {
@@ -169,10 +186,8 @@ export class QueueManagementController {
   })
   @ApiParam({ name: 'queue', description: 'Target queue name', example: 'webhooks' })
   @ApiQuery({ type: BatchOperationFilterDtoSwagger })
-  @ApiResponse({
-    status: 200,
-    description: 'Batch purge results',
-  })
+  @ApiEnvelope(BatchPurgeResultDto, { description: 'Batch purge results' })
+  @ApiErrorResponses({ unauthorized: true, forbidden: true, serverError: true })
   async batchPurgeInQueue(
     @Param('queue') queue: string,
     @Query(new ZodValidationPipe(batchPurgeFilterSchema)) query: BatchPurgeFilterDto,

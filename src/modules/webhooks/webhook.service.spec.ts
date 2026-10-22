@@ -185,7 +185,7 @@ describe('Webhook signing & delivery', () => {
       const [, opts] = fetchSpy.mock.calls[0];
       expect(findFirst).toHaveBeenCalledWith({
         where: { id: 'wh-1', organizationId: 'org-1' },
-        select: { secret: true },
+        select: { secret: true, url: true, enabled: true },
       });
       expect(job.data).not.toHaveProperty('secret');
       expect(opts.headers['x-astroid-signature']).toMatch(/^v1=[0-9a-f]{64}$/);

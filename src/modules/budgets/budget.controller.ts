@@ -12,7 +12,6 @@ import {
   ApiOperation,
   ApiTags,
   ApiBearerAuth,
-  ApiResponse,
   ApiParam,
   ApiBody,
   ApiQuery,
@@ -38,8 +37,8 @@ import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 import { AuthenticatedUser } from '../../common/interfaces/authenticated-user.interface';
 import { PaginationQuery, paginationQuerySchema } from '../../common/helpers/pagination';
 import { ApiPaginationQuery } from '../../common/decorators/api-pagination-query.decorator';
-import { ApiEnvelope } from '../../common/decorators/api-envelope.decorator';
-import { ApiErrorResponses } from '../../common/decorators/api-error-response.decorator';
+import { ApiEnvelope, ApiPaginatedEnvelope } from '../../common/decorators/api-envelope.decorator';
+import { ApiErrorResponses } from '../../common/decorators/api-error-responses.decorator';
 
 @ApiTags('budgets')
 @ApiBearerAuth('access-token')
@@ -57,9 +56,8 @@ export class BudgetController {
   @ApiPaginationQuery()
   @ApiQuery({ name: 'period', required: false, enum: ['DAILY', 'WEEKLY', 'MONTHLY', 'QUARTERLY', 'YEARLY'], description: 'Filter by budget period' })
   @ApiQuery({ name: 'enabled', required: false, type: Boolean, description: 'Filter by enabled status' })
-  @ApiEnvelope(CreateBudgetDto as never, { isArray: true })
-  @ApiResponse({ status: 200, description: 'Paginated list of budgets' })
-  @ApiErrorResponses(401)
+  @ApiPaginatedEnvelope(CreateBudgetDto, { description: 'Paginated list of budgets' })
+  @ApiErrorResponses({ unauthorized: true, serverError: true })
   list(
     @CurrentUser('organizationId') organizationId: string,
     @Query(new ZodValidationPipe(paginationQuerySchema)) query: PaginationQuery,
@@ -77,10 +75,13 @@ export class BudgetController {
       'Creates a new budget with spending limits. Budgets can be hierarchical with parent-child relationships.',
   })
   @ApiBody({ type: CreateBudgetDto })
-  @ApiEnvelope(CreateBudgetDto as never, { status: 201 })
-  @ApiErrorResponses(400)
-  @ApiErrorResponses(401)
-  @ApiErrorResponses(403)
+  @ApiEnvelope(CreateBudgetDto, { status: 201, description: 'Budget created successfully' })
+  @ApiErrorResponses({
+    validation: true,
+    unauthorized: true,
+    forbidden: 'Insufficient permissions (requires OWNER, ADMIN, or FINANCE)',
+    serverError: true,
+  })
   create(
     @CurrentUser() user: AuthenticatedUser,
     @Body(new ZodValidationPipe(createBudgetSchema)) body: CreateBudgetInput,
@@ -95,10 +96,8 @@ export class BudgetController {
       'Returns full details of a budget including its remaining balance, spending history, and child budgets.',
   })
   @ApiParam({ name: 'id', description: 'Budget UUID', example: '018f0a1b-...' })
-  @ApiEnvelope(CreateBudgetDto as never)
-  @ApiResponse({ status: 200, description: 'Budget details with balance and children' })
-  @ApiErrorResponses(401)
-  @ApiErrorResponses(404)
+  @ApiEnvelope(CreateBudgetDto, { description: 'Budget details with balance and children' })
+  @ApiErrorResponses({ unauthorized: true, notFound: true, serverError: true })
   findOne(@CurrentUser('organizationId') organizationId: string, @Param('id') id: string) {
     return this.budgetService.getDetail(organizationId, id);
   }
@@ -114,11 +113,14 @@ export class BudgetController {
   })
   @ApiParam({ name: 'id', description: 'Budget UUID', example: '018f0a1b-...' })
   @ApiBody({ type: CreateBudgetDto })
-  @ApiResponse({ status: 200, description: 'Budget updated successfully' })
-  @ApiErrorResponses(400)
-  @ApiErrorResponses(401)
-  @ApiErrorResponses(403)
-  @ApiErrorResponses(404)
+  @ApiEnvelope(CreateBudgetDto, { description: 'Budget updated successfully' })
+  @ApiErrorResponses({
+    validation: true,
+    unauthorized: true,
+    forbidden: true,
+    notFound: true,
+    serverError: true,
+  })
   update(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id') id: string,
@@ -139,12 +141,15 @@ export class BudgetController {
   })
   @ApiParam({ name: 'id', description: 'Child budget UUID', example: '018f0a1b-...' })
   @ApiBody({ type: AllocateBudgetDto })
-  @ApiResponse({ status: 200, description: 'Funds allocated successfully' })
-  @ApiErrorResponses(400)
-  @ApiErrorResponses(401)
-  @ApiErrorResponses(403)
-  @ApiErrorResponses(404)
-  @ApiErrorResponses(409)
+  @ApiEnvelope(CreateBudgetDto, { description: 'Funds allocated successfully' })
+  @ApiErrorResponses({
+    validation: 'Validation error or insufficient parent balance',
+    unauthorized: true,
+    forbidden: true,
+    notFound: true,
+    conflict: 'Parent budget has insufficient balance',
+    serverError: true,
+  })
   allocate(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id') id: string,
@@ -165,10 +170,13 @@ export class BudgetController {
       'Child budgets are also soft-deleted.',
   })
   @ApiParam({ name: 'id', description: 'Budget UUID', example: '018f0a1b-...' })
-  @ApiResponse({ status: 200, description: 'Budget deleted successfully' })
-  @ApiErrorResponses(401)
-  @ApiErrorResponses(403)
-  @ApiErrorResponses(404)
+  @ApiEnvelope(CreateBudgetDto, { description: 'Budget deleted successfully' })
+  @ApiErrorResponses({
+    unauthorized: true,
+    forbidden: true,
+    notFound: true,
+    serverError: true,
+  })
   remove(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
     return this.budgetService.remove(user.organizationId, user.id, id);
   }

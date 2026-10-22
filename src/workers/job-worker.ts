@@ -23,6 +23,20 @@ export interface WorkerJob<TData = unknown> {
 /** Lifecycle stage a worker log record describes. */
 export type WorkerJobEvent = 'job.completed' | 'job.retrying' | 'job.dead-lettered';
 
+/** Details of a failed job, handed to the optional {@link RunWorkerJobOptions.onFailure} hook. */
+export interface WorkerJobFailure {
+  /** True when the job will not be retried (retries exhausted or unrecoverable). */
+  terminal: boolean;
+  /** True when the handler declared the failure unrecoverable. */
+  unrecoverable: boolean;
+  /** 1-based number of the attempt that failed. */
+  attempt: number;
+  /** Retry ceiling for the job. */
+  maxAttempts: number;
+  /** The original error thrown by the handler. */
+  error: unknown;
+}
+
 /** One structured log line emitted by {@link runWorkerJob}. */
 export interface WorkerJobLogRecord {
   event: WorkerJobEvent;
@@ -50,6 +64,13 @@ export interface RunWorkerJobOptions<TData, TResult> {
   metrics?: Pick<WorkerMetricsService, 'instrumentJob'>;
   /** Job name used when the BullMQ job carries none. */
   defaultJobName?: string;
+  /**
+   * Optional hook invoked when the handler throws, before the error is
+   * rethrown. It receives the failure classification so a worker can emit a
+   * domain event or warn the operator when a job fails permanently. The hook
+   * is best-effort: a throwing hook never masks the original error.
+   */
+  onFailure?: (failure: WorkerJobFailure) => void | Promise<void>;
 }
 
 /** Payload keys lifted into `trace` so a failure can be tied to its origin. */
@@ -104,17 +125,17 @@ export async function runWorkerJob<TData, TResult>(
 
     return result;
   } catch (error) {
-    emit(() => {
-      const described = describeError(error);
-      const unrecoverable = classifyJobError(error) === 'permanent';
-      const terminal =
-        unrecoverable ||
-        isTerminalJobFailure(
-          { attemptsMade: attempt, opts: { attempts: maxAttempts }, stacktrace: [] },
-          `${described.name}: ${described.message}`,
-          maxAttempts,
-        );
+    const described = describeError(error);
+    const unrecoverable = classifyJobError(error) === 'permanent';
+    const terminal =
+      unrecoverable ||
+      isTerminalJobFailure(
+        { attemptsMade: attempt, opts: { attempts: maxAttempts }, stacktrace: [] },
+        `${described.name}: ${described.message}`,
+        maxAttempts,
+      );
 
+    emit(() => {
       const record: WorkerJobLogRecord = {
         event: terminal ? 'job.dead-lettered' : 'job.retrying',
         ...base(),
@@ -139,8 +160,22 @@ export async function runWorkerJob<TData, TResult>(
       }
     });
 
-    if (classifyJobError(error) === 'permanent' && !(error instanceof UnrecoverableError)) {
-      throw new UnrecoverableError(describeError(error).message);
+    if (options.onFailure) {
+      try {
+        await options.onFailure({
+          terminal,
+          unrecoverable,
+          attempt,
+          maxAttempts,
+          error,
+        });
+      } catch {
+        // The hook is best-effort: it must never replace the job's own outcome.
+      }
+    }
+
+    if (unrecoverable && !(error instanceof UnrecoverableError)) {
+      throw new UnrecoverableError(described.message);
     }
     throw error;
   }

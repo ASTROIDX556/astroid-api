@@ -1,0 +1,13 @@
+-- CreateIndex
+-- Status-filtered wallet listing: `WHERE "organizationId" = $1
+-- AND "status" = $2 AND "deletedAt" IS NULL ORDER BY "createdAt" DESC`
+-- (WalletService.list?filter=<status>). The existing (organizationId, createdAt)
+-- index keeps the ordering but must examine every wallet in the organization
+-- before applying the status predicate. This composite index applies both.
+--
+-- Built CONCURRENTLY so writes are never blocked. Postgres forbids that inside
+-- a transaction, and Prisma runs a multi-statement migration as one, so this
+-- file must contain exactly this one statement. Prisma records the migration
+-- once, so re-applying it is a no-op; the paired down.sql restores the state
+-- needed to apply it again.
+CREATE INDEX CONCURRENTLY "wallets_organizationId_status_createdAt_idx" ON "wallets"("organizationId", "status", "createdAt");

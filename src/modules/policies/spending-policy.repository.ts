@@ -18,6 +18,13 @@ export interface SpendingWindowQuery {
   statuses?: readonly TransactionStatus[];
 }
 
+/** Query describing the rolling window used to count an agent's transactions. */
+export interface TransactionCountQuery {
+  agentId: string;
+  since: Date;
+  statuses?: readonly TransactionStatus[];
+}
+
 /** Fields persisted when a policy evaluation is appended to the audit trail. */
 export interface PolicyEvaluationAuditInput {
   organizationId: string;
@@ -130,6 +137,23 @@ export class SpendingPolicyRepository {
       });
       return rows.reduce((sum, row) => sum + Number(row.amount), 0);
     });
+  }
+
+  /**
+   * Counts the transactions an agent executed since `since`. Used by the
+   * velocity rule, which caps transaction frequency independently of the
+   * amount they move.
+   */
+  async countTransactionsInWindow(query: TransactionCountQuery): Promise<number> {
+    return this.execute('countTransactionsInWindow', () =>
+      this.prisma.transaction.count({
+        where: {
+          agentId: query.agentId,
+          status: { in: [...(query.statuses ?? SETTLED_TRANSACTION_STATUSES)] },
+          createdAt: { gte: query.since },
+        },
+      }),
+    );
   }
 
   /** Appends a policy-evaluation entry to the immutable audit trail. */

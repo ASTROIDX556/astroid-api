@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { DeadLetterController } from './dead-letter.controller';
 import { Queues } from '../../queues/queues.constants';
+import { paginationQuerySchema } from '../../common/helpers/pagination';
 
 function buildMockService() {
   return {
@@ -28,10 +29,11 @@ describe('DeadLetterController', () => {
     controller = new DeadLetterController(service as never);
   });
 
-  it('lists DLQ events scoped to the current organization', async () => {
-    const result = await controller.list('org-1', Queues.Webhooks, '10');
+  it('lists paginated DLQ events scoped to the current organization', async () => {
+    const query = paginationQuerySchema.parse({ offset: '10', limit: '10' });
+    const result = await controller.list('org-1', Queues.Webhooks, query);
 
-    expect(service.listForOrganization).toHaveBeenCalledWith('org-1', Queues.Webhooks, 10);
+    expect(service.listForOrganization).toHaveBeenCalledWith('org-1', Queues.Webhooks, query);
     expect(result).toEqual([{ id: 'evt-1' }]);
   });
 

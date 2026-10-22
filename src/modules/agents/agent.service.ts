@@ -59,9 +59,11 @@ export class AgentService {
   }
 
   async create(organizationId: string, actorId: string, input: CreateAgentInput) {
-    const encryptedMetadata = input.metadata
-      ? this.encryptAgentMetadata(input.metadata as Record<string, unknown>)
-      : {};
+    await this.assertHandleIsFree(organizationId, input.name);
+
+    const encryptedMetadata = this.encryptAgentMetadata(
+      this.buildMetadata(input.metadata, input.publicKey),
+    );
 
     const agent = await this.repository.create({
       organization: { connect: { id: organizationId } },
@@ -81,6 +83,36 @@ export class AgentService {
     );
 
     return this.decryptAgent(agent);
+  }
+
+  /**
+   * Rejects a duplicate agent handle with a structured conflict error instead
+   * of letting two agents share the same name inside an organization.
+   */
+  private async assertHandleIsFree(
+    organizationId: string,
+    name: string,
+    excludeId?: string,
+  ): Promise<void> {
+    const existing = await this.repository.findByNameInOrg(organizationId, name, excludeId);
+    if (existing) {
+      throw new ConflictException(`An agent named '${name}' already exists in this organization`);
+    }
+  }
+
+  /**
+   * Merges the caller supplied metadata with the validated Stellar public key.
+   * The public key has no dedicated column, so it is persisted as metadata.
+   */
+  private buildMetadata(
+    metadata: Record<string, unknown> | undefined,
+    publicKey: string | undefined,
+  ): Record<string, unknown> {
+    const merged: Record<string, unknown> = { ...(metadata ?? {}) };
+    if (publicKey) {
+      merged.stellarPublicKey = publicKey;
+    }
+    return merged;
   }
 
   async list(organizationId: string, query: PaginationQuery) {
@@ -106,7 +138,12 @@ export class AgentService {
   }
 
   async update(organizationId: string, actorId: string, id: string, input: UpdateAgentInput) {
-    await this.getOrThrow(organizationId, id);
+    const current = await this.getOrThrow(organizationId, id);
+
+    if (input.name !== undefined) {
+      await this.assertHandleIsFree(organizationId, input.name, id);
+    }
+
     const data: Prisma.AgentUpdateInput = {
       name: input.name,
       description: input.description,
@@ -115,10 +152,11 @@ export class AgentService {
       role: input.role,
       capabilities: input.capabilities,
     };
-    if (input.metadata) {
-      data.metadata = this.encryptAgentMetadata(
-        input.metadata as Record<string, unknown>,
-      ) as Prisma.InputJsonValue;
+    if (input.metadata || input.publicKey !== undefined) {
+      const base =
+        input.metadata ?? ((current.metadata as unknown as Record<string, unknown>) ?? {});
+      const metadata = this.buildMetadata(base, input.publicKey);
+      data.metadata = this.encryptAgentMetadata(metadata) as Prisma.InputJsonValue;
     }
     const agent = await this.repository.update(id, data);
     await this.eventBus.emit(

@@ -1,4 +1,4 @@
-import { MiddlewareConsumer, Module, NestModule, RequestMethod } from '@nestjs/common';
+import { Module } from '@nestjs/common';
 import { BullModule } from '@nestjs/bullmq';
 import { WebhookController } from './webhook.controller';
 import { WebhookIngressController } from './webhook-ingress.controller';
@@ -12,7 +12,6 @@ import { WebhooksProcessor } from './webhooks.processor';
 import { createWebhookQueueOptions } from '../../queues/webhook.queue';
 import { redisConfig } from '../../config/redis.config';
 import { MetricsModule } from '../metrics/metrics.module';
-import { RawBodyMiddleware } from '../../common/middleware/raw-body.middleware';
 import { WebhookSignatureGuard } from '../../common/guards/webhook-signature.guard';
 import { SlidingWindowThrottlerGuard } from '../../common/guards/sliding-window-throttler.guard';
 import { WebhookDestinationPolicy } from './webhook-destination.policy';
@@ -54,10 +53,4 @@ import { WebhookDestinationPolicy } from './webhook-destination.policy';
   ],
   exports: [WebhookService],
 })
-export class WebhookModule implements NestModule {
-  configure(consumer: MiddlewareConsumer): void {
-    consumer
-      .apply(RawBodyMiddleware)
-      .forRoutes({ path: 'webhooks/receive', method: RequestMethod.POST });
-  }
-}
+export class WebhookModule {}

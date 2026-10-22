@@ -79,6 +79,31 @@ describe('SorobanSimulationService', () => {
       );
     });
 
+    it('skips malformed event logs while returning the valid ones', async () => {
+      const validEvent = {
+        type: 'contract',
+        contractId: 'mock-contract-1',
+        topic: ['transfer'],
+        value: { amount: '100' },
+      };
+      sorobanClient = buildMockSorobanClient({
+        events: [validEvent, null, { type: 'contract' }] as never,
+      });
+      service = new SorobanSimulationService(
+        sorobanClient,
+        new RiskEngine(),
+        eventBus as unknown as EventBusService,
+      );
+
+      const result = await service.simulate({
+        transactionXdr: buildValidXdr(),
+        organizationId: 'org-1',
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.events).toEqual([validEvent]);
+    });
+
     it('should throw DomainException for invalid base64 XDR', async () => {
       await expect(
         service.simulate({

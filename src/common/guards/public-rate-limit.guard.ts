@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { CanActivate, ExecutionContext, Inject, Injectable, Logger } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { ConfigService } from '@nestjs/config';
@@ -178,7 +179,8 @@ export class PublicRateLimitGuard implements CanActivate {
       if (identifier === 'apiKey') {
         const apiKey = extractApiKeyFromRequest(request);
         if (apiKey) {
-          parts.push(`key:${apiKey}`);
+          // Never persist a credential verbatim in Redis keys.
+          parts.push(`key:${createHash('sha256').update(apiKey).digest('hex')}`);
         }
       }
     }

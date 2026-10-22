@@ -3,10 +3,11 @@ import {
   ApiOperation,
   ApiTags,
   ApiBearerAuth,
-  ApiResponse,
   ApiParam,
   ApiBody,
 } from '@nestjs/swagger';
+import { ApiErrorResponses } from '../../common/decorators/api-error-responses.decorator';
+import { ApiEnvelope, ApiPaginatedEnvelope } from '../../common/decorators/api-envelope.decorator';
 import { UserRole } from '@prisma/client';
 import { ApiKeyService } from './api-key.service';
 import { createApiKeySchema, CreateApiKeyInput, CreateApiKeyDto, ApiKeyCreatedDto } from './api-key.dto';
@@ -18,6 +19,7 @@ import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 import { AuthenticatedUser } from '../../common/interfaces/authenticated-user.interface';
 import { PaginationQuery, paginationQuerySchema } from '../../common/helpers/pagination';
 import { ApiPaginationQuery } from '../../common/decorators/api-pagination-query.decorator';
+import { ApiKeyResponseDto, ApiKeyRevokedDto } from './api-key.dto';
 
 @ApiTags('developer')
 @ApiBearerAuth('access-token')
@@ -34,9 +36,8 @@ export class ApiKeyController {
       'Full secrets are never included — only prefix and metadata.',
   })
   @ApiPaginationQuery()
-  @ApiResponse({ status: 200, description: 'Paginated list of API keys' })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
-  @ApiResponse({ status: 403, description: 'Insufficient permissions' })
+  @ApiPaginatedEnvelope(ApiKeyResponseDto, { description: 'Paginated list of API keys' })
+  @ApiErrorResponses({ unauthorized: true, forbidden: true, serverError: true })
   list(
     @CurrentUser('organizationId') organizationId: string,
     @Query(new ZodValidationPipe(paginationQuerySchema)) query: PaginationQuery,
@@ -55,14 +56,16 @@ export class ApiKeyController {
       'Store the key securely — it cannot be retrieved later.',
   })
   @ApiBody({ type: CreateApiKeyDto })
-  @ApiResponse({
+  @ApiEnvelope(ApiKeyCreatedDto, {
     status: 201,
     description: 'API key created successfully (full key included)',
-    type: ApiKeyCreatedDto,
   })
-  @ApiResponse({ status: 400, description: 'Validation error' })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
-  @ApiResponse({ status: 403, description: 'Insufficient permissions' })
+  @ApiErrorResponses({
+    validation: true,
+    unauthorized: true,
+    forbidden: true,
+    serverError: true,
+  })
   create(
     @CurrentUser() user: AuthenticatedUser,
     @Body(new ZodValidationPipe(createApiKeySchema)) body: CreateApiKeyInput,
@@ -81,10 +84,13 @@ export class ApiKeyController {
       'This action cannot be undone.',
   })
   @ApiParam({ name: 'id', description: 'API key UUID', example: '018f0a1b-...' })
-  @ApiResponse({ status: 200, description: 'API key revoked successfully' })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
-  @ApiResponse({ status: 403, description: 'Insufficient permissions' })
-  @ApiResponse({ status: 404, description: 'API key not found' })
+  @ApiEnvelope(ApiKeyRevokedDto, { description: 'API key revoked successfully' })
+  @ApiErrorResponses({
+    unauthorized: true,
+    forbidden: true,
+    notFound: true,
+    serverError: true,
+  })
   revoke(@CurrentUser('organizationId') organizationId: string, @Param('id') id: string) {
     return this.apiKeyService.revoke(organizationId, id);
   }

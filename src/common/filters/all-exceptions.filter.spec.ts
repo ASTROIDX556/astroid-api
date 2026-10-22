@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { afterEach, describe, expect, it, vi, beforeEach } from 'vitest';
 import {
   ArgumentsHost,
   BadRequestException,
@@ -73,6 +73,7 @@ describe('AllExceptionsFilter', () => {
         instance: '/api/v1/transactions',
         code: ErrorCode.NOT_FOUND,
         requestId: 'req-1',
+        timestamp: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
       });
     });
 
@@ -265,7 +266,10 @@ describe('AllExceptionsFilter', () => {
 
       filter.catch(error, host);
 
-      expect(Logger.prototype.error).toHaveBeenCalledWith(expect.stringContaining('500'), error.stack);
+      expect(Logger.prototype.error).toHaveBeenCalledWith(
+        expect.stringContaining('500'),
+        error.stack,
+      );
     });
   });
 
@@ -340,7 +344,9 @@ describe('AllExceptionsFilter', () => {
       filter.catch(new Error('boom'), host);
 
       const { requestId } = renderedBody(response);
-      expect(requestId).toMatch(/^req_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+      expect(requestId).toMatch(
+        /^req_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+      );
       expect(requestId).not.toBe('unknown');
     });
 
@@ -404,6 +410,104 @@ describe('AllExceptionsFilter', () => {
       );
 
       expect(renderedBody(response).requestId).toBe('header-req-1');
+    });
+  });
+
+  // Nest forwards failures raised outside its request pipeline (body parsing,
+  // Express middleware) to this filter as plain errors carrying an HTTP status.
+  // They must produce the same envelope instead of becoming a 500.
+  describe('errors raised outside the Nest pipeline', () => {
+    it('maps an oversized request body to a 413 problem', () => {
+      const { host, response } = buildHost();
+      const error = Object.assign(new Error('request entity too large'), {
+        status: 413,
+        type: 'entity.too.large',
+        expose: true,
+      });
+
+      filter.catch(error, host);
+
+      expect(response.status).toHaveBeenCalledWith(413);
+      expect(renderedBody(response)).toMatchObject({
+        type: 'about:blank',
+        title: 'Payload Too Large',
+        status: 413,
+        detail: 'Request body is too large',
+        code: ErrorCode.BAD_REQUEST,
+      });
+    });
+
+    it('maps an unsupported request body encoding to a 415 problem', () => {
+      const { host, response } = buildHost();
+      const error = Object.assign(new Error('unsupported charset'), {
+        statusCode: 415,
+        type: 'charset.unsupported',
+      });
+
+      filter.catch(error, host);
+
+      expect(response.status).toHaveBeenCalledWith(415);
+      expect(renderedBody(response)).toMatchObject({
+        type: 'about:blank',
+        title: 'Unsupported Media Type',
+        status: 415,
+        detail: 'Unsupported request body charset',
+      });
+    });
+
+    it('preserves a client-safe 4xx middleware error message', () => {
+      const { host, response } = buildHost();
+      const error = Object.assign(new Error('Tenant mismatch'), { status: 403, expose: true });
+
+      filter.catch(error, host);
+
+      expect(response.status).toHaveBeenCalledWith(403);
+      expect(renderedBody(response)).toMatchObject({
+        type: 'urn:astroid:problem:forbidden',
+        status: 403,
+        detail: 'Tenant mismatch',
+        code: ErrorCode.FORBIDDEN,
+      });
+    });
+
+    it('never exposes the message of an unexpected 5xx middleware error', () => {
+      const { host, response } = buildHost();
+      const error = Object.assign(new Error('postgres://user:pw@db refused'), {
+        status: 503,
+        expose: false,
+      });
+
+      filter.catch(error, host);
+
+      expect(response.status).toHaveBeenCalledWith(503);
+      const body = renderedBody(response);
+      expect(body).toMatchObject({
+        type: 'about:blank',
+        title: 'Service Unavailable',
+        status: 503,
+        detail: 'An unexpected error occurred',
+        code: ErrorCode.INTERNAL_ERROR,
+      });
+      expect(JSON.stringify(body)).not.toContain('postgres://');
+    });
+  });
+
+  describe('production responses', () => {
+    const originalNodeEnv = process.env.NODE_ENV;
+
+    afterEach(() => {
+      process.env.NODE_ENV = originalNodeEnv;
+    });
+
+    it('omits stack traces from every error response in production', () => {
+      process.env.NODE_ENV = 'production';
+      const { host, response } = buildHost();
+
+      filter.catch(new Error('boom'), host);
+
+      const body = renderedBody(response);
+      expect(body).not.toHaveProperty('stack');
+      expect(JSON.stringify(body)).not.toContain('all-exceptions.filter.spec');
     });
   });
 });
