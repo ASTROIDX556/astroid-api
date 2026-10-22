@@ -39,6 +39,7 @@ import { AuthenticatedUser } from '../../common/interfaces/authenticated-user.in
 import { PaginationQuery, paginationQuerySchema } from '../../common/helpers/pagination';
 import { ApiPaginationQuery } from '../../common/decorators/api-pagination-query.decorator';
 import { ApiEnvelope } from '../../common/decorators/api-envelope.decorator';
+import { ApiErrorResponses } from '../../common/decorators/api-error-response.decorator';
 
 @ApiTags('budgets')
 @ApiBearerAuth('access-token')
@@ -58,7 +59,7 @@ export class BudgetController {
   @ApiQuery({ name: 'enabled', required: false, type: Boolean, description: 'Filter by enabled status' })
   @ApiEnvelope(CreateBudgetDto as never, { isArray: true })
   @ApiResponse({ status: 200, description: 'Paginated list of budgets' })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
+  @ApiErrorResponses(401)
   list(
     @CurrentUser('organizationId') organizationId: string,
     @Query(new ZodValidationPipe(paginationQuerySchema)) query: PaginationQuery,
@@ -78,9 +79,9 @@ export class BudgetController {
   @ApiBody({ type: CreateBudgetDto })
   @ApiEnvelope(CreateBudgetDto as never)
   @ApiResponse({ status: 201, description: 'Budget created successfully' })
-  @ApiResponse({ status: 400, description: 'Validation error' })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
-  @ApiResponse({ status: 403, description: 'Insufficient permissions (requires OWNER, ADMIN, or FINANCE)' })
+  @ApiErrorResponses(400)
+  @ApiErrorResponses(401)
+  @ApiErrorResponses(403)
   create(
     @CurrentUser() user: AuthenticatedUser,
     @Body(new ZodValidationPipe(createBudgetSchema)) body: CreateBudgetInput,
@@ -97,8 +98,8 @@ export class BudgetController {
   @ApiParam({ name: 'id', description: 'Budget UUID', example: '018f0a1b-...' })
   @ApiEnvelope(CreateBudgetDto as never)
   @ApiResponse({ status: 200, description: 'Budget details with balance and children' })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
-  @ApiResponse({ status: 404, description: 'Budget not found' })
+  @ApiErrorResponses(401)
+  @ApiErrorResponses(404)
   findOne(@CurrentUser('organizationId') organizationId: string, @Param('id') id: string) {
     return this.budgetService.getDetail(organizationId, id);
   }
@@ -115,10 +116,10 @@ export class BudgetController {
   @ApiParam({ name: 'id', description: 'Budget UUID', example: '018f0a1b-...' })
   @ApiBody({ type: CreateBudgetDto })
   @ApiResponse({ status: 200, description: 'Budget updated successfully' })
-  @ApiResponse({ status: 400, description: 'Validation error' })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
-  @ApiResponse({ status: 403, description: 'Insufficient permissions' })
-  @ApiResponse({ status: 404, description: 'Budget not found' })
+  @ApiErrorResponses(400)
+  @ApiErrorResponses(401)
+  @ApiErrorResponses(403)
+  @ApiErrorResponses(404)
   update(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id') id: string,
@@ -140,11 +141,11 @@ export class BudgetController {
   @ApiParam({ name: 'id', description: 'Child budget UUID', example: '018f0a1b-...' })
   @ApiBody({ type: AllocateBudgetDto })
   @ApiResponse({ status: 200, description: 'Funds allocated successfully' })
-  @ApiResponse({ status: 400, description: 'Validation error or insufficient parent balance' })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
-  @ApiResponse({ status: 403, description: 'Insufficient permissions' })
-  @ApiResponse({ status: 404, description: 'Budget not found' })
-  @ApiResponse({ status: 409, description: 'Parent budget has insufficient balance' })
+  @ApiErrorResponses(400)
+  @ApiErrorResponses(401)
+  @ApiErrorResponses(403)
+  @ApiErrorResponses(404)
+  @ApiErrorResponses(409)
   allocate(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id') id: string,
@@ -166,9 +167,9 @@ export class BudgetController {
   })
   @ApiParam({ name: 'id', description: 'Budget UUID', example: '018f0a1b-...' })
   @ApiResponse({ status: 200, description: 'Budget deleted successfully' })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
-  @ApiResponse({ status: 403, description: 'Insufficient permissions' })
-  @ApiResponse({ status: 404, description: 'Budget not found' })
+  @ApiErrorResponses(401)
+  @ApiErrorResponses(403)
+  @ApiErrorResponses(404)
   remove(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
     return this.budgetService.remove(user.organizationId, user.id, id);
   }
