@@ -59,7 +59,7 @@ jobs:
           # against the previous tip (skipped with a warning for new branches).
           MIGRATION_BASE_REF: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event.before }}
           SHADOW_DATABASE_URL: postgresql://postgres:password@localhost:5432/astroid_shadow?schema=public
-          DATABASE_URL: postgresql://postgres:password@localhost:5432/astroid_shadow?schema=public
+          DATABASE_URL: postgresql://postgres:password@localhost:5432/astroid_verify?schema=public
 
   build-and-test:
     runs-on: ubuntu-latest
