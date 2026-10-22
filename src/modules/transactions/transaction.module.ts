@@ -34,7 +34,15 @@ import { TransactionIdempotencyCleanupService } from './transaction-idempotency-
     RiskModule,
     BudgetModule,
     StellarModule,
-    BullModule.registerQueue(createQueueRegistrationOptions(Queues.Transactions)),
+    BullModule.registerQueue(
+      // Transaction execution is retried with exponential backoff and jitter.
+      // A job that still fails on its last attempt is dead-lettered by the
+      // shared QueueFailureListener for manual review.
+      createQueueRegistrationOptions(Queues.Transactions, {
+        attempts: 5,
+        backoff: { type: 'exponential', delay: 2_000 },
+      }),
+    ),
   ],
   controllers: [TransactionController],
   providers: [

@@ -251,6 +251,34 @@ export class QueueFailureListener implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
+   * The payload stored on the dead-letter entry.
+   *
+   * For webhook deliveries only the identifying metadata is kept: the event
+   * payload carries tenant data and is deliberately not duplicated into a
+   * second Redis structure with its own retention window. Nothing is lost —
+   * re-driving a dead-lettered delivery re-queues the original job from the
+   * source queue, and the delivery row in the database still holds the event.
+   *
+   * Every other queue keeps its (already redacted) job payload so the entry
+   * stays useful for triage.
+   */
+  private deadLetterPayload(queue: string, payload: unknown): unknown {
+    if (queue !== Queues.Webhooks) {
+      return payload;
+    }
+    const metadata = this.webhookLogMetadata(payload);
+    if (!metadata || typeof metadata !== 'object') {
+      return metadata;
+    }
+    // Drop the keys the job did not carry so the entry never holds empty fields.
+    return Object.fromEntries(
+      Object.entries(metadata as Record<string, unknown>).filter(
+        ([, value]) => value !== undefined,
+      ),
+    );
+  }
+
+  /**
    * Enqueues a copy of the terminal failure on the dead-letter queue for
    * administrative triage. Failures are logged, never propagated.
    */
@@ -262,7 +290,7 @@ export class QueueFailureListener implements OnModuleInit, OnModuleDestroy {
         originalQueue: record.queue,
         originalJobId: record.jobId,
         originalJobName: record.jobName,
-        payload: record.payload ?? null,
+        payload: this.deadLetterPayload(record.queue, record.payload) ?? null,
         failedReason: record.failedReason,
         stacktrace: record.stacktrace ?? [],
         attemptsMade: record.attemptsMade,

@@ -9,7 +9,7 @@ import {
   toPrismaPagination,
 } from '../../common/helpers/pagination';
 import { Paginated } from '../../common/interfaces/api-response.interface';
-import { generateApiKey, verifyArgon2, sha256 } from '../../utils/crypto.util';
+import { generateApiKey, safeEqual, verifyArgon2, sha256 } from '../../utils/crypto.util';
 
 const SORTABLE = ['createdAt', 'name', 'lastUsedAt'];
 
@@ -84,10 +84,11 @@ export class ApiKeyService {
     
     const trimmedKey = rawKey.trim();
     
-    // First try to find by the stored hash (we need to retrieve the key to verify)
-    // Since we can't hash the input without knowing which algorithm was used,
-    // we'll try to find by prefix first, then verify the hash
-    const keys = await this.repository.findByPrefix(trimmedKey.slice(0, 14));
+    // The hash algorithm is not known before the key is found, so candidates are
+    // looked up by their public prefix. Revoked and expired rows are excluded
+    // by the repository, and re-checked below so a stale cache can never let a
+    // dead key through.
+    const keys = await this.repository.findActiveByPrefix(trimmedKey.slice(0, 14));
     
     for (const key of keys) {
       if (key.revokedAt) {
@@ -97,28 +98,35 @@ export class ApiKeyService {
         continue;
       }
       
-      // Try Argon2 verification first (new keys)
+      // Try Argon2 verification first (new keys). Argon2id verification is a
+      // constant-time comparison of the derived hash against the stored one.
       const isValidArgon2 = await verifyArgon2(key.hashedKey, trimmedKey);
       if (isValidArgon2) {
-        try {
-          await this.repository.touchLastUsed(key.id);
-        } catch {
-          // Gracefully continue even if updating lastUsedAt encounters an error
-        }
+        await this.touchLastUsed(key.id);
         return key;
       }
       
-      // Fallback to SHA-256 for legacy keys (backward compatibility)
-      if (key.hashedKey === sha256(trimmedKey)) {
-        try {
-          await this.repository.touchLastUsed(key.id);
-        } catch {
-          // Gracefully continue even if updating lastUsedAt encounters an error
-        }
+      // Fallback to SHA-256 for legacy keys (backward compatibility). The
+      // comparison is constant-time as well, so a legacy key is never
+      // distinguishable from a wrong one by response timing.
+      if (safeEqual(key.hashedKey, sha256(trimmedKey))) {
+        await this.touchLastUsed(key.id);
         return key;
       }
     }
     
     return null;
+  }
+
+  /**
+   * Records that a key was just used. A failure to persist the timestamp must
+   * never turn a valid authentication into a rejection, so it is swallowed.
+   */
+  private async touchLastUsed(id: string): Promise<void> {
+    try {
+      await this.repository.touchLastUsed(id);
+    } catch {
+      // Gracefully continue even if updating lastUsedAt encounters an error
+    }
   }
 }

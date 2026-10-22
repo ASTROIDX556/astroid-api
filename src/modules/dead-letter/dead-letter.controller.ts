@@ -1,7 +1,10 @@
 import { Controller, Delete, Get, Param, Post, Query } from '@nestjs/common';
 import { ApiOperation, ApiTags, ApiParam, ApiQuery, ApiBearerAuth } from '@nestjs/swagger';
 import { ApiErrorResponses } from '../../common/decorators/api-error-responses.decorator';
-import { ApiEnvelope } from '../../common/decorators/api-envelope.decorator';
+import { ApiEnvelope, ApiPaginatedEnvelope } from '../../common/decorators/api-envelope.decorator';
+import { ApiPaginationQuery } from '../../common/decorators/api-pagination-query.decorator';
+import { PaginationQuery, paginationQuerySchema } from '../../common/helpers/pagination';
+import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 import { UserRole } from '@prisma/client';
 import { DeadLetterService } from './dead-letter.service';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -27,11 +30,10 @@ export class DeadLetterController {
       'Returns the durable ledger entries for terminally failed background jobs, ' +
       'newest first. Optionally restricted to a single queue.',
   })
+  @ApiPaginationQuery()
   @ApiQuery({ name: 'queue', required: false, type: String, description: 'Restrict entries to a single queue', example: 'webhooks' })
-  @ApiQuery({ name: 'take', required: false, type: Number, description: 'Maximum entries to return (1-200, default 50)' })
-  @ApiEnvelope(DeadLetterEntryDto, {
-    isArray: true,
-    description: 'List of DLQ ledger entries for the organization',
+  @ApiPaginatedEnvelope(DeadLetterEntryDto, {
+    description: 'Paginated list of DLQ ledger entries for the organization',
   })
   @ApiErrorResponses({
     unauthorized: true,
@@ -40,15 +42,10 @@ export class DeadLetterController {
   })
   list(
     @CurrentUser('organizationId') organizationId: string,
-    @Query('queue') queue?: string,
-    @Query('take') take?: string,
+    @Query('queue') queue: string | undefined,
+    @Query(new ZodValidationPipe(paginationQuerySchema)) query: PaginationQuery,
   ) {
-    const limit = take ? Number(take) : undefined;
-    return this.deadLetterService.listForOrganization(
-      organizationId,
-      queue,
-      Number.isFinite(limit) ? limit : undefined,
-    );
+    return this.deadLetterService.listForOrganization(organizationId, queue, query);
   }
 
   @Post(':queue/:jobId/retry')

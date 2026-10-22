@@ -12,6 +12,7 @@ describe('AgentService', () => {
   let repository: {
     create: ReturnType<typeof vi.fn>;
     findById: ReturnType<typeof vi.fn>;
+    findByNameInOrg: ReturnType<typeof vi.fn>;
     findManyAndCount: ReturnType<typeof vi.fn>;
     update: ReturnType<typeof vi.fn>;
     softDelete: ReturnType<typeof vi.fn>;
@@ -32,6 +33,7 @@ describe('AgentService', () => {
     repository = {
       create: vi.fn(),
       findById: vi.fn(),
+      findByNameInOrg: vi.fn().mockResolvedValue(null),
       findManyAndCount: vi.fn(),
       update: vi.fn(),
       softDelete: vi.fn(),
@@ -107,6 +109,61 @@ describe('AgentService', () => {
         { agentId, name: input.name, role: input.role },
         { organizationId: orgId, actorId, aggregateType: 'agent', aggregateId: agentId },
       );
+    });
+
+    it('should reject a duplicate agent handle with a conflict error', async () => {
+      repository.findByNameInOrg.mockResolvedValue({ id: 'other-agent' });
+
+      await expect(
+        service.create(orgId, actorId, {
+          name: 'Autonomous Trader',
+          role: AgentRole.FINANCE,
+          capabilities: [],
+          metadata: {},
+        }),
+      ).rejects.toThrow(ConflictException);
+
+      expect(repository.create).not.toHaveBeenCalled();
+    });
+
+    it('should persist a validated Stellar public key as agent metadata', async () => {
+      const publicKey = 'GA7QYNF7SOWQ3GLR2BGMZEHXAVIRZA4KVWLTJJFC7MGXUA74P7UJVSGZ';
+      let storedData: Prisma.AgentCreateInput = {
+        name: '',
+        organization: { connect: { id: orgId } },
+      };
+
+      repository.create.mockImplementation(async (data: Prisma.AgentCreateInput) => {
+        storedData = data;
+        return {
+          id: agentId,
+          organizationId: orgId,
+          primaryWalletId: null,
+          name: data.name,
+          description: null,
+          provider: null,
+          model: null,
+          role: AgentRole.CUSTOM,
+          status: AgentStatus.ACTIVE,
+          capabilities: [],
+          metadata: data.metadata as Prisma.JsonValue,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          deletedAt: null,
+        } as Agent;
+      });
+
+      const result = await service.create(orgId, actorId, {
+        name: 'Keyed Agent',
+        role: AgentRole.CUSTOM,
+        capabilities: [],
+        metadata: {},
+        publicKey,
+      });
+
+      const storedMeta = storedData.metadata as Record<string, string>;
+      expect(storedMeta.stellarPublicKey).toBe(publicKey);
+      expect((result.metadata as Record<string, string>).stellarPublicKey).toBe(publicKey);
     });
   });
 
