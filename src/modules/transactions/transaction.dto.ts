@@ -151,13 +151,13 @@ export type SimulateTransactionInput = z.infer<typeof simulateTransactionSchema>
 // ── Swagger DTOs ──
 
 export class CreateTransactionDto {
-  @ApiProperty({ description: 'Sender wallet id' })
+  @ApiProperty({ description: 'Sender wallet UUID', format: 'uuid', example: '018f0a1b-1234-7000-8000-000000000001' })
   walletId!: string;
 
-  @ApiPropertyOptional({ description: 'Initiating agent id' })
+  @ApiPropertyOptional({ description: 'Initiating agent UUID', format: 'uuid' })
   agentId?: string;
 
-  @ApiPropertyOptional({ description: 'Budget to charge this transaction against' })
+  @ApiPropertyOptional({ description: 'Budget UUID to charge this transaction against', format: 'uuid' })
   budgetId?: string;
 
   @ApiPropertyOptional({ example: 'XLM' })
@@ -166,7 +166,7 @@ export class CreateTransactionDto {
   @ApiProperty({ example: '125.5000000' })
   amount!: string;
 
-  @ApiProperty({ example: 'GB...' })
+  @ApiProperty({ description: 'Stellar destination public address', example: 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF' })
   recipientAddress!: string;
 
   @ApiPropertyOptional({
@@ -186,7 +186,7 @@ export class CreateTransactionDto {
   })
   memoValue?: string;
 
-  @ApiPropertyOptional()
+  @ApiPropertyOptional({ description: 'Human-readable transfer purpose', maxLength: 280, example: 'Monthly infrastructure payment' })
   purpose?: string;
 
   @ApiPropertyOptional({ type: Object })
