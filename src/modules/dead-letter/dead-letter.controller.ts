@@ -1,9 +1,12 @@
 import { Controller, Delete, Get, Param, Post, Query } from '@nestjs/common';
-import { ApiOperation, ApiTags, ApiParam, ApiQuery, ApiBearerAuth, ApiResponse } from '@nestjs/swagger';
+import { ApiOperation, ApiTags, ApiParam, ApiQuery, ApiBearerAuth } from '@nestjs/swagger';
+import { ApiErrorResponses } from '../../common/decorators/api-error-responses.decorator';
+import { ApiEnvelope } from '../../common/decorators/api-envelope.decorator';
 import { UserRole } from '@prisma/client';
 import { DeadLetterService } from './dead-letter.service';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
+import { DeadLetterEntryDto, DeadLetterRetryDto, DeadLetterPurgeDto } from './dead-letter.dto';
 
 /**
  * Administrative dead-letter queue endpoints. Read-only inspection of captured
@@ -26,7 +29,15 @@ export class DeadLetterController {
   })
   @ApiQuery({ name: 'queue', required: false, type: String, description: 'Restrict entries to a single queue', example: 'webhooks' })
   @ApiQuery({ name: 'take', required: false, type: Number, description: 'Maximum entries to return (1-200, default 50)' })
-  @ApiResponse({ status: 200, description: 'List of DLQ ledger entries for the organization' })
+  @ApiEnvelope(DeadLetterEntryDto, {
+    isArray: true,
+    description: 'List of DLQ ledger entries for the organization',
+  })
+  @ApiErrorResponses({
+    unauthorized: true,
+    forbidden: 'Insufficient permissions (requires OWNER or ADMIN)',
+    serverError: true,
+  })
   list(
     @CurrentUser('organizationId') organizationId: string,
     @Query('queue') queue?: string,
@@ -49,8 +60,13 @@ export class DeadLetterController {
   })
   @ApiParam({ name: 'queue', description: 'Queue the failed job belongs to', example: 'webhooks' })
   @ApiParam({ name: 'jobId', description: 'BullMQ job id of the failed job', example: '42' })
-  @ApiResponse({ status: 200, description: 'Re-drive accepted; returns the new job id' })
-  @ApiResponse({ status: 404, description: 'Failed job not found' })
+  @ApiEnvelope(DeadLetterRetryDto, { description: 'Re-drive accepted; returns the new job id' })
+  @ApiErrorResponses({
+    unauthorized: true,
+    forbidden: 'Insufficient permissions (requires OWNER or ADMIN)',
+    notFound: true,
+    serverError: true,
+  })
   retry(@Param('queue') queue: string, @Param('jobId') jobId: string) {
     return this.deadLetterService.requeue(queue, jobId);
   }
@@ -62,8 +78,13 @@ export class DeadLetterController {
   })
   @ApiParam({ name: 'queue', description: 'Queue the failed job belongs to', example: 'webhooks' })
   @ApiParam({ name: 'jobId', description: 'BullMQ job id of the failed job', example: '42' })
-  @ApiResponse({ status: 200, description: 'Job purged' })
-  @ApiResponse({ status: 404, description: 'Failed job not found' })
+  @ApiEnvelope(DeadLetterPurgeDto, { description: 'Job purged' })
+  @ApiErrorResponses({
+    unauthorized: true,
+    forbidden: 'Insufficient permissions (requires OWNER or ADMIN)',
+    notFound: true,
+    serverError: true,
+  })
   purge(@Param('queue') queue: string, @Param('jobId') jobId: string) {
     return this.deadLetterService.purge(queue, jobId);
   }

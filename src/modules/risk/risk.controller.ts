@@ -3,13 +3,15 @@ import {
   ApiOperation,
   ApiTags,
   ApiBearerAuth,
-  ApiResponse,
   ApiBody,
 } from '@nestjs/swagger';
+import { ApiErrorResponses } from '../../common/decorators/api-error-responses.decorator';
+import { ApiEnvelope } from '../../common/decorators/api-envelope.decorator';
 import { RiskService } from './risk.service';
 import { assessRiskSchema, AssessRiskInput, AssessRiskDto } from './risk.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
+import { RiskAssessmentDto } from './risk.dto';
 
 @ApiTags('risk')
 @ApiBearerAuth('access-token')
@@ -25,9 +27,8 @@ export class RiskController {
       'Consider using POST /transactions/simulate for full governance pipeline evaluation.',
   })
   @ApiBody({ type: AssessRiskDto })
-  @ApiResponse({ status: 200, description: 'Risk assessment with score and detailed factors' })
-  @ApiResponse({ status: 400, description: 'Validation error' })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
+  @ApiEnvelope(RiskAssessmentDto, { description: 'Risk assessment with score and detailed factors' })
+  @ApiErrorResponses({ validation: true, unauthorized: true, serverError: true })
   assess(
     @CurrentUser('organizationId') _organizationId: string,
     @Body(new ZodValidationPipe(assessRiskSchema)) body: AssessRiskInput,

@@ -54,8 +54,9 @@ export class CreateAgentDto {
 
   @ApiPropertyOptional({
     enum: AgentRole,
-    description: 'Functional role of the agent',
     enumName: 'AgentRole',
+    description: 'Functional role of the agent',
+    example: 'PROCUREMENT',
   })
   role?: AgentRole;
 
@@ -92,48 +93,59 @@ export class UpdateAgentStatusDto {
 }
 
 export class AgentResponseDto {
-  @ApiProperty({ description: 'Agent UUID', format: 'uuid' })
+  @ApiProperty({ description: 'Agent UUID', format: 'uuid', example: '018f0a1b-2c3d-4e5f-8a9b-0c1d2e3f4a5b' })
   id!: string;
 
-  @ApiProperty({ description: 'Organization UUID', format: 'uuid' })
+  @ApiProperty({ description: 'Organization UUID', format: 'uuid', example: '018f0a1b-0000-4000-8000-000000000000' })
   organizationId!: string;
 
   @ApiPropertyOptional({ description: 'Primary wallet UUID', format: 'uuid' })
   primaryWalletId?: string;
 
-  @ApiProperty({ description: 'Agent name' })
+  @ApiProperty({ description: 'Agent name', example: 'Procurement Bot' })
   name!: string;
 
-  @ApiPropertyOptional({ description: 'Agent description' })
+  @ApiPropertyOptional({ description: 'Agent description', example: 'Renegotiates supplier contracts' })
   description?: string;
 
-  @ApiPropertyOptional({ description: 'AI provider' })
+  @ApiPropertyOptional({ description: 'AI provider', example: 'openai' })
   provider?: string;
 
-  @ApiPropertyOptional({ description: 'AI model' })
+  @ApiPropertyOptional({ description: 'AI model', example: 'gpt-4o' })
   model?: string;
 
-  @ApiProperty({ enum: AgentRole, description: 'Agent role' })
+  @ApiProperty({ enum: AgentRole, description: 'Agent role', example: AgentRole.PROCUREMENT })
   role!: AgentRole;
 
-  @ApiProperty({ enum: AgentStatus, description: 'Current agent status' })
+  @ApiProperty({ enum: AgentStatus, description: 'Current agent status', example: AgentStatus.ACTIVE })
   status!: AgentStatus;
 
   @ApiProperty({
     type: [String],
     description: 'Agent capabilities',
+    example: ['payments', 'reporting'],
   })
   capabilities!: string[];
 
   @ApiProperty({
     type: Object,
     description: 'Agent metadata',
+    example: { rateLimit: 5 },
   })
   metadata!: Record<string, unknown>;
 
-  @ApiProperty({ description: 'Agent creation timestamp' })
+  @ApiProperty({ description: 'Agent creation timestamp', example: '2026-01-15T10:30:00.000Z' })
   createdAt!: Date;
 
-  @ApiProperty({ description: 'Last update timestamp' })
+  @ApiProperty({ description: 'Last update timestamp', example: '2026-01-16T08:00:00.000Z' })
   updatedAt!: Date;
+}
+
+/** The acknowledgement returned when an agent execution is requested. */
+export class AgentExecutionDto {
+  @ApiProperty({ description: 'Whether the execution was accepted', example: true })
+  success!: boolean;
+
+  @ApiProperty({ description: 'Human-readable confirmation', example: 'Execution triggered' })
+  message!: string;
 }
