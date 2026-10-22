@@ -44,6 +44,11 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Apply migrations to disposable PostgreSQL
+        run: npm run prisma:deploy
+        env:
+          DATABASE_URL: postgresql://postgres:password@localhost:5432/astroid_shadow?schema=public
+
       - name: Verify migrations, SQL validity and schema drift
         run: npm run db:verify
         env:
