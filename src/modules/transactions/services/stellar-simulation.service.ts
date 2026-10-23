@@ -13,6 +13,11 @@ import {
 } from '../../../common/exceptions/domain.exception';
 import { CircuitBreaker, isRpcFailure } from '../../../common/circuit-breaker/circuit-breaker';
 import { parseContractEventLogs } from '../../../integrations/stellar/contract-event.parser';
+import {
+  decodeContractRevert,
+  isRecognisedContractRevert,
+  toContractRevertException,
+} from '../../../common/exceptions/contract-revert.decoder';
 import { EventBusService } from '../../../events/event-bus.service';
 import { DomainEventName } from '../../../events/event-names';
 import { GasEstimationService } from './gas-estimation.service';
@@ -118,6 +123,12 @@ export class StellarSimulationService {
       if (error instanceof DomainException) {
         throw error;
       }
+      // A contract revert thrown by the RPC client is decoded and mapped onto a
+      // descriptive domain error; transport failures keep the generic path.
+      const decoded = decodeContractRevert(error);
+      if (isRecognisedContractRevert(decoded)) {
+        throw toContractRevertException(decoded);
+      }
       this.logger.warn(
         `Stellar simulation failed: ${(error as Error).message}`,
       );
@@ -128,14 +139,13 @@ export class StellarSimulationService {
     }
 
     if (!result.success) {
+      const decoded = decodeContractRevert(
+        result.error ?? { message: 'Simulation failed without error details' },
+      );
       this.logger.warn(
-        `Stellar simulation returned error: ${result.error?.code} - ${result.error?.message}`,
+        `Stellar simulation returned error: ${result.error?.code} - ${decoded.message}`,
       );
-      throw new DomainException(
-        ErrorCode.STELLAR_ERROR,
-        `Stellar simulation failed: ${result.error?.message ?? 'Unknown error'}`,
-        result.error,
-      );
+      throw toContractRevertException(decoded);
     }
 
     // Parse event logs defensively: a malformed log is skipped with a warning

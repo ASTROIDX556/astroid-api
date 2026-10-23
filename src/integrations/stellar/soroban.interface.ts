@@ -43,6 +43,14 @@ export interface SorobanSimulationResult {
   error?: {
     code: string;
     message: string;
+    /** Contract that raised the error, when the RPC reports it. */
+    contractId?: string;
+    /**
+     * Raw revert payload (hex, base64 XDR or ABI-encoded bytes) forwarded
+     * verbatim by the RPC. Decoded by `decodeContractRevert` — kept unparsed
+     * here so no information is lost before it reaches the error layer.
+     */
+    data?: string;
   };
   /** Transaction hash from the simulation. */
   transactionHash?: string;

@@ -152,6 +152,34 @@ describe('SorobanSimulationService', () => {
       ).rejects.toThrow('Contract Error');
     });
 
+    it('decodes a raw contract revert payload into a descriptive domain error', async () => {
+      const reason = Buffer.from('insufficient balance for transfer', 'utf8');
+      const padding = Buffer.alloc((32 - (reason.length % 32)) % 32);
+      const rawData = `0x08c379a0${'20'.padStart(64, '0')}${reason.length
+        .toString(16)
+        .padStart(64, '0')}${Buffer.concat([reason, padding]).toString('hex')}`;
+
+      (sorobanClient.simulateTransaction as ReturnType<typeof vi.fn>).mockResolvedValue({
+        success: false,
+        minResourceFee: '0',
+        cost: { cpuInstructions: 0, memoryBytes: 0 },
+        footprint: { readOnly: [], readWrite: [] },
+        events: [],
+        error: { code: 'HOST_ERROR', message: 'HostError: Error(Contract, #3)', data: rawData },
+      });
+
+      const error = await service
+        .simulate({ transactionXdr: buildValidXdr(), organizationId: 'org-1' })
+        .catch((thrown: unknown) => thrown as DomainException);
+
+      expect(error).toBeInstanceOf(DomainException);
+      expect((error as DomainException).code).toBe(ErrorCode.INSUFFICIENT_FUNDS);
+      expect((error as DomainException).message).toBe('insufficient balance for transfer');
+      expect((error as DomainException).details).toMatchObject({
+        contractError: { kind: 'message', raw: { format: 'hex', data: rawData } },
+      });
+    });
+
     it('should throw DomainException when soroban client throws', async () => {
       (sorobanClient.simulateTransaction as ReturnType<typeof vi.fn>).mockRejectedValue(
         new Error('Connection refused'),
