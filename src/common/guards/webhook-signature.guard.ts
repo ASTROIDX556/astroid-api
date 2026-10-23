@@ -7,12 +7,14 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Request } from 'express';
 import { createHmac, timingSafeEqual } from 'crypto';
+import { Request } from 'express';
 import {
+  WEBHOOK_EVENT_ID_HEADER,
   WEBHOOK_SIGNATURE_HEADER,
   WEBHOOK_TIMESTAMP_HEADER,
 } from '../constants/headers';
+import { verifyWebhookSignature } from '../../modules/webhooks/utils/signing';
 
 export type WebhookSecretResolver = (
   request: Request,
@@ -25,10 +27,8 @@ export interface WebhookSignatureGuardOptions {
 }
 
 /**
- * Verifies inbound signatures in the format
- * HMAC-SHA256(secret, timestamp + "." + exact raw request bytes), encoded as
- * 64 hexadecimal characters. The ingress secret is deliberately distinct from
- * per-subscriber outbound signing secrets.
+ * Verifies inbound signatures against the exact raw request bytes. The ingress
+ * secret is deliberately distinct from per-subscriber outbound signing secrets.
  */
 @Injectable()
 export class WebhookSignatureGuard implements CanActivate {
@@ -78,12 +78,19 @@ export class WebhookSignatureGuard implements CanActivate {
       throw new UnauthorizedException('Raw webhook body is unavailable');
     }
 
+    const eventId = request.headers[WEBHOOK_EVENT_ID_HEADER];
+    const validVersionedSignature =
+      signature.startsWith('v1=') &&
+      typeof eventId === 'string' &&
+      verifyWebhookSignature(secret, timestamp, eventId, request.rawBody, signature);
     const expected = createHmac('sha256', secret)
       .update(Buffer.concat([Buffer.from(`${timestamp}.`, 'utf8'), request.rawBody]))
       .digest();
     const received = Buffer.from(normalizedSignature, 'hex');
+    const validLegacySignature =
+      received.length === expected.length && timingSafeEqual(received, expected);
 
-    if (received.length !== expected.length || !timingSafeEqual(received, expected)) {
+    if (!validVersionedSignature && !validLegacySignature) {
       throw new UnauthorizedException('Invalid webhook cryptographic signature');
     }
 

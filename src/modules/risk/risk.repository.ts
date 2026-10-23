@@ -32,15 +32,41 @@ export class RiskRepository {
     factors: Record<string, unknown>;
     canAutoExecute: boolean;
   }) {
+    const assessment = {
+      organizationId: data.organizationId,
+      transactionId: data.transactionId,
+      score: data.score,
+      band: data.band,
+      factors: data.factors,
+      canAutoExecute: data.canAutoExecute,
+    };
+    // Upsert makes retries of a risk-analysis job safe for the unique transactionId.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return (this.prisma as any).riskAssessment.create({
-      data: {
-        organizationId: data.organizationId,
-        transactionId: data.transactionId,
+    return (this.prisma as any).riskAssessment.upsert({
+      where: { transactionId: data.transactionId },
+      create: assessment,
+      update: {
         score: data.score,
         band: data.band,
         factors: data.factors,
         canAutoExecute: data.canAutoExecute,
+      },
+    });
+  }
+
+  async updateTransactionRisk(
+    organizationId: string,
+    transactionId: string,
+    data: { score: number; band: RiskBand; requiresApproval: boolean },
+  ) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const client = (this.prisma as any).workerClient ?? this.prisma;
+    return client.transaction.updateMany({
+      where: { id: transactionId, organizationId },
+      data: {
+        riskScore: data.score,
+        riskBand: data.band,
+        ...(data.requiresApproval ? { requiresApproval: true } : {}),
       },
     });
   }

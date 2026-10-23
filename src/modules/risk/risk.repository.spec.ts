@@ -11,10 +11,11 @@ describe('RiskRepository', () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     prisma = {
       riskAssessment: {
-        create: vi.fn(),
+        upsert: vi.fn(),
         findMany: vi.fn(),
         findUnique: vi.fn(),
       },
+      transaction: { updateMany: vi.fn() },
     } as unknown as PrismaService;
     repository = new RiskRepository(prisma);
   });
@@ -33,7 +34,7 @@ describe('RiskRepository', () => {
       };
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      vi.mocked((prisma as any).riskAssessment.create).mockResolvedValue(mockAssessment);
+      vi.mocked((prisma as any).riskAssessment.upsert).mockResolvedValue(mockAssessment);
 
       const result = await repository.createAssessmentRecord({
         organizationId: 'org-1',
@@ -45,8 +46,9 @@ describe('RiskRepository', () => {
       });
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      expect((prisma as any).riskAssessment.create).toHaveBeenCalledWith({
-        data: {
+      expect((prisma as any).riskAssessment.upsert).toHaveBeenCalledWith({
+        where: { transactionId: 'tx-1' },
+        create: {
           organizationId: 'org-1',
           transactionId: 'tx-1',
           score: 25,
@@ -54,8 +56,46 @@ describe('RiskRepository', () => {
           factors: { factors: [] },
           canAutoExecute: true,
         },
+        update: {
+          score: 25,
+          band: RiskBand.LOW,
+          factors: { factors: [] },
+          canAutoExecute: true,
+        },
       });
       expect(result).toEqual(mockAssessment);
+    });
+  });
+
+  describe('updateTransactionRisk', () => {
+    it('updates risk fields and flags approval without clearing an existing flag', async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const updateMany = vi.mocked((prisma as any).transaction.updateMany);
+      await repository.updateTransactionRisk('org-1', 'tx-1', {
+        score: 90,
+        band: RiskBand.CRITICAL,
+        requiresApproval: true,
+      });
+
+      expect(updateMany).toHaveBeenCalledWith({
+        where: { id: 'tx-1', organizationId: 'org-1' },
+        data: { riskScore: 90, riskBand: RiskBand.CRITICAL, requiresApproval: true },
+      });
+    });
+
+    it('does not clear approval when an assessment is below the approval threshold', async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const updateMany = vi.mocked((prisma as any).transaction.updateMany);
+      await repository.updateTransactionRisk('org-1', 'tx-1', {
+        score: 10,
+        band: RiskBand.LOW,
+        requiresApproval: false,
+      });
+
+      expect(updateMany).toHaveBeenCalledWith({
+        where: { id: 'tx-1', organizationId: 'org-1' },
+        data: { riskScore: 10, riskBand: RiskBand.LOW },
+      });
     });
   });
 
