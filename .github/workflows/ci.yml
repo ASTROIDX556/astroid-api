@@ -44,13 +44,22 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Create separate verification database
+        run: PGPASSWORD=password psql -h localhost -U postgres -d postgres -v ON_ERROR_STOP=1 -c 'CREATE DATABASE astroid_verify;'
+
+      - name: Apply migrations to disposable PostgreSQL
+        run: npm run prisma:deploy
+        env:
+          DATABASE_URL: postgresql://postgres:password@localhost:5432/astroid_verify?schema=public
+
       - name: Verify migrations, SQL validity and schema drift
-        run: bash scripts/verify-migrations.sh
+        run: npm run db:verify
         env:
           # Pull requests compare against their target branch; pushes compare
           # against the previous tip (skipped with a warning for new branches).
           MIGRATION_BASE_REF: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event.before }}
           SHADOW_DATABASE_URL: postgresql://postgres:password@localhost:5432/astroid_shadow?schema=public
+          DATABASE_URL: postgresql://postgres:password@localhost:5432/astroid_verify?schema=public
 
   build-and-test:
     runs-on: ubuntu-latest

@@ -64,6 +64,7 @@ DESTRUCTIVE_OPT_IN='astroid:allow-destructive'
 
 errors=0
 warnings=0
+checks_failed=0
 
 # --- reporting ---------------------------------------------------------------
 
@@ -87,6 +88,7 @@ annotate() {
 
 error() {
   errors=$((errors + 1))
+  checks_failed=1
   annotate error "${2:-}" "${3:-}" "$1" >&2
 }
 
@@ -96,6 +98,9 @@ warn() {
 }
 
 section() {
+  if [ "${GITHUB_ACTIONS:-}" = "true" ]; then
+    echo "::group::$1"
+  fi
   echo
   echo "==> $1"
 }
@@ -708,6 +713,9 @@ fi
 echo
 if [ "$errors" -gt 0 ]; then
   echo "Migration verification FAILED: ${errors} error(s), ${warnings} warning(s)."
+  if [ "${GITHUB_ACTIONS:-}" = "true" ]; then
+    echo "::error title=Migration verification failed::${errors} error(s), ${warnings} warning(s); inspect grouped diagnostics above."
+  fi
   exit 1
 fi
 echo "Migration verification passed with ${warnings} warning(s)."
