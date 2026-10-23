@@ -10,6 +10,7 @@ import { RiskModule } from '../risk/risk.module';
 import { BudgetModule } from '../budgets/budget.module';
 import { SorobanSimulationService } from './services/soroban-simulation.service';
 import { StellarSimulationService } from './services/stellar-simulation.service';
+import { GasEstimationService } from './services/gas-estimation.service';
 import { StellarModule } from '../stellar/stellar.module';
 import { SpendingLimitService } from './spending-limit.service';
 import { SpendingLimitGuard } from './guards/spending-limit.guard';
@@ -50,11 +51,12 @@ import { TransactionIdempotencyCleanupService } from './transaction-idempotency-
     TransactionRepository,
     SorobanSimulationService,
     StellarSimulationService,
+    GasEstimationService,
     SpendingLimitService,
     SpendingLimitGuard,
     TransactionWorker,
     TransactionIdempotencyCleanupService,
   ],
-  exports: [TransactionService, SorobanSimulationService, StellarSimulationService, SpendingLimitService],
+  exports: [TransactionService, SorobanSimulationService, StellarSimulationService, GasEstimationService, SpendingLimitService],
 })
 export class TransactionModule {}

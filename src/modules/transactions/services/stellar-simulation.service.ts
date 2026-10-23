@@ -15,6 +15,7 @@ import { CircuitBreaker, isRpcFailure } from '../../../common/circuit-breaker/ci
 import { parseContractEventLogs } from '../../../integrations/stellar/contract-event.parser';
 import { EventBusService } from '../../../events/event-bus.service';
 import { DomainEventName } from '../../../events/event-names';
+import { GasEstimationService } from './gas-estimation.service';
 
 /** Consecutive failures before the Soroban RPC circuit trips OPEN. */
 const SOROBAN_FAILURE_THRESHOLD = 5;
@@ -84,6 +85,7 @@ export class StellarSimulationService {
     @Inject(SOROBAN_CLIENT) private readonly sorobanClient: SorobanClient,
     private readonly riskEngine: RiskEngine,
     private readonly eventBus: EventBusService,
+    private readonly gasEstimation: GasEstimationService,
   ) {}
 
   /**
@@ -140,6 +142,10 @@ export class StellarSimulationService {
     // instead of aborting the batch or crashing the simulation.
     const events = parseContractEventLogs(result.events, this.logger);
 
+    // Apply the congestion safety buffer and cap the fee at what the network
+    // will accept instead of forwarding the raw simulation fee.
+    const gas = this.gasEstimation.fromSimulation(result);
+
     // Risk scoring
     const riskInput = input.riskFactors ?? this.buildDefaultRiskFactors(result, events.length);
     const risk = this.riskEngine.assess(riskInput);
@@ -160,7 +166,7 @@ export class StellarSimulationService {
         score: risk.score,
         band: risk.band,
         simulationSuccess: true,
-        feeEstimate: result.minResourceFee,
+        feeEstimate: gas.fee,
         transactionHash: result.transactionHash,
       },
       {
@@ -176,7 +182,7 @@ export class StellarSimulationService {
 
     return {
       success: true,
-      feeEstimate: result.minResourceFee,
+      feeEstimate: gas.fee,
       cost: result.cost,
       footprint: result.footprint,
       events,

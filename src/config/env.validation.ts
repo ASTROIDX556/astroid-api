@@ -75,6 +75,16 @@ export const stellarEnvSchema = z.object({
     .enum(['true', 'false'])
     .default('true')
     .transform((value) => value === 'true'),
+  // Percentage added on top of a simulated gas limit so transactions still fit
+  // when network congestion pushes real usage above the simulation estimate.
+  STELLAR_GAS_SAFETY_BUFFER_PERCENT: z.coerce.number().min(0).max(100).default(25),
+  // Network block gas limit (Soroban CPU instructions per transaction). No
+  // estimate is ever allowed to exceed this ceiling.
+  STELLAR_MAX_GAS_LIMIT: z.coerce.number().int().positive().default(100_000_000),
+  // Static gas limit used when simulation fails or omits a gas estimate.
+  STELLAR_FALLBACK_GAS_LIMIT: z.coerce.number().int().positive().default(1_000_000),
+  // Static fee limit, in stroops, used alongside the fallback gas limit.
+  STELLAR_FALLBACK_FEE_STROOPS: z.coerce.number().int().nonnegative().default(100_000),
 });
 
 export const storageEnvSchema = z.object({

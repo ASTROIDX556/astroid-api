@@ -5,6 +5,15 @@ import { RiskEngine } from '../../risk/risk.engine';
 import { EventBusService } from '../../../events/event-bus.service';
 import { CircuitOpenException, DomainException } from '../../../common/exceptions/domain.exception';
 import { ErrorCode } from '../../../common/constants/error-codes';
+import { ConfigService } from '@nestjs/config';
+import { GasEstimationService } from './gas-estimation.service';
+
+/** Gas settings fall back to the service defaults (25% buffer) in these tests. */
+function buildGasEstimationService(client: SorobanClient): GasEstimationService {
+  return new GasEstimationService(client, {
+    get: vi.fn().mockReturnValue(undefined),
+  } as unknown as ConfigService);
+}
 
 function buildMockSorobanClient(overrides: Partial<SorobanSimulationResult> = {}): SorobanClient {
   return {
@@ -47,6 +56,7 @@ describe('StellarSimulationService', () => {
       sorobanClient,
       new RiskEngine(),
       eventBus as unknown as EventBusService,
+      buildGasEstimationService(sorobanClient),
     );
   });
 
@@ -58,7 +68,8 @@ describe('StellarSimulationService', () => {
       });
 
       expect(result.success).toBe(true);
-      expect(result.feeEstimate).toBe('100000');
+      // The raw 100,000 stroop simulation fee carries the default 25% buffer.
+      expect(result.feeEstimate).toBe('125000');
       expect(result.risk).toBeDefined();
       expect(result.risk.score).toBeGreaterThanOrEqual(0);
       expect(result.risk.score).toBeLessThanOrEqual(100);
@@ -93,6 +104,7 @@ describe('StellarSimulationService', () => {
         sorobanClient,
         new RiskEngine(),
         eventBus as unknown as EventBusService,
+        buildGasEstimationService(sorobanClient),
       );
 
       const result = await service.simulate({
