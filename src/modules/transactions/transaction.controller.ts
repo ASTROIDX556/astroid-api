@@ -151,7 +151,7 @@ export class TransactionController {
     description: 'Returns full details of a single transaction by ID.',
   })
   @ApiParam({ name: 'id', description: 'Transaction UUID', example: '018f0a1b-...' })
-  @ApiEnvelope(TransactionResponseDto, { description: 'Transaction details' })
+   @ApiEnvelope(TransactionResponseDto, { description: 'Transaction details' })
   @ApiErrorResponses({ unauthorized: true, notFound: true, serverError: true })
   findOne(@CurrentUser('organizationId') organizationId: string, @Param('id') id: string) {
     return this.transactionService.getOrThrow(organizationId, id);

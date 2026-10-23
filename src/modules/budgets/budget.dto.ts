@@ -56,7 +56,7 @@ export class CreateBudgetDto {
   @ApiPropertyOptional({ example: false, description: 'Whether the unused amount rolls into the next period' })
   rollover?: boolean;
 
-  @ApiPropertyOptional({ description: 'Parent budget for hierarchical allocation' })
+  @ApiPropertyOptional({ description: 'Parent budget UUID for hierarchical allocation', format: 'uuid' })
   parentBudgetId?: string;
 
   @ApiPropertyOptional({ description: 'Restrict the budget to a single agent', example: '018f0a1b-2c3d-4e5f-8a9b-0c1d2e3f4a5b' })
