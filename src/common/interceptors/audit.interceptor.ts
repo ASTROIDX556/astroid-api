@@ -12,7 +12,7 @@ import { Request, Response } from 'express';
 import { AuditService } from '../../modules/audit/audit.service';
 import { AuthenticatedUser } from '../interfaces/authenticated-user.interface';
 import { IS_SKIP_AUDIT_KEY } from '../decorators/skip-audit.decorator';
-import { AUDIT_ACTION_KEY } from '../decorators/audit-action.decorator';
+import { AUDIT_ACTION_KEY, normalizeAuditAction } from '../decorators/audit-action.decorator';
 import { TraceContext } from '../context/trace.context';
 import { sanitizeAuditPayload } from '../helpers/audit-sanitizer';
 
@@ -25,7 +25,7 @@ const EXCLUDED_META_KEYS = new Set(['password', 'token', 'authorization', 'x-api
 
 /**
  * NestJS interceptor that automatically persists an immutable audit-log record
- * for every state-mutating HTTP request (POST, PUT, PATCH, DELETE).
+ * for every request (POST, PUT, PATCH, DELETE).
  *
  * Captures:
  *   - IP address and user-agent
@@ -35,10 +35,12 @@ const EXCLUDED_META_KEYS = new Set(['password', 'token', 'authorization', 'x-api
  *   - The request's trace/correlation id, read from the `TraceContext`
  *     AsyncLocalStorage populated upstream by `AgentTraceInterceptor`
  *
- * The logged `action` defaults to `METHOD /url`, but a handler decorated
- * with `@AuditAction('TRANSFER_FUNDS')` overrides it with a semantic name.
- *
  * Routes decorated with @SkipAudit() are excluded.
+ *
+ * Routes marked with `@AuditAction()` are owned by the
+ * `StructuredAuditInterceptor`, which publishes the audit record on the
+ * internal event bus instead of writing it inline. Skipping them here keeps
+ * exactly one audit row per operation.
  */
 
 @Injectable()
@@ -51,19 +53,22 @@ export class AuditInterceptor implements NestInterceptor {
   ) {}
 
   intercept(context: ExecutionContext, next: CallHandler): Observable<unknown> {
-    const skipAudit = this.reflector.getAllAndOverride<boolean>(IS_SKIP_AUDIT_KEY, [
-      context.getHandler(),
-      context.getClass(),
-    ]);
+    const targets = [context.getHandler(), context.getClass()];
+
+    const skipAudit = this.reflector.getAllAndOverride<boolean>(IS_SKIP_AUDIT_KEY, targets);
 
     if (skipAudit) {
       return next.handle();
     }
 
-    const customAction = this.reflector.getAllAndOverride<string | undefined>(AUDIT_ACTION_KEY, [
-      context.getHandler(),
-      context.getClass(),
-    ]);
+    // Routes that declare a semantic audit action are audited through the
+    // event bus by the StructuredAuditInterceptor.
+    const structuredAction = normalizeAuditAction(
+      this.reflector.getAllAndOverride<unknown>(AUDIT_ACTION_KEY, targets),
+    );
+    if (structuredAction) {
+      return next.handle();
+    }
 
     const http = context.switchToHttp();
     const req = http.getRequest<Request & { user?: AuthenticatedUser }>();
@@ -84,24 +89,24 @@ export class AuditInterceptor implements NestInterceptor {
     const startTime = Date.now();
 
     const recordLog = () => {
-          const durationMs = Date.now() - startTime;
-      const action = customAction ?? `${method} ${originalUrl}`;
-          this.persistAuditLog({
-            organizationId,
-            userId,
-            agentId,
+      const durationMs = Date.now() - startTime;
+      const action = `${method} ${originalUrl}`;
+      this.persistAuditLog({
+        organizationId,
+        userId,
+        agentId,
         action,
-            method,
-            url: originalUrl,
-            statusCode: res.statusCode,
-            ipAddress,
-            userAgent,
-            requestId,
-            body: sanitizedBody,
-            params: sanitizedParams,
-            query: sanitizedQuery,
-            durationMs,
-          }).catch((err) => {
+        method,
+        url: originalUrl,
+        statusCode: res.statusCode,
+        ipAddress,
+        userAgent,
+        requestId,
+        body: sanitizedBody,
+        params: sanitizedParams,
+        query: sanitizedQuery,
+        durationMs,
+      }).catch((err) => {
             this.logger.error(
               `Failed to persist audit log for ${method} ${originalUrl}: ${(err as Error).message}`,
             );

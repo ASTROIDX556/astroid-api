@@ -3,7 +3,6 @@ import {
   ApiOperation,
   ApiTags,
   ApiBearerAuth,
-  ApiResponse,
   ApiParam,
   ApiBody,
   ApiQuery,
@@ -17,6 +16,7 @@ import {
   decisionCommentSchema,
   DecisionCommentInput,
   DecisionCommentDto,
+  ProposalResponseDto,
 } from './approval.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
@@ -25,6 +25,8 @@ import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 import { AuthenticatedUser } from '../../common/interfaces/authenticated-user.interface';
 import { PaginationQuery, paginationQuerySchema } from '../../common/helpers/pagination';
 import { ApiPaginationQuery } from '../../common/decorators/api-pagination-query.decorator';
+import { ApiEnvelope, ApiPaginatedEnvelope } from '../../common/decorators/api-envelope.decorator';
+import { ApiErrorResponses } from '../../common/decorators/api-error-responses.decorator';
 
 @ApiTags('approvals')
 @ApiBearerAuth('access-token')
@@ -41,8 +43,8 @@ export class ApprovalController {
   })
   @ApiPaginationQuery()
   @ApiQuery({ name: 'status', required: false, enum: ['PENDING', 'APPROVED', 'REJECTED', 'EXPIRED'], description: 'Filter by proposal status' })
-  @ApiResponse({ status: 200, description: 'Paginated list of proposals' })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
+  @ApiPaginatedEnvelope(ProposalResponseDto, { description: 'Paginated list of proposals' })
+  @ApiErrorResponses({ unauthorized: true, serverError: true })
   list(
     @CurrentUser('organizationId') organizationId: string,
     @Query(new ZodValidationPipe(paginationQuerySchema)) query: PaginationQuery,
@@ -57,9 +59,8 @@ export class ApprovalController {
       'Returns full details of a proposal including all approval/rejection decisions.',
   })
   @ApiParam({ name: 'id', description: 'Proposal UUID', example: '018f0a1b-...' })
-  @ApiResponse({ status: 200, description: 'Proposal details with approvals' })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
-  @ApiResponse({ status: 404, description: 'Proposal not found' })
+  @ApiEnvelope(ProposalResponseDto, { description: 'Proposal details with approvals' })
+  @ApiErrorResponses({ unauthorized: true, notFound: true, serverError: true })
   findOne(@CurrentUser('organizationId') organizationId: string, @Param('id') id: string) {
     return this.approvalService.getOrThrow(organizationId, id);
   }
@@ -75,12 +76,17 @@ export class ApprovalController {
   })
   @ApiParam({ name: 'id', description: 'Proposal UUID', example: '018f0a1b-...' })
   @ApiBody({ type: DecideProposalDto })
-  @ApiResponse({ status: 200, description: 'Decision recorded (transaction may execute automatically)' })
-  @ApiResponse({ status: 400, description: 'Validation error' })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
-  @ApiResponse({ status: 403, description: 'Insufficient permissions' })
-  @ApiResponse({ status: 404, description: 'Proposal not found' })
-  @ApiResponse({ status: 409, description: 'Proposal already decided or expired' })
+  @ApiEnvelope(ProposalResponseDto, {
+    description: 'Decision recorded (transaction may execute automatically)',
+  })
+  @ApiErrorResponses({
+    validation: true,
+    unauthorized: true,
+    forbidden: true,
+    notFound: true,
+    conflict: 'Proposal already decided or expired',
+    serverError: true,
+  })
   decide(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id') id: string,
@@ -100,11 +106,16 @@ export class ApprovalController {
   })
   @ApiParam({ name: 'id', description: 'Proposal UUID', example: '018f0a1b-...' })
   @ApiBody({ type: DecisionCommentDto })
-  @ApiResponse({ status: 200, description: 'Approval recorded (transaction may execute automatically)' })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
-  @ApiResponse({ status: 403, description: 'Insufficient permissions' })
-  @ApiResponse({ status: 404, description: 'Proposal not found' })
-  @ApiResponse({ status: 409, description: 'Proposal already decided or expired' })
+  @ApiEnvelope(ProposalResponseDto, {
+    description: 'Approval recorded (transaction may execute automatically)',
+  })
+  @ApiErrorResponses({
+    unauthorized: true,
+    forbidden: true,
+    notFound: true,
+    conflict: 'Proposal already decided or expired',
+    serverError: true,
+  })
   approve(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id') id: string,
@@ -126,11 +137,14 @@ export class ApprovalController {
   })
   @ApiParam({ name: 'id', description: 'Proposal UUID', example: '018f0a1b-...' })
   @ApiBody({ type: DecisionCommentDto })
-  @ApiResponse({ status: 200, description: 'Rejection recorded (transaction cancelled)' })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
-  @ApiResponse({ status: 403, description: 'Insufficient permissions' })
-  @ApiResponse({ status: 404, description: 'Proposal not found' })
-  @ApiResponse({ status: 409, description: 'Proposal already decided or expired' })
+  @ApiEnvelope(ProposalResponseDto, { description: 'Rejection recorded (transaction cancelled)' })
+  @ApiErrorResponses({
+    unauthorized: true,
+    forbidden: true,
+    notFound: true,
+    conflict: 'Proposal already decided or expired',
+    serverError: true,
+  })
   reject(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id') id: string,

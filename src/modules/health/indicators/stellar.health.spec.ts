@@ -87,4 +87,63 @@ describe('StellarHealthIndicator', () => {
     expect(report.horizon.status).toBe('degraded');
     expect(report.horizon.error).toBe('HTTP 503 Service Unavailable');
   });
+
+  it('reports DEGRADED when an endpoint answers but needs more than half of the budget', async () => {
+    vi.spyOn(global, 'fetch').mockImplementation(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      return {
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ history_latest_ledger: 1, protocol_version: 21 }),
+      } as unknown as Response;
+    });
+
+    // A 50 ms budget is exhausted at 25 ms, so the 40 ms answer is degraded.
+    const report = await indicator.checkHealth(50);
+
+    expect(report.status).toBe('degraded');
+    expect(report.horizon.status).toBe('degraded');
+    expect(report.horizon.latencyMs).toBeGreaterThanOrEqual(25);
+  });
+
+  it('aborts a hanging endpoint and reports it as DOWN within the budget', async () => {
+    vi.spyOn(global, 'fetch').mockImplementation(
+      (_url: RequestInfo | URL, init?: RequestInit) =>
+        new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () =>
+            reject(new Error('The operation was aborted')),
+          );
+        }),
+    );
+
+    const started = Date.now();
+    const report = await indicator.checkHealth(30);
+    const elapsed = Date.now() - started;
+
+    expect(report.status).toBe('down');
+    expect(report.horizon.status).toBe('down');
+    expect(report.sorobanRpc.status).toBe('down');
+    expect(elapsed).toBeLessThan(1_000);
+  });
+
+  it('falls back to the default budget when a non-positive timeout is given', async () => {
+    vi.spyOn(global, 'fetch').mockImplementation((url: RequestInfo | URL) => {
+      if (String(url).includes('horizon')) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({ history_latest_ledger: 7 }),
+        } as unknown as Response);
+      }
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ result: { status: 'healthy', latestLedger: 7 } }),
+      } as unknown as Response);
+    });
+
+    const report = await indicator.checkHealth(0);
+
+    expect(report.status).toBe('up');
+  });
 });

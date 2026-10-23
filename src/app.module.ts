@@ -49,11 +49,11 @@ import { AiModule } from './modules/ai/ai.module';
 import { HealthModule } from './modules/health/health.module';
 import { MetricsModule } from './modules/metrics/metrics.module';
 import { AdminModule } from './modules/admin/admin.module';
-import { RequestMetricsMiddleware } from './modules/metrics/metrics.middleware';
 import { DeadLetterModule } from './modules/dead-letter/dead-letter.module';
 import { AgentTraceInterceptor } from './common/interceptors/agent-trace.interceptor';
 import { RequestContextInterceptor } from './common/interceptors/request-context.interceptor';
 import { AuditLogInterceptor } from './common/interceptors/audit-log.interceptor';
+import { StructuredAuditInterceptor } from './common/interceptors/structured-audit.interceptor';
 import { MetricsInterceptor } from './common/interceptors/metrics.interceptor';
 import { RequestIdInterceptor } from './common/interceptors/request-id.interceptor';
 import { sanitizeAuditPayload, sanitizeLogArguments } from './common/helpers/audit-sanitizer';
@@ -72,6 +72,9 @@ import { sanitizeAuditPayload, sanitizeLogArguments } from './common/helpers/aud
  *   - ThrottlerGuard    : per-organization / per-IP rate limiting, shared via Redis
  *   - ResponseInterceptor: wraps every result in the success envelope
  *   - AuditLogInterceptor: persists masked mutation requests to the audit trail
+ *   - StructuredAuditInterceptor: publishes `audit.recorded` events for every
+ *                          route marked with @AuditAction() so sensitive
+ *                          operations are logged asynchronously on the event bus
  *   - MetricsInterceptor: records Prometheus metrics for HTTP requests
  *   - AllExceptionsFilter: converts every error into the error envelope
  */
@@ -159,6 +162,7 @@ import { sanitizeAuditPayload, sanitizeLogArguments } from './common/helpers/aud
     { provide: APP_INTERCEPTOR, useClass: AuditLogInterceptor },
     { provide: APP_INTERCEPTOR, useClass: ResponseInterceptor },
     { provide: APP_INTERCEPTOR, useClass: AuditInterceptor },
+    { provide: APP_INTERCEPTOR, useClass: StructuredAuditInterceptor },
     { provide: APP_INTERCEPTOR, useClass: MetricsInterceptor },
     { provide: APP_FILTER, useClass: AllExceptionsFilter },
   ],
@@ -166,7 +170,6 @@ import { sanitizeAuditPayload, sanitizeLogArguments } from './common/helpers/aud
 export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer): void {
     consumer.apply(RequestIdMiddleware, StructuredRequestLoggingMiddleware).forRoutes('*');
-    consumer.apply(RequestMetricsMiddleware).forRoutes('*');
     consumer.apply(RawBodyMiddleware).forRoutes({
       path: 'webhooks/receive',
       method: RequestMethod.POST,

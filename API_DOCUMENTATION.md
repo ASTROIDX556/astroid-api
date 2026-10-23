@@ -503,6 +503,39 @@ Richer diagnostics (including Stellar and migration status) remain available
 under the API prefix at `GET /{API_PREFIX}/health/readiness`,
 `GET /{API_PREFIX}/health/liveness` and `GET /{API_PREFIX}/health/database`.
 
+### GET `/{API_PREFIX}/health/stellar`
+Stellar network connectivity check. Probes the configured Horizon server and
+the Soroban RPC node in parallel, each bounded by a 2 second timeout. Returns
+`200` when both endpoints are healthy and `503` when one of them is `down` or
+`degraded` — an endpoint that answers but needs more than half of the budget is
+reported as `degraded`.
+
+**Authentication:** Public
+
+**Response (503 example):**
+```json
+{
+  "status": "down",
+  "timestamp": "2026-09-28T10:00:00.000Z",
+  "network": "testnet",
+  "horizon": { "status": "up", "latencyMs": 42, "url": "https://horizon-testnet.stellar.org" },
+  "sorobanRpc": {
+    "status": "down",
+    "latencyMs": 2001,
+    "url": "https://soroban-testnet.stellar.org",
+    "error": "The operation was aborted"
+  }
+}
+```
+
+### GET `/{API_PREFIX}/health/redis`
+Redis connectivity check. Issues a `PING` on the application's shared Redis
+client, bounded by a 2 second timeout, so the check exercises the exact
+connection the API depends on. Returns `200` when the ping is answered and
+`503` when Redis is unreachable or the probe times out.
+
+**Authentication:** Public
+
 ---
 
 ## Common Types
@@ -556,7 +589,9 @@ All endpoints return errors as [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457
 | `requestId` | Correlation id, matching the `x-request-id` header |
 | `details` | Optional structured context, e.g. field-level validation errors |
 
-Unhandled server errors always return `500` with `code: "INTERNAL_ERROR"` and a generic `detail`; internal information is only written to the server logs under the `requestId`.
+Unhandled server errors always return `500` with `code: "INTERNAL_ERROR"` and a generic `detail`; internal information is only written to the server logs under the `requestId`. Stack traces are never included in a response.
+
+The same envelope is used for requests rejected before they reach a controller — a malformed JSON body returns `400`, and a body above the parser limit returns `413` — so clients only ever parse one error shape.
 
 ### Authentication
 Most endpoints require Bearer token authentication in the format:

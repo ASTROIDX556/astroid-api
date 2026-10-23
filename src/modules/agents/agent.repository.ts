@@ -18,6 +18,21 @@ export class AgentRepository {
     });
   }
 
+  /**
+   * Finds a live agent by its handle (the display name) inside an organization.
+   * Used to reject duplicate handles with a structured conflict error.
+   */
+  findByNameInOrg(organizationId: string, name: string, excludeId?: string) {
+    return this.prisma.agent.findFirst({
+      where: {
+        organizationId,
+        name,
+        deletedAt: null,
+        ...(excludeId ? { id: { not: excludeId } } : {}),
+      },
+    });
+  }
+
   async findManyAndCount(where: Prisma.AgentWhereInput, pagination: PrismaPagination) {
     const [items, total] = await this.prisma.$transaction([
       this.prisma.agent.findMany({ where, ...pagination }),

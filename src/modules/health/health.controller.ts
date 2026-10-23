@@ -9,6 +9,7 @@ import { PrismaHealthIndicator } from './indicators/prisma.health';
 import { RedisHealthIndicator } from './indicators/redis.health';
 import { StellarHealthIndicator } from './indicators/stellar.health';
 import { DatabaseMigrationHealthIndicator } from './indicators/database-migration.health';
+import { HealthStatusDto, StellarHealthDto } from './health.dto';
 
 /** Per-dependency report shape returned under `services` in the readiness body. */
 interface ReadinessServiceReport {
@@ -48,7 +49,7 @@ export class HealthController {
       'dependency checks, so a downstream outage never causes the orchestrator to restart ' +
       'an otherwise healthy process.',
   })
-  @ApiResponse({ status: 200, description: 'Process is alive' })
+  @ApiResponse({ status: 200, description: 'Process is alive', type: HealthStatusDto })
   live(@Res() res: Response) {
     return res.status(HttpStatus.OK).json({
       status: 'up',
@@ -65,8 +66,12 @@ export class HealthController {
       'every dependency is up and 503 when any is down, with per-dependency status, latency ' +
       'and error detail under `services`.',
   })
-  @ApiResponse({ status: 200, description: 'All critical dependencies are reachable' })
-  @ApiResponse({ status: 503, description: 'At least one critical dependency is unreachable' })
+  @ApiResponse({ status: 200, description: 'All critical dependencies are reachable', type: HealthStatusDto })
+  @ApiResponse({
+    status: 503,
+    description: 'At least one critical dependency is unreachable',
+    type: HealthStatusDto,
+  })
   async ready(@Res() res: Response) {
     const [database, cache] = await Promise.all([
       this.dbIndicator.check('database'),
@@ -90,7 +95,7 @@ export class HealthController {
 
   @Get('liveness')
   @ApiOperation({ summary: 'Application liveness check' })
-  @ApiResponse({ status: 200, description: 'Application is alive' })
+  @ApiResponse({ status: 200, description: 'Application is alive', type: HealthStatusDto })
   getLiveness() {
     return {
       status: 'up',
@@ -100,8 +105,12 @@ export class HealthController {
 
   @Get(['ready', 'readiness'])
   @ApiOperation({ summary: 'Application readiness check' })
-  @ApiResponse({ status: 200, description: 'Application is ready' })
-  @ApiResponse({ status: 503, description: 'Application is not ready' })
+  @ApiResponse({ status: 200, description: 'Application is ready', type: HealthStatusDto })
+  @ApiResponse({
+    status: 503,
+    description: 'Application is not ready',
+    type: HealthStatusDto,
+  })
   async getReadiness(@Res() res: Response) {
     // The database indicator is a Terminus health indicator, so it reports
     // `{ database: { status, ...details } }`; unwrap it to the same flat shape
@@ -132,8 +141,12 @@ export class HealthController {
 
   @Get('database')
   @ApiOperation({ summary: 'Database connectivity check' })
-  @ApiResponse({ status: 200, description: 'Database is reachable' })
-  @ApiResponse({ status: 503, description: 'Database is unreachable' })
+  @ApiResponse({ status: 200, description: 'Database is reachable', type: HealthStatusDto })
+  @ApiResponse({
+    status: 503,
+    description: 'Database is unreachable',
+    type: HealthStatusDto,
+  })
   async getDatabase(@Res() res: Response) {
     const database = unwrap(await this.dbIndicator.check('database'), 'database');
 
@@ -145,8 +158,12 @@ export class HealthController {
 
   @Get('redis')
   @ApiOperation({ summary: 'Redis connectivity check' })
-  @ApiResponse({ status: 200, description: 'Redis is reachable' })
-  @ApiResponse({ status: 503, description: 'Redis is unreachable' })
+  @ApiResponse({ status: 200, description: 'Redis is reachable', type: HealthStatusDto })
+  @ApiResponse({
+    status: 503,
+    description: 'Redis is unreachable',
+    type: HealthStatusDto,
+  })
   async getRedis(@Res() res: Response) {
     const redis = await this.redisIndicator.checkHealth();
 
@@ -156,10 +173,39 @@ export class HealthController {
     return res.status(statusCode).json(redis);
   }
 
+  @Get('stellar')
+  @ApiOperation({
+    summary: 'Stellar network connectivity check',
+    description:
+      'Probes the configured Horizon server and Soroban RPC node in parallel, each bounded ' +
+      'by a timeout. Returns 200 when both endpoints are healthy and 503 when one of them ' +
+      'is down or degraded.',
+  })
+  @ApiResponse({ status: 200, description: 'Horizon and Soroban RPC are reachable', type: StellarHealthDto })
+  @ApiResponse({
+    status: 503,
+    description: 'Horizon or the Soroban RPC is unreachable or degraded',
+    type: StellarHealthDto,
+  })
+  async getStellar(@Res() res: Response) {
+    const stellar = await this.stellarIndicator.checkHealth();
+
+    // A degraded endpoint is not healthy: monitoring must be able to tell the
+    // difference between "reachable" and "usable", so only `up` answers 200.
+    const isUp = stellar.status === 'up';
+    const statusCode = isUp ? HttpStatus.OK : HttpStatus.SERVICE_UNAVAILABLE;
+
+    return res.status(statusCode).json(stellar);
+  }
+
   @Get()
   @ApiOperation({ summary: 'Application health check' })
-  @ApiResponse({ status: 200, description: 'Application is healthy' })
-  @ApiResponse({ status: 503, description: 'Application is degraded or unhealthy' })
+  @ApiResponse({ status: 200, description: 'Application is healthy', type: HealthStatusDto })
+  @ApiResponse({
+    status: 503,
+    description: 'Application is degraded or unhealthy',
+    type: HealthStatusDto,
+  })
   async check(@Res() res: Response) {
     return this.getReadiness(res);
   }

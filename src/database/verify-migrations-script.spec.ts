@@ -274,6 +274,153 @@ describe.skipIf(!hasBash)('scripts/verify-migrations.sh', () => {
     expect(output).toContain('FAILED: 2 error(s)');
   });
 
+  it('rejects leftover merge artefacts and conflict markers in a migration folder', () => {
+    write('20260201000000_conflicted/migration.sql', 'SELECT 1;\n');
+    write('20260201000000_conflicted/migration.sql.orig', 'SELECT 1;\n');
+    write('20260201000000_conflicted/notes.sql', '<<<<<<< HEAD\nSELECT 2;\n');
+
+    const { status, output } = run();
+
+    expect(status).toBe(1);
+    expect(output).toContain("Leftover merge artefact 'migration.sql.orig' in migration folder");
+    expect(output).toContain("Unresolved merge-conflict marker in 'notes.sql'");
+  });
+
+  describe('statement classification', () => {
+    it('rejects forbidden statements', () => {
+      write(
+        '20260201000000_forbidden/migration.sql',
+        [
+          'DROP DATABASE "astroid";',
+          'DROP SCHEMA public CASCADE;',
+          'CREATE ROLE reporting;',
+          'GRANT ALL ON SCHEMA public TO reporting;',
+          "ALTER SYSTEM SET work_mem = '1GB';",
+        ].join('\n'),
+      );
+
+      const { status, output } = run();
+
+      expect(status).toBe(1);
+      expect(output).toContain('Forbidden statement: DROP DATABASE "astroid"');
+      expect(output).toContain('Forbidden statement: DROP SCHEMA public CASCADE');
+      expect(output).toContain('Forbidden statement: CREATE ROLE reporting');
+      expect(output).toContain('Forbidden statement: GRANT ALL ON SCHEMA public TO reporting');
+      expect(output).toContain("Forbidden statement: ALTER SYSTEM SET work_mem = '1GB'");
+    });
+
+    it('rejects a destructive statement that does not opt in', () => {
+      write(
+        '20260201000000_cleanup/migration.sql',
+        '-- DROP TABLE "Thing"; in a comment is ignored\nALTER TABLE "Thing" DROP COLUMN "name";\n',
+      );
+
+      const { status, output } = run();
+
+      expect(status).toBe(1);
+      expect(output).toContain(
+        'ERROR: prisma/migrations/20260201000000_cleanup/migration.sql:2: Destructive statement is not allowed',
+      );
+      expect(output).not.toContain('migration.sql:1: Destructive statement');
+    });
+
+    it('accepts a destructive statement that opts in explicitly', () => {
+      write(
+        '20260201000000_cleanup/migration.sql',
+        '-- astroid:allow-destructive the column is unused and holds no data\nALTER TABLE "Thing" DROP COLUMN "name";\n',
+      );
+
+      const { status, output } = run();
+
+      expect(status).toBe(0);
+      expect(output).toContain(
+        'WARNING: prisma/migrations/20260201000000_cleanup/migration.sql:2: Destructive statement: ALTER TABLE "Thing" DROP COLUMN "name"',
+      );
+      expect(output).toContain('passed with 1 warning(s)');
+    });
+
+    it('accepts every destructive statement when ALLOW_DESTRUCTIVE_MIGRATIONS is set', () => {
+      write('20260201000000_cleanup/migration.sql', 'TRUNCATE TABLE "Thing";\n');
+
+      const { status, output } = run({ ALLOW_DESTRUCTIVE_MIGRATIONS: 'true' });
+
+      expect(status).toBe(0);
+      expect(output).toContain(
+        'WARNING: prisma/migrations/20260201000000_cleanup/migration.sql:1: Destructive statement',
+      );
+      expect(output).toContain('passed with 1 warning(s)');
+    });
+
+    it('rejects a NOT NULL column without DEFAULT on a table that already holds rows', () => {
+      write(
+        '20260201000000_not_null/migration.sql',
+        '  ALTER TABLE "Thing" ADD COLUMN "label" TEXT NOT NULL;\n',
+      );
+
+      const { status, output } = run();
+
+      expect(status).toBe(1);
+      expect(output).toContain(
+        'ERROR: prisma/migrations/20260201000000_not_null/migration.sql:1: Unsafe statement: ADD COLUMN ... NOT NULL without DEFAULT on table "Thing"',
+      );
+    });
+
+    it('allows a NOT NULL column on a table created by the same migration', () => {
+      write(
+        '20260201000000_not_null/migration.sql',
+        'CREATE TABLE "Widget" ("id" TEXT NOT NULL, PRIMARY KEY ("id"));\nALTER TABLE "Widget" ADD COLUMN "label" TEXT NOT NULL;\n',
+      );
+
+      expect(run().status).toBe(0);
+    });
+
+    it('allows a NOT NULL column that has a DEFAULT', () => {
+      write(
+        '20260201000000_not_null/migration.sql',
+        'ALTER TABLE "Thing" ADD COLUMN "label" TEXT NOT NULL DEFAULT \'\';\n',
+      );
+
+      expect(run().status).toBe(0);
+    });
+
+    it('rejects CREATE INDEX CONCURRENTLY with IF NOT EXISTS', () => {
+      write(
+        '20260201000000_index/migration.sql',
+        'CREATE INDEX CONCURRENTLY IF NOT EXISTS "Thing_label_idx" ON "Thing" ("label");\n',
+      );
+
+      const { status, output } = run();
+
+      expect(status).toBe(1);
+      expect(output).toContain(
+        'Unsafe statement: CREATE INDEX CONCURRENTLY ... IF NOT EXISTS is not allowed',
+      );
+    });
+
+    it('rejects CREATE INDEX CONCURRENTLY next to another statement', () => {
+      write(
+        '20260201000000_index/migration.sql',
+        'CREATE INDEX CONCURRENTLY "Thing_label_idx" ON "Thing" ("label");\nCREATE INDEX "Thing_id_idx" ON "Thing" ("id");\n',
+      );
+
+      const { status, output } = run();
+
+      expect(status).toBe(1);
+      expect(output).toContain(
+        'Unsafe statement: CREATE INDEX CONCURRENTLY must be the only statement in a migration',
+      );
+    });
+
+    it('accepts a single CREATE INDEX CONCURRENTLY statement', () => {
+      write(
+        '20260201000000_index/migration.sql',
+        'CREATE INDEX CONCURRENTLY "Thing_label_idx" ON "Thing" ("label");\n',
+      );
+
+      expect(run().status).toBe(0);
+    });
+  });
+
   describe('history checks against MIGRATION_BASE_REF', () => {
     beforeEach(() => {
       git('init', '-q');
@@ -333,7 +480,22 @@ describe.skipIf(!hasBash)('scripts/verify-migrations.sh', () => {
       );
     });
 
-    it('warns, without failing, on destructive statements in new migrations only', () => {
+    it('warns about an index created without CONCURRENTLY in a new migration', () => {
+      write(
+        '20260201000000_index/migration.sql',
+        'CREATE INDEX "Thing_name_idx" ON "Thing" ("name");\n',
+      );
+
+      const { status, output } = run({ MIGRATION_BASE_REF: 'base' });
+
+      expect(status).toBe(0);
+      expect(output).toContain(
+        'WARNING: prisma/migrations/20260201000000_index/migration.sql:1: Index created without CONCURRENTLY',
+      );
+      expect(output).toContain('passed with 1 warning(s)');
+    });
+
+    it('rejects a destructive statement in a new migration', () => {
       write(
         '20260201000000_cleanup/migration.sql',
         '-- DROP TABLE "Thing"; in a comment is ignored\nALTER TABLE "Thing" DROP COLUMN "name";\n',
@@ -341,12 +503,43 @@ describe.skipIf(!hasBash)('scripts/verify-migrations.sh', () => {
 
       const { status, output } = run({ MIGRATION_BASE_REF: 'base' });
 
+      expect(status).toBe(1);
+      expect(output).toContain(
+        'ERROR: prisma/migrations/20260201000000_cleanup/migration.sql:2: Destructive statement is not allowed',
+      );
+      expect(output).not.toContain('migration.sql:1: Destructive statement');
+    });
+
+    it('accepts a destructive statement in a new migration that opts in', () => {
+      write(
+        '20260201000000_cleanup/migration.sql',
+        '-- astroid:allow-destructive the column is unused and holds no data\nALTER TABLE "Thing" DROP COLUMN "name";\n',
+      );
+
+      const { status, output } = run({ MIGRATION_BASE_REF: 'base' });
+
       expect(status).toBe(0);
       expect(output).toContain(
-        'WARNING: prisma/migrations/20260201000000_cleanup/migration.sql:2: Potentially destructive statement',
+        'WARNING: prisma/migrations/20260201000000_cleanup/migration.sql:2: Destructive statement: ALTER TABLE "Thing" DROP COLUMN "name"',
       );
-      expect(output).not.toContain('migration.sql:1: Potentially destructive');
       expect(output).toContain('passed with 1 warning(s)');
+    });
+
+    it('only warns about a destructive statement in an already merged migration', () => {
+      write(
+        '20260101000000_add_name/migration.sql',
+        'ALTER TABLE "Thing" ADD COLUMN "name" TEXT;\nDROP INDEX "Thing_name_idx";\n',
+      );
+
+      const { status, output } = run({ MIGRATION_BASE_REF: 'base' });
+
+      expect(status).toBe(1);
+      expect(output).toContain(
+        "Migration '20260101000000_add_name' already exists on base and was modified",
+      );
+      expect(output).toContain(
+        'WARNING: prisma/migrations/20260101000000_add_name/migration.sql:2: Destructive statement in an already merged migration',
+      );
     });
 
     it('skips with a warning when the base ref cannot be resolved', () => {

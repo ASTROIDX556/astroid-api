@@ -22,6 +22,7 @@ describe('Health probes over HTTP', () => {
 
   const dbIndicator = { check: vi.fn() };
   const redisIndicator = { checkHealth: vi.fn() };
+  const stellarIndicator = { checkHealth: vi.fn() };
 
   const databaseUp = () => ({
     database: { status: 'up', latencyMs: 3, timestamp: new Date().toISOString() },
@@ -35,7 +36,7 @@ describe('Health probes over HTTP', () => {
         { provide: APP_GUARD, useClass: JwtAuthGuard },
         { provide: PrismaHealthIndicator, useValue: dbIndicator },
         { provide: RedisHealthIndicator, useValue: redisIndicator },
-        { provide: StellarHealthIndicator, useValue: { checkHealth: vi.fn() } },
+        { provide: StellarHealthIndicator, useValue: stellarIndicator },
         { provide: DatabaseMigrationHealthIndicator, useValue: { checkHealth: vi.fn() } },
       ],
     }).compile();
@@ -113,5 +114,39 @@ describe('Health probes over HTTP', () => {
     const res = await fetch(`${baseUrl}/api/v1/health/database`);
 
     expect(res.status).toBe(200);
+  });
+
+  it('serves GET /api/v1/health/stellar with the per-endpoint status', async () => {
+    stellarIndicator.checkHealth.mockResolvedValue({
+      status: 'up',
+      timestamp: new Date().toISOString(),
+      network: 'testnet',
+      horizon: { status: 'up', latencyMs: 21, url: 'https://horizon' },
+      sorobanRpc: { status: 'up', latencyMs: 18, url: 'https://soroban' },
+    });
+
+    const res = await fetch(`${baseUrl}/api/v1/health/stellar`);
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      status: 'up',
+      horizon: { status: 'up' },
+      sorobanRpc: { status: 'up' },
+    });
+  });
+
+  it('answers GET /api/v1/health/stellar with 503 during a Stellar outage', async () => {
+    stellarIndicator.checkHealth.mockResolvedValue({
+      status: 'down',
+      timestamp: new Date().toISOString(),
+      network: 'testnet',
+      horizon: { status: 'down', latencyMs: 2000, url: 'https://horizon', error: 'timeout' },
+      sorobanRpc: { status: 'up', latencyMs: 18, url: 'https://soroban' },
+    });
+
+    const res = await fetch(`${baseUrl}/api/v1/health/stellar`);
+
+    expect(res.status).toBe(503);
+    expect(await res.json()).toMatchObject({ status: 'down' });
   });
 });

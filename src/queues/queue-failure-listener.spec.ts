@@ -274,8 +274,57 @@ describe('QueueFailureListener', () => {
       expect(loggedRecord(errorSpy).payload).toEqual({ webhookId: 'wh-1' });
 
       const dlqAdd = add.mock.calls.find((call: unknown[]) => String(call[0]).startsWith('dlq:'));
-      expect((dlqAdd?.[1] as { payload: unknown }).payload).toEqual({
+      expect((dlqAdd?.[1] as { payload: unknown }).payload).toEqual({ webhookId: 'wh-1' });
+    });
+
+    it('keeps the tenant event payload out of the dead-letter entry', async () => {
+      listener.onModuleInit();
+      getJob.mockResolvedValue(
+        exhaustedJob({
+          data: {
+            webhookId: 'wh-1',
+            organizationId: 'org-1',
+            eventName: 'transaction.completed',
+            eventId: 'evt-1',
+            payload: { customerEmail: 'private@example.com' },
+          },
+        }),
+      );
+
+      await listener.handleFailed(Queues.Webhooks, {
+        jobId: 'job-123',
+        failedReason: 'HTTP 500',
+      });
+
+      const dlqAdd = add.mock.calls.find((call: unknown[]) => String(call[0]).startsWith('dlq:'));
+      const dlqPayload = (dlqAdd?.[1] as { payload: unknown }).payload;
+
+      expect(dlqPayload).toEqual({
         webhookId: 'wh-1',
+        organizationId: 'org-1',
+        eventName: 'transaction.completed',
+        eventId: 'evt-1',
+      });
+      expect(JSON.stringify(dlqPayload)).not.toContain('private@example.com');
+    });
+
+    it('keeps the redacted job payload of every other queue on the dead-letter entry', async () => {
+      listener.onModuleInit();
+      getJob.mockResolvedValue(
+        exhaustedJob({
+          data: { organizationId: 'org-1', transactionId: 'txn-1', secret: 'whsec_live' },
+        }),
+      );
+
+      await listener.handleFailed(Queues.Transactions, {
+        jobId: 'job-123',
+        failedReason: 'HTTP 500',
+      });
+
+      const dlqAdd = add.mock.calls.find((call: unknown[]) => String(call[0]).startsWith('dlq:'));
+      expect((dlqAdd?.[1] as { payload: unknown }).payload).toEqual({
+        organizationId: 'org-1',
+        transactionId: 'txn-1',
         secret: '[REDACTED]',
       });
     });

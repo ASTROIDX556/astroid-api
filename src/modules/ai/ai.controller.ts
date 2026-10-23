@@ -3,13 +3,15 @@ import {
   ApiOperation,
   ApiTags,
   ApiBearerAuth,
-  ApiResponse,
   ApiBody,
 } from '@nestjs/swagger';
+import { ApiErrorResponses } from '../../common/decorators/api-error-responses.decorator';
+import { ApiEnvelope } from '../../common/decorators/api-envelope.decorator';
 import { z } from 'zod';
 import { AiService } from './ai.service';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
+import { AiBriefingDto, ChatMessageDto, AiChatResponseDto } from './ai.dto';
 
 const chatSchema = z.object({ message: z.string().min(1).max(2000) });
 type ChatInput = z.infer<typeof chatSchema>;
@@ -27,9 +29,10 @@ export class AiController {
       'Generates a comprehensive briefing summarizing key financial activities, ' +
       'agent performance, policy compliance, and risk alerts for the current day.',
   })
-  @ApiResponse({ status: 200, description: 'Daily executive briefing with insights and recommendations' })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
-  @ApiResponse({ status: 429, description: 'Rate limit exceeded' })
+  @ApiEnvelope(AiBriefingDto, {
+    description: 'Daily executive briefing with insights and recommendations',
+  })
+  @ApiErrorResponses({ unauthorized: true, tooManyRequests: true, serverError: true })
   getBriefing(@CurrentUser('organizationId') organizationId: string) {
     return this.aiService.getBriefing(organizationId);
   }
@@ -41,8 +44,11 @@ export class AiController {
       'Returns the initial conversation transcript for the AI assistant. ' +
       'This is used to bootstrap the assistant with context about the organization.',
   })
-  @ApiResponse({ status: 200, description: 'Seeded conversation transcript' })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
+  @ApiEnvelope(ChatMessageDto, {
+    isArray: true,
+    description: 'Seeded conversation transcript',
+  })
+  @ApiErrorResponses({ unauthorized: true, serverError: true })
   getSeed() {
     return this.aiService.getSeed();
   }
@@ -70,10 +76,13 @@ export class AiController {
       required: ['message'],
     },
   })
-  @ApiResponse({ status: 200, description: 'AI assistant response' })
-  @ApiResponse({ status: 400, description: 'Validation error (empty or too long message)' })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
-  @ApiResponse({ status: 429, description: 'Rate limit exceeded' })
+  @ApiEnvelope(AiChatResponseDto, { description: 'AI assistant response' })
+  @ApiErrorResponses({
+    validation: 'Validation error (empty or too long message)',
+    unauthorized: true,
+    tooManyRequests: true,
+    serverError: true,
+  })
   async chat(@Body(new ZodValidationPipe(chatSchema)) body: ChatInput) {
     const reply = await this.aiService.chat(body.message);
     return { reply };
