@@ -16,12 +16,11 @@ import { CreateTransactionInput } from './transaction.dto';
 import { TransactionsValidator } from './transactions.validator';
 import { WalletService, toNetworkName } from '../wallets/wallet.service';
 import { PolicyService } from '../policies/policy.service';
-import { RiskService } from '../risk/risk.service';
+import { RiskAggregatorService } from '../risk/risk-aggregator.service';
 import { BudgetService } from '../budgets/budget.service';
 import { StellarService } from '../stellar/stellar.service';
 import { AgentService } from '../agents/agent.service';
 import { TransactionIntent } from '../policies/policy.types';
-import { RiskFactorsInput } from '../risk/risk.types';
 import { DomainException } from '../../common/exceptions/domain.exception';
 import { ErrorCode } from '../../common/constants/error-codes';
 import {
@@ -87,9 +86,11 @@ function transactionRequestHash(input: CreateTransactionInput): string {
  *   1. resolve + validate the sender wallet (must be ACTIVE / not frozen)
  *   2. resolve + validate the initiating agent (must be ACTIVE)
  *   3. evaluate all applicable policies (may block or require approval)
- *   4. score risk (CRITICAL can never auto-execute)
+ *   4. score risk (the aggregator combines velocity, destination reputation and
+ *      amount anomaly into a composite 0-100 score; scores at or above the
+ *      review threshold require a human approval)
  *   5. check the budget headroom (does not mutate yet)
- *   6. persist the Transaction row
+ *   6. persist the Transaction row and the linked risk assessment
  *   7. if approval is required -> create a Proposal (status PENDING) and stop
  *      else -> execute on-chain immediately
  * Execution is idempotent-ish and also callable by the approvals module once a
@@ -104,7 +105,7 @@ export class TransactionService {
     private readonly wallets: WalletService,
     private readonly agents: AgentService,
     private readonly policies: PolicyService,
-    private readonly risk: RiskService,
+    private readonly risk: RiskAggregatorService,
     private readonly budgets: BudgetService,
     private readonly stellar: StellarService,
     private readonly eventBus: EventBusService,
@@ -214,19 +215,25 @@ export class TransactionService {
       );
     }
 
-    // 4. Risk scoring — CRITICAL can never auto-execute.
-    const assessment = await this.risk.evaluate(
+    // 4. Risk scoring — the aggregator combines the velocity, destination
+    //    reputation and amount-anomaly signals into the composite score.
+    const assessment = await this.risk.assess({
       organizationId,
-      await this.toRiskFactors(organizationId, wallet, input, amount, policyResult.violations.length),
-      { actorId },
-    );
+      walletId: wallet.id,
+      recipientAddress: input.recipientAddress,
+      amount,
+      asset: input.asset,
+      walletAgeDays: this.walletAgeDays(wallet),
+      policyViolations: policyResult.violations.length,
+      hourUtc: new Date().getUTCHours(),
+    });
 
     // 5. Budget headroom (no mutation yet).
     if (input.budgetId) {
       await this.budgets.assertWithinBudget(organizationId, input.budgetId, amount);
     }
 
-    const requiresApproval = policyResult.requiresApproval || !assessment.canAutoExecute;
+    const requiresApproval = policyResult.requiresApproval || assessment.requiresApproval;
 
     // 6. Persist the transaction row.
     const createTransactionRow = () => this.repository.create({
@@ -259,6 +266,11 @@ export class TransactionService {
         )
       : await createTransactionRow();
     await onTransactionCreated?.(transaction);
+
+    // 6.1. Persist the risk assessment against the transaction and emit the
+    //      risk evaluation events for the downstream notification workers.
+    await this.risk.record(organizationId, transaction.id, assessment, { actorId });
+
     await this.eventBus.emit(
       DomainEventName.TransactionCreated,
       { transactionId: transaction.id, amount: input.amount, riskBand: assessment.band },
@@ -371,10 +383,17 @@ export class TransactionService {
     const { wallet } = await this.preflight(organizationId, input);
     const intent = this.toIntent(organizationId, input, amount);
     const policyResult = await this.policies.evaluateIntent(intent);
-    const assessment = this.risk.assess(
-      await this.toRiskFactors(organizationId, wallet, input, amount, policyResult.violations.length),
-    );
-    const requiresApproval = policyResult.requiresApproval || !assessment.canAutoExecute;
+    const assessment = await this.risk.assess({
+      organizationId,
+      walletId: wallet.id,
+      recipientAddress: input.recipientAddress,
+      amount,
+      asset: input.asset,
+      walletAgeDays: this.walletAgeDays(wallet),
+      policyViolations: policyResult.violations.length,
+      hourUtc: new Date().getUTCHours(),
+    });
+    const requiresApproval = policyResult.requiresApproval || assessment.requiresApproval;
     return {
       wouldPass: policyResult.passed,
       requiresApproval,
@@ -494,29 +513,9 @@ export class TransactionService {
     };
   }
 
-  private async toRiskFactors(
-    organizationId: string,
-    wallet: Wallet,
-    input: CreateTransactionInput,
-    amount: number,
-    policyViolations: number,
-  ): Promise<RiskFactorsInput> {
-    const [knownRecipient, recentTransactionCount] = await Promise.all([
-      this.repository.hasPaidRecipient(organizationId, input.recipientAddress),
-      this.repository.recentCountForWallet(wallet.id),
-    ]);
-    const walletAgeDays = Math.floor(
-      (Date.now() - wallet.createdAt.getTime()) / 86_400_000,
-    );
-    return {
-      amount,
-      asset: input.asset,
-      knownRecipient,
-      recentTransactionCount,
-      walletAgeDays,
-      policyViolations,
-      hourUtc: new Date().getUTCHours(),
-    };
+  /** Age of the sending wallet in days — new wallets carry more risk. */
+  private walletAgeDays(wallet: Wallet): number {
+    return Math.floor((Date.now() - wallet.createdAt.getTime()) / 86_400_000);
   }
 
   /** Creates the approval Proposal row directly (avoids a circular module dep). */

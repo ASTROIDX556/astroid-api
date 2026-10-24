@@ -115,24 +115,4 @@ export class TransactionRepository {
   ): Promise<Transaction> {
     return client.transaction.update({ where: { id }, data });
   }
-
-  /** True when this org has previously paid the given recipient successfully. */
-  async hasPaidRecipient(organizationId: string, recipientAddress: string): Promise<boolean> {
-    const count = await this.prisma.transaction.count({
-      where: {
-        organizationId,
-        recipientAddress,
-        status: { in: ['COMPLETED', 'CONFIRMED', 'SUBMITTED'] },
-      },
-    });
-    return count > 0;
-  }
-
-  /** Number of transactions from a wallet within the trailing `sinceHours`. */
-  recentCountForWallet(walletId: string, sinceHours = 24): Promise<number> {
-    const since = new Date(Date.now() - sinceHours * 3_600_000);
-    return this.prisma.transaction.count({
-      where: { walletId, createdAt: { gte: since } },
-    });
-  }
 }

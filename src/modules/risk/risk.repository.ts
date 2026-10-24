@@ -21,6 +21,23 @@ interface RiskAssessment {
 export class RiskRepository {
   constructor(private readonly prisma: PrismaService) {}
 
+  async updateTransactionRisk(
+    organizationId: string,
+    transactionId: string,
+    data: { score: number; band: RiskBand; requiresApproval: boolean },
+  ) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const client = (this.prisma as any).workerClient ?? this.prisma;
+    return client.transaction.updateMany({
+      where: { id: transactionId, organizationId },
+      data: {
+        riskScore: data.score,
+        riskBand: data.band,
+        ...(data.requiresApproval ? { requiresApproval: true } : {}),
+      },
+    });
+  }
+
   /**
    * Record a risk assessment result for audit trail compliance.
    */

@@ -75,12 +75,49 @@ describe('RiskEngine', () => {
     expect(night.score).toBeGreaterThan(day.score);
   });
 
+  // ── Aggregator signals ───────────────────────────────────────────────────
+
+  it('scores the value moved in the velocity window, not only the count', () => {
+    const idle = engine.assess({ ...lowRisk, recentTransactionCount: 1 });
+    const value = engine.assess({
+      ...lowRisk,
+      recentTransactionCount: 1,
+      recentTransactionAmount: 20_000,
+    });
+    expect(value.factors.find((f) => f.factor === 'velocity')?.contribution).toBe(20);
+    expect(value.score).toBeGreaterThan(idle.score);
+  });
+
+  it('raises the score for a destination with a poor payment history', () => {
+    const trusted = engine.assess({ ...lowRisk, destinationPaymentCount: 10 });
+    const faulty = engine.assess({
+      ...lowRisk,
+      destinationPaymentCount: 10,
+      destinationFailureCount: 5,
+    });
+    expect(faulty.score).toBeGreaterThan(trusted.score);
+  });
+
+  it('raises the score for an amount far above the wallet average', () => {
+    const normal = engine.assess({ ...lowRisk, amount: 100, amountBaseline: 100 });
+    const anomalous = engine.assess({ ...lowRisk, amount: 500, amountBaseline: 100 });
+    expect(anomalous.score).toBeGreaterThan(normal.score);
+  });
+
+  it('does not score the signals that have no data', () => {
+    const result = engine.assess(lowRisk);
+    expect(result.factors.find((f) => f.factor === 'amountAnomaly')?.contribution).toBe(0);
+    expect(result.factors.find((f) => f.factor === 'destinationReputation')?.contribution).toBe(0);
+  });
+
   it('returns a factor breakdown for every rule', () => {
     const result = engine.assess(lowRisk);
-    expect(result.factors.length).toBe(6);
+    expect(result.factors.length).toBe(8);
     const names = result.factors.map((f) => f.factor);
     expect(names).toContain('amount');
+    expect(names).toContain('amountAnomaly');
     expect(names).toContain('unknownRecipient');
+    expect(names).toContain('destinationReputation');
     expect(names).toContain('velocity');
     expect(names).toContain('walletAge');
     expect(names).toContain('policyViolations');
@@ -126,13 +163,13 @@ describe('RiskEngine', () => {
 
   it('uses config to override velocity saturation', () => {
     const config = { velocitySaturation: 5 };
-    // 5 recent txns with saturation=5 → ratio=1 → full weight (15)
+    // 5 recent txns with saturation=5 → ratio=1 → full weight (20)
     const result = engine.assess(
       { ...lowRisk, recentTransactionCount: 5 },
       config,
     );
     const velocityFactor = result.factors.find((f) => f.factor === 'velocity');
-    expect(velocityFactor!.contribution).toBe(15);
+    expect(velocityFactor!.contribution).toBe(20);
   });
 
   it('uses config to override wallet seasoned days', () => {
@@ -157,8 +194,30 @@ describe('RiskEngine', () => {
     expect(timingFactor!.contribution).toBe(timingFactor!.weight);
   });
 
-  // ── Configurable weights ─────────────────────────────────────────────────
+  // ── Review and block thresholds ──────────────────────────────────────────
 
+  it('flags an assessment at the review threshold for human review', () => {
+    const config = { reviewThreshold: 30 };
+    expect(engine.assess({ ...lowRisk, amount: 100 }, config).requiresApproval).toBe(false);
+    expect(engine.assess({ ...lowRisk, amount: 100 }, { ...config, reviewThreshold: 1 }).requiresApproval).toBe(true);
+  });
+
+  it('blocks auto-execution at the block threshold', () => {
+    const critical = engine.assess({
+      amount: 50_000,
+      asset: 'USDC',
+      knownRecipient: false,
+      recentTransactionCount: 20,
+      walletAgeDays: 0,
+      policyViolations: 3,
+      hourUtc: 2,
+    });
+    expect(critical.score).toBeGreaterThanOrEqual(81);
+    expect(critical.canAutoExecute).toBe(false);
+    expect(critical.requiresApproval).toBe(true);
+  });
+
+  // ── Configurable weights ─────────────────────────────────────────────────
   it('uses config weights to override default rule weights', () => {
     const config = { weights: { amount: 50 } };
     const result = engine.assess(
