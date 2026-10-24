@@ -35,6 +35,12 @@ const amountString = z
   .regex(/^\d+(\.\d{1,7})?$/, 'Amount must be a positive decimal with up to 7 places')
   .refine((v) => Number(v) > 0, 'Amount must be greater than zero');
 
+const assetTransferSchema = z.object({
+  asset: stellarAssetCodeSchema,
+  amount: amountString,
+  recipientAddress: stellarPublicKeySchema.optional(),
+});
+
 export const createTransactionSchema = z
   .object({
     walletId: z.string().uuid(),
@@ -43,6 +49,7 @@ export const createTransactionSchema = z
     asset: stellarAssetCodeSchema.default('XLM'),
     amount: amountString,
     recipientAddress: stellarPublicKeySchema,
+    transfers: z.array(assetTransferSchema).max(10).optional(),
     memo: z.string().max(128).optional(),
     memoType: stellarMemoTypeSchema.optional(),
     memoValue: z.string().optional(),
@@ -51,6 +58,14 @@ export const createTransactionSchema = z
   })
   .strict()
   .superRefine((data, ctx) => {
+    if (data.transfers) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'A transaction moves a single asset; use the simulation endpoint for multi-asset transfers',
+        path: ['transfers'],
+      });
+      return;
+    }
     const hasTyped = data.memoType !== undefined;
     const hasLegacy = data.memo !== undefined;
 
@@ -146,7 +161,31 @@ export const createTransactionSchema = z
 
 export type CreateTransactionInput = z.infer<typeof createTransactionSchema>;
 
-export const simulateTransactionSchema = createTransactionSchema;
+export const simulateTransactionSchema = z
+  .object({
+    walletId: z.string().uuid(),
+    agentId: z.string().uuid().optional(),
+    budgetId: z.string().uuid().optional(),
+    asset: stellarAssetCodeSchema.optional(),
+    amount: amountString.optional(),
+    recipientAddress: stellarPublicKeySchema,
+    transfers: z.array(assetTransferSchema).min(1).max(10).optional(),
+    memo: z.string().max(128).optional(),
+    memoType: stellarMemoTypeSchema.optional(),
+    memoValue: z.string().optional(),
+    purpose: z.string().max(280).optional(),
+    metadata: z.record(jsonValueSchema).default({}),
+  })
+  .strict()
+  .superRefine((data, ctx) => {
+    const hasTransfers = data.transfers !== undefined;
+    const hasSingle = data.asset !== undefined || data.amount !== undefined;
+    if (hasTransfers && hasSingle) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Provide either an asset/amount pair or transfers, not both', path: ['transfers'] });
+    } else if (!hasTransfers && data.amount === undefined) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'amount is required when transfers is not provided', path: ['amount'] });
+    }
+  });
 export type SimulateTransactionInput = z.infer<typeof simulateTransactionSchema>;
 
 // ── Swagger DTOs ──

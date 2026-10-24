@@ -12,3 +12,6 @@ export const stellarAssetCodeSchema = z
   .max(12, 'Asset code must be at most 12 characters');
 
 export type StellarAssetCode = z.infer<typeof stellarAssetCodeSchema>;
+
+/** Backwards-compatible name used by transfer payload validation. */
+export const stellarAssetSchema = stellarAssetCodeSchema;

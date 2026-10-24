@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { Policy } from '@prisma/client';
 import { SpendingPolicyService } from './spending-policy.service';
 import { PolicyEngine } from './policy.engine';
@@ -10,7 +10,6 @@ import {
   PolicyConfiguration,
   PolicyEvaluationResult,
   PolicyViolation,
-  PolicyVelocityWindow,
   SpendPeriods,
   TransactionIntent,
 } from './policy.types';
@@ -25,8 +24,6 @@ import { DomainEventName } from '../../events/event-names';
  */
 @Injectable()
 export class PolicyService {
-  private readonly logger = new Logger(PolicyService.name);
-
   constructor(
     private readonly spendingPolicyService: SpendingPolicyService,
     private readonly engine: PolicyEngine,

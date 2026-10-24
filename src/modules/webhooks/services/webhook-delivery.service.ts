@@ -1,11 +1,11 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { ConfigService } from '@nestjs/config';
 import { Queue } from 'bullmq';
 
 import { Queues } from '../../../queues/queues.constants';
 import { WEBHOOK_JOB_NAME, webhookJobOptionsFor } from '../../../queues/webhook.queue';
-import { WebhookConfig } from '../../../config/webhook.config';
+import { DEFAULT_WEBHOOK_CONFIG, WebhookConfig } from '../../../config/webhook.config';
 import { WebhookJobData } from '../types/webhook-job.types';
 import { RequestContext } from '../../../common/context/request-context';
 import { resolveRequestId } from '../../../common/helpers/request-id';
@@ -24,12 +24,12 @@ export class WebhookDeliveryService {
   constructor(
     @InjectQueue(Queues.Webhooks)
     private readonly webhookQueue: Queue<WebhookJobData>,
-    private readonly config: ConfigService,
+    @Optional() private readonly config?: ConfigService,
   ) {}
 
   /** The resolved webhook delivery configuration. */
   private get settings(): WebhookConfig {
-    return this.config.getOrThrow<WebhookConfig>('webhook');
+    return this.config?.get<WebhookConfig>('webhook') ?? DEFAULT_WEBHOOK_CONFIG;
   }
 
   /**

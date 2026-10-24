@@ -25,6 +25,9 @@ import {
   WebhookDestinationPolicy,
   WebhookDestinationResolutionError,
 } from './webhook-destination.policy';
+import { WebhookCircuitService } from './services/webhook-circuit.service';
+import { EventBusService } from '../../events/event-bus.service';
+import { DomainEventName } from '../../events/event-names';
 
 /**
  * BullMQ job processor for webhook event delivery with exponential backoff + jitter.
@@ -49,6 +52,8 @@ import { OnModuleDestroy } from '@nestjs/common';
 export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
   private readonly logger = new Logger(WebhooksProcessor.name);
   private readonly config: QueueConfig;
+  private readonly circuit?: WebhookCircuitService;
+  private readonly eventBus?: EventBusService;
 
   async onModuleDestroy(): Promise<void> {
     if (this.worker) {
@@ -122,10 +127,22 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
     @Optional() private readonly webhookAudit?: WebhookAuditService,
     @Optional() @Inject(WebhookDestinationPolicy)
     private readonly destinationPolicy: WebhookDestinationClient = new WebhookDestinationPolicy(),
-    @Optional() @Inject(ConfigService) private readonly configService?: any,
+    @Optional() @Inject(WebhookCircuitService)
+    private readonly compatibilityService?: WebhookCircuitService | EventBusService | ConfigService,
+    @Optional() @Inject(ConfigService) private readonly configService?: ConfigService,
+    @Optional() private readonly eventBusService?: EventBusService,
   ) {
     super();
-    this.config = this.configService?.get<QueueConfig>('queue') ?? queueConfig();
+    this.circuit = compatibilityService && 'beforeAttempt' in compatibilityService
+      ? compatibilityService as WebhookCircuitService
+      : undefined;
+    this.eventBus = eventBusService ?? (compatibilityService && 'emit' in compatibilityService
+      ? compatibilityService as EventBusService
+      : undefined);
+    const configService = this.configService ?? (compatibilityService && 'get' in compatibilityService
+      ? compatibilityService as ConfigService
+      : undefined);
+    this.config = configService?.get<QueueConfig>('queue') ?? queueConfig();
   }
 
   /**
@@ -139,7 +156,25 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
     responseStatus?: number,
     endpoint = job.data.url,
   ): Promise<void> {
-    if (!this.webhookAudit) return;
+    if (!this.webhookAudit) {
+      if (this.eventBus) {
+        await this.eventBus.emit(
+          DomainEventName.WebhookPermanentlyFailed,
+          {
+            webhookId: job.data.webhookId,
+            organizationId: job.data.organizationId,
+            url: endpoint,
+            eventName: job.data.eventName,
+            eventId: job.data.eventId,
+            attemptsMade: job.attemptsMade + 1,
+            failedReason,
+            ...(responseStatus === undefined ? {} : { responseStatus }),
+          },
+          { organizationId: job.data.organizationId, aggregateType: 'webhook', aggregateId: job.data.webhookId },
+        );
+      }
+      return;
+    }
     try {
       await this.webhookAudit.recordTerminalFailure({
         webhookId: job.data.webhookId,

@@ -4,6 +4,7 @@ import {
   exponentialBackoffWithJitter,
   jitteredBackoffDelay,
   jitteredBackoffStrategy,
+  webhookBackoffStrategy,
 } from './backoff.util';
 
 describe('backoff.util', () => {
