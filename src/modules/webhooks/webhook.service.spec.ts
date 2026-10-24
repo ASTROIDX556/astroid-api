@@ -255,10 +255,14 @@ describe('Webhook signing & delivery', () => {
   });
 
   describe('WebhookDeliveryService – BullMQ retry configuration', () => {
-    it('queues with 5 attempts and exponential backoff delay 2000', async () => {
+    it('queues with 5 attempts and the custom backoff strategy', async () => {
       const { WebhookDeliveryService } = await import('./services/webhook-delivery.service');
+      const { DEFAULT_WEBHOOK_CONFIG } = await import('../../config/webhook.config');
       const mockQueue = { add: vi.fn().mockResolvedValue({ id: 'job-1' }) } as unknown as import('bullmq').Queue<WebhookJobData>;
-      const svc = new WebhookDeliveryService(mockQueue);
+      const config = {
+        getOrThrow: vi.fn().mockReturnValue(DEFAULT_WEBHOOK_CONFIG),
+      } as unknown as import('@nestjs/config').ConfigService;
+      const svc = new WebhookDeliveryService(mockQueue, config);
       await svc.queueDelivery({
         webhookId: 'wh-1',
         organizationId: 'org-1',
@@ -269,7 +273,9 @@ describe('Webhook signing & delivery', () => {
       });
       const call = vi.mocked(mockQueue.add).mock.calls[0];
       expect(call[2]?.attempts).toBe(5);
-      expect(call[2]?.backoff).toEqual({ type: 'exponential', delay: 2000 });
+      // The `custom` backoff type is what makes BullMQ use the registered
+      // jittered and capped strategy.
+      expect(call[2]?.backoff).toEqual({ type: 'custom', delay: 2000 });
     });
   });
 

@@ -50,21 +50,22 @@ Zod runs first.
 
 ## Failure shape
 
-A failed parse throws `ValidationException`, which the global
-`AllExceptionsFilter` renders in the standard error envelope:
+A failed parse throws `ZodValidationException`, which the global
+`AllExceptionsFilter` renders as an RFC 9457 problem-details body:
 
 ```json
 {
-  "success": false,
-  "error": {
-    "code": "VALIDATION_ERROR",
-    "message": "Request validation failed",
-    "details": [
-      { "path": "email", "message": "Invalid email" },
-      { "path": "limitAmount", "message": "Number must be greater than or equal to 0" }
-    ]
-  },
-  "requestId": "req_..."
+  "type": "urn:astroid:problem:validation-error",
+  "title": "Validation Failed",
+  "status": 400,
+  "detail": "Request validation failed",
+  "instance": "/api/v1/wallets",
+  "code": "VALIDATION_ERROR",
+  "requestId": "req_...",
+  "details": [
+    { "path": "label", "message": "Label must not be empty" },
+    { "path": "stellarAddress", "message": "Invalid Stellar Ed25519 public key: the value's checksum does not match its contents" }
+  ]
 }
 ```
 
@@ -77,6 +78,10 @@ can render field-level errors without special-casing individual endpoints.
 > Nest's standard HTTP exception flow (framework code, guards and tests can
 > `instanceof`-check it), while the preserved code and details stop the error
 > envelope from degrading to a generic 400 message.
+>
+> The domain `ValidationException` (thrown by the Stellar address and memo
+> pipes) uses the same `VALIDATION_ERROR` code and the same `details` shape,
+> but answers with HTTP `422`.
 
 ## Localized error messages
 

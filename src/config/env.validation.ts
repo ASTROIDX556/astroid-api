@@ -109,6 +109,36 @@ export const webhookEnvSchema = z.object({
   WEBHOOK_INGRESS_SECRET: z.string().min(32).optional(),
 });
 
+/**
+ * Outbound webhook delivery configuration: the retry policy of the BullMQ
+ * queue and the circuit breaker that protects a failing endpoint.
+ *
+ * The backoff is exponential (`WEBHOOK_BACKOFF_BASE_DELAY_MS` doubling per
+ * attempt) and capped by `WEBHOOK_BACKOFF_MAX_DELAY_MS` so a retry is never
+ * scheduled further away than the cap. The circuit breaker opens after
+ * `WEBHOOK_CIRCUIT_FAILURE_THRESHOLD` consecutive failed attempts against the
+ * same endpoint and stays open for `WEBHOOK_CIRCUIT_COOLDOWN_MS`.
+ */
+export const webhookEnvSchema = z.object({
+  // Total delivery attempts (1 initial + retries) before a webhook is dead-lettered.
+  WEBHOOK_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(20).default(5),
+  // Base delay in milliseconds for the exponential backoff between attempts.
+  WEBHOOK_BACKOFF_BASE_DELAY_MS: z.coerce.number().int().min(100).max(600_000).default(2_000),
+  // Upper bound for a single backoff delay (ms).
+  WEBHOOK_BACKOFF_MAX_DELAY_MS: z.coerce.number().int().min(100).max(3_600_000).default(60_000),
+  // Timeout of a single delivery request (ms).
+  WEBHOOK_REQUEST_TIMEOUT_MS: z.coerce.number().int().min(100).max(120_000).default(5_000),
+  // Enables the per-endpoint circuit breaker.
+  WEBHOOK_CIRCUIT_ENABLED: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((value) => value === 'true'),
+  // Consecutive failed attempts against one endpoint before the circuit opens.
+  WEBHOOK_CIRCUIT_FAILURE_THRESHOLD: z.coerce.number().int().min(1).max(100).default(5),
+  // How long the circuit stays open before a probe delivery is allowed (ms).
+  WEBHOOK_CIRCUIT_COOLDOWN_MS: z.coerce.number().int().min(1_000).max(86_400_000).default(300_000),
+});
+
 export const throttleEnvSchema = z.object({
   THROTTLE_AUTH_LIMIT: z.coerce.number().int().positive().default(10),
   THROTTLE_API_LIMIT: z.coerce.number().int().positive().default(120),

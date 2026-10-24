@@ -278,6 +278,43 @@ export interface RiskAlertPayload extends Record<string, unknown> {
   requiresApproval?: boolean;
 }
 
+export interface WebhookCircuitOpenedPayload extends Record<string, unknown> {
+  webhookId: string;
+  url?: string | null;
+  /** The state the circuit transitioned into. */
+  status: string;
+  /** Consecutive failed attempts recorded for the endpoint. */
+  consecutiveFailures: number;
+  /** The threshold that was reached. */
+  threshold: number;
+  /** When the cooldown ends and a probe delivery becomes allowed again. */
+  cooldownEndsAt: string;
+  /** Machine-readable reason of the failure that opened the circuit. */
+  failureCode?: string | null;
+}
+
+export interface WebhookCircuitClosedPayload extends Record<string, unknown> {
+  webhookId: string;
+  url?: string | null;
+  /** The state the circuit transitioned into. */
+  status: string;
+  /** The state the circuit was in before the transition. */
+  previousStatus?: string | null;
+}
+
+export interface WebhookDeliveryFailedPayload extends Record<string, unknown> {
+  webhookId: string;
+  eventName?: string | null;
+  eventId?: string | null;
+  attemptsMade: number;
+  failedReason: string;
+  responseStatus?: number | null;
+  /** Broad class of the failure (transient, permanent, timeout, circuit-open). */
+  failureCategory?: string | null;
+  /** Machine-readable reason (HTTP_503, TIMEOUT, …). */
+  failureCode?: string | null;
+  /** The circuit state of the endpoint when the delivery was abandoned. */
+  circuitStatus?: string | null;
 /**
  * Payload of the `audit.recorded` event published by the
  * `StructuredAuditInterceptor` for every route marked with `@AuditAction()`.

@@ -45,7 +45,16 @@ describe('shared queue policy', () => {
 
   it('applies bounded jitter to retry delays', () => {
     vi.spyOn(Math, 'random').mockReturnValue(0.5);
-    expect(createJitteredBackoffStrategy(1_000)(1, 'exponential', new Error())).toBe(2_200);
+    // The strategy receives the 1-based attempt number BullMQ passes to it,
+    // so the first retry waits the base delay — exactly like BullMQ's built-in
+    // exponential backoff — plus the bounded jitter.
+    expect(createJitteredBackoffStrategy(1_000)(1, 'exponential', new Error())).toBe(1_100);
+    vi.restoreAllMocks();
+  });
+
+  it('caps the jittered retry delay at the configured maximum', () => {
+    vi.spyOn(Math, 'random').mockReturnValue(1);
+    expect(createJitteredBackoffStrategy(1_000, 2_000)(10, 'exponential', new Error())).toBe(2_000);
     vi.restoreAllMocks();
   });
 

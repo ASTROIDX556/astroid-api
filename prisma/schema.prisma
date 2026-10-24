@@ -194,20 +194,21 @@ model Organization {
   updatedAt   DateTime           @updatedAt
   deletedAt   DateTime?
 
-  users         User[]
-  agents        Agent[]
-  wallets       Wallet[]
-  policies      Policy[]
-  budgets       Budget[]
-  transactions  Transaction[]
-  auditLogs     AuditLog[]
-  apiKeys       ApiKey[]
-  webhooks           Webhook[]
-  webhookDeliveries  WebhookDelivery[]
-  notifications Notification[]
-  memoryRecords MemoryRecord[]
-  domainEvents  DomainEvent[]
-  riskAssessments RiskAssessment[]
+  users                User[]
+  agents               Agent[]
+  wallets              Wallet[]
+  policies             Policy[]
+  budgets              Budget[]
+  transactions         Transaction[]
+  auditLogs            AuditLog[]
+  apiKeys              ApiKey[]
+  webhooks             Webhook[]
+  webhookDeliveries    WebhookDelivery[]
+  webhookCircuitStates WebhookCircuitState[]
+  notifications        Notification[]
+  memoryRecords        MemoryRecord[]
+  domainEvents         DomainEvent[]
+  riskAssessments      RiskAssessment[]
 
   @@index([status])
   @@index([createdAt])
@@ -618,8 +619,9 @@ model Webhook {
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
-  organization Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  organization Organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   deliveries   WebhookDelivery[]
+  circuitState WebhookCircuitState?
 
   @@index([organizationId])
   @@index([enabled])
@@ -627,18 +629,27 @@ model Webhook {
 }
 
 model WebhookDelivery {
-  id             String                 @id @default(uuid(7))
-  webhookId      String
-  organizationId String
-  eventName      String
-  eventId        String
-  payload        Json                   @default("{}")
-  status         WebhookDeliveryStatus  @default(PENDING)
-  attempts       Int                    @default(0)
-  lastError      String?
-  responseStatus Int?
-  createdAt      DateTime               @default(now())
-  updatedAt      DateTime               @updatedAt
+  id              String                @id @default(uuid(7))
+  webhookId       String
+  organizationId  String
+  eventName       String
+  eventId         String
+  payload         Json                  @default("{}")
+  status          WebhookDeliveryStatus @default(PENDING)
+  attempts        Int                   @default(0)
+  lastError       String?
+  responseStatus  Int?
+  // Structured failure metadata for the most recent failed attempt:
+  //   failureCategory — broad class of the failure (transient, permanent,
+  //                     timeout or circuit-open)
+  //   failureCode     — machine-readable reason (HTTP_503, TIMEOUT, …)
+  failureCategory String?
+  failureCode     String?
+  // When the last attempt was made and when the next one is scheduled.
+  lastAttemptAt   DateTime?
+  nextRetryAt     DateTime?
+  createdAt       DateTime              @default(now())
+  updatedAt       DateTime              @updatedAt
 
   webhook      Webhook      @relation(fields: [webhookId], references: [id], onDelete: Cascade)
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
@@ -649,6 +660,44 @@ model WebhookDelivery {
   @@index([eventId])
   @@index([createdAt])
   @@map("webhook_deliveries")
+}
+
+// State of the per-endpoint circuit breaker. One row per webhook endpoint so
+// the failure history survives a worker restart and is shared by every worker
+// of a multi-instance deployment.
+enum WebhookCircuitStatus {
+  CLOSED
+  OPEN
+  HALF_OPEN
+}
+
+model WebhookCircuitState {
+  // The webhook endpoint this circuit protects.
+  webhookId           String               @id
+  organizationId      String
+  status              WebhookCircuitStatus @default(CLOSED)
+  // Failed attempts since the last successful delivery.
+  consecutiveFailures Int                  @default(0)
+  // Failed attempts over the lifetime of the endpoint.
+  totalFailures       Int                  @default(0)
+  // When the circuit was opened and when the cooldown ends.
+  openedAt            DateTime?
+  cooldownEndsAt      DateTime?
+  // The most recent failure, for operator diagnostics.
+  lastFailureAt       DateTime?
+  lastFailureCode     String?
+  lastFailureReason   String?
+  // The most recent successful delivery.
+  lastSuccessAt       DateTime?
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+
+  webhook      Webhook      @relation(fields: [webhookId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@index([status])
+  @@map("webhook_circuit_states")
 }
 
 // ---------------------------------------------------------------------------

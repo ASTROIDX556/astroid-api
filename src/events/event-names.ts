@@ -66,6 +66,14 @@ export const DomainEventName = {
   NotificationCreated: 'notification.created',
   AuditRecorded: 'audit.recorded',
 
+  // Webhook delivery / circuit breaker
+  /** The circuit of a webhook endpoint opened: deliveries are paused for the cooldown. */
+  WebhookCircuitOpened: 'webhook.circuit_opened',
+  /** The circuit of a webhook endpoint closed again after a successful probe delivery. */
+  WebhookCircuitClosed: 'webhook.circuit_closed',
+  /** A webhook delivery reached its terminal state (retries exhausted or permanent error). */
+  WebhookDeliveryFailed: 'webhook.delivery_failed',
+
   // Dead letter queue / background job lifecycle
   JobFailed: 'dead_letter.job_failed',
   JobRequeued: 'dead_letter.job_requeued',

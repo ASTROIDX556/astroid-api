@@ -99,11 +99,15 @@ Create a wallet (generate a keypair or import an address).
 **Request Body:**
 | Field | Type | Required | Constraints | Description |
 |-------|------|----------|-------------|-------------|
-| label | string | No | Max 120 chars | Wallet label/name |
+| label | string | No | 1-120 chars, whitespace normalized | Wallet label/name |
 | walletType | enum | No | AGENT, OPERATIONAL, TREASURY | Type of wallet (default: AGENT) |
 | network | enum | No | TESTNET, PUBLIC | Stellar network (default: TESTNET) |
 | agentId | string | No | Valid UUID | Owning agent ID |
-| stellarAddress | string | No | Non-empty | Import existing address (if provided, no keypair is generated) |
+| stellarAddress | string | No | Stellar account address (`G…`), checksum validated | Import existing address (if provided, no keypair is generated) |
+
+Only Stellar **accounts** can be imported: a contract ID (`C…`) or a
+multiplexed address (`M…`) cannot hold a balance or sign for the wallet and is
+rejected. Unknown properties are rejected as well.
 
 **Response:** `WalletSecretDto` (on generation) or wallet object (on import)
 | Field | Type | Description |
@@ -133,8 +137,11 @@ Update a wallet label or owning agent.
 **Request Body:**
 | Field | Type | Required | Constraints | Description |
 |-------|------|----------|-------------|-------------|
-| label | string | No | Max 120 chars | New wallet label |
+| label | string | No | 1-120 chars, whitespace normalized | New wallet label |
 | agentId | string | No | Valid UUID or null | Reassign or clear owning agent |
+
+At least one field must be supplied: an empty body would be a no-op that still
+writes an audit entry and is rejected with a validation error.
 
 **Response:** Updated wallet object
 
