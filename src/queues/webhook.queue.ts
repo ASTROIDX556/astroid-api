@@ -4,7 +4,7 @@ import type { RegisterQueueOptions } from '@nestjs/bullmq';
 import { queueConfig, type QueueConfig } from '../config/queue.config';
 import { Queues } from './queues.constants';
 import { buildJobOptions, createQueueRegistrationOptions } from './queue-policy';
-import { DEFAULT_WEBHOOK_CONFIG, WebhookConfig } from '../config/webhook.config';
+import { WebhookConfig } from '../config/webhook.config';
 import { jitteredBackoffDelay } from '../utils/backoff.util';
 import { createWebhookBackoffStrategy } from '../utils/backoff.util';
 

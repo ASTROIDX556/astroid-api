@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { stellarMemoTypeSchema } from '../../common/validators/stellar-memo.schema';
 import { stellarPublicKeySchema } from '../../common/validators/stellar-address.schema';
-import { stellarAssetCodeSchema, stellarAssetSchema } from '../../common/validators/stellar-asset.schema';
+import { stellarAssetSchema } from '../../common/validators/stellar-asset.schema';
 import { ValidationException } from '../../common/exceptions/domain.exception';
 
 const idempotencyKeyPattern = /^[A-Za-z0-9._~-]{1,128}$/;
