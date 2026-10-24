@@ -13,6 +13,16 @@ interface RiskAssessment {
   createdAt: Date;
 }
 
+export interface DestinationHistory {
+  successful: number;
+  failed: number;
+}
+
+export interface WalletVelocity {
+  count: number;
+  totalAmount: number;
+}
+
 /**
  * Repository for risk assessment persistence and historical analysis.
  * Stores risk evaluation results for compliance reporting and pattern detection.
@@ -20,23 +30,6 @@ interface RiskAssessment {
 @Injectable()
 export class RiskRepository {
   constructor(private readonly prisma: PrismaService) {}
-
-  async updateTransactionRisk(
-    organizationId: string,
-    transactionId: string,
-    data: { score: number; band: RiskBand; requiresApproval: boolean },
-  ) {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const client = (this.prisma as any).workerClient ?? this.prisma;
-    return client.transaction.updateMany({
-      where: { id: transactionId, organizationId },
-      data: {
-        riskScore: data.score,
-        riskBand: data.band,
-        ...(data.requiresApproval ? { requiresApproval: true } : {}),
-      },
-    });
-  }
 
   /**
    * Record a risk assessment result for audit trail compliance.
@@ -142,5 +135,37 @@ export class RiskRepository {
       byBand,
       autoExecuteRate: total > 0 ? assessments.filter((a: RiskAssessment) => a.canAutoExecute).length / total : 0,
     };
+  }
+
+  async getDestinationHistory(organizationId: string, recipientAddress: string): Promise<DestinationHistory> {
+    const [successful, failed] = await Promise.all([
+      this.prisma.transaction.count({
+        where: { organizationId, recipientAddress, status: { in: ['COMPLETED', 'CONFIRMED', 'SUBMITTED'] } },
+      }),
+      this.prisma.transaction.count({
+        where: { organizationId, recipientAddress, status: 'FAILED' },
+      }),
+    ]);
+    return { successful, failed };
+  }
+
+  async getWalletVelocity(walletId: string, sinceHours = 24): Promise<WalletVelocity> {
+    const since = new Date(Date.now() - sinceHours * 3_600_000);
+    const [count, aggregate] = await Promise.all([
+      this.prisma.transaction.count({ where: { walletId, createdAt: { gte: since } } }),
+      this.prisma.transaction.aggregate({ where: { walletId, createdAt: { gte: since } }, _sum: { amount: true } }),
+    ]);
+    const total = aggregate._sum.amount;
+    return { count, totalAmount: total === null || total === undefined ? 0 : Number(total.toString()) };
+  }
+
+  async getAmountBaseline(walletId: string, sinceDays = 90): Promise<number | null> {
+    const since = new Date(Date.now() - sinceDays * 86_400_000);
+    const aggregate = await this.prisma.transaction.aggregate({
+      where: { walletId, createdAt: { gte: since } },
+      _avg: { amount: true },
+    });
+    const average = aggregate._avg.amount;
+    return average === null || average === undefined ? null : Number(average.toString());
   }
 }

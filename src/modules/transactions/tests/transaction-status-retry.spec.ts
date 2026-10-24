@@ -10,7 +10,7 @@ import { TransactionRepository } from '../transaction.repository';
 import { WalletService } from '../../wallets/wallet.service';
 import { AgentService } from '../../agents/agent.service';
 import { PolicyService } from '../../policies/policy.service';
-import { RiskService } from '../../risk/risk.service';
+import { RiskAggregatorService } from '../../risk/risk-aggregator.service';
 import { BudgetService } from '../../budgets/budget.service';
 import { StellarService } from '../../stellar/stellar.service';
 import { EventBusService } from '../../../events/event-bus.service';
@@ -115,7 +115,7 @@ describe('TransactionService status transitions under write conflicts', () => {
       } as unknown as WalletService,
       { getOrThrow: vi.fn() } as unknown as AgentService,
       {} as unknown as PolicyService,
-      {} as unknown as RiskService,
+      {} as unknown as RiskAggregatorService,
       budgets as unknown as BudgetService,
       stellar as unknown as StellarService,
       eventBus as unknown as EventBusService,
