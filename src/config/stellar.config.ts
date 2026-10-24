@@ -24,12 +24,11 @@ export function parseAnchorAssets(raw: string): Record<string, string> {
     const trimmed = entry.trim();
     if (!trimmed) continue;
     const separator = trimmed.indexOf('=');
-    if (separator <= 0) throw new Error(`Invalid STELLAR_ANCHOR_ASSETS entry '${trimmed}'`);
+    if (separator <= 0) throw new Error(`Invalid STELLAR_ANCHOR_ASSETS entry '${trimmed}': expected CODE=ISSUER`);
     const code = trimmed.slice(0, separator).trim().toUpperCase();
     const issuer = trimmed.slice(separator + 1).trim();
-    if (!/^[A-Z0-9]{1,12}$/.test(code) || !/^G[A-Z2-7]{55}$/.test(issuer)) {
-      throw new Error(`Invalid STELLAR_ANCHOR_ASSETS entry '${trimmed}'`);
-    }
+    if (!/^[A-Z0-9]{1,12}$/.test(code)) throw new Error('Stellar asset code must be 1-12 alphanumeric characters');
+    if (!/^G[A-Z2-7]{55}$/.test(issuer)) throw new Error('Stellar account address is invalid');
     assets[code] = issuer;
   }
   return assets;

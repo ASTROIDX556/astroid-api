@@ -29,7 +29,13 @@ export class WebhookDeliveryService {
 
   /** The resolved webhook delivery configuration. */
   private get settings(): WebhookConfig {
-    return this.config?.get<WebhookConfig>('webhook') ?? DEFAULT_WEBHOOK_CONFIG;
+    if (this.config && typeof this.config.get === 'function') {
+      return this.config.get<WebhookConfig>('webhook') ?? DEFAULT_WEBHOOK_CONFIG;
+    }
+    if (this.config && typeof this.config.getOrThrow === 'function') {
+      return this.config.getOrThrow<WebhookConfig>('webhook');
+    }
+    return DEFAULT_WEBHOOK_CONFIG;
   }
 
   /**

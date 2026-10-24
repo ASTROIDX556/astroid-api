@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import {
   Agent,
@@ -111,7 +111,7 @@ export class TransactionService {
     private readonly eventBus: EventBusService,
     private readonly prisma: PrismaService,
     private readonly spendingLimits: SpendingLimitService,
-    private readonly transactions: PrismaTransactionService,
+    @Optional() private readonly transactions?: PrismaTransactionService,
   ) {}
 
   async create(
@@ -313,7 +313,7 @@ export class TransactionService {
     // Postgres abort the loser with a serialization conflict (P2034), which
     // runWithRetry replays — the replay re-reads the row, sees SUBMITTED and
     // surfaces a ConflictException *before* any funds move on-chain.
-    await this.transactions.runWithRetry(
+    await this.transactions!.runWithRetry(
       async (client) => {
         const current = await this.repository.findById(organizationId, transactionId, client);
         if (!current) {
@@ -438,7 +438,7 @@ export class TransactionService {
     // CANCELLED write run inside one SERIALIZABLE transaction that is replayed
     // on P2034, so a cancel can never overwrite a transaction that a
     // concurrent worker has just submitted or completed.
-    const cancelled = await this.transactions.runWithRetry(
+    const cancelled = await this.transactions!.runWithRetry(
       async (client) => {
         const current = await this.repository.findById(organizationId, id, client);
         if (!current) {

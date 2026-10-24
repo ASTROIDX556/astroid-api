@@ -1,7 +1,7 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Inject, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Job, UnrecoverableError } from 'bullmq';
+import { DelayedError, Job, UnrecoverableError } from 'bullmq';
 import { PermanentJobError } from '../../queues/queue-policy';
 import { Queues } from '../../queues/queues.constants';
 import { WebhookJobData, WebhookJobResult } from './types/webhook-job.types';
@@ -28,6 +28,7 @@ import {
 import { WebhookCircuitService } from './services/webhook-circuit.service';
 import { EventBusService } from '../../events/event-bus.service';
 import { DomainEventName } from '../../events/event-names';
+import { classifyWebhookFailure, WebhookFailureCategory } from './utils/failure-classification';
 
 /**
  * BullMQ job processor for webhook event delivery with exponential backoff + jitter.
@@ -209,7 +210,36 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
   }
 
   async process(job: Job<WebhookJobData>): Promise<WebhookJobResult> {
-    void this.circuit;
+    if (this.circuit?.enabled) {
+      const decision = await this.circuit.beforeAttempt(job.data.webhookId);
+      if (!decision.allowed) {
+        const retryAt = decision.retryAt ?? new Date(Date.now() + this.circuit.cooldownMs);
+        await this.persistState({
+          webhookId: job.data.webhookId,
+          organizationId: job.data.organizationId,
+          eventName: job.data.eventName,
+          eventId: job.data.eventId,
+          payload: job.data.payload,
+          status: 'RETRYING',
+          attempts: job.attemptsMade,
+          lastError: 'Webhook circuit is open; the delivery was deferred',
+          failureCategory: WebhookFailureCategory.CircuitOpen,
+          failureCode: 'CIRCUIT_OPEN',
+          nextRetryAt: retryAt,
+        });
+        const delayedJob = job as Job<WebhookJobData> & { moveToDelayed?: (timestamp: number, token?: string) => Promise<unknown> };
+        if (delayedJob.moveToDelayed) {
+          try {
+            await delayedJob.moveToDelayed(retryAt.getTime(), job.token);
+            throw new DelayedError();
+          } catch (error) {
+            if (error instanceof DelayedError) throw error;
+            throw new Error(`Webhook circuit is open until ${retryAt.toISOString()}`);
+          }
+        }
+        throw new Error(`Webhook circuit is open until ${retryAt.toISOString()}`);
+      }
+    }
     const jobName = job.name ?? 'webhook-delivery';
 
     const execute = async (): Promise<WebhookJobResult> => {
@@ -275,6 +305,7 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
           throw new Error(errorMessage);
         }
         this.logger.debug(`Webhook ${webhookId} delivered successfully${requestTrace}`);
+        await this.circuit?.recordSuccess(webhookId, organizationId, endpoint);
       } catch (error) {
         if (error instanceof UnrecoverableError) throw error;
         if (error instanceof WebhookDestinationError) {
@@ -296,6 +327,15 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
           : error instanceof Error && /^HTTP \d{3}$/.test(error.message)
             ? error.message
             : 'Webhook delivery failed';
+        if (this.circuit?.enabled) {
+          const classification = classifyWebhookFailure(error, responseStatus);
+          await this.circuit.recordFailure(
+            webhookId,
+            organizationId,
+            { code: classification.code, category: classification.category, reason: errorMessage, responseStatus },
+            endpoint,
+          );
+        }
         const isLastAttempt = job.attemptsMade >= maxAttempts - 1;
         this.logger.error(
           `Webhook ${webhookId} failed attempt ${job.attemptsMade + 1}/${maxAttempts}${requestTrace}`,
@@ -349,6 +389,10 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
     attempts: number;
     lastError?: string;
     responseStatus?: number;
+    failureCategory?: string;
+    failureCode?: string;
+    lastAttemptAt?: Date;
+    nextRetryAt?: Date;
   }): Promise<void> {
     if (!this.prisma) return;
     try {
@@ -373,12 +417,20 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
           attempts: data.attempts,
           lastError: data.lastError ?? null,
           responseStatus: data.responseStatus ?? null,
+          failureCategory: data.failureCategory ?? null,
+          failureCode: data.failureCode ?? null,
+          lastAttemptAt: data.lastAttemptAt ?? new Date(),
+          nextRetryAt: data.nextRetryAt ?? null,
         },
         update: {
           status: data.status,
           attempts: data.attempts,
           lastError: data.lastError ?? null,
           responseStatus: data.responseStatus ?? null,
+          failureCategory: data.failureCategory ?? null,
+          failureCode: data.failureCode ?? null,
+          lastAttemptAt: data.lastAttemptAt ?? new Date(),
+          nextRetryAt: data.nextRetryAt ?? null,
         },
       } as unknown);
     } catch (err) {

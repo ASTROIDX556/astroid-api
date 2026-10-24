@@ -8,6 +8,7 @@ import { DomainException } from '../exceptions/domain.exception';
 import { PROBLEM_JSON_CONTENT_TYPE, ProblemDetails } from '../interfaces/api-response.interface';
 import { REQUEST_ID_HEADER } from '../constants/headers';
 import { RequestContext } from '../context/request-context';
+import { sanitizeAuditPayload } from '../helpers/audit-sanitizer';
 
 /** An exception reduced to the facts a problem details body is built from. */
 export interface ResolvedError {
@@ -249,7 +250,7 @@ export function buildProblemDetails(
     timestamp: new Date().toISOString(),
   };
   if (error.details !== undefined) {
-    problem.details = error.details;
+    problem.details = sanitizeAuditPayload(error.details);
   }
   return problem;
 }
