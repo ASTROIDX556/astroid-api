@@ -75,6 +75,16 @@ export const stellarEnvSchema = z.object({
     .enum(['true', 'false'])
     .default('true')
     .transform((value) => value === 'true'),
+  // Percentage added on top of a simulated gas limit so transactions still fit
+  // when network congestion pushes real usage above the simulation estimate.
+  STELLAR_GAS_SAFETY_BUFFER_PERCENT: z.coerce.number().min(0).max(100).default(25),
+  // Network block gas limit (Soroban CPU instructions per transaction). No
+  // estimate is ever allowed to exceed this ceiling.
+  STELLAR_MAX_GAS_LIMIT: z.coerce.number().int().positive().default(100_000_000),
+  // Static gas limit used when simulation fails or omits a gas estimate.
+  STELLAR_FALLBACK_GAS_LIMIT: z.coerce.number().int().positive().default(1_000_000),
+  // Static fee limit, in stroops, used alongside the fallback gas limit.
+  STELLAR_FALLBACK_FEE_STROOPS: z.coerce.number().int().nonnegative().default(100_000),
 });
 
 export const storageEnvSchema = z.object({
@@ -88,6 +98,15 @@ export const storageEnvSchema = z.object({
 export const queueEnvSchema = z.object({
   QUEUE_PREFIX: z.string().default('astroid'),
   QUEUE_CONCURRENCY: z.coerce.number().int().positive().default(5),
+  WEBHOOK_DELIVERY_MAX_ATTEMPTS: z.coerce.number().int().positive().max(25).default(5),
+  WEBHOOK_RETRY_DELAY_MS: z.coerce.number().int().positive().max(300_000).default(2_000),
+  WEBHOOK_HTTP_TIMEOUT_MS: z.coerce.number().int().positive().max(120_000).default(5_000),
+  WEBHOOK_FAILED_JOB_RETENTION_SECONDS: z.coerce.number().int().positive().max(2_592_000).default(86_400),
+  WEBHOOK_DEAD_LETTER_RETENTION_SECONDS: z.coerce.number().int().positive().max(2_592_000).default(604_800),
+});
+
+export const webhookEnvSchema = z.object({
+  WEBHOOK_INGRESS_SECRET: z.string().min(32).optional(),
 });
 
 /**

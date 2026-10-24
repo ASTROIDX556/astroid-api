@@ -70,6 +70,30 @@ describe('RiskService', () => {
     const amountFactor = assessment.factors.find((factor) => factor.factor === 'amount');
     expect(amountFactor?.contribution).toBe(30);
   });
+
+  it('persists and applies queued risk results to the transaction', async () => {
+    const eventBus = createEventBus();
+    const repository = {
+      createAssessmentRecord: vi.fn().mockResolvedValue(undefined),
+      updateTransactionRisk: vi.fn().mockResolvedValue({ count: 1 }),
+    } as unknown as RiskRepository;
+    const service = new RiskService(new RiskEngine(), eventBus as unknown as EventBusService, repository);
+
+    const assessment = await service.evaluateQueuedTransaction({
+      organizationId: 'org-1',
+      transactionId: 'tx-1',
+      input: { ...lowRisk, knownRecipient: false, walletAgeDays: 0 },
+    });
+
+    expect(repository.createAssessmentRecord).toHaveBeenCalledWith(
+      expect.objectContaining({ transactionId: 'tx-1', organizationId: 'org-1' }),
+    );
+    expect(repository.updateTransactionRisk).toHaveBeenCalledWith('org-1', 'tx-1', {
+      score: assessment.score,
+      band: assessment.band,
+      requiresApproval: !assessment.canAutoExecute,
+    });
+  });
 });
 
 describe('RiskService Event Handler', () => {
@@ -131,6 +155,40 @@ describe('RiskService Event Handler', () => {
         transactionId: 'tx-123',
       }),
     );
+  });
+
+  it('queues transaction risk evaluation when the risk queue is available', async () => {
+    const riskQueue = { add: vi.fn().mockResolvedValue({ id: 'risk-tx-queued' }) };
+    const service = new RiskService(
+      riskEngine,
+      eventBusService,
+      riskRepository,
+      riskQueue as never,
+    );
+    const envelope = {
+      eventId: 'event-queued',
+      name: DomainEventName.TransactionCreated,
+      organizationId: 'org-1',
+      aggregateType: 'transaction',
+      aggregateId: 'tx-queued',
+      actorId: 'agent-1',
+      payload: { transactionId: 'tx-queued', amount: '500.0', asset: 'XLM' },
+      occurredAt: new Date(),
+    };
+
+    await service.handleTransactionCreated(envelope);
+
+    expect(riskQueue.add).toHaveBeenCalledWith(
+      'risk-evaluation',
+      expect.objectContaining({
+        organizationId: 'org-1',
+        transactionId: 'tx-queued',
+        actorId: 'agent-1',
+        input: expect.objectContaining({ amount: 500, asset: 'XLM' }),
+      }),
+      { jobId: 'risk-tx-queued' },
+    );
+    expect(riskRepository.createAssessmentRecord).not.toHaveBeenCalled();
   });
 
   it('should deduplicate concurrent or repeated event deliveries', async () => {

@@ -3,9 +3,10 @@ import {
   ApiOperation,
   ApiTags,
   ApiBearerAuth,
-  ApiResponse,
   ApiBody,
 } from '@nestjs/swagger';
+import { ApiErrorResponses } from '../../common/decorators/api-error-responses.decorator';
+import { ApiEnvelope } from '../../common/decorators/api-envelope.decorator';
 import { Request } from 'express';
 import { AuthService } from './auth.service';
 import {
@@ -19,6 +20,9 @@ import {
   refreshSchema,
   RefreshInput,
   TokenPairDto,
+  AuthResultDto,
+  CurrentUserDto,
+  LogoutResultDto,
 } from './auth.dto';
 import { Public } from '../../common/decorators/public.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -45,14 +49,16 @@ export class AuthController {
       'Creates a new organization with the caller as the owner. Returns a JWT token pair.',
   })
   @ApiBody({ type: RegisterDto })
-  @ApiResponse({
+  @ApiEnvelope(AuthResultDto, {
     status: 201,
     description: 'Organization and owner created successfully',
-    type: TokenPairDto,
   })
-  @ApiResponse({ status: 400, description: 'Validation error (missing or invalid fields)' })
-  @ApiResponse({ status: 409, description: 'Email address already registered' })
-  @ApiResponse({ status: 429, description: 'Rate limit exceeded' })
+  @ApiErrorResponses({
+    validation: 'Validation error (missing or invalid fields)',
+    conflict: 'Email address already registered',
+    tooManyRequests: true,
+    serverError: true,
+  })
   register(
     @Body(new ZodValidationPipe(registerSchema)) body: RegisterInput,
     @Req() req: Request,
@@ -68,13 +74,13 @@ export class AuthController {
     description: 'Validates credentials and returns a JWT access/refresh token pair.',
   })
   @ApiBody({ type: LoginDto })
-  @ApiResponse({
-    status: 200,
-    description: 'Authenticated successfully',
-    type: TokenPairDto,
+  @ApiEnvelope(AuthResultDto, { description: 'Authenticated successfully' })
+  @ApiErrorResponses({
+    validation: true,
+    unauthorized: 'Invalid email or password',
+    tooManyRequests: true,
+    serverError: true,
   })
-  @ApiResponse({ status: 401, description: 'Invalid email or password' })
-  @ApiResponse({ status: 429, description: 'Rate limit exceeded' })
   login(
     @Body(new ZodValidationPipe(loginSchema)) body: LoginInput,
     @Req() req: Request,
@@ -91,13 +97,13 @@ export class AuthController {
       'Exchanges a valid refresh token for a new access/refresh token pair. The old refresh token is invalidated.',
   })
   @ApiBody({ type: RefreshDto })
-  @ApiResponse({
-    status: 200,
-    description: 'Token pair rotated successfully',
-    type: TokenPairDto,
+  @ApiEnvelope(TokenPairDto, { description: 'Token pair rotated successfully' })
+  @ApiErrorResponses({
+    validation: true,
+    unauthorized: 'Invalid or expired refresh token',
+    tooManyRequests: true,
+    serverError: true,
   })
-  @ApiResponse({ status: 401, description: 'Invalid or expired refresh token' })
-  @ApiResponse({ status: 429, description: 'Rate limit exceeded' })
   refresh(@Body(new ZodValidationPipe(refreshSchema)) body: RefreshInput) {
     return this.authService.refresh(body.refreshToken);
   }
@@ -112,9 +118,11 @@ export class AuthController {
     summary: 'Revoke the current session',
     description: 'Invalidates the JWT session so the access/refresh token pair can no longer be used.',
   })
-  @ApiResponse({ status: 200, description: 'Session revoked' })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
-  @ApiResponse({ status: 401, description: 'No active session on this token' })
+  @ApiEnvelope(LogoutResultDto, { description: 'Session revoked' })
+  @ApiErrorResponses({
+    unauthorized: 'Not authenticated or no active session on this token',
+    serverError: true,
+  })
   logout(@CurrentUser() user: AuthenticatedUser) {
     if (!user.sessionId) {
       throw new UnauthorizedException('No active session on this token');
@@ -128,11 +136,8 @@ export class AuthController {
     summary: 'Get the current authenticated user',
     description: 'Returns the profile and organization details of the authenticated user.',
   })
-  @ApiResponse({
-    status: 200,
-    description: 'Current user profile',
-  })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
+  @ApiEnvelope(CurrentUserDto, { description: 'Current user profile' })
+  @ApiErrorResponses({ unauthorized: true, serverError: true })
   me(@CurrentUser() user: AuthenticatedUser) {
     return this.authService.me(user);
   }
@@ -143,11 +148,8 @@ export class AuthController {
     summary: 'Get the current session principal',
     description: 'PRD alias of GET /auth/me — resolves the authenticated user.',
   })
-  @ApiResponse({
-    status: 200,
-    description: 'Current session principal',
-  })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
+  @ApiEnvelope(CurrentUserDto, { description: 'Current session principal' })
+  @ApiErrorResponses({ unauthorized: true, serverError: true })
   session(@CurrentUser() user: AuthenticatedUser) {
     return this.authService.me(user);
   }

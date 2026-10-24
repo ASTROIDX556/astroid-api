@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { ApiPropertyOptional } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 /**
  * Zod schema for the time-range filter used in failed job queries.
@@ -109,4 +109,95 @@ export class BatchOperationFilterDtoSwagger {
 
   @ApiPropertyOptional({ description: 'Maximum number of jobs to process in this invocation', default: 1000, example: 1000 })
   limit?: number;
+}
+
+/** A failed job of any queue. */
+export class FailedJobDto {
+  @ApiProperty({ description: 'BullMQ id of the failed job', example: '42' })
+  id!: string;
+
+  @ApiProperty({ description: 'Name of the failed job', example: 'deliver-webhook' })
+  name!: string;
+
+  @ApiProperty({ description: 'Queue the job belonged to', example: 'webhooks' })
+  queue!: string;
+
+  @ApiProperty({ description: 'Why the job failed', example: 'HTTP 500 from the partner endpoint' })
+  failedReason!: string;
+
+  @ApiProperty({ description: 'Number of attempts that were made', example: 3 })
+  attemptsMade!: number;
+
+  @ApiProperty({ description: 'Moment the job failed', example: '2026-01-15T10:30:00.000Z' })
+  timestamp!: string;
+
+  @ApiProperty({
+    description: 'Derived status of the job',
+    enum: ['failed', 'exhausted', 'unrecoverable'],
+    example: 'exhausted',
+  })
+  status!: string;
+}
+
+/** The result of a batch retry. */
+export class BatchRetryResultDto {
+  @ApiProperty({ description: 'Number of jobs that were retried', example: 12 })
+  retriedCount!: number;
+
+  @ApiProperty({ description: 'Number of jobs that could not be retried', example: 1 })
+  failedCount!: number;
+
+  @ApiProperty({ description: 'Number of jobs that were skipped', example: 0 })
+  skippedCount!: number;
+
+  @ApiProperty({ type: [String], description: 'Queues the operation touched', example: ['webhooks'] })
+  queues!: string[];
+
+  @ApiProperty({ type: [String], description: 'Ids of the retried jobs' })
+  retriedJobIds!: string[];
+
+  @ApiProperty({ type: [Object], description: 'Errors that occurred during the batch' })
+  errors!: Array<Record<string, unknown>>;
+}
+
+/** The result of a batch purge. */
+export class BatchPurgeResultDto {
+  @ApiProperty({ description: 'Number of jobs that were purged', example: 12 })
+  purgedCount!: number;
+
+  @ApiProperty({ type: [String], description: 'Queues the operation touched', example: ['webhooks'] })
+  queues!: string[];
+
+  @ApiProperty({ type: [String], description: 'Ids of the purged jobs' })
+  removedJobIds!: string[];
+
+  @ApiProperty({ type: [Object], description: 'Errors that occurred during the batch' })
+  errors!: Array<Record<string, unknown>>;
+}
+
+/** The health of a single queue. */
+export class QueueHealthDto {
+  @ApiProperty({ description: 'Name of the queue', example: 'webhooks' })
+  queue!: string;
+
+  @ApiProperty({ description: 'Number of failed jobs', example: 3 })
+  failed!: number;
+
+  @ApiProperty({ description: 'Number of active jobs', example: 1 })
+  active!: number;
+
+  @ApiProperty({ description: 'Number of waiting jobs', example: 0 })
+  waiting!: number;
+
+  @ApiProperty({ description: 'Number of delayed jobs', example: 0 })
+  delayed!: number;
+
+  @ApiProperty({ description: 'Number of completed jobs', example: 120 })
+  completed!: number;
+
+  @ApiProperty({ description: 'Number of paused jobs', example: 0 })
+  paused!: number;
+
+  @ApiProperty({ description: 'Number of jobs processed since the queue was created', example: 240 })
+  totalProcessed!: number;
 }

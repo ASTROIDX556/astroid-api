@@ -65,10 +65,10 @@ export type VerifyPasskeyAuthenticationInput = z.infer<typeof verifyPasskeyAuthe
 // ── Swagger DTO (documentation only — validation is done by Zod pipe) ──
 
 class CredentialResponseDto {
-  @ApiProperty({ description: 'Base64url credential ID' })
+  @ApiProperty({ description: 'Base64url credential ID', example: 'Y3FycG90ZWN0aW9uSWRf' })
   id!: string;
 
-  @ApiProperty({ description: 'Base64url-encoded raw credential ID' })
+  @ApiProperty({ description: 'Base64url-encoded raw credential ID', example: 'Y3FycG90ZWN0aW9uSWRf' })
   rawId!: string;
 
   @ApiProperty({ description: 'Authenticator response payloads' })
@@ -77,10 +77,14 @@ class CredentialResponseDto {
     clientDataJSON: string;
   };
 
-  @ApiPropertyOptional({ enum: ['platform', 'cross-platform'] })
+  @ApiPropertyOptional({
+    enum: ['platform', 'cross-platform'],
+    description: 'Authenticator attachment modality',
+    example: 'platform',
+  })
   authenticatorAttachment?: 'platform' | 'cross-platform';
 
-  @ApiProperty({ enum: ['public-key'] })
+  @ApiProperty({ enum: ['public-key'], description: 'Credential type', example: 'public-key' })
   type!: 'public-key';
 
   @ApiPropertyOptional({ description: 'WebAuthn client extension results' })
@@ -113,10 +117,10 @@ export class PasskeyCredentialDto {
 }
 
 class AuthenticationResponseDto {
-  @ApiProperty({ description: 'Base64url credential ID' })
+  @ApiProperty({ description: 'Base64url credential ID', example: 'Y3FycG90ZWN0aW9uSWRf' })
   id!: string;
 
-  @ApiProperty({ description: 'Base64url-encoded raw credential ID' })
+  @ApiProperty({ description: 'Base64url-encoded raw credential ID', example: 'Y3FycG90ZWN0aW9uSWRf' })
   rawId!: string;
 
   @ApiProperty({ description: 'Authenticator assertion response payloads' })
@@ -127,7 +131,7 @@ class AuthenticationResponseDto {
     userHandle?: string;
   };
 
-  @ApiProperty({ enum: ['public-key'] })
+  @ApiProperty({ enum: ['public-key'], description: 'Credential type', example: 'public-key' })
   type!: 'public-key';
 
   @ApiPropertyOptional({ description: 'WebAuthn client extension results' })

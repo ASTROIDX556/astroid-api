@@ -3,17 +3,25 @@ import {
   ApiOperation,
   ApiTags,
   ApiBearerAuth,
-  ApiResponse,
   ApiBody,
   ApiQuery,
 } from '@nestjs/swagger';
 import { NotificationService } from './notification.service';
-import { markReadSchema, MarkReadInput, MarkReadDto } from './notification.dto';
+import {
+  markReadSchema,
+  MarkReadInput,
+  MarkReadDto,
+  MarkedReadDto,
+  NotificationResponseDto,
+  UnreadCountDto,
+} from './notification.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 import { AuthenticatedUser } from '../../common/interfaces/authenticated-user.interface';
 import { PaginationQuery, paginationQuerySchema } from '../../common/helpers/pagination';
 import { ApiPaginationQuery } from '../../common/decorators/api-pagination-query.decorator';
+import { ApiEnvelope, ApiPaginatedEnvelope } from '../../common/decorators/api-envelope.decorator';
+import { ApiErrorResponses } from '../../common/decorators/api-error-responses.decorator';
 
 @ApiTags('notifications')
 @ApiBearerAuth('access-token')
@@ -30,8 +38,8 @@ export class NotificationController {
   })
   @ApiPaginationQuery()
   @ApiQuery({ name: 'unread', required: false, type: Boolean, description: 'Filter by unread status' })
-  @ApiResponse({ status: 200, description: 'Paginated list of notifications' })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
+  @ApiPaginatedEnvelope(NotificationResponseDto, { description: 'Paginated list of notifications' })
+  @ApiErrorResponses({ unauthorized: true, serverError: true })
   list(
     @CurrentUser() user: AuthenticatedUser,
     @Query(new ZodValidationPipe(paginationQuerySchema)) query: PaginationQuery,
@@ -44,8 +52,8 @@ export class NotificationController {
     summary: 'Count unread notifications',
     description: 'Returns the count of unread notifications for the authenticated user.',
   })
-  @ApiResponse({ status: 200, description: 'Unread notification count' })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
+  @ApiEnvelope(UnreadCountDto, { description: 'Unread notification count' })
+  @ApiErrorResponses({ unauthorized: true, serverError: true })
   unreadCount(@CurrentUser() user: AuthenticatedUser) {
     return this.notificationService.unreadCount(user.organizationId, user.id);
   }
@@ -56,9 +64,12 @@ export class NotificationController {
     description: 'Marks the specified notification IDs as read for the authenticated user.',
   })
   @ApiBody({ type: MarkReadDto })
-  @ApiResponse({ status: 200, description: 'Notifications marked as read' })
-  @ApiResponse({ status: 400, description: 'Validation error (invalid notification IDs)' })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
+  @ApiEnvelope(MarkedReadDto, { description: 'Notifications marked as read' })
+  @ApiErrorResponses({
+    validation: 'Validation error (invalid notification IDs)',
+    unauthorized: true,
+    serverError: true,
+  })
   markRead(
     @CurrentUser() user: AuthenticatedUser,
     @Body(new ZodValidationPipe(markReadSchema)) body: MarkReadInput,
@@ -71,8 +82,8 @@ export class NotificationController {
     summary: 'Mark all notifications as read',
     description: 'Marks all unread notifications as read for the authenticated user.',
   })
-  @ApiResponse({ status: 200, description: 'All notifications marked as read' })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
+  @ApiEnvelope(MarkedReadDto, { description: 'All notifications marked as read' })
+  @ApiErrorResponses({ unauthorized: true, serverError: true })
   markAllRead(@CurrentUser() user: AuthenticatedUser) {
     return this.notificationService.markAllRead(user.organizationId, user.id);
   }

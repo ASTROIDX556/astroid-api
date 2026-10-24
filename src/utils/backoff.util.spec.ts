@@ -83,6 +83,17 @@ describe('backoff.util', () => {
       expect(strategy(1, 'custom', new Error('test')) as number).toBe(2000);
       expect(strategy(2, 'custom', new Error('test')) as number).toBe(4000);
       expect(strategy(3, 'custom', new Error('test')) as number).toBe(8000);
+      // BullMQ passes 1 for the first failure that schedules a retry.
+      const delay1 = webhookBackoffStrategy(1, 'exponential', new Error('test')) as number;
+      expect(delay1).toBe(2000);
+
+      // BullMQ passes 2 for the second retry.
+      const delay2 = webhookBackoffStrategy(2, 'exponential', new Error('test')) as number;
+      expect(delay2).toBe(4000);
+
+      // Third retry.
+      const thirdRetryDelay = webhookBackoffStrategy(3, 'exponential', new Error('test')) as number;
+      expect(thirdRetryDelay).toBe(8000);
     });
 
     it('adds jitter to prevent thundering herd', () => {
@@ -97,10 +108,10 @@ describe('backoff.util', () => {
       const uniqueDelays = new Set(delays);
       expect(uniqueDelays.size).toBeGreaterThan(1);
 
-      // All delays should be in the range [4000, 4800)
+      // BullMQ's attemptsMade = 1 is the first retry: [2000, 2400).
       for (const delay of delays) {
-        expect(delay).toBeGreaterThanOrEqual(4000);
-        expect(delay).toBeLessThanOrEqual(4800);
+        expect(delay).toBeGreaterThanOrEqual(2000);
+        expect(delay).toBeLessThanOrEqual(2400);
       }
     });
 
@@ -120,6 +131,7 @@ describe('backoff.util', () => {
     it('works when err and job are not provided', () => {
       vi.mocked(Math.random).mockReturnValue(0);
       const delay = jitteredBackoffStrategy(2_000)(1) as number;
+      const delay = webhookBackoffStrategy(1) as number;
       expect(delay).toBe(2000);
     });
   });

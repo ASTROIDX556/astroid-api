@@ -102,5 +102,12 @@ export function jitteredBackoffDelay(
  *
  * @see https://docs.bullmq.io/guide/retrying-failing-jobs#custom-backoff-strategy
  */
-export const jitteredBackoffStrategy = (baseDelayMs: number, maxDelayMs?: number): BackoffStrategy =>
-  (attemptsMade: number) => jitteredBackoffDelay(attemptsMade, baseDelayMs, maxDelayMs);
+export const webhookBackoffStrategy: BackoffStrategy = (attemptsMade) => {
+  return exponentialBackoffWithJitter(Math.max(attemptsMade, 1), DEFAULT_BASE_DELAY_MS, DEFAULT_JITTER_FACTOR);
+};
+
+/** Creates a webhook retry strategy using the configured base delay. */
+export function createWebhookBackoffStrategy(baseDelayMs: number): BackoffStrategy {
+  return (attemptsMade) =>
+    exponentialBackoffWithJitter(Math.max(attemptsMade, 1), baseDelayMs, DEFAULT_JITTER_FACTOR);
+}

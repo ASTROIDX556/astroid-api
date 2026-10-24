@@ -5,6 +5,15 @@ import { RiskEngine } from '../../risk/risk.engine';
 import { EventBusService } from '../../../events/event-bus.service';
 import { CircuitOpenException, DomainException } from '../../../common/exceptions/domain.exception';
 import { ErrorCode } from '../../../common/constants/error-codes';
+import { ConfigService } from '@nestjs/config';
+import { GasEstimationService } from './gas-estimation.service';
+
+/** Gas settings fall back to the service defaults (25% buffer) in these tests. */
+function buildGasEstimationService(client: SorobanClient): GasEstimationService {
+  return new GasEstimationService(client, {
+    get: vi.fn().mockReturnValue(undefined),
+  } as unknown as ConfigService);
+}
 
 function buildMockSorobanClient(overrides: Partial<SorobanSimulationResult> = {}): SorobanClient {
   return {
@@ -47,6 +56,7 @@ describe('SorobanSimulationService', () => {
       sorobanClient,
       new RiskEngine(),
       eventBus as unknown as EventBusService,
+      buildGasEstimationService(sorobanClient),
     );
   });
 
@@ -58,7 +68,8 @@ describe('SorobanSimulationService', () => {
       });
 
       expect(result.success).toBe(true);
-      expect(result.feeEstimate).toBe('100000');
+      // The raw 100,000 stroop simulation fee carries the default 25% buffer.
+      expect(result.feeEstimate).toBe('125000');
       expect(result.risk).toBeDefined();
       expect(result.risk.score).toBeGreaterThanOrEqual(0);
       expect(result.risk.score).toBeLessThanOrEqual(100);
@@ -77,6 +88,32 @@ describe('SorobanSimulationService', () => {
         expect.objectContaining({ score: expect.any(Number) }),
         expect.objectContaining({ organizationId: 'org-1', actorId: 'user-1' }),
       );
+    });
+
+    it('skips malformed event logs while returning the valid ones', async () => {
+      const validEvent = {
+        type: 'contract',
+        contractId: 'mock-contract-1',
+        topic: ['transfer'],
+        value: { amount: '100' },
+      };
+      sorobanClient = buildMockSorobanClient({
+        events: [validEvent, null, { type: 'contract' }] as never,
+      });
+      service = new SorobanSimulationService(
+        sorobanClient,
+        new RiskEngine(),
+        eventBus as unknown as EventBusService,
+        buildGasEstimationService(sorobanClient),
+      );
+
+      const result = await service.simulate({
+        transactionXdr: buildValidXdr(),
+        organizationId: 'org-1',
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.events).toEqual([validEvent]);
     });
 
     it('should throw DomainException for invalid base64 XDR', async () => {
@@ -113,6 +150,34 @@ describe('SorobanSimulationService', () => {
           organizationId: 'org-1',
         }),
       ).rejects.toThrow('Contract Error');
+    });
+
+    it('decodes a raw contract revert payload into a descriptive domain error', async () => {
+      const reason = Buffer.from('insufficient balance for transfer', 'utf8');
+      const padding = Buffer.alloc((32 - (reason.length % 32)) % 32);
+      const rawData = `0x08c379a0${'20'.padStart(64, '0')}${reason.length
+        .toString(16)
+        .padStart(64, '0')}${Buffer.concat([reason, padding]).toString('hex')}`;
+
+      (sorobanClient.simulateTransaction as ReturnType<typeof vi.fn>).mockResolvedValue({
+        success: false,
+        minResourceFee: '0',
+        cost: { cpuInstructions: 0, memoryBytes: 0 },
+        footprint: { readOnly: [], readWrite: [] },
+        events: [],
+        error: { code: 'HOST_ERROR', message: 'HostError: Error(Contract, #3)', data: rawData },
+      });
+
+      const error = await service
+        .simulate({ transactionXdr: buildValidXdr(), organizationId: 'org-1' })
+        .catch((thrown: unknown) => thrown as DomainException);
+
+      expect(error).toBeInstanceOf(DomainException);
+      expect((error as DomainException).code).toBe(ErrorCode.INSUFFICIENT_FUNDS);
+      expect((error as DomainException).message).toBe('insufficient balance for transfer');
+      expect((error as DomainException).details).toMatchObject({
+        contractError: { kind: 'message', raw: { format: 'hex', data: rawData } },
+      });
     });
 
     it('should throw DomainException when soroban client throws', async () => {

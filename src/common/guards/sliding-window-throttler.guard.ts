@@ -9,11 +9,29 @@ import { DomainException } from '../exceptions/domain.exception';
 import { ErrorCode } from '../constants/error-codes';
 import { THROTTLE_TIER_KEY, ThrottleTier } from '../decorators/throttle-tier.decorator';
 import { extractApiKeyFromRequest } from '../helpers/extract-api-key';
+import { resolveRequestAgentId } from '../helpers/resolve-agent-id';
 
 export const SLIDING_WINDOW_LIMIT_KEY = 'astroid:slidingWindowLimit';
 export const SlidingWindowLimit = (limit: number, windowSeconds = 60) =>
   Reflector.createDecorator<{ limit: number; windowSeconds: number }>()({ limit, windowSeconds });
 
+/**
+ * Redis-backed sliding-window rate limiter for the high-frequency routes
+ * (transaction submission, agent commands, webhook ingress).
+ *
+ * The window is a Redis sorted set per client and route: every request adds a
+ * member scored with its timestamp, expired members are pruned on the next
+ * request, and the whole update runs inside a `MULTI`/`EXEC` transaction so
+ * concurrent requests cannot slip past the limit.
+ *
+ * Clients are bucketed by the acting agent first, then by the API key, the
+ * organization and finally the client IP. Bucketing per agent keeps a single
+ * misbehaving agent from exhausting the budget of every other agent of the
+ * same organization.
+ *
+ * Exceeding the limit answers with HTTP 429 and a `Retry-After` header that
+ * points at the moment the oldest request leaves the window.
+ */
 @Injectable()
 export class SlidingWindowThrottlerGuard implements CanActivate {
   private readonly logger = new Logger(SlidingWindowThrottlerGuard.name);
@@ -64,21 +82,24 @@ export class SlidingWindowThrottlerGuard implements CanActivate {
 
     try {
       const member = `${now}:${Math.random().toString(36).slice(2)}`;
+      // One atomic transaction: prune the expired members, count what is left,
+      // record the new request and read the oldest member (the one whose slot
+      // frees up first). The count is taken before the insert, so the limit
+      // allows exactly `limit` requests per window.
       const result = await this.redis
         .multi()
         .zremrangebyscore(key, 0, windowStart)
         .zcard(key)
         .zadd(key, now, member)
         .expire(key, windowSeconds)
+        .zrange(key, 0, 0, 'WITHSCORES')
         .exec();
-      const count = Number(result?.[1]?.[1] ?? 0);
+      const entries = (result ?? []) as unknown as Array<[Error | null, unknown]>;
+      const count = Number(entries[1]?.[1] ?? 0);
       const remaining = Math.max(0, limit - count - 1);
       response.setHeader('X-RateLimit-Remaining', remaining);
       if (count >= limit) {
-        response.setHeader(
-          'Retry-After',
-          Math.max(1, Math.ceil((windowStart + windowSeconds * 1000 - now) / 1000)),
-        );
+        response.setHeader('Retry-After', this.retryAfterSeconds(entries[4]?.[1], now, windowSeconds));
         throw new DomainException(ErrorCode.RATE_LIMITED, 'Rate limit exceeded', {
           limit,
           windowSeconds,
@@ -95,6 +116,22 @@ export class SlidingWindowThrottlerGuard implements CanActivate {
     }
   }
 
+  /**
+   * Seconds until the next request is accepted: the oldest member of the
+   * window leaves it after `windowSeconds`, at which point a slot frees up.
+   */
+  private retryAfterSeconds(
+    oldestScore: unknown,
+    now: number,
+    windowSeconds: number,
+  ): number {
+    const oldest = Number(oldestScore ?? 0);
+    if (!Number.isFinite(oldest) || oldest <= 0) {
+      return Math.max(1, windowSeconds);
+    }
+    return Math.max(1, Math.ceil((oldest + windowSeconds * 1000 - now) / 1000));
+  }
+
   private keyFor(
     request: Request & { user?: AuthenticatedUser },
     context: ExecutionContext,
@@ -109,12 +146,18 @@ export class SlidingWindowThrottlerGuard implements CanActivate {
   }
 
   /**
-   * Identifies the client for rate-limit bucketing. Prefers the authenticated
-   * organization (set by the auth guards from the JWT/API key), then the raw
-   * `Authorization`/`X-API-Key` header value (hashed, never stored raw), and
-   * finally falls back to the client IP for fully unauthenticated routes.
+   * Identifies the client for rate-limit bucketing. The acting agent comes
+   * first so one agent cannot exhaust the budget of the other agents of the
+   * same organization; then the authenticated API key, the organization and
+   * finally the client IP for fully unauthenticated routes. A raw API key is
+   * never stored — it is hashed.
    */
   private clientScope(request: Request & { user?: AuthenticatedUser }): string {
+    const agentId = resolveRequestAgentId(request);
+    if (agentId) {
+      return `agent:${agentId}`;
+    }
+
     if (request.user?.isApiKey) {
       return `key:${request.user.apiKeyId ?? request.user.id}`;
     }

@@ -12,8 +12,15 @@ import {
   RiskTooHighException,
 } from '../../../common/exceptions/domain.exception';
 import { CircuitBreaker, isRpcFailure } from '../../../common/circuit-breaker/circuit-breaker';
+import { parseContractEventLogs } from '../../../integrations/stellar/contract-event.parser';
+import {
+  decodeContractRevert,
+  isRecognisedContractRevert,
+  toContractRevertException,
+} from '../../../common/exceptions/contract-revert.decoder';
 import { EventBusService } from '../../../events/event-bus.service';
 import { DomainEventName } from '../../../events/event-names';
+import { GasEstimationService } from './gas-estimation.service';
 
 /** Consecutive failures before the Soroban RPC circuit trips OPEN. */
 const SOROBAN_FAILURE_THRESHOLD = 5;
@@ -83,6 +90,7 @@ export class SorobanSimulationService {
     @Inject(SOROBAN_CLIENT) private readonly sorobanClient: SorobanClient,
     private readonly riskEngine: RiskEngine,
     private readonly eventBus: EventBusService,
+    private readonly gasEstimation: GasEstimationService,
   ) {}
 
   /**
@@ -109,6 +117,12 @@ export class SorobanSimulationService {
       if (error instanceof DomainException) {
         throw error;
       }
+      // A contract revert thrown by the RPC client is decoded and mapped onto a
+      // descriptive domain error; transport failures keep the generic path.
+      const decoded = decodeContractRevert(error);
+      if (isRecognisedContractRevert(decoded)) {
+        throw toContractRevertException(decoded);
+      }
       this.logger.warn(
         `Soroban simulation failed: ${(error as Error).message}`,
       );
@@ -119,18 +133,25 @@ export class SorobanSimulationService {
     }
 
     if (!result.success) {
+      const decoded = decodeContractRevert(
+        result.error ?? { message: 'Simulation failed without error details' },
+      );
       this.logger.warn(
-        `Soroban simulation returned error: ${result.error?.code} - ${result.error?.message}`,
+        `Soroban simulation returned error: ${result.error?.code} - ${decoded.message}`,
       );
-      throw new DomainException(
-        ErrorCode.STELLAR_ERROR,
-        `Soroban simulation failed: ${result.error?.message ?? 'Unknown error'}`,
-        result.error,
-      );
+      throw toContractRevertException(decoded);
     }
 
+    // Parse event logs defensively: a malformed log is skipped with a warning
+    // instead of aborting the batch or crashing the simulation.
+    const events = parseContractEventLogs(result.events, this.logger);
+
+    // Apply the congestion safety buffer and cap the fee at what the network
+    // will accept instead of forwarding the raw simulation fee.
+    const gas = this.gasEstimation.fromSimulation(result);
+
     // Risk scoring
-    const riskInput = input.riskFactors ?? this.buildDefaultRiskFactors(result);
+    const riskInput = input.riskFactors ?? this.buildDefaultRiskFactors(result, events.length);
     const risk = this.riskEngine.assess(riskInput);
     const maxRiskScore = input.maxRiskScore ?? 80;
     const requiresApproval = risk.score > 20 || risk.band !== 'LOW';
@@ -149,7 +170,7 @@ export class SorobanSimulationService {
         score: risk.score,
         band: risk.band,
         simulationSuccess: true,
-        feeEstimate: result.minResourceFee,
+        feeEstimate: gas.fee,
         transactionHash: result.transactionHash,
       },
       {
@@ -161,10 +182,10 @@ export class SorobanSimulationService {
 
     return {
       success: true,
-      feeEstimate: result.minResourceFee,
+      feeEstimate: gas.fee,
       cost: result.cost,
       footprint: result.footprint,
-      events: result.events,
+      events,
       risk,
       requiresApproval,
       transactionHash: result.transactionHash,
@@ -195,9 +216,13 @@ export class SorobanSimulationService {
     }
   }
 
-  private buildDefaultRiskFactors(result: SorobanSimulationResult): RiskFactorsInput {
-    // Build risk factors from simulation result when not explicitly provided
-    const eventCount = result.events.length;
+  private buildDefaultRiskFactors(
+    result: SorobanSimulationResult,
+    eventCount: number,
+  ): RiskFactorsInput {
+    // Build risk factors from simulation result when not explicitly provided.
+    // `eventCount` counts only well-formed logs (malformed entries are skipped
+    // by parseContractEventLogs before scoring).
     const hasWriteFootprint = result.footprint.readWrite.length > 0;
     const feeStroops = parseInt(result.minResourceFee, 10);
 

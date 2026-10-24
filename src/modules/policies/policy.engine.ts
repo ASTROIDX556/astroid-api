@@ -3,9 +3,27 @@ import {
   EvaluablePolicy,
   PolicyConfiguration,
   PolicyEvaluationResult,
+  PolicyRuleCondition,
   PolicyViolation,
   TransactionIntent,
 } from './policy.types';
+
+/** Weekday indices, matching `Date.prototype.getUTCDay()`. */
+const WEEKDAY_INDEX: Record<string, number> = {
+  Sun: 0,
+  Mon: 1,
+  Tue: 2,
+  Wed: 3,
+  Thu: 4,
+  Fri: 5,
+  Sat: 6,
+};
+
+/** Local time of an instant, resolved in a specific IANA time zone. */
+interface LocalTime {
+  hour: number;
+  dayOfWeek: number;
+}
 
 /**
  * Pure, deterministic policy evaluation engine. Given a transaction intent and
@@ -37,6 +55,8 @@ export class PolicyEngine {
       violations.push(...this.checkRecipients(policy, config, intent));
       violations.push(...this.checkPeriodicLimits(policy, config, intent));
       violations.push(...this.checkTimeWindow(policy, config, at));
+      violations.push(...this.checkVelocity(policy, config, intent));
+      violations.push(...this.checkRuleGroups(policy, config, intent, at));
       violations.push(...this.checkEmergencyLock(policy, config));
       if (this.demandsApproval(config, intent)) {
         requiresApproval = true;
@@ -182,21 +202,184 @@ export class PolicyEngine {
     if (!config.timeWindow) {
       return [];
     }
-    const { startHour, endHour, days } = config.timeWindow;
-    const hour = at.getUTCHours();
-    const day = at.getUTCDay();
-    const withinHours = hour >= startHour && hour < endHour;
-    const withinDays = !days || days.includes(day);
+    const { startHour, endHour, days, timezone } = config.timeWindow;
+    const local = this.resolveLocalTime(at, timezone);
+    const withinHours = local.hour >= startHour && local.hour < endHour;
+    const withinDays = !days || days.includes(local.dayOfWeek);
     if (!withinHours || !withinDays) {
       return [
         this.violation(
           policy,
           'OUTSIDE_TIME_WINDOW',
-          `Transaction attempted outside the allowed time window (${startHour}:00-${endHour}:00 UTC)`,
+          `Transaction attempted outside the allowed time window (${startHour}:00-${endHour}:00 ${
+            timezone ?? 'UTC'
+          })`,
         ),
       ];
     }
     return [];
+  }
+
+  /**
+   * Enforces the velocity rule: at most `maxTransactions` may be executed
+   * inside the configured rolling window. The window count is supplied by the
+   * caller through `intent.transactionCount`, so the engine stays pure.
+   */
+  private checkVelocity(
+    policy: EvaluablePolicy,
+    config: PolicyConfiguration,
+    intent: TransactionIntent,
+  ): PolicyViolation[] {
+    const velocity = config.velocity;
+    if (!velocity) {
+      return [];
+    }
+
+    const executed =
+      intent.transactionCounts?.[velocity.window] ?? intent.transactionCount ?? 0;
+    if (executed < velocity.maxTransactions) {
+      return [];
+    }
+
+    return [
+      this.violation(
+        policy,
+        'VELOCITY_LIMIT_EXCEEDED',
+        `Transaction count ${executed} reaches the velocity limit of ${velocity.maxTransactions} per ${velocity.window}`,
+      ),
+    ];
+  }
+
+  /**
+   * Evaluates the multi-condition rule groups of a policy. A group holds when
+   * its conditions satisfy the group's logic (`AND` / `OR`); a group that does
+   * not hold produces one violation naming the failed conditions.
+   */
+  private checkRuleGroups(
+    policy: EvaluablePolicy,
+    config: PolicyConfiguration,
+    intent: TransactionIntent,
+    at: Date,
+  ): PolicyViolation[] {
+    const groups = config.rules;
+    if (!groups || groups.length === 0) {
+      return [];
+    }
+
+    const out: PolicyViolation[] = [];
+    for (const group of groups) {
+      const failed = group.conditions.filter(
+        (condition) => !this.evaluateCondition(condition, intent, at),
+      );
+
+      const holds =
+        group.logic === 'OR' ? failed.length < group.conditions.length : failed.length === 0;
+      if (holds) {
+        continue;
+      }
+
+      const label = group.id ?? `rule-${out.length + 1}`;
+      out.push(
+        this.violation(
+          policy,
+          'RULE_GROUP_VIOLATED',
+          `Rule group '${label}' was not satisfied: ${failed
+            .map((condition) => this.describeCondition(condition))
+            .join(', ')}`,
+        ),
+      );
+    }
+    return out;
+  }
+
+  /** Evaluates a single rule condition against the intent. */
+  private evaluateCondition(
+    condition: PolicyRuleCondition,
+    intent: TransactionIntent,
+    at: Date,
+  ): boolean {
+    const actual = this.resolveConditionValue(condition.field, intent, at);
+
+    switch (condition.operator) {
+      case 'eq':
+        return actual === condition.value;
+      case 'neq':
+        return actual !== condition.value;
+      case 'gt':
+        return typeof actual === 'number' && actual > Number(condition.value);
+      case 'gte':
+        return typeof actual === 'number' && actual >= Number(condition.value);
+      case 'lt':
+        return typeof actual === 'number' && actual < Number(condition.value);
+      case 'lte':
+        return typeof actual === 'number' && actual <= Number(condition.value);
+      case 'in':
+        return Array.isArray(condition.value)
+          ? condition.value.includes(String(actual))
+          : false;
+      case 'notIn':
+        return Array.isArray(condition.value)
+          ? !condition.value.includes(String(actual))
+          : false;
+      default:
+        return false;
+    }
+  }
+
+  /** Resolves the value a condition is compared against. */
+  private resolveConditionValue(
+    field: PolicyRuleCondition['field'],
+    intent: TransactionIntent,
+    at: Date,
+  ): string | number | undefined {
+    switch (field) {
+      case 'amount':
+        return intent.amount;
+      case 'asset':
+        return intent.asset;
+      case 'recipientAddress':
+        return intent.recipientAddress;
+      case 'agentId':
+        return intent.agentId;
+      case 'hourOfDay':
+        return this.resolveLocalTime(at).hour;
+      case 'dayOfWeek':
+        return this.resolveLocalTime(at).dayOfWeek;
+      case 'transactionCount':
+        return intent.transactionCount ?? 0;
+      default:
+        return undefined;
+    }
+  }
+
+  /** Human readable description of a condition, used in violation messages. */
+  private describeCondition(condition: PolicyRuleCondition): string {
+    return `${condition.field} ${condition.operator} ${JSON.stringify(condition.value)}`;
+  }
+
+  /**
+   * Resolves the local hour and weekday of an instant. The time zone defaults
+   * to UTC; an unknown zone falls back to UTC rather than failing the check.
+   */
+  private resolveLocalTime(at: Date, timeZone?: string): LocalTime {
+    if (!timeZone) {
+      return { hour: at.getUTCHours(), dayOfWeek: at.getUTCDay() };
+    }
+
+    try {
+      const formatter = new Intl.DateTimeFormat('en-US', {
+        timeZone,
+        hour: '2-digit',
+        hourCycle: 'h23',
+        weekday: 'short',
+      });
+      const parts = formatter.formatToParts(at);
+      const hour = Number(parts.find((part) => part.type === 'hour')?.value ?? 0) % 24;
+      const weekday = parts.find((part) => part.type === 'weekday')?.value ?? 'Sun';
+      return { hour, dayOfWeek: WEEKDAY_INDEX[weekday] ?? 0 };
+    } catch {
+      return { hour: at.getUTCHours(), dayOfWeek: at.getUTCDay() };
+    }
   }
 
   private checkEmergencyLock(

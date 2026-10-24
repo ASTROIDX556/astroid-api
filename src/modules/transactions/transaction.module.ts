@@ -10,6 +10,7 @@ import { RiskModule } from '../risk/risk.module';
 import { BudgetModule } from '../budgets/budget.module';
 import { SorobanSimulationService } from './services/soroban-simulation.service';
 import { StellarSimulationService } from './services/stellar-simulation.service';
+import { GasEstimationService } from './services/gas-estimation.service';
 import { StellarModule } from '../stellar/stellar.module';
 import { SpendingLimitService } from './spending-limit.service';
 import { SpendingLimitGuard } from './guards/spending-limit.guard';
@@ -34,7 +35,15 @@ import { TransactionIdempotencyCleanupService } from './transaction-idempotency-
     RiskModule,
     BudgetModule,
     StellarModule,
-    BullModule.registerQueue(createQueueRegistrationOptions(Queues.Transactions)),
+    BullModule.registerQueue(
+      // Transaction execution is retried with exponential backoff and jitter.
+      // A job that still fails on its last attempt is dead-lettered by the
+      // shared QueueFailureListener for manual review.
+      createQueueRegistrationOptions(Queues.Transactions, {
+        attempts: 5,
+        backoff: { type: 'exponential', delay: 2_000 },
+      }),
+    ),
   ],
   controllers: [TransactionController],
   providers: [
@@ -42,11 +51,12 @@ import { TransactionIdempotencyCleanupService } from './transaction-idempotency-
     TransactionRepository,
     SorobanSimulationService,
     StellarSimulationService,
+    GasEstimationService,
     SpendingLimitService,
     SpendingLimitGuard,
     TransactionWorker,
     TransactionIdempotencyCleanupService,
   ],
-  exports: [TransactionService, SorobanSimulationService, StellarSimulationService, SpendingLimitService],
+  exports: [TransactionService, SorobanSimulationService, StellarSimulationService, GasEstimationService, SpendingLimitService],
 })
 export class TransactionModule {}

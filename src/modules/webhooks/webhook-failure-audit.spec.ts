@@ -5,6 +5,21 @@ import { WebhooksProcessor } from './webhooks.processor';
 import { WebhookAuditService } from './services/webhook-audit.service';
 import { WebhookJobData } from './types/webhook-job.types';
 
+const createDestinationPolicy = () => ({
+  post: async (
+    url: string,
+    options: { headers: Record<string, string>; body: Buffer; timeoutMs: number },
+  ) => {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: options.headers,
+      body: options.body,
+      signal: AbortSignal.timeout(options.timeoutMs),
+    });
+    return { status: response.status };
+  },
+});
+
 /**
  * Terminal-failure behaviour of the webhook processor: retries are scheduled
  * while attempts remain, and a delivery that exhausts them (or hits a
@@ -44,7 +59,15 @@ describe('WebhooksProcessor terminal failures', () => {
       },
     };
     processor = new WebhooksProcessor(
-      { webhook: { findFirst: vi.fn().mockResolvedValue({ secret: 'whsec_test' }) } } as never,
+      {
+        webhook: {
+          findFirst: vi.fn().mockResolvedValue({
+            secret: 'whsec_test',
+            url: jobData.url,
+            enabled: true,
+          }),
+        },
+      } as never,
       undefined,
       { recordTerminalFailure } as unknown as WebhookAuditService,
       destinationPolicy,
@@ -87,7 +110,7 @@ describe('WebhooksProcessor terminal failures', () => {
       eventName: 'transaction.completed',
       eventId: 'event-1',
       attemptsMade: 5,
-      failedReason: expect.stringContaining('HTTP 503'),
+      failedReason: 'HTTP 503',
       responseStatus: 503,
     });
   });
@@ -99,13 +122,38 @@ describe('WebhooksProcessor terminal failures', () => {
       statusText: 'Not Found',
       text: () => Promise.resolve('Not Found'),
     });
-
     await expect(processor.process(makeJob(0))).rejects.toBeInstanceOf(UnrecoverableError);
 
     expect(recordTerminalFailure).toHaveBeenCalledTimes(1);
     expect(recordTerminalFailure).toHaveBeenCalledWith(
       expect.objectContaining({ attemptsMade: 1, responseStatus: 404 }),
     );
+  });
+
+  it('uses the current subscription URL instead of a stale URL in queued job data', async () => {
+    const currentUrl = 'https://current.example.com/hook';
+    processor = new WebhooksProcessor(
+      {
+        webhook: {
+          findFirst: vi.fn().mockResolvedValue({
+            secret: 'whsec_test',
+            url: currentUrl,
+            enabled: true,
+          }),
+        },
+      } as never,
+      undefined,
+      undefined,
+      createDestinationPolicy(),
+    );
+    fetchSpy.mockResolvedValue({ ok: true, status: 200 });
+
+    await processor.process({
+      ...makeJob(0),
+      data: { ...jobData, url: 'https://stale.example.com/hook' },
+    } as Job<WebhookJobData>);
+
+    expect(fetchSpy).toHaveBeenCalledWith(currentUrl, expect.any(Object));
   });
 
   it('never lets an audit failure mask the original delivery error', async () => {

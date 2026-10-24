@@ -3,6 +3,11 @@ import { ErrorCode } from '../../../common/constants/error-codes';
 import { DomainException } from '../../../common/exceptions/domain.exception';
 import { CircuitBreaker, isRpcFailure } from '../../../common/circuit-breaker/circuit-breaker';
 import {
+  decodeContractRevert,
+  isRecognisedContractRevert,
+  toContractRevertException,
+} from '../../../common/exceptions/contract-revert.decoder';
+import {
   BuildPaymentParams,
   StellarBalance,
   StellarClient,
@@ -90,9 +95,8 @@ export class StellarService {
       return await this.breaker.execute(async () => {
         const result = await this.sorobanClient.simulateTransaction({ transactionXdr });
         if (!result.success || result.error) {
-          throw new DomainException(
-            ErrorCode.STELLAR_ERROR,
-            `Simulation failed: ${result.error?.message ?? 'Unknown simulation error'}`,
+          throw toContractRevertException(
+            decodeContractRevert(result.error ?? { message: 'Unknown simulation error' }),
           );
         }
         return result;
@@ -100,6 +104,12 @@ export class StellarService {
     } catch (error: unknown) {
       if (error instanceof DomainException) {
         throw error;
+      }
+      // Decode raw revert payloads the RPC client may throw (hex/base64 XDR or
+      // ABI-encoded bytes) before falling back to a generic network error.
+      const decoded = decodeContractRevert(error);
+      if (isRecognisedContractRevert(decoded)) {
+        throw toContractRevertException(decoded);
       }
       const errMessage = error instanceof Error ? error.message : 'Unknown simulation error';
       this.logger.error(

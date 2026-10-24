@@ -110,6 +110,29 @@ For full control — or to pull messages from a translation catalog — pass
 body: CreateWalletInput
 ```
 
+## Agent identity module
+
+The agent endpoints use a **strict** schema, so an unexpected key is a hard
+error instead of a silent drop:
+
+```ts
+export const createAgentSchema = z
+  .object({
+    name: agentNameSchema,          // trimmed, 1-120 chars, unique per org
+    role: z.nativeEnum(AgentRole).default(AgentRole.CUSTOM),
+    capabilities: agentCapabilitiesSchema, // trimmed, unique, max 50 entries
+    metadata: agentMetadataSchema,
+    publicKey: stellarEd25519PublicKeySchema.optional(), // Stellar checksum
+  })
+  .strict();
+```
+
+`publicKey` is validated against the Stellar strkey checksum, so a malformed
+key is rejected at the API boundary instead of failing later on-chain. A
+duplicate agent handle is rejected by the service with a `409 CONFLICT` — both
+error paths are covered by `src/modules/agents/agent.controller.spec.ts`, which
+asserts the standardized error envelope over real HTTP.
+
 ## Checklist for a new endpoint
 
 1. Add the schema and its inferred input type to the module's `*.dto.ts`.

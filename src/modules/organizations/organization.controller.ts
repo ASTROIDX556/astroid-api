@@ -3,13 +3,15 @@ import {
   ApiOperation,
   ApiTags,
   ApiBearerAuth,
-  ApiResponse,
   ApiParam,
   ApiBody,
 } from '@nestjs/swagger';
 import { UserRole } from '@prisma/client';
 import { OrganizationService } from './organization.service';
 import {
+  OrganizationMemberDto,
+  OrganizationResponseDto,
+  MemberRemovedDto,
   inviteMemberSchema,
   InviteMemberInput,
   InviteMemberDto,
@@ -27,6 +29,8 @@ import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 import { AuthenticatedUser } from '../../common/interfaces/authenticated-user.interface';
 import { PaginationQuery, paginationQuerySchema } from '../../common/helpers/pagination';
 import { ApiPaginationQuery } from '../../common/decorators/api-pagination-query.decorator';
+import { ApiEnvelope, ApiPaginatedEnvelope } from '../../common/decorators/api-envelope.decorator';
+import { ApiErrorResponses } from '../../common/decorators/api-error-responses.decorator';
 
 @ApiTags('organizations')
 @ApiBearerAuth('access-token')
@@ -39,9 +43,8 @@ export class OrganizationController {
     summary: 'Get the current organization',
     description: 'Returns the organization details for the authenticated user.',
   })
-  @ApiResponse({ status: 200, description: 'Organization details' })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
-  @ApiResponse({ status: 404, description: 'Organization not found' })
+  @ApiEnvelope(OrganizationResponseDto, { description: 'Organization details' })
+  @ApiErrorResponses({ unauthorized: true, notFound: true, serverError: true })
   getCurrent(@CurrentUser('organizationId') organizationId: string) {
     return this.organizationService.getCurrent(organizationId);
   }
@@ -54,10 +57,13 @@ export class OrganizationController {
     description: 'Partial update of organization fields (name, settings, etc.).',
   })
   @ApiBody({ type: UpdateOrganizationDto })
-  @ApiResponse({ status: 200, description: 'Organization updated successfully' })
-  @ApiResponse({ status: 400, description: 'Validation error' })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
-  @ApiResponse({ status: 403, description: 'Insufficient permissions (requires OWNER or ADMIN)' })
+  @ApiEnvelope(OrganizationResponseDto, { description: 'Organization updated successfully' })
+  @ApiErrorResponses({
+    validation: true,
+    unauthorized: true,
+    forbidden: 'Insufficient permissions (requires OWNER or ADMIN)',
+    serverError: true,
+  })
   updateCurrent(
     @CurrentUser() user: AuthenticatedUser,
     @Body(new ZodValidationPipe(updateOrganizationSchema)) body: UpdateOrganizationInput,
@@ -71,8 +77,8 @@ export class OrganizationController {
     description: 'Returns a paginated list of members in the current organization.',
   })
   @ApiPaginationQuery()
-  @ApiResponse({ status: 200, description: 'Paginated list of members' })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
+  @ApiPaginatedEnvelope(OrganizationMemberDto, { description: 'Paginated list of members' })
+  @ApiErrorResponses({ unauthorized: true, serverError: true })
   listMembers(
     @CurrentUser('organizationId') organizationId: string,
     @Query(new ZodValidationPipe(paginationQuerySchema)) query: PaginationQuery,
@@ -89,11 +95,14 @@ export class OrganizationController {
       'Sends an invitation to join the organization. The invited user will receive an email with an activation link.',
   })
   @ApiBody({ type: InviteMemberDto })
-  @ApiResponse({ status: 201, description: 'Invitation sent successfully' })
-  @ApiResponse({ status: 400, description: 'Validation error' })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
-  @ApiResponse({ status: 403, description: 'Insufficient permissions (requires OWNER or ADMIN)' })
-  @ApiResponse({ status: 409, description: 'User already a member of this organization' })
+  @ApiEnvelope(OrganizationMemberDto, { status: 201, description: 'Invitation sent successfully' })
+  @ApiErrorResponses({
+    validation: true,
+    unauthorized: true,
+    forbidden: 'Insufficient permissions (requires OWNER or ADMIN)',
+    conflict: 'User already a member of this organization',
+    serverError: true,
+  })
   inviteMember(
     @CurrentUser() user: AuthenticatedUser,
     @Body(new ZodValidationPipe(inviteMemberSchema)) body: InviteMemberInput,
@@ -111,11 +120,14 @@ export class OrganizationController {
   })
   @ApiParam({ name: 'id', description: 'Member UUID', example: '018f0a1b-...' })
   @ApiBody({ type: UpdateMemberDto })
-  @ApiResponse({ status: 200, description: 'Member updated successfully' })
-  @ApiResponse({ status: 400, description: 'Validation error' })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
-  @ApiResponse({ status: 403, description: 'Insufficient permissions' })
-  @ApiResponse({ status: 404, description: 'Member not found' })
+  @ApiEnvelope(OrganizationMemberDto, { description: 'Member updated successfully' })
+  @ApiErrorResponses({
+    validation: true,
+    unauthorized: true,
+    forbidden: true,
+    notFound: true,
+    serverError: true,
+  })
   updateMember(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id') id: string,
@@ -133,10 +145,13 @@ export class OrganizationController {
       'Soft-deletes a member from the organization. The member record is retained for audit purposes.',
   })
   @ApiParam({ name: 'id', description: 'Member UUID', example: '018f0a1b-...' })
-  @ApiResponse({ status: 200, description: 'Member removed successfully' })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
-  @ApiResponse({ status: 403, description: 'Insufficient permissions' })
-  @ApiResponse({ status: 404, description: 'Member not found' })
+  @ApiEnvelope(MemberRemovedDto, { description: 'Member removed successfully' })
+  @ApiErrorResponses({
+    unauthorized: true,
+    forbidden: true,
+    notFound: true,
+    serverError: true,
+  })
   removeMember(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
     return this.organizationService.removeMember(user.organizationId, user.id, id);
   }

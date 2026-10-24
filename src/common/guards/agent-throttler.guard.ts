@@ -9,6 +9,7 @@ import { Request, Response } from 'express';
 
 import { THROTTLE_TIER_KEY, ThrottleTier } from '../decorators/throttle-tier.decorator';
 import { extractApiKeyFromRequest } from '../helpers/extract-api-key';
+import { resolveAgentId } from '../helpers/resolve-agent-id';
 import { AuthenticatedUser } from '../interfaces/authenticated-user.interface';
 
 /** Request-scoped view the tracker/lookup helpers work against. */
@@ -61,7 +62,7 @@ export class AgentThrottlerGuard extends ThrottlerGuard {
   protected async getTracker(req: Record<string, unknown>): Promise<string> {
     const request = req as unknown as ThrottledRequest;
 
-    const agentId = this.resolveAgentId(request);
+    const agentId = resolveAgentId(request);
     if (agentId) {
       return `agent:${agentId}`;
     }
@@ -106,32 +107,7 @@ export class AgentThrottlerGuard extends ThrottlerGuard {
     }
 
     const request = context.switchToHttp().getRequest<ThrottledRequest>();
-    return this.resolveAgentId(request) ? 'agent' : 'api';
-  }
-
-  /**
-   * Extracts the acting agent id from any of the places the platform carries it:
-   * route params, body, query, the `x-agent-id` header, or an API-key principal
-   * bound to an agent (`user.id` of an `isApiKey` principal).
-   */
-  private resolveAgentId(request: ThrottledRequest): string | undefined {
-    const fromRequest =
-      (request.params?.agentId as string) ||
-      ((request.body as Record<string, unknown> | undefined)?.agentId as string) ||
-      ((request.query as Record<string, unknown> | undefined)?.agentId as string) ||
-      (request.headers?.['x-agent-id'] as string) ||
-      undefined;
-
-    if (fromRequest) {
-      return fromRequest;
-    }
-
-    // An API-key principal acts on behalf of an agent in this platform.
-    if (request.user?.isApiKey && request.user.id) {
-      return request.user.id;
-    }
-
-    return undefined;
+    return resolveAgentId(request) ? 'agent' : 'api';
   }
 
   /** Trusts `x-forwarded-for` for tracker bucketing, then falls back to the socket IP. */

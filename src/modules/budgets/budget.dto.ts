@@ -41,32 +41,32 @@ export type AllocateBudgetInput = z.infer<typeof allocateBudgetSchema>;
 // ── Swagger DTOs ──
 
 export class CreateBudgetDto {
-  @ApiProperty({ example: 'Q3 Marketing' })
+  @ApiProperty({ example: 'Q3 Marketing', description: 'Name of the budget' })
   name!: string;
 
-  @ApiPropertyOptional({ example: 'USDC' })
+  @ApiPropertyOptional({ example: 'USDC', description: 'Asset the budget is denominated in' })
   currency?: string;
 
-  @ApiProperty({ example: '10000.0000000' })
+  @ApiProperty({ example: '10000.0000000', description: 'Maximum amount that can be spent in the period' })
   limitAmount!: string;
 
-  @ApiPropertyOptional({ enum: BudgetPeriod })
+  @ApiPropertyOptional({ enum: BudgetPeriod, description: 'How often the budget resets', example: BudgetPeriod.MONTHLY })
   period?: BudgetPeriod;
 
-  @ApiPropertyOptional()
+  @ApiPropertyOptional({ example: false, description: 'Whether the unused amount rolls into the next period' })
   rollover?: boolean;
 
-  @ApiPropertyOptional({ description: 'Parent budget for hierarchical allocation' })
+  @ApiPropertyOptional({ description: 'Parent budget UUID for hierarchical allocation', format: 'uuid' })
   parentBudgetId?: string;
 
-  @ApiPropertyOptional()
+  @ApiPropertyOptional({ description: 'Restrict the budget to a single agent', example: '018f0a1b-2c3d-4e5f-8a9b-0c1d2e3f4a5b' })
   agentId?: string;
 
-  @ApiPropertyOptional()
+  @ApiPropertyOptional({ example: true, description: 'Whether the budget is enforced' })
   enabled?: boolean;
 }
 
 export class AllocateBudgetDto {
-  @ApiProperty({ example: '250.0000000' })
+  @ApiProperty({ example: '250.0000000', description: 'Amount moved from the parent budget' })
   amount!: string;
 }

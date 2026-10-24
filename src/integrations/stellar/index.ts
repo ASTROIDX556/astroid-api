@@ -4,3 +4,4 @@ export * from './horizon-stellar.client';
 export * from './horizon-circuit-breaker.service';
 export * from './soroban.interface';
 export * from './mock-soroban.client';
+export * from './contract-event.parser';

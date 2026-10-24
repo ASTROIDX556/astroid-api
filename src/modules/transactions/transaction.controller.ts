@@ -3,7 +3,6 @@ import {
   ApiOperation,
   ApiTags,
   ApiBearerAuth,
-  ApiResponse,
   ApiParam,
   ApiBody,
   ApiQuery,
@@ -11,10 +10,14 @@ import {
 } from '@nestjs/swagger';
 import { UserRole } from '@prisma/client';
 import { TransactionService } from './transaction.service';
+import { AgentBudgetGuard } from '../budgets/guards/agent-budget.guard';
 import {
   createTransactionSchema,
   CreateTransactionInput,
   CreateTransactionDto,
+  TransactionResponseDto,
+  TransactionSimulationDto,
+  TransactionSubmissionDto,
   simulateTransactionSchema,
   SimulateTransactionInput,
   parseIdempotencyKey,
@@ -30,7 +33,8 @@ import { AgentThrottlerGuard } from '../../common/guards/agent-throttler.guard';
 import { AuthenticatedUser } from '../../common/interfaces/authenticated-user.interface';
 import { PaginationQuery, paginationQuerySchema } from '../../common/helpers/pagination';
 import { ApiPaginationQuery } from '../../common/decorators/api-pagination-query.decorator';
-import { ApiEnvelope } from '../../common/decorators/api-envelope.decorator';
+import { ApiEnvelope, ApiPaginatedEnvelope } from '../../common/decorators/api-envelope.decorator';
+import { ApiErrorResponses } from '../../common/decorators/api-error-responses.decorator';
 import { IDEMPOTENCY_KEY_HEADER } from '../../common/constants/headers';
 import {
   SlidingWindowThrottlerGuard,
@@ -54,9 +58,10 @@ export class TransactionController {
   @ApiQuery({ name: 'status', required: false, enum: ['DRAFT', 'PENDING', 'APPROVED', 'COMPLETED', 'FAILED', 'CANCELLED'], description: 'Filter by transaction status' })
   @ApiQuery({ name: 'agentId', required: false, type: String, description: 'Filter by agent UUID' })
   @ApiQuery({ name: 'walletId', required: false, type: String, description: 'Filter by wallet UUID' })
-  @ApiEnvelope(CreateTransactionDto as never, { isArray: true })
-  @ApiResponse({ status: 200, description: 'Paginated list of transactions' })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
+  @ApiPaginatedEnvelope(TransactionResponseDto, {
+    description: 'Paginated list of transactions',
+  })
+  @ApiErrorResponses({ unauthorized: true, serverError: true })
   list(
     @CurrentUser('organizationId') organizationId: string,
     @Query(new ZodValidationPipe(paginationQuerySchema)) query: PaginationQuery,
@@ -66,7 +71,7 @@ export class TransactionController {
 
   @Post()
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.FINANCE, UserRole.DEVELOPER)
-  @UseGuards(SlidingWindowThrottlerGuard, SpendingLimitGuard)
+  @UseGuards(SlidingWindowThrottlerGuard, SpendingLimitGuard, AgentBudgetGuard)
   @SlidingWindowLimit(30, 60)
   @RequireSpendingLimitCheck()
   @UseWalletLock()
@@ -86,16 +91,18 @@ export class TransactionController {
     required: false,
     description: 'Optional key for replay-safe transaction submission (1-128 allowed ASCII characters).',
   })
-  @ApiEnvelope(CreateTransactionDto as never)
-  @ApiResponse({ status: 201, description: 'Transaction created (may require approval)' })
-  @ApiResponse({ status: 400, description: 'Validation error or policy violation' })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
-  @ApiResponse({ status: 403, description: 'Insufficient permissions' })
-  @ApiResponse({ status: 409, description: 'Insufficient budget or risk threshold exceeded' })
-  @ApiResponse({ status: 409, description: 'Idempotency key is in use or was reused with a different payload' })
-  @ApiResponse({
-    status: 422,
-    description: 'Transaction blocked by spending limit policy (POLICY_VIOLATION)',
+  @ApiEnvelope(TransactionSubmissionDto, {
+    status: 201,
+    description: 'Transaction created (may require approval)',
+  })
+  @ApiErrorResponses({
+    validation: 'Validation error',
+    unauthorized: true,
+    forbidden: true,
+    conflict: 'Insufficient budget, risk threshold exceeded, or the idempotency key is in use',
+    unprocessable: 'Transaction blocked by a spending-limit policy (POLICY_VIOLATION)',
+    tooManyRequests: true,
+    serverError: true,
   })
   create(
     @CurrentUser() user: AuthenticatedUser,
@@ -122,9 +129,15 @@ export class TransactionController {
       'Returns the results without creating any records or moving funds.',
   })
   @ApiBody({ type: CreateTransactionDto })
-  @ApiResponse({ status: 200, description: 'Simulation results with policy/risk/budget outcomes' })
-  @ApiResponse({ status: 400, description: 'Validation error' })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
+  @ApiEnvelope(TransactionSimulationDto, {
+    description: 'Simulation results with policy and risk outcomes',
+  })
+  @ApiErrorResponses({
+    validation: true,
+    unauthorized: true,
+    tooManyRequests: true,
+    serverError: true,
+  })
   simulate(
     @CurrentUser('organizationId') organizationId: string,
     @Body(new ZodValidationPipe(simulateTransactionSchema)) body: SimulateTransactionInput,
@@ -138,10 +151,8 @@ export class TransactionController {
     description: 'Returns full details of a single transaction by ID.',
   })
   @ApiParam({ name: 'id', description: 'Transaction UUID', example: '018f0a1b-...' })
-  @ApiEnvelope(CreateTransactionDto as never)
-  @ApiResponse({ status: 200, description: 'Transaction details' })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
-  @ApiResponse({ status: 404, description: 'Transaction not found' })
+   @ApiEnvelope(TransactionResponseDto, { description: 'Transaction details' })
+  @ApiErrorResponses({ unauthorized: true, notFound: true, serverError: true })
   findOne(@CurrentUser('organizationId') organizationId: string, @Param('id') id: string) {
     return this.transactionService.getOrThrow(organizationId, id);
   }
@@ -156,11 +167,14 @@ export class TransactionController {
       'Completed or already cancelled transactions cannot be cancelled.',
   })
   @ApiParam({ name: 'id', description: 'Transaction UUID', example: '018f0a1b-...' })
-  @ApiResponse({ status: 200, description: 'Transaction cancelled successfully' })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
-  @ApiResponse({ status: 403, description: 'Insufficient permissions' })
-  @ApiResponse({ status: 404, description: 'Transaction not found' })
-  @ApiResponse({ status: 409, description: 'Transaction cannot be cancelled (wrong status)' })
+  @ApiEnvelope(TransactionResponseDto, { description: 'Transaction cancelled successfully' })
+  @ApiErrorResponses({
+    unauthorized: true,
+    forbidden: true,
+    notFound: true,
+    conflict: 'Transaction cannot be cancelled (wrong status)',
+    serverError: true,
+  })
   cancel(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
     return this.transactionService.cancel(user.organizationId, user.id, id);
   }
