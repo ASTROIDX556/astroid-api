@@ -3,6 +3,8 @@ import { Job, UnrecoverableError } from 'bullmq';
 import { WebhooksProcessor } from './webhooks.processor';
 import { WebhookJobData } from './types/webhook-job.types';
 import { verifyWebhookSignature } from './utils/signing';
+import { EventBusService } from '../../events/event-bus.service';
+import { DomainEventName } from '../../events/event-names';
 
 describe('WebhooksProcessor', () => {
   let processor: WebhooksProcessor;
@@ -255,6 +257,68 @@ describe('WebhooksProcessor', () => {
       // Attempt 5 of 5 (attemptsMade = 4, which means this is the last attempt)
       const job = createMockJob({ attemptsMade: 4 } as Partial<Job<WebhookJobData>>);
       await expect(processor.process(job)).rejects.toThrow('HTTP 503');
+    });
+
+    it('emits a permanent failure event when a job exhausts its configured attempts', async () => {
+      const emit = vi.fn().mockResolvedValue(undefined);
+      processor = new WebhooksProcessor(
+        mockPrisma as never,
+        undefined,
+        undefined,
+        processor['destinationPolicy'],
+        { emit } as unknown as EventBusService,
+      );
+      fetchSpy.mockResolvedValue({
+        ok: false,
+        status: 503,
+        text: () => Promise.resolve('Service Unavailable'),
+      });
+      const job = createMockJob({
+        attemptsMade: 2,
+        opts: { attempts: 3 },
+      } as Partial<Job<WebhookJobData>>);
+
+      await expect(processor.process(job)).rejects.toThrow('HTTP 503');
+
+      expect(emit).toHaveBeenCalledWith(
+        DomainEventName.WebhookPermanentlyFailed,
+        expect.objectContaining({
+          webhookId: WEBHOOK_ID,
+          organizationId: ORG_ID,
+          eventId: EVENT_ID,
+          attemptsMade: 3,
+          failedReason: 'HTTP 503',
+          responseStatus: 503,
+        }),
+        expect.objectContaining({ aggregateType: 'webhook', aggregateId: WEBHOOK_ID }),
+      );
+    });
+
+    it('persists and emits permanent failures when the signing secret is unavailable', async () => {
+      const emit = vi.fn().mockResolvedValue(undefined);
+      const upsert = vi.fn().mockResolvedValue(undefined);
+      mockPrisma.webhook = { findFirst: vi.fn().mockResolvedValue(null) };
+      mockPrisma.webhookDelivery = { upsert };
+      processor = new WebhooksProcessor(
+        mockPrisma as never,
+        undefined,
+        undefined,
+        processor['destinationPolicy'],
+        { emit } as unknown as EventBusService,
+      );
+
+      await expect(processor.process(createMockJob())).rejects.toThrow(
+        'Webhook signing secret is unavailable',
+      );
+
+      expect(upsert).toHaveBeenCalledWith(
+        expect.objectContaining({ create: expect.objectContaining({ status: 'FAILED' }) }),
+      );
+      expect(emit).toHaveBeenCalledWith(
+        DomainEventName.WebhookPermanentlyFailed,
+        expect.objectContaining({ failedReason: 'Webhook signing secret is unavailable' }),
+        expect.any(Object),
+      );
     });
 
     it('keeps the same event identity across retry attempts', async () => {

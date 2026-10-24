@@ -48,6 +48,7 @@ describe('assertValidEnvironment', () => {
     expect(env.NODE_ENV).toBe('development');
     expect(env.PORT).toBe(3000);
     expect(env.REDIS_HOST).toBe('localhost');
+    expect(env.WEBHOOK_MAX_ATTEMPTS).toBe(5);
     expect(env.STELLAR_USE_MOCK).toBe(true);
     expect(env.DATABASE_URL).toBe(REQUIRED_ENV.DATABASE_URL);
     expect(env.DATABASE_SLOW_QUERY_THRESHOLD_MS).toBe(250);
@@ -61,6 +62,12 @@ describe('assertValidEnvironment', () => {
       });
       expect(error.issues.map((issue) => issue.key)).toContain('DATABASE_SLOW_QUERY_THRESHOLD_MS');
     }
+  });
+
+  it('accepts a positive webhook retry limit and rejects zero', () => {
+    expect(assertValidEnvironment({ ...REQUIRED_ENV, WEBHOOK_MAX_ATTEMPTS: '3' }).WEBHOOK_MAX_ATTEMPTS).toBe(3);
+    const error = validationError({ ...REQUIRED_ENV, WEBHOOK_MAX_ATTEMPTS: '0' });
+    expect(error.issues.map((issue) => issue.key)).toContain('WEBHOOK_MAX_ATTEMPTS');
   });
 
   it('accepts the documented .env.example as-is', () => {

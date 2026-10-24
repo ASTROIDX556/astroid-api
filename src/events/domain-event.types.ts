@@ -406,3 +406,14 @@ export interface JobRequeuedPayload extends Record<string, unknown> {
   /** Reason the job was re-queued. */
   reason?: string;
 }
+
+export interface WebhookPermanentlyFailedPayload extends Record<string, unknown> {
+  webhookId: string;
+  organizationId: string;
+  url: string;
+  eventName: string;
+  eventId: string;
+  attemptsMade: number;
+  failedReason: string;
+  responseStatus?: number;
+}

@@ -144,6 +144,18 @@ describe('GlobalExceptionFilter', () => {
 
       expect(renderedBody(response)).not.toHaveProperty('details');
     });
+
+    it('serializes circular details without throwing', () => {
+      const { host, response } = buildHost();
+      const details: Record<string, unknown> = { field: 'amount' };
+      details.self = details;
+
+      filter.catch(new DomainException(ErrorCode.BAD_REQUEST, 'Invalid request', details), host);
+
+      const body = renderedBody(response);
+      expect(body.details).toEqual({ field: 'amount', self: '[Circular]' });
+      expect(() => JSON.stringify(body)).not.toThrow();
+    });
   });
 
   // -------------------------------------------------------------------------
