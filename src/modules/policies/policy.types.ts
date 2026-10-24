@@ -1,5 +1,14 @@
 import { z } from 'zod';
 
+export const assetLimitSchema = z.object({
+  maxAmount: z.number().nonnegative().optional(),
+  minAmount: z.number().nonnegative().optional(),
+  dailyLimit: z.number().nonnegative().optional(),
+  weeklyLimit: z.number().nonnegative().optional(),
+  monthlyLimit: z.number().nonnegative().optional(),
+}).strict();
+export const assetLimitsSchema = z.record(z.string().min(1).max(12), assetLimitSchema);
+
 /**
  * The window a velocity rule is measured over.
  */
@@ -120,6 +129,8 @@ export const policyConfigurationSchema = z
     approvalThreshold: z.number().nonnegative().optional(),
     /** When true, blocks ALL spending (emergency lock / kill switch). */
     emergencyLock: z.boolean().optional(),
+    assetLimits: assetLimitsSchema.optional(),
+    baseCurrency: z.string().min(1).max(12).optional(),
   })
   .strict();
 
@@ -208,6 +219,9 @@ export const policyConfigurationSchemaStrict = z
   );
 
 export type PolicyConfiguration = z.infer<typeof policyConfigurationSchema>;
+export type AssetLimitConfiguration = z.infer<typeof assetLimitSchema>;
+export interface AssetTransfer { asset: string; amount: number; recipientAddress?: string }
+export interface SpendPeriods { spentToday: number; spentThisWeek: number; spentThisMonth: number }
 
 /** The transaction intent evaluated against policies. */
 export interface TransactionIntent {
@@ -235,6 +249,9 @@ export interface TransactionIntent {
    * more than one velocity window.
    */
   transactionCounts?: Partial<Record<PolicyVelocityWindow, number>>;
+  transfers?: AssetTransfer[];
+  spentByAsset?: Record<string, SpendPeriods>;
+  limitCurrency?: string;
 }
 
 export interface PolicyViolation {
@@ -242,6 +259,7 @@ export interface PolicyViolation {
   policyName: string;
   code: string;
   message: string;
+  asset?: string;
 }
 
 export interface PolicyEvaluationResult {

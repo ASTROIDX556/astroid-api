@@ -5,7 +5,6 @@ import { Queues } from './queues.constants';
 import {
   WEBHOOK_DEAD_LETTER_QUEUE,
   WEBHOOK_JOB_NAME,
-  WEBHOOK_MAX_ATTEMPTS,
   createWebhookJobOptions,
   createWebhookQueueOptions,
   webhookJobOptionsFor,
@@ -146,6 +145,9 @@ describe('webhook queue configuration', () => {
     } finally {
       random.mockRestore();
     }
+    const settings = createWebhookQueueOptions(SETTINGS).settings as unknown as {
+      backoffStrategy: (attemptsMade: number) => number;
+    };
     const firstRetry = settings.backoffStrategy(1);
     expect(firstRetry).toBeGreaterThanOrEqual(2_000);
     expect(firstRetry).toBeLessThan(2_400);

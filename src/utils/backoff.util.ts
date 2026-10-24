@@ -111,3 +111,16 @@ export function createWebhookBackoffStrategy(baseDelayMs: number): BackoffStrate
   return (attemptsMade) =>
     exponentialBackoffWithJitter(Math.max(attemptsMade, 1), baseDelayMs, DEFAULT_JITTER_FACTOR);
 }
+
+export function jitteredBackoffStrategy(
+  baseDelayMs: number = DEFAULT_BASE_DELAY_MS,
+  maxDelayMs?: number,
+): BackoffStrategy {
+  return (attemptsMade) =>
+    exponentialBackoffWithJitter(
+      Math.max(attemptsMade, 1),
+      baseDelayMs,
+      DEFAULT_JITTER_FACTOR,
+      maxDelayMs,
+    );
+}

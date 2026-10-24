@@ -122,7 +122,7 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
     @Optional() private readonly webhookAudit?: WebhookAuditService,
     @Optional() @Inject(WebhookDestinationPolicy)
     private readonly destinationPolicy: WebhookDestinationClient = new WebhookDestinationPolicy(),
-    @Optional() @Inject(ConfigService) private readonly configService?: ConfigService,
+    @Optional() @Inject(ConfigService) private readonly configService?: any,
   ) {
     super();
     this.config = this.configService?.get<QueueConfig>('queue') ?? queueConfig();

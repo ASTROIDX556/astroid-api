@@ -131,7 +131,6 @@ describe('backoff.util', () => {
     it('works when err and job are not provided', () => {
       vi.mocked(Math.random).mockReturnValue(0);
       const delay = jitteredBackoffStrategy(2_000)(1) as number;
-      const delay = webhookBackoffStrategy(1) as number;
       expect(delay).toBe(2000);
     });
   });

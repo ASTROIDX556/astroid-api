@@ -69,6 +69,11 @@ export interface DomainEventMap {
   // Audit
   'audit.recorded': PayloadTypes.AuditRecordedPayload;
 
+  // Webhook delivery / circuit breaker
+  'webhook.circuit_opened': PayloadTypes.WebhookCircuitOpenedPayload;
+  'webhook.circuit_closed': PayloadTypes.WebhookCircuitClosedPayload;
+  'webhook.delivery_failed': PayloadTypes.WebhookDeliveryFailedPayload;
+
   // Dead letter queue / background job lifecycle
   'dead_letter.job_failed': PayloadTypes.JobFailedPayload;
   'dead_letter.job_requeued': PayloadTypes.JobRequeuedPayload;

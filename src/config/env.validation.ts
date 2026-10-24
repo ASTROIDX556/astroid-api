@@ -85,6 +85,16 @@ export const stellarEnvSchema = z.object({
   STELLAR_FALLBACK_GAS_LIMIT: z.coerce.number().int().positive().default(1_000_000),
   // Static fee limit, in stroops, used alongside the fallback gas limit.
   STELLAR_FALLBACK_FEE_STROOPS: z.coerce.number().int().nonnegative().default(100_000),
+  STELLAR_ANCHOR_ASSETS: z.string().default(''),
+});
+
+export const priceOracleEnvSchema = z.object({
+  PRICE_ORACLE_ENABLED: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
+  PRICE_ORACLE_URL: z.string().default(''),
+  PRICE_ORACLE_API_KEY: z.string().default(''),
+  PRICE_ORACLE_TIMEOUT_MS: z.coerce.number().int().positive().max(30_000).default(3_000),
+  PRICE_ORACLE_MAX_AGE_MS: z.coerce.number().int().positive().max(86_400_000).default(300_000),
+  PRICE_ORACLE_STATIC_PRICES: z.string().default(''),
 });
 
 export const storageEnvSchema = z.object({
@@ -244,6 +254,7 @@ export const environmentSchema = z
     ...authEnvSchema.shape,
     ...stellarEnvSchema.shape,
     ...storageEnvSchema.shape,
+    ...priceOracleEnvSchema.shape,
     ...queueEnvSchema.shape,
     ...webhookEnvSchema.shape,
     ...throttleEnvSchema.shape,

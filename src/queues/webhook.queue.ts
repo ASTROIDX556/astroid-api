@@ -104,7 +104,10 @@ export function createWebhookQueueOptions(
     ...options,
     settings: {
       ...options.settings,
-      backoffStrategy: createWebhookBackoffStrategy(config.webhookRetryDelayMs),
+      backoffStrategy: createWebhookBackoffStrategy(value.webhookRetryDelayMs),
     } as RegisterQueueOptions['settings'],
   };
 }
+
+/** Backward-compatible default options used by older dispatch integrations. */
+export const webhookJobOptions: JobsOptions = createWebhookJobOptions();
