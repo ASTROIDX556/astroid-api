@@ -635,7 +635,7 @@ if [ -f "$SCHEMA_PATH" ] && [ -d "$MIGRATIONS_DIR" ]; then
     /^[[:space:]]*enum[[:space:]]+[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\{/ {
       emit_model(); emit_enum()
       match($0, /enum[[:space:]]+[A-Za-z_][A-Za-z0-9_]*/)
-      enum_name = substr($0, RSTART + 5, RLENGTH - 5); model = ""; in_model = 0; in_enum = 1; next
+      enum_name = substr($0, RSTART + 5, RLENGTH - 5); enum_types[enum_name] = 1; model = ""; in_model = 0; in_enum = 1; next
     }
     in_model && /^[[:space:]]*\}[[:space:]]*$/ { emit_model(); model = ""; table = ""; field_count = 0; in_model = 0; next }
     in_enum && /^[[:space:]]*\}[[:space:]]*$/ { emit_enum(); enum_name = ""; in_enum = 0; next }
@@ -645,6 +645,9 @@ if [ -f "$SCHEMA_PATH" ] && [ -d "$MIGRATIONS_DIR" ]; then
     }
     in_model && /^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*[[:space:]]+[A-Za-z_][A-Za-z0-9_]*(\?|\[\])?/ {
       if ($0 ~ /@relation[[:space:]]*\(/ || $0 ~ /^[[:space:]]*@@/ || $2 ~ /\[\]$/) next
+      field_type = $2
+      sub(/\?$/, "", field_type)
+      if (field_type !~ /^(String|Int|BigInt|Float|Decimal|Boolean|DateTime|Json|Bytes)$/ && enum_types[field_type] != 1) next
       field = $1
       fields[++field_count] = field
       next
