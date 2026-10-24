@@ -308,21 +308,7 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
               ![408, 425, 429].includes(response.status));
           this.logger.warn(`Webhook ${webhookId} responded ${response.status}${requestTrace}`);
           if (isNonTransient) {
-            await this.persistState({
-              webhookId,
-              organizationId,
-              eventName,
-              eventId,
-              payload,
-              status: 'FAILED',
-              attempts: job.attemptsMade + 1,
-              lastError: errorMessage,
-              responseStatus,
-            });
-            // Non-transient (4xx): record the abandoned delivery before BullMQ
-            // moves it straight to the failed set.
-            await this.auditTerminalFailure(job, errorMessage ?? 'HTTP error', responseStatus);
-                        throw new PermanentJobError(errorMessage);
+            throw new PermanentJobError(errorMessage);
           }
           throw new Error(errorMessage);
         }
@@ -330,8 +316,9 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
         await this.circuit?.recordSuccess(webhookId, organizationId, endpoint);
       } catch (error) {
         if (error instanceof UnrecoverableError) {
-          if (error instanceof PermanentJobError && /unavailable/i.test(error.message)) {
+          if (error instanceof PermanentJobError) {
             const failedReason = error.message;
+            const classification = classifyWebhookFailure(error, responseStatus);
             await this.persistState({
               webhookId,
               organizationId,
@@ -341,11 +328,14 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
               status: 'FAILED',
               attempts: job.attemptsMade + 1,
               lastError: failedReason,
+              responseStatus,
+              failureCategory: responseStatus === undefined ? WebhookFailureCategory.Permanent : classification.category,
+              failureCode: responseStatus === undefined ? 'WEBHOOK_CONFIGURATION' : classification.code,
               lastAttemptAt: new Date(),
             });
-            await this.auditTerminalFailure(job, failedReason, undefined, endpoint, {
-              category: WebhookFailureCategory.Permanent,
-              code: 'WEBHOOK_CONFIGURATION',
+            await this.auditTerminalFailure(job, failedReason, responseStatus, endpoint, {
+              category: responseStatus === undefined ? WebhookFailureCategory.Permanent : classification.category,
+              code: responseStatus === undefined ? 'WEBHOOK_CONFIGURATION' : classification.code,
               circuitStatus: 'CLOSED',
             });
           }
