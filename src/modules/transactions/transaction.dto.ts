@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { stellarMemoTypeSchema } from '../../common/validators/stellar-memo.schema';
 import { stellarPublicKeySchema } from '../../common/validators/stellar-address.schema';
-import { stellarAssetCodeSchema } from '../../common/validators/stellar-asset.schema';
+import { stellarAssetCodeSchema, stellarAssetSchema } from '../../common/validators/stellar-asset.schema';
 import { ValidationException } from '../../common/exceptions/domain.exception';
 
 const idempotencyKeyPattern = /^[A-Za-z0-9._~-]{1,128}$/;
@@ -36,7 +36,7 @@ const amountString = z
   .refine((v) => Number(v) > 0, 'Amount must be greater than zero');
 
 const assetTransferSchema = z.object({
-  asset: stellarAssetCodeSchema,
+  asset: stellarAssetSchema,
   amount: amountString,
   recipientAddress: stellarPublicKeySchema.optional(),
 });
@@ -46,7 +46,7 @@ export const createTransactionSchema = z
     walletId: z.string().uuid(),
     agentId: z.string().uuid().optional(),
     budgetId: z.string().uuid().optional(),
-    asset: stellarAssetCodeSchema.default('XLM'),
+    asset: stellarAssetSchema.default('XLM'),
     amount: amountString,
     recipientAddress: stellarPublicKeySchema,
     transfers: z.array(assetTransferSchema).max(10).optional(),
@@ -166,7 +166,7 @@ export const simulateTransactionSchema = z
     walletId: z.string().uuid(),
     agentId: z.string().uuid().optional(),
     budgetId: z.string().uuid().optional(),
-    asset: stellarAssetCodeSchema.optional(),
+    asset: stellarAssetSchema.optional(),
     amount: amountString.optional(),
     recipientAddress: stellarPublicKeySchema,
     transfers: z.array(assetTransferSchema).min(1).max(10).optional(),

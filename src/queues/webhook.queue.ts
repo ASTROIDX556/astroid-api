@@ -110,4 +110,4 @@ export function createWebhookQueueOptions(
 }
 
 /** Backward-compatible default options used by older dispatch integrations. */
-export const webhookJobOptions: JobsOptions = webhookJobOptionsFor(DEFAULT_WEBHOOK_CONFIG);
+export const webhookJobOptions: JobsOptions = createWebhookJobOptions();

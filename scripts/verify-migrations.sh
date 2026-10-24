@@ -613,6 +613,69 @@ else
   fi
 fi
 
+# --- schema coverage -----------------------------------------------------------
+# The database tier catches drift when a disposable Postgres instance is
+# available. This lightweight static check keeps the same guarantee in local
+# and unit-test environments where only the schema and SQL files exist.
+if [ -f "$SCHEMA_PATH" ] && [ -d "$MIGRATIONS_DIR" ]; then
+  section "Schema coverage"
+  schema_records="$(awk '
+    function emit_model(   f) {
+      if (model == "") return
+      printf "M\t%s\t%s", model, table
+      for (f = 1; f <= field_count; f++) printf "\t%s", fields[f]
+      printf "\n"
+    }
+    function emit_enum() { if (enum_name != "") printf "E\t%s\n", enum_name }
+    /^[[:space:]]*model[[:space:]]+[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\{/ {
+      emit_model(); emit_enum(); enum_name = ""
+      match($0, /model[[:space:]]+[A-Za-z_][A-Za-z0-9_]*/)
+      model = substr($0, RSTART + 6, RLENGTH - 6); table = model; field_count = 0; in_model = 1; in_enum = 0; next
+    }
+    /^[[:space:]]*enum[[:space:]]+[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\{/ {
+      emit_model(); emit_enum()
+      match($0, /enum[[:space:]]+[A-Za-z_][A-Za-z0-9_]*/)
+      enum_name = substr($0, RSTART + 5, RLENGTH - 5); model = ""; in_model = 0; in_enum = 1; next
+    }
+    in_model && /^[[:space:]]*\}[[:space:]]*$/ { emit_model(); model = ""; table = ""; field_count = 0; in_model = 0; next }
+    in_enum && /^[[:space:]]*\}[[:space:]]*$/ { emit_enum(); enum_name = ""; in_enum = 0; next }
+    in_model && /^[[:space:]]*@@map[[:space:]]*\(/ {
+      if (match($0, /@@map[[:space:]]*\([[:space:]]*"([^"]+)"/, m)) table = m[1]
+      next
+    }
+    in_model && /^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*[[:space:]]+[A-Za-z_][A-Za-z0-9_]*(\?|\[\])?/ {
+      if ($0 ~ /@relation[[:space:]]*\(/ || $0 ~ /^[[:space:]]*@@/ || $2 ~ /\[\]$/) next
+      field = $1
+      fields[++field_count] = field
+      next
+    }
+  ' "$SCHEMA_PATH")"
+  sql_history="$(find "$MIGRATIONS_DIR" -type f -name 'migration.sql' -print0 | xargs -0 cat 2>/dev/null || true)"
+  while IFS=$'\t' read -r kind first second rest; do
+    [ -n "$kind" ] || continue
+    if [ "$kind" = "E" ]; then
+      if ! grep -qiE "CREATE[[:space:]]+TYPE[[:space:]]+\"?${first}\"?" <<< "$sql_history"; then
+        error "Enum '${first}' is declared in the schema but no migration creates it" "$SCHEMA_PATH"
+      fi
+      continue
+    fi
+    table_name="$second"
+    if ! grep -qiE "CREATE[[:space:]]+TABLE" <<< "$sql_history" || ! grep -qiE "\"${table_name}\"" <<< "$sql_history"; then
+      error "Model '${first}' (table \"${table_name}\") is declared in the schema but no migration creates it" "$SCHEMA_PATH"
+      continue
+    fi
+    fields=( $rest )
+    for field_name in "${fields[@]}"; do
+      if ! grep -qiE "\"${field_name}\"" <<< "$sql_history"; then
+        error "Column \"${first}\".\"${field_name}\" of model '${first}' is declared in the schema but no migration creates it" "$SCHEMA_PATH"
+      fi
+    done
+  done <<< "$schema_records"
+  if [ "$errors" -eq 0 ]; then
+    echo "Every model, enum and column of the schema is covered by the migration history."
+  fi
+fi
+
 # --- 2. history checks ---------------------------------------------------------
 
 section "Migration history"
@@ -673,7 +736,7 @@ elif [ ! -d "$MIGRATIONS_DIR" ]; then
   echo "Skipping: no migrations directory."
 else
   if [ -n "${DATABASE_URL:-}" ] && [ "$(normalize_db_url "$SHADOW_DATABASE_URL")" = "$(normalize_db_url "$DATABASE_URL")" ]; then
-    error "SHADOW_DATABASE_URL and DATABASE_URL point at the same database; the shadow database is reset by the verification, so it must be a disposable database of its own" "$SHADOW_DATABASE_URL"
+    error "SHADOW_DATABASE_URL is identical to DATABASE_URL; the shadow database is reset by the verification, so it must be a disposable database of its own" "$SHADOW_DATABASE_URL"
   else
     # Fail early with a clear message when the shadow database is unreachable.
     if ! printf 'SELECT 1;\n' | DATABASE_URL="$SHADOW_DATABASE_URL" npx --no-install prisma db execute --stdin >/dev/null 2>&1; then

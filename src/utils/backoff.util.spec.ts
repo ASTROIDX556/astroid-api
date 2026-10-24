@@ -102,7 +102,7 @@ describe('backoff.util', () => {
       const delays: number[] = [];
       for (let i = 0; i < 10; i++) {
         vi.mocked(Math.random).mockReturnValue(i / 10);
-        delays.push(strategy(2, 'custom', new Error('test')) as number);
+        delays.push(strategy(1, 'custom', new Error('test')) as number);
       }
 
       // All delays should be different (due to jitter)

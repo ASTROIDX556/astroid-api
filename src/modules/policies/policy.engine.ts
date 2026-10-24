@@ -101,12 +101,14 @@ export class PolicyEngine {
   ): PolicyViolation[] {
     const out: PolicyViolation[] = [];
     const effectiveMax = this.effectiveMaxAmount(policy, config, at);
+    const violationAsset = intent.transfers?.length ? intent.asset.split(':', 1)[0].toUpperCase() : undefined;
     if (effectiveMax !== undefined && intent.amount > effectiveMax) {
       out.push(
         this.violation(
           policy,
           'MAX_AMOUNT_EXCEEDED',
           `Amount ${intent.amount}${intent.limitCurrency ? ` ${intent.limitCurrency}` : ''} exceeds maximum ${effectiveMax}${intent.limitCurrency ? ` ${intent.limitCurrency}` : ''}`,
+          violationAsset,
         ),
       );
     }
@@ -116,6 +118,7 @@ export class PolicyEngine {
           policy,
           'MIN_AMOUNT_NOT_MET',
           `Amount ${intent.amount}${intent.limitCurrency ? ` ${intent.limitCurrency}` : ''} is below minimum ${config.minAmount}${intent.limitCurrency ? ` ${intent.limitCurrency}` : ''}`,
+          violationAsset,
         ),
       );
     }
@@ -424,7 +427,7 @@ export class PolicyEngine {
     return false;
   }
 
-  private violation(policy: EvaluablePolicy, code: string, message: string): PolicyViolation {
-    return { policyId: policy.id, policyName: policy.name, code, message };
+  private violation(policy: EvaluablePolicy, code: string, message: string, asset?: string): PolicyViolation {
+    return { policyId: policy.id, policyName: policy.name, code, message, ...(asset ? { asset } : {}) };
   }
 }

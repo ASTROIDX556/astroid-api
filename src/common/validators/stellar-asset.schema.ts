@@ -13,5 +13,8 @@ export const stellarAssetCodeSchema = z
 
 export type StellarAssetCode = z.infer<typeof stellarAssetCodeSchema>;
 
-/** Backwards-compatible name used by transfer payload validation. */
-export const stellarAssetSchema = stellarAssetCodeSchema;
+/** Asset identifier accepted by transfer payloads: native/code or CODE:ISSUER. */
+export const stellarAssetSchema = z.union([
+  stellarAssetCodeSchema,
+  z.string().regex(/^[a-zA-Z0-9]{1,12}:G[A-Z2-7]{55}$/, 'Issued asset must use CODE:ISSUER form'),
+]);

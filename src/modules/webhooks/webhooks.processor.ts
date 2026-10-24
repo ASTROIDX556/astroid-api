@@ -156,26 +156,34 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
     failedReason: string,
     responseStatus?: number,
     endpoint = job.data.url,
+    failure?: { category?: string; code?: string; circuitStatus?: string },
   ): Promise<void> {
-    if (!this.webhookAudit) {
-      if (this.eventBus) {
-        await this.eventBus.emit(
-          DomainEventName.WebhookDeliveryFailed,
-          {
-            webhookId: job.data.webhookId,
-            organizationId: job.data.organizationId,
-            url: endpoint,
-            eventName: job.data.eventName,
-            eventId: job.data.eventId,
-            attemptsMade: job.attemptsMade + 1,
-            failedReason,
-            ...(responseStatus === undefined ? {} : { responseStatus }),
-          } as never,
-          { organizationId: job.data.organizationId, aggregateType: 'webhook', aggregateId: job.data.webhookId },
-        );
-      }
-      return;
+    if (this.eventBus) {
+      const deliveryPayload = {
+        webhookId: job.data.webhookId,
+        organizationId: job.data.organizationId,
+        url: endpoint,
+        eventName: job.data.eventName,
+        eventId: job.data.eventId,
+        attemptsMade: job.attemptsMade + 1,
+        failedReason,
+        ...(responseStatus === undefined ? {} : { responseStatus }),
+        ...(failure?.category ? { failureCategory: failure.category } : {}),
+        ...(failure?.code ? { failureCode: failure.code } : {}),
+        ...(failure?.circuitStatus ? { circuitStatus: failure.circuitStatus } : {}),
+      };
+      await this.eventBus.emit(
+        DomainEventName.WebhookDeliveryFailed,
+        deliveryPayload as never,
+        { organizationId: job.data.organizationId, aggregateType: 'webhook', aggregateId: job.data.webhookId, persist: false },
+      );
+      await this.eventBus.emit(
+        DomainEventName.WebhookPermanentlyFailed as never,
+        deliveryPayload as never,
+        { organizationId: job.data.organizationId, aggregateType: 'webhook', aggregateId: job.data.webhookId, persist: false },
+      );
     }
+    if (!this.webhookAudit) return;
     try {
       await this.webhookAudit.recordTerminalFailure({
         webhookId: job.data.webhookId,
@@ -355,7 +363,12 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
           this.logger.error(`Webhook ${webhookId} exhausted all retry attempts${requestTrace}`);
           // Retries are exhausted: the delivery is dead-lettered by the queue
           // failure listener, so record it permanently in the audit trail.
-          await this.auditTerminalFailure(job, errorMessage ?? 'unknown error', responseStatus, endpoint);
+          const classification = classifyWebhookFailure(error, responseStatus);
+          await this.auditTerminalFailure(job, errorMessage ?? 'unknown error', responseStatus, endpoint, {
+            category: classification.category,
+            code: classification.code,
+            circuitStatus: 'CLOSED',
+          });
         }
         throw new Error(errorMessage);
       }
