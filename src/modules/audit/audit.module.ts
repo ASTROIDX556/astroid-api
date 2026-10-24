@@ -13,11 +13,13 @@ import { AuditArchiveRepository } from './audit-archive.repository';
 import { AuditArchiveService } from './audit-archive.service';
 import { AuditArchiveScheduler } from './audit-archive.scheduler';
 import { AuditArchiveWorker } from './queues/audit-archive.worker';
+import { MetricsModule } from '../metrics/metrics.module';
 import { createQueueRegistrationOptions } from '../../queues/queue-policy';
 
 @Global()
 @Module({
   imports: [
+    MetricsModule,
     BullModule.forRoot({
       connection: {
         host: redisConfig().host,
