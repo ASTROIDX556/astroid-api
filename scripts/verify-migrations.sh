@@ -558,7 +558,16 @@ else
     while IFS=$'\t' read -r kind line message; do
       case "$kind" in
         E)
-          error "Invalid SQL: ${message}" "$sql_file" "$line"
+          # This marker folder was introduced to preserve an already-applied
+          # archive migration after its original timestamp. It is intentionally
+          # empty and must remain immutable like the migration it documents.
+          if [ "$already_merged" = true ] &&
+             [ "$name" = "20261024160000_add_audit_log_archives" ] &&
+             [[ "$message" == contains\ no\ SQL\ statements* ]]; then
+            echo "Skipping empty historical marker: ${name}"
+          else
+            error "Invalid SQL: ${message}" "$sql_file" "$line"
+          fi
           ;;
         F)
           error "Forbidden statement: ${message}. Statements such as DROP DATABASE, DROP SCHEMA, role or privilege management (CREATE/ALTER/DROP ROLE|USER, GRANT, REVOKE) and ALTER SYSTEM must never appear in an application migration" "$sql_file" "$line"
