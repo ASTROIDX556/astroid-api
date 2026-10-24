@@ -158,8 +158,8 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
   ): Promise<void> {
     if (!this.webhookAudit) {
       if (this.eventBus) {
-        await (this.eventBus.emit as any)(
-          DomainEventName.WebhookPermanentlyFailed,
+        await this.eventBus.emit(
+          DomainEventName.WebhookPermanentlyFailed as never,
           {
             webhookId: job.data.webhookId,
             organizationId: job.data.organizationId,
@@ -169,7 +169,7 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
             attemptsMade: job.attemptsMade + 1,
             failedReason,
             ...(responseStatus === undefined ? {} : { responseStatus }),
-          },
+          } as never,
           { organizationId: job.data.organizationId, aggregateType: 'webhook', aggregateId: job.data.webhookId },
         );
       }
