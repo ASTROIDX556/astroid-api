@@ -78,13 +78,6 @@ export function webhookRetryDelayMs(
  * `queue.opts.settings.backoffStrategy` at retry time; `@nestjs/bullmq` does not
  * surface that field on `RegisterQueueOptions`, hence the narrow cast.
  */
-export function createWebhookQueueOptions(settings: WebhookConfig): RegisterQueueOptions {
-  return createQueueRegistrationOptions(
-    Queues.Webhooks,
-    webhookJobOptionsFor(settings),
-    settings.backoffMaxDelayMs,
-  );
- */
 export function createWebhookJobOptions(config: QueueConfig = queueConfig()): JobsOptions {
   return buildJobOptions({
     attempts: config.webhookDeliveryMaxAttempts,
@@ -93,8 +86,20 @@ export function createWebhookJobOptions(config: QueueConfig = queueConfig()): Jo
   });
 }
 
-export function createWebhookQueueOptions(config: QueueConfig = queueConfig()): RegisterQueueOptions {
-  const options = createQueueRegistrationOptions(Queues.Webhooks, createWebhookJobOptions(config));
+export function createWebhookQueueOptions(settings: WebhookConfig): RegisterQueueOptions;
+export function createWebhookQueueOptions(config?: QueueConfig): RegisterQueueOptions;
+export function createWebhookQueueOptions(
+  value: WebhookConfig | QueueConfig = queueConfig(),
+): RegisterQueueOptions {
+  if ('maxAttempts' in value) {
+    return createQueueRegistrationOptions(
+      Queues.Webhooks,
+      webhookJobOptionsFor(value),
+      value.backoffMaxDelayMs,
+    );
+  }
+
+  const options = createQueueRegistrationOptions(Queues.Webhooks, createWebhookJobOptions(value));
   return {
     ...options,
     settings: {
