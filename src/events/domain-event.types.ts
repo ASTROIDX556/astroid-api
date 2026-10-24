@@ -315,6 +315,7 @@ export interface WebhookDeliveryFailedPayload extends Record<string, unknown> {
   failureCode?: string | null;
   /** The circuit state of the endpoint when the delivery was abandoned. */
   circuitStatus?: string | null;
+}
 /**
  * Payload of the `audit.recorded` event published by the
  * `StructuredAuditInterceptor` for every route marked with `@AuditAction()`.
