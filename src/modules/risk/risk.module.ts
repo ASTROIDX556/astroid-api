@@ -8,7 +8,6 @@ import { DatabaseModule } from '../../database/database.module';
 import { BullModule } from '@nestjs/bullmq';
 import { Queues } from '../../queues/queues.constants';
 import { createQueueRegistrationOptions } from '../../queues/queue-policy';
-import { RiskProcessor } from '../../workers/risk.processor';
 
 @Module({
   imports: [
