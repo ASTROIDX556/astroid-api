@@ -160,7 +160,7 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
     if (!this.webhookAudit) {
       if (this.eventBus) {
         await this.eventBus.emit(
-          DomainEventName.WebhookPermanentlyFailed as never,
+          DomainEventName.WebhookDeliveryFailed,
           {
             webhookId: job.data.webhookId,
             organizationId: job.data.organizationId,

@@ -4,7 +4,7 @@ import type { RegisterQueueOptions } from '@nestjs/bullmq';
 import { queueConfig, type QueueConfig } from '../config/queue.config';
 import { Queues } from './queues.constants';
 import { buildJobOptions, createQueueRegistrationOptions } from './queue-policy';
-import { WebhookConfig } from '../config/webhook.config';
+import { DEFAULT_WEBHOOK_CONFIG, WebhookConfig } from '../config/webhook.config';
 import { jitteredBackoffDelay } from '../utils/backoff.util';
 import { createWebhookBackoffStrategy } from '../utils/backoff.util';
 
@@ -110,4 +110,4 @@ export function createWebhookQueueOptions(
 }
 
 /** Backward-compatible default options used by older dispatch integrations. */
-export const webhookJobOptions: JobsOptions = createWebhookJobOptions();
+export const webhookJobOptions: JobsOptions = webhookJobOptionsFor(DEFAULT_WEBHOOK_CONFIG);

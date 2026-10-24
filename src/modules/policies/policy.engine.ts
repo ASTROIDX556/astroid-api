@@ -50,10 +50,26 @@ export class PolicyEngine {
 
     for (const policy of active) {
       const config = policy.configuration;
-      violations.push(...this.checkAmount(policy, config, intent, at));
-      violations.push(...this.checkAssets(policy, config, intent));
-      violations.push(...this.checkRecipients(policy, config, intent));
-      violations.push(...this.checkPeriodicLimits(policy, config, intent));
+      const legs = intent.transfers?.length
+        ? intent.transfers
+        : [{ asset: intent.asset, amount: intent.amount, recipientAddress: intent.recipientAddress }];
+      for (const leg of legs) {
+        const assetCode = leg.asset.split(':', 1)[0].toUpperCase();
+        const assetLimit = config.assetLimits?.[assetCode] ?? config.assetLimits?.[assetCode.toLowerCase()];
+        const legConfig = assetLimit
+          ? { ...config, maxAmount: assetLimit.maxAmount ?? config.maxAmount, minAmount: assetLimit.minAmount ?? config.minAmount }
+          : config;
+        const legIntent = {
+          ...intent,
+          asset: leg.asset,
+          amount: leg.amount,
+          recipientAddress: leg.recipientAddress ?? intent.recipientAddress,
+        };
+        violations.push(...this.checkAmount(policy, legConfig, legIntent, at));
+        violations.push(...this.checkAssets(policy, legConfig, legIntent));
+        violations.push(...this.checkRecipients(policy, legConfig, legIntent));
+        violations.push(...this.checkPeriodicLimits(policy, legConfig, legIntent));
+      }
       violations.push(...this.checkTimeWindow(policy, config, at));
       violations.push(...this.checkVelocity(policy, config, intent));
       violations.push(...this.checkRuleGroups(policy, config, intent, at));
@@ -90,7 +106,7 @@ export class PolicyEngine {
         this.violation(
           policy,
           'MAX_AMOUNT_EXCEEDED',
-          `Amount ${intent.amount} exceeds maximum ${effectiveMax}`,
+          `Amount ${intent.amount}${intent.limitCurrency ? ` ${intent.limitCurrency}` : ''} exceeds maximum ${effectiveMax}${intent.limitCurrency ? ` ${intent.limitCurrency}` : ''}`,
         ),
       );
     }
@@ -99,7 +115,7 @@ export class PolicyEngine {
         this.violation(
           policy,
           'MIN_AMOUNT_NOT_MET',
-          `Amount ${intent.amount} is below minimum ${config.minAmount}`,
+          `Amount ${intent.amount}${intent.limitCurrency ? ` ${intent.limitCurrency}` : ''} is below minimum ${config.minAmount}${intent.limitCurrency ? ` ${intent.limitCurrency}` : ''}`,
         ),
       );
     }

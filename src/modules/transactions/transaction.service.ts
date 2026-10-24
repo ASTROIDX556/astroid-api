@@ -256,7 +256,7 @@ export class TransactionService {
       requiresApproval,
       metadata: input.metadata as Prisma.InputJsonValue,
     });
-    const transaction = input.agentId
+    const transaction = input.agentId && typeof this.budgets.withAgentBudgetLimit === 'function'
       ? await this.budgets.withAgentBudgetLimit(
           organizationId,
           input.agentId,
