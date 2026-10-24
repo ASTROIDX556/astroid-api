@@ -97,15 +97,15 @@ export const priceOracleEnvSchema = z.object({
   PRICE_ORACLE_STATIC_PRICES: z.string().default(''),
 });
 
-export const auditEnvSchema = z
-  .object({
+export const auditEnvSchemaBase = z.object({
     AUDIT_ARCHIVE_ENABLED: z.enum(['true', 'false']).default('true').transform((value) => value === 'true'),
     AUDIT_ARCHIVE_RETENTION_DAYS: z.coerce.number().int().positive().max(3650).default(30),
     AUDIT_ARCHIVE_BATCH_SIZE: z.coerce.number().int().positive().max(5_000).default(500),
     AUDIT_ARCHIVE_MAX_BATCHES: z.coerce.number().int().positive().max(1_000).default(20),
     AUDIT_RETENTION_DAYS: z.coerce.number().int().positive().max(3650).default(90),
-  })
-  .superRefine((env, ctx) => {
+});
+
+export const auditEnvSchema = auditEnvSchemaBase.superRefine((env, ctx) => {
     if (env.AUDIT_ARCHIVE_RETENTION_DAYS >= env.AUDIT_RETENTION_DAYS) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -273,7 +273,7 @@ export const environmentSchema = z
     ...stellarEnvSchema.shape,
     ...storageEnvSchema.shape,
     ...priceOracleEnvSchema.shape,
-    ...auditEnvSchema.shape,
+    ...auditEnvSchemaBase.shape,
     ...queueEnvSchema.shape,
     ...webhookEnvSchema.shape,
     ...throttleEnvSchema.shape,

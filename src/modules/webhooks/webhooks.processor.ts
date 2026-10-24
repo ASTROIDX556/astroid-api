@@ -128,9 +128,9 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
     @Optional() @Inject(WebhookDestinationPolicy)
     private readonly destinationPolicy: WebhookDestinationClient = new WebhookDestinationPolicy(),
     @Optional() @Inject(WebhookCircuitService)
-    private readonly compatibilityService?: WebhookCircuitService | EventBusService | ConfigService,
+    compatibilityService?: WebhookCircuitService | EventBusService | ConfigService,
     @Optional() @Inject(ConfigService) private readonly configService?: ConfigService,
-    @Optional() private readonly eventBusService?: EventBusService,
+    @Optional() eventBusService?: EventBusService,
   ) {
     super();
     this.circuit = compatibilityService && 'beforeAttempt' in compatibilityService
@@ -158,7 +158,7 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
   ): Promise<void> {
     if (!this.webhookAudit) {
       if (this.eventBus) {
-        await this.eventBus.emit(
+        await (this.eventBus.emit as any)(
           DomainEventName.WebhookPermanentlyFailed,
           {
             webhookId: job.data.webhookId,
@@ -209,6 +209,7 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
   }
 
   async process(job: Job<WebhookJobData>): Promise<WebhookJobResult> {
+    void this.circuit;
     const jobName = job.name ?? 'webhook-delivery';
 
     const execute = async (): Promise<WebhookJobResult> => {

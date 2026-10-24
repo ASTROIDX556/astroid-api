@@ -12,7 +12,7 @@ import {
 } from '@prisma/client';
 import { TransactionRepository } from './transaction.repository';
 import { SpendingLimitService } from './spending-limit.service';
-import { CreateTransactionInput } from './transaction.dto';
+import { CreateTransactionInput, SimulateTransactionInput } from './transaction.dto';
 import { TransactionsValidator } from './transactions.validator';
 import { WalletService, toNetworkName } from '../wallets/wallet.service';
 import { PolicyService } from '../policies/policy.service';
@@ -378,17 +378,20 @@ export class TransactionService {
   }
 
   /** Dry-run: runs every governance check without persisting or moving funds. */
-  async simulate(organizationId: string, input: CreateTransactionInput) {
-    const amount = Number(input.amount);
-    const { wallet } = await this.preflight(organizationId, input);
-    const intent = this.toIntent(organizationId, input, amount);
+  async simulate(organizationId: string, input: CreateTransactionInput | SimulateTransactionInput) {
+    const firstTransfer = input.transfers?.[0];
+    const amount = Number(input.amount ?? firstTransfer?.amount ?? 0);
+    const asset = input.asset ?? firstTransfer?.asset ?? 'XLM';
+    const createInput = { ...input, asset, amount: String(amount) } as CreateTransactionInput;
+    const { wallet } = await this.preflight(organizationId, createInput);
+    const intent = this.toIntent(organizationId, createInput, amount);
     const policyResult = await this.policies.evaluateIntent(intent);
     const assessment = await this.risk.assess({
       organizationId,
       walletId: wallet.id,
       recipientAddress: input.recipientAddress,
       amount,
-      asset: input.asset,
+      asset,
       walletAgeDays: this.walletAgeDays(wallet),
       policyViolations: policyResult.violations.length,
       hourUtc: new Date().getUTCHours(),
