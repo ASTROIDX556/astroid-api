@@ -11,7 +11,9 @@ import {
 } from './risk.types';
 import {
   AmountRule,
+  AmountAnomalyRule,
   RecipientRule,
+  RecipientReputationRule,
   VelocityRule,
   WalletAgeRule,
   PolicyViolationRule,
@@ -35,7 +37,9 @@ export class RiskEngine {
   /** Built-in rules registered by default. */
   private readonly defaultRules: RiskRule[] = [
     AmountRule,
+    AmountAnomalyRule,
     RecipientRule,
+    RecipientReputationRule,
     VelocityRule,
     WalletAgeRule,
     PolicyViolationRule,
@@ -68,7 +72,16 @@ export class RiskEngine {
       ),
     );
     const band = this.toBand(score, effectiveConfig);
-    return { score, band, factors, canAutoExecute: band !== RiskBand.CRITICAL };
+    return {
+      score,
+      band,
+      factors,
+      // Thresholds are explicit so a high-risk transaction is always routed to
+      // a human: at or above the review threshold it needs an approval, at or
+      // above the block threshold it can never auto-execute.
+      canAutoExecute: score < effectiveConfig.blockThreshold,
+      requiresApproval: score >= effectiveConfig.reviewThreshold,
+    };
   }
 
   /**

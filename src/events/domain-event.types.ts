@@ -256,12 +256,17 @@ export interface RiskEvaluatedPayload extends Record<string, unknown> {
   score: number;
   band: string;
   factors?: Record<string, unknown> | Array<unknown>;
+  canAutoExecute?: boolean;
+  requiresApproval?: boolean;
   simulationSuccess?: boolean;
 }
 
 export interface RiskAlertPayload extends Record<string, unknown> {
   transactionId?: string;
   riskLevel?: string;
+  score?: number;
+  band?: string;
+  requiresApproval?: boolean;
 }
 
 /**

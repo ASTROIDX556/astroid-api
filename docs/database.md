@@ -7,9 +7,21 @@ database schema by hand, and never edit a migration after it has been merged.
 
 `scripts/verify-migrations.sh` (`npm run db:verify`) enforces the rules below.
 CI runs it in the `verify-migrations` job on every pull request and push to
+`main`, with full git history and a disposable PostgreSQL database, so all
+tiers of checks run there. Locally, the optional tiers run when you opt in
+through the environment variables shown.
 `main`, with full git history and a disposable PostgreSQL database, so the
 static, history and replay tiers all run there. Locally, the history and replay
 tiers run when you opt in through the environment variables shown.
+
+The script is written for robust Bash (`set -euo pipefail`) and reports every
+problem it finds in a single run, together with the fix to apply.
+
+### 0. Prerequisites
+
+- The tools the script relies on (`awk`, `sed`, `grep`, `mktemp`) are
+  installed, `git` is available when the history checks are enabled, and the
+  Prisma CLI is installed when the schema or database tiers run.
 
 ### 1. Structure and SQL (always)
 
@@ -75,7 +87,20 @@ a destructive statement in one is only reported as a warning.
   created by the same migration is reported as a warning: on a live table it
   blocks writes.
 
-### 2. History (`MIGRATION_BASE_REF`)
+### 2. Schema coverage (always, no database required)
+
+The script parses `prisma/schema.prisma` and the migration history and
+compares them:
+
+- Every model of the schema must be created by a migration.
+- Every column of a model must be created by a migration.
+- Every enum of the schema must be created by a migration.
+
+A schema change that was committed without its migration is reported as
+schema drift, with the command that fixes it. This tier needs no database, so
+it also runs on a plain `npm run db:verify`.
+
+### 3. History (`MIGRATION_BASE_REF`)
 
 ```bash
 MIGRATION_BASE_REF=origin/main npm run db:verify
@@ -89,14 +114,15 @@ MIGRATION_BASE_REF=origin/main npm run db:verify
 - The index advisories are only reported for migrations that are new relative
   to the base branch; the ones already merged cannot be changed any more.
 
-### 3. Replay and drift (`SHADOW_DATABASE_URL`)
+### 4. Replay and drift (`SHADOW_DATABASE_URL`)
 
 ```bash
 SHADOW_DATABASE_URL=postgresql://postgres:password@localhost:5432/astroid_shadow npm run db:verify
 ```
 
 > The shadow database is **reset**. Never point this at a database whose data
-> you need.
+> you need. The script refuses to run when `SHADOW_DATABASE_URL` is the same
+> database as `DATABASE_URL`.
 
 - The full migration history is replayed in order on the empty database. This
   catches invalid SQL and migrations that depend on objects created by a later
@@ -104,6 +130,9 @@ SHADOW_DATABASE_URL=postgresql://postgres:password@localhost:5432/astroid_shadow
 - The replayed schema is compared with `prisma/schema.prisma`. Any difference
   means a schema change was committed without its migration; generate one with
   `npx prisma migrate dev --name <change>`.
+- The history is applied to an empty schema the way the deployment tooling
+  applies it, and `prisma migrate status` must report an up-to-date database.
+  This validates the path operators run in production.
 
 ### 4. Working tree (`CHECK_GIT_DIRTY`)
 
@@ -119,18 +148,10 @@ Each problem is reported with the file (and line, where applicable) and the
 fix to apply. All problems are reported in one run; in CI they also appear as
 annotations on the pull request diff. The script exits non-zero if any error
 was found. Warnings never fail the run.
-All database changes must be managed via Prisma migrations.
 
 ## Startup Checks
 
 The API retries PostgreSQL connections during startup using exponential backoff. Configure the total number of attempts with `DATABASE_CONNECT_RETRY_ATTEMPTS` (default `5`) and the initial delay with `DATABASE_CONNECT_RETRY_DELAY_MS` (default `1000` ms). Startup fails if either Prisma pool cannot connect or if any checked-in migration is pending or failed; deploy migrations before starting the API.
-
-## Migration Verification Requirements
-
-- Every migration folder must contain a valid, non-empty `migration.sql` file.
-- Migration directories must start with a 14-digit timestamp prefix (`YYYYMMDDHHMMSS`) to ensure strict ordering and avoid conflicts.
-- Run `npm run db:verify` locally to execute `scripts/verify-migrations.sh` prior to opening a pull request.
-- The CI pipeline automatically runs `scripts/verify-migrations.sh` to validate schema syntax, migration structure, and working tree cleanliness.
 
 ## Startup Migration Check
 Before the HTTP server starts listening, `main.ts` calls `PrismaService.verifyMigrations()`, which compares the folders in `prisma/migrations` with the rows in `_prisma_migrations` (rolled-back rows are ignored). The behaviour is controlled by `DATABASE_MIGRATION_CHECK`:
