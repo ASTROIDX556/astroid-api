@@ -139,10 +139,10 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
     this.eventBus = eventBusService ?? (compatibilityService && 'emit' in compatibilityService
       ? compatibilityService as EventBusService
       : undefined);
-    const configService = this.configService ?? (compatibilityService && 'get' in compatibilityService
+    const resolvedConfigService = this.configService ?? (compatibilityService && 'get' in compatibilityService
       ? compatibilityService as ConfigService
       : undefined);
-    this.config = configService?.get<QueueConfig>('queue') ?? queueConfig();
+    this.config = resolvedConfigService?.get<QueueConfig>('queue') ?? queueConfig();
   }
 
   /**
