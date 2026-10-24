@@ -2,7 +2,7 @@
 
 ## Authentication Endpoints (`/auth`)
 
-### POST `/auth/register`
+# POST `/auth/register`
 Register a new organization and its owner.
 
 **Request Body:**
