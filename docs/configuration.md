@@ -126,6 +126,28 @@ are rejected:
 | `STELLAR_MAX_GAS_LIMIT` | `100000000` | Network block gas limit in Soroban CPU instructions. Estimates are capped at this ceiling. |
 | `STELLAR_FALLBACK_GAS_LIMIT` | `1000000` | Static gas limit used when simulation fails or omits a gas estimate. |
 | `STELLAR_FALLBACK_FEE_STROOPS` | `100000` | Static fee limit in stroops paired with the fallback gas limit. |
+| `STELLAR_ANCHOR_ASSETS` | _(empty)_ | Comma-separated `CODE=ISSUER` mappings for anchored Stellar assets. |
+
+### Price oracle
+
+| Variable | Default | Description |
+| -------- | ------- | ----------- |
+| `PRICE_ORACLE_ENABLED` | `false` | Enables external price conversion for policy limits. |
+| `PRICE_ORACLE_URL` | _(empty)_ | Price oracle endpoint. |
+| `PRICE_ORACLE_API_KEY` | _(empty)_ | Price oracle API key. |
+| `PRICE_ORACLE_TIMEOUT_MS` | `3000` | Price request timeout in milliseconds. |
+| `PRICE_ORACLE_MAX_AGE_MS` | `300000` | Maximum accepted quote age in milliseconds. |
+| `PRICE_ORACLE_STATIC_PRICES` | _(empty)_ | Comma-separated static `ASSET=PRICE` fallback quotes. |
+
+### Audit archival
+
+| Variable | Default | Description |
+| -------- | ------- | ----------- |
+| `AUDIT_ARCHIVE_ENABLED` | `true` | Enables scheduled audit-log archival. |
+| `AUDIT_ARCHIVE_RETENTION_DAYS` | `30` | Age at which audit records become archivable. |
+| `AUDIT_ARCHIVE_BATCH_SIZE` | `500` | Maximum records per archival batch. |
+| `AUDIT_ARCHIVE_MAX_BATCHES` | `20` | Maximum batches per archival run. |
+| `AUDIT_RETENTION_DAYS` | `90` | Hard-delete retention for audit records. |
 
 ### Storage (S3-compatible)
 
