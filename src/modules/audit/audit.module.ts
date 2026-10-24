@@ -9,6 +9,10 @@ import { AuditRecordedListener } from './audit-recorded.listener';
 import { Queues } from '../../queues/queues.constants';
 import { redisConfig } from '../../config/redis.config';
 import { AuditCleanupQueue } from './queues/audit-cleanup.queue';
+import { AuditArchiveRepository } from './audit-archive.repository';
+import { AuditArchiveService } from './audit-archive.service';
+import { AuditArchiveScheduler } from './audit-archive.scheduler';
+import { AuditArchiveWorker } from './queues/audit-archive.worker';
 import { createQueueRegistrationOptions } from '../../queues/queue-policy';
 
 @Global()
@@ -23,6 +27,7 @@ import { createQueueRegistrationOptions } from '../../queues/queue-policy';
       },
     }),
     BullModule.registerQueue(createQueueRegistrationOptions(Queues.AuditCleanup)),
+    BullModule.registerQueue(createQueueRegistrationOptions(Queues.AuditArchive)),
   ],
   controllers: [AuditController],
   providers: [
@@ -32,6 +37,10 @@ import { createQueueRegistrationOptions } from '../../queues/queue-policy';
     AuditListener,
     AuditRecordedListener,
     AuditCleanupQueue,
+    AuditArchiveRepository,
+    AuditArchiveService,
+    AuditArchiveScheduler,
+    AuditArchiveWorker,
   ],
   exports: [AuditService],
 })
