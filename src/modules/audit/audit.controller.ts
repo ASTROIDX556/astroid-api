@@ -191,9 +191,19 @@ export class AuditController {
       'Only the batch metadata is returned; use `GET /audit/archives/{batchId}` to read the records of a batch.',
   })
   @ApiQuery({ name: 'limit', required: false, type: Number, description: 'Max batches to return (default 50, max 100)' })
-  @ApiResponse({ status: 200, description: 'Archive batches, newest first' })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
-  @ApiResponse({ status: 403, description: 'Insufficient permissions' })
+  @ApiResponse({
+    status: 200,
+    description: 'Archive batches, newest first',
+    schema: {
+      type: 'object',
+      required: ['batches', 'count'],
+      properties: {
+        batches: { type: 'array', items: { type: 'object', additionalProperties: true } },
+        count: { type: 'integer' },
+      },
+    },
+  })
+  @ApiErrorResponses({ unauthorized: true, forbidden: true, serverError: true })
   async listArchives(
     @CurrentUser('organizationId') organizationId: string,
     @Query('limit') limit?: string,
@@ -213,10 +223,19 @@ export class AuditController {
       'Returns the audit records of one archived batch. The compressed payload is decompressed and its checksum verified before it is returned.',
   })
   @ApiParam({ name: 'batchId', description: 'Archive batch id', example: '8f1c…' })
-  @ApiResponse({ status: 200, description: 'The archived audit records' })
-  @ApiResponse({ status: 401, description: 'Not authenticated' })
-  @ApiResponse({ status: 403, description: 'Insufficient permissions' })
-  @ApiResponse({ status: 404, description: 'Audit archive batch not found' })
+  @ApiResponse({
+    status: 200,
+    description: 'The archived audit records',
+    schema: {
+      type: 'object',
+      required: ['records', 'count'],
+      properties: {
+        records: { type: 'array', items: { type: 'object', additionalProperties: true } },
+        count: { type: 'integer' },
+      },
+    },
+  })
+  @ApiErrorResponses({ unauthorized: true, forbidden: true, notFound: true, serverError: true })
   async readArchive(
     @CurrentUser('organizationId') organizationId: string,
     @Param('batchId') batchId: string,
