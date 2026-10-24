@@ -4,7 +4,7 @@ import { ConfigService } from '@nestjs/config';
 import { Queue } from 'bullmq';
 
 import { Queues } from '../../../queues/queues.constants';
-import { WEBHOOK_JOB_NAME, webhookJobOptionsFor } from '../../../queues/webhook.queue';
+import { WEBHOOK_JOB_NAME, webhookJobOptions, webhookJobOptionsFor } from '../../../queues/webhook.queue';
 import { DEFAULT_WEBHOOK_CONFIG, WebhookConfig } from '../../../config/webhook.config';
 import { WebhookJobData } from '../types/webhook-job.types';
 import { RequestContext } from '../../../common/context/request-context';
@@ -61,10 +61,11 @@ export class WebhookDeliveryService {
         ...data,
         ...(hasMetadata ? { metadata } : {}),
       };
+      const options = this.config ? webhookJobOptionsFor(this.settings) : webhookJobOptions;
       await this.webhookQueue.add(
         WEBHOOK_JOB_NAME,
         jobData,
-        webhookJobOptionsFor(this.settings),
+        options,
       );
       this.logger.debug(`Queued webhook delivery for ${data.eventName} on webhook ${data.webhookId}`);
     } catch (error) {

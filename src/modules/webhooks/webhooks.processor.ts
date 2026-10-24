@@ -143,7 +143,21 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
     const resolvedConfigService = this.configService ?? (compatibilityService && 'get' in compatibilityService
       ? compatibilityService as ConfigService
       : undefined);
-    this.config = resolvedConfigService?.get<QueueConfig>('queue') ?? queueConfig();
+    const resolvedConfig = resolvedConfigService?.get<QueueConfig>('queue') ?? queueConfig();
+    const compatibilityConfig = resolvedConfig as QueueConfig & {
+      maxAttempts?: number;
+      backoffBaseDelayMs?: number;
+      requestTimeoutMs?: number;
+    };
+    this.config = {
+      ...resolvedConfig,
+      webhookDeliveryMaxAttempts:
+        resolvedConfig.webhookDeliveryMaxAttempts ?? compatibilityConfig.maxAttempts ?? 5,
+      webhookRetryDelayMs:
+        resolvedConfig.webhookRetryDelayMs ?? compatibilityConfig.backoffBaseDelayMs ?? 2_000,
+      webhookHttpTimeoutMs:
+        resolvedConfig.webhookHttpTimeoutMs ?? compatibilityConfig.requestTimeoutMs ?? 5_000,
+    };
   }
 
   /**
@@ -315,7 +329,28 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
         this.logger.debug(`Webhook ${webhookId} delivered successfully${requestTrace}`);
         await this.circuit?.recordSuccess(webhookId, organizationId, endpoint);
       } catch (error) {
-        if (error instanceof UnrecoverableError) throw error;
+        if (error instanceof UnrecoverableError) {
+          if (error instanceof PermanentJobError) {
+            const failedReason = error.message;
+            await this.persistState({
+              webhookId,
+              organizationId,
+              eventName,
+              eventId,
+              payload,
+              status: 'FAILED',
+              attempts: job.attemptsMade + 1,
+              lastError: failedReason,
+              lastAttemptAt: new Date(),
+            });
+            await this.auditTerminalFailure(job, failedReason, undefined, endpoint, {
+              category: WebhookFailureCategory.Permanent,
+              code: 'WEBHOOK_CONFIGURATION',
+              circuitStatus: 'CLOSED',
+            });
+          }
+          throw error;
+        }
         if (error instanceof WebhookDestinationError) {
           errorMessage = error.message;
           await this.persistState({
@@ -335,8 +370,8 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
           : error instanceof Error && /^HTTP \d{3}$/.test(error.message)
             ? error.message
             : 'Webhook delivery failed';
+        const classification = classifyWebhookFailure(error, responseStatus);
         if (this.circuit?.enabled) {
-          const classification = classifyWebhookFailure(error, responseStatus);
           await this.circuit.recordFailure(
             webhookId,
             organizationId,
@@ -358,6 +393,12 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
           attempts: job.attemptsMade + 1,
           lastError: errorMessage,
           responseStatus,
+          failureCategory: classification.category,
+          failureCode: classification.code,
+          lastAttemptAt: new Date(),
+          ...(isLastAttempt
+            ? {}
+            : { nextRetryAt: new Date(Date.now() + this.config.webhookRetryDelayMs) }),
         });
         if (isLastAttempt) {
           this.logger.error(`Webhook ${webhookId} exhausted all retry attempts${requestTrace}`);
