@@ -4,6 +4,8 @@ import { PolicyService } from './policy.service';
 import { SpendingPolicyService } from './spending-policy.service';
 import { SpendingPolicyRepository } from './spending-policy.repository';
 import { PolicyEngine } from './policy.engine';
+import { PriceOracleService } from './price-oracle.service';
+import { AssetRegistryService } from './asset-registry.service';
 import { PolicyOverrideCleanupService } from './services/policy-override-cleanup.service';
 import { AgentPolicyGuard } from './guards/agent-policy.guard';
 
@@ -22,6 +24,8 @@ import { AgentPolicyGuard } from './guards/agent-policy.guard';
     SpendingPolicyService,
     SpendingPolicyRepository,
     PolicyEngine,
+    PriceOracleService,
+    AssetRegistryService,
     PolicyOverrideCleanupService,
     AgentPolicyGuard,
   ],
@@ -29,6 +33,8 @@ import { AgentPolicyGuard } from './guards/agent-policy.guard';
     PolicyService,
     SpendingPolicyService,
     PolicyEngine,
+    PriceOracleService,
+    AssetRegistryService,
     PolicyOverrideCleanupService,
     AgentPolicyGuard,
   ],

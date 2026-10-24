@@ -3,7 +3,7 @@ import { Prisma, TransactionStatus } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { PolicyService } from '../policies/policy.service';
 import { AuditService } from '../audit/audit.service';
-import { PolicyConfiguration, TransactionIntent } from '../policies/policy.types';
+import { PolicyConfiguration, SpendPeriods, TransactionIntent } from '../policies/policy.types';
 import { PolicyViolationException } from '../../common/exceptions/domain.exception';
 
 /**
@@ -29,6 +29,10 @@ export interface SpendAggregates {
  *  3. On failure: persist a dedicated audit log entry before throwing
  *     {@link PolicyViolationException} so the compliance trail is complete
  *     even when the transaction is blocked.
+ *
+ * Multi-asset transfers are supported: {@link aggregateSpendByAsset} returns
+ * the spend accumulated per asset so every leg of a transfer is compared
+ * against the spend of *its own* asset.
  *
  * This service is intentionally narrow in scope — it does not replace
  * {@link PolicyService} or {@link PolicyEngine}; it only enriches the intent
@@ -60,35 +64,8 @@ export class SpendingLimitService {
    * the aggregate — DRAFT/REJECTED/FAILED/CANCELLED/EXPIRED are excluded.
    */
   async aggregateSpend(agentId: string, asset: string): Promise<SpendAggregates> {
-    const now = new Date();
-
-    // UTC day boundary — midnight today
-    const startOfDay = new Date(
-      Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()),
-    );
-
-    // UTC week boundary — most-recent Monday at midnight
-    const dayOfWeek = now.getUTCDay(); // 0 = Sunday
-    const daysSinceMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
-    const startOfWeek = new Date(
-      Date.UTC(
-        now.getUTCFullYear(),
-        now.getUTCMonth(),
-        now.getUTCDate() - daysSinceMonday,
-      ),
-    );
-
-    // UTC month boundary — 1st of the current month
-    const startOfMonth = new Date(
-      Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1),
-    );
-
-    const COUNTED_STATUSES: TransactionStatus[] = [
-      TransactionStatus.PENDING,
-      TransactionStatus.SUBMITTED,
-      TransactionStatus.CONFIRMED,
-      TransactionStatus.COMPLETED,
-    ];
+    const windows = this.windowBounds();
+    const counted = this.countedStatuses();
 
     // Run all three aggregates in parallel within a single Prisma transaction
     // to get a consistent snapshot.
@@ -98,9 +75,9 @@ export class SpendingLimitService {
         where: {
           agentId,
           asset,
-          status: { in: COUNTED_STATUSES },
+          status: { in: counted },
           deletedAt: null,
-          createdAt: { gte: startOfDay },
+          createdAt: { gte: windows.startOfDay },
         },
       }),
       this.prisma.transaction.aggregate({
@@ -108,9 +85,9 @@ export class SpendingLimitService {
         where: {
           agentId,
           asset,
-          status: { in: COUNTED_STATUSES },
+          status: { in: counted },
           deletedAt: null,
-          createdAt: { gte: startOfWeek },
+          createdAt: { gte: windows.startOfWeek },
         },
       }),
       this.prisma.transaction.aggregate({
@@ -118,9 +95,9 @@ export class SpendingLimitService {
         where: {
           agentId,
           asset,
-          status: { in: COUNTED_STATUSES },
+          status: { in: counted },
           deletedAt: null,
-          createdAt: { gte: startOfMonth },
+          createdAt: { gte: windows.startOfMonth },
         },
       }),
     ]);
@@ -130,6 +107,33 @@ export class SpendingLimitService {
       spentThisWeek: weekResult._sum?.amount?.toNumber() ?? 0,
       spentThisMonth: monthResult._sum?.amount?.toNumber() ?? 0,
     };
+  }
+
+  /**
+   * Computes the spend aggregates for several assets at once. Used by
+   * multi-asset transfers, where every leg must be compared against the spend
+   * of its own asset rather than against the spend of the primary asset.
+   *
+   * The result is keyed by the canonical asset identifier so it lines up with
+   * the legs of the intent.
+   */
+  async aggregateSpendByAsset(
+    agentId: string,
+    assets: string[],
+  ): Promise<Record<string, SpendAggregates>> {
+    const unique = [...new Set(assets)];
+    if (unique.length === 0) {
+      return {};
+    }
+
+    const entries = await Promise.all(
+      unique.map(async (asset) => {
+        const aggregates = await this.aggregateSpend(agentId, asset);
+        return [asset, aggregates] as const;
+      }),
+    );
+
+    return Object.fromEntries(entries);
   }
 
   /**
@@ -156,7 +160,14 @@ export class SpendingLimitService {
       return (
         config.dailyLimit !== undefined ||
         config.weeklyLimit !== undefined ||
-        config.monthlyLimit !== undefined
+        config.monthlyLimit !== undefined ||
+        (config.assetLimits !== undefined &&
+          Object.values(config.assetLimits).some(
+            (limits) =>
+              limits.dailyLimit !== undefined ||
+              limits.weeklyLimit !== undefined ||
+              limits.monthlyLimit !== undefined,
+          ))
       );
     });
   }
@@ -223,6 +234,16 @@ export class SpendingLimitService {
       };
     }
 
+    // Multi-asset transfers need the spend of every asset in the payload, not
+    // just the spend of the primary asset.
+    if (intent.transfers && intent.transfers.length > 0 && !intent.spentByAsset) {
+      const spentByAsset = await this.aggregateSpendByAsset(
+        agentId,
+        intent.transfers.map((leg) => leg.asset),
+      );
+      enrichedIntent = { ...enrichedIntent, spentByAsset };
+    }
+
     const result = await this.policyService.evaluateIntent(enrichedIntent, actorId);
 
     if (!result.passed) {
@@ -247,12 +268,55 @@ export class SpendingLimitService {
           violations: result.violations,
           requiresApproval: result.requiresApproval,
           aggregates,
+          ...(enrichedIntent.spentByAsset ? { spentByAsset: enrichedIntent.spentByAsset } : {}),
         },
       );
     }
   }
 
   // ── private helpers ──────────────────────────────────────────────────────
+
+  /** UTC window boundaries used by the spend aggregates. */
+  private windowBounds(): {
+    startOfDay: Date;
+    startOfWeek: Date;
+    startOfMonth: Date;
+  } {
+    const now = new Date();
+
+    // UTC day boundary — midnight today
+    const startOfDay = new Date(
+      Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()),
+    );
+
+    // UTC week boundary — most-recent Monday at midnight
+    const dayOfWeek = now.getUTCDay(); // 0 = Sunday
+    const daysSinceMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
+    const startOfWeek = new Date(
+      Date.UTC(
+        now.getUTCFullYear(),
+        now.getUTCMonth(),
+        now.getUTCDate() - daysSinceMonday,
+      ),
+    );
+
+    // UTC month boundary — 1st of the current month
+    const startOfMonth = new Date(
+      Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1),
+    );
+
+    return { startOfDay, startOfWeek, startOfMonth };
+  }
+
+  /** Transaction states that count as real, settled spend. */
+  private countedStatuses(): TransactionStatus[] {
+    return [
+      TransactionStatus.PENDING,
+      TransactionStatus.SUBMITTED,
+      TransactionStatus.CONFIRMED,
+      TransactionStatus.COMPLETED,
+    ];
+  }
 
   /**
    * Writes an audit log entry for a spending limit policy failure.
@@ -264,7 +328,13 @@ export class SpendingLimitService {
     actorId: string | null,
     agentId: string,
     intent: TransactionIntent,
-    violations: Array<{ policyId: string; policyName: string; code: string; message: string }>,
+    violations: Array<{
+      policyId: string;
+      policyName: string;
+      code: string;
+      message: string;
+      asset?: string;
+    }>,
     aggregates: SpendAggregates,
   ): Promise<void> {
     try {
@@ -282,6 +352,12 @@ export class SpendingLimitService {
           recipientAddress: intent.recipientAddress,
           violations,
           aggregates,
+          ...(intent.transfers
+            ? { transfers: intent.transfers.map((leg) => ({ asset: leg.asset, amount: leg.amount })) }
+            : {}),
+          ...(intent.spentByAsset
+            ? { spentByAsset: intent.spentByAsset as Record<string, SpendPeriods> }
+            : {}),
           evaluatedAt: new Date().toISOString(),
         } as unknown as Prisma.InputJsonValue,
       });

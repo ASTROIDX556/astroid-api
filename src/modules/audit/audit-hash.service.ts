@@ -75,6 +75,11 @@ export class AuditHashService {
   /**
    * Validates the integrity of the entire audit chain for an organization.
    * Traverses all entries and verifies each hash links correctly to the previous.
+   *
+   * Records that were moved into the compressed archive are not part of the
+   * live table any more. The archive stores the hash of the last archived
+   * entry, which anchors the chain: the first live entry is expected to point
+   * at that hash instead of at `null`.
    */
   async verifyChainIntegrity(
     organizationId: string,
@@ -99,7 +104,8 @@ export class AuditHashService {
       },
     });
 
-    let expectedPreviousHash: string | null = null;
+    const archiveAnchor = await this.findArchiveAnchor(organizationId);
+    let expectedPreviousHash: string | null = archiveAnchor;
 
     for (let i = 0; i < entries.length; i++) {
       const entry = entries[i];
@@ -205,6 +211,23 @@ export class AuditHashService {
     }
 
     return { valid: true, message: `Entry ${entryId} integrity verified` };
+  }
+
+  /**
+   * The hash of the newest archived entry of an organization, if any. It is
+   * the anchor the live entries chain onto after the archival moved the older
+   * entries into the compressed archive.
+   *
+   * Only batches that carry an anchor are considered, so a batch of entries
+   * that predate the hash chain can never mask the anchor of an earlier batch.
+   */
+  private async findArchiveAnchor(organizationId: string): Promise<string | null> {
+    const archive = await this.prisma.auditLogArchive.findFirst({
+      where: { organizationId, chainBoundaryHash: { not: null } },
+      orderBy: [{ archivedThrough: 'desc' }, { createdAt: 'desc' }],
+      select: { chainBoundaryHash: true },
+    });
+    return archive?.chainBoundaryHash ?? null;
   }
 
   /**

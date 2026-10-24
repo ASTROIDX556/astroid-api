@@ -11,6 +11,8 @@ describe('PolicyService velocity limit delegation', () => {
       { checkVelocityLimit } as never,
       {} as never,
       { emit: vi.fn() } as never,
+      { convert: vi.fn(), getQuote: vi.fn() } as never,
+      { canonicalize: (asset: string) => asset } as never,
     );
   });
 

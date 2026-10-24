@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { createTransactionSchema } from './transaction.dto';
+import { createTransactionSchema, simulateTransactionSchema } from './transaction.dto';
 
 describe('createTransactionSchema memo validation', () => {
   const baseInput = {
@@ -44,6 +44,27 @@ describe('createTransactionSchema memo validation', () => {
       expect(() =>
         createTransactionSchema.parse({ ...baseInput, metadata: ['unexpected'] }),
       ).toThrow();
+    });
+
+    it('rejects an amount with more than seven decimal places', () => {
+      expect(() =>
+        createTransactionSchema.parse({ ...baseInput, amount: '1.12345678' }),
+      ).toThrow();
+      expect(() =>
+        simulateTransactionSchema.parse({
+          ...baseInput,
+          transfers: [{ asset: 'XLM', amount: '1.12345678' }],
+        }),
+      ).toThrow();
+    });
+
+    it('rejects a non-numeric amount', () => {
+      expect(() => createTransactionSchema.parse({ ...baseInput, amount: 'abc' })).toThrow();
+    });
+
+    it('rejects a malformed asset identifier', () => {
+      expect(() => createTransactionSchema.parse({ ...baseInput, asset: 'USDC:bad' })).toThrow();
+      expect(() => createTransactionSchema.parse({ ...baseInput, asset: '' })).toThrow();
     });
 
     it('rejects non-JSON values nested in metadata', () => {
@@ -238,5 +259,109 @@ describe('createTransactionSchema memo validation', () => {
         createTransactionSchema.parse({ ...baseInput, unknown: 'field' }),
       ).toThrow();
     });
+  });
+});
+
+describe('createTransactionSchema asset validation', () => {
+  const baseInput = {
+    walletId: '550e8400-e29b-41d4-a716-446655440000',
+    amount: '10.0000000',
+    recipientAddress: 'GDEGSXLGANKHK7QFOV63XCBHBTZ3YRKUJV7ZB7JMSJQB5CNBRLL5QIG5',
+  };
+
+  it('defaults to the native asset', () => {
+    expect(createTransactionSchema.parse(baseInput).asset).toBe('XLM');
+  });
+
+  it('accepts a Stellar Anchor ticker', () => {
+    expect(createTransactionSchema.parse({ ...baseInput, asset: 'USDC' }).asset).toBe('USDC');
+  });
+
+  it('accepts an issued asset in its canonical CODE:ISSUER form', () => {
+    const asset = 'USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN';
+    expect(createTransactionSchema.parse({ ...baseInput, asset }).asset).toBe(asset);
+  });
+
+  it('rejects an asset code that is too long', () => {
+    expect(() =>
+      createTransactionSchema.parse({ ...baseInput, asset: 'A'.repeat(13) }),
+    ).toThrow();
+  });
+
+  it('rejects an issued asset with a malformed issuer', () => {
+    expect(() =>
+      createTransactionSchema.parse({ ...baseInput, asset: 'USDC:not-an-issuer' }),
+    ).toThrow();
+  });
+
+  it('explains that a transaction moves a single asset when a transfers array is sent', () => {
+    expect(() =>
+      createTransactionSchema.parse({
+        ...baseInput,
+        transfers: [{ asset: 'XLM', amount: '1.0000000' }],
+      }),
+    ).toThrow('A transaction moves a single asset');
+  });
+});
+
+describe('simulateTransactionSchema multi-asset payloads', () => {
+  const baseInput = {
+    walletId: '550e8400-e29b-41d4-a716-446655440000',
+    recipientAddress: 'GDEGSXLGANKHK7QFOV63XCBHBTZ3YRKUJV7ZB7JMSJQB5CNBRLL5QIG5',
+  };
+
+  it('accepts a single-asset payload', () => {
+    const parsed = simulateTransactionSchema.parse({
+      ...baseInput,
+      asset: 'XLM',
+      amount: '10.0000000',
+    });
+    expect(parsed.amount).toBe('10.0000000');
+    expect(parsed.transfers).toBeUndefined();
+  });
+
+  it('accepts a multi-asset payload', () => {
+    const parsed = simulateTransactionSchema.parse({
+      ...baseInput,
+      transfers: [
+        { asset: 'XLM', amount: '10.0000000' },
+        { asset: 'USDC', amount: '25.5000000' },
+      ],
+    });
+    expect(parsed.transfers).toHaveLength(2);
+    expect(parsed.transfers?.[1]).toEqual({ asset: 'USDC', amount: '25.5000000' });
+  });
+
+  it('rejects a payload that mixes a single transfer with a transfers array', () => {
+    expect(() =>
+      simulateTransactionSchema.parse({
+        ...baseInput,
+        asset: 'XLM',
+        amount: '10.0000000',
+        transfers: [{ asset: 'USDC', amount: '1.0000000' }],
+      }),
+    ).toThrow('not both');
+  });
+
+  it('rejects a payload without any transfer', () => {
+    expect(() => simulateTransactionSchema.parse(baseInput)).toThrow('amount is required');
+  });
+
+  it('rejects a transfers array with an invalid amount', () => {
+    expect(() =>
+      simulateTransactionSchema.parse({
+        ...baseInput,
+        transfers: [{ asset: 'USDC', amount: '0' }],
+      }),
+    ).toThrow();
+  });
+
+  it('rejects a transfers array with more than ten legs', () => {
+    expect(() =>
+      simulateTransactionSchema.parse({
+        ...baseInput,
+        transfers: Array.from({ length: 11 }, () => ({ asset: 'USDC', amount: '1.0000000' })),
+      }),
+    ).toThrow();
   });
 });

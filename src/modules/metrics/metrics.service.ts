@@ -52,6 +52,13 @@ export class MetricsService implements OnModuleDestroy {
     registers: [this.registry],
   });
 
+  private readonly auditArchivedRecordsTotal = new Counter({
+    name: 'audit_archived_records_total',
+    help: 'Total audit log records moved out of the active table into the compressed archive',
+    labelNames: ['status'],
+    registers: [this.registry],
+  });
+
   constructor(private readonly prisma: PrismaService) {
     const rConfig = redisConfig();
     const connection = {
@@ -91,6 +98,18 @@ export class MetricsService implements OnModuleDestroy {
     const labels = { queue, job_name: jobName, result };
     this.workerJobsTotal.inc(labels);
     this.workerJobDurationSeconds.observe(labels, durationSeconds);
+  }
+
+  /**
+   * Records the number of audit records the archival job moved into the
+   * compressed archive (`archived`) and removed from the active table
+   * (`deleted`).
+   */
+  public recordAuditArchive(records: number, status: 'archived' | 'deleted' | 'failed'): void {
+    if (records <= 0) {
+      return;
+    }
+    this.auditArchivedRecordsTotal.inc({ status }, records);
   }
 
   private async collectQueueMetrics(): Promise<void> {

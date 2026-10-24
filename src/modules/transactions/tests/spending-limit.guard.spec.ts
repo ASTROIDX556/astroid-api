@@ -4,6 +4,7 @@ import { Reflector } from '@nestjs/core';
 import { ExecutionContext } from '@nestjs/common';
 import { SpendingLimitGuard, SPENDING_LIMIT_GUARD_KEY } from '../guards/spending-limit.guard';
 import { SpendingLimitService } from '../spending-limit.service';
+import { AssetRegistryService } from '../../policies/asset-registry.service';
 import { PolicyViolationException } from '../../../common/exceptions/domain.exception';
 
 // ---------------------------------------------------------------------------
@@ -11,6 +12,18 @@ import { PolicyViolationException } from '../../../common/exceptions/domain.exce
 // ---------------------------------------------------------------------------
 
 const VALID_STELLAR = 'GDEGSXLGANKHK7QFOV63XCBHBTZ3YRKUJV7ZB7JMSJQB5CNBRLL5QIG5';
+const USDC_ISSUER = 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN';
+const CANONICAL_USDC = `USDC:${USDC_ISSUER}`;
+
+/**
+ * Mirrors the real {@link AssetRegistryService}: a bare anchor ticker is
+ * expanded to its canonical `CODE:ISSUER` identifier so the guard checks the
+ * limit against the same identity the transaction pipeline uses.
+ */
+function canonicalize(asset: string): string {
+  if (asset === 'USDC') return CANONICAL_USDC;
+  return asset;
+}
 
 function makeContext(overrides: {
   body?: Record<string, unknown>;
@@ -56,6 +69,10 @@ describe('SpendingLimitGuard', () => {
         SpendingLimitGuard,
         Reflector,
         { provide: SpendingLimitService, useValue: mockSpendingLimitService },
+        {
+          provide: AssetRegistryService,
+          useValue: { canonicalize },
+        },
       ],
     }).compile();
 
@@ -138,10 +155,29 @@ describe('SpendingLimitGuard', () => {
       expect(intent.organizationId).toBe('org-1');
       expect(intent.agentId).toBe('agent-1');
       expect(intent.amount).toBe(250);
-      expect(intent.asset).toBe('USDC');
+      // The asset is canonicalized, so a bare ticker and the credit asset it
+      // refers to share one spending budget.
+      expect(intent.asset).toBe(CANONICAL_USDC);
       expect(intent.recipientAddress).toBe(VALID_STELLAR);
       expect(intent.walletId).toBe('wallet-1');
       expect(actorId).toBe('user-1');
+    });
+
+    it('keeps an already canonical credit asset untouched', async () => {
+      const ctx = makeContext({
+        body: {
+          agentId: 'agent-1',
+          amount: '250',
+          asset: CANONICAL_USDC,
+          recipientAddress: VALID_STELLAR,
+          walletId: 'wallet-1',
+        },
+      });
+
+      await guard.canActivate(ctx);
+
+      const [intent] = mockSpendingLimitService.evaluateSpendingLimits.mock.calls[0] as [Record<string, unknown>];
+      expect(intent.asset).toBe(CANONICAL_USDC);
     });
 
     it('uses XLM as default asset when none provided', async () => {

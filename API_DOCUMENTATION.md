@@ -195,7 +195,7 @@ Create a transaction (runs the full governance pipeline).
 | walletId | string | Yes | Valid UUID | Sender wallet ID |
 | agentId | string | No | Valid UUID | Initiating agent ID |
 | budgetId | string | No | Valid UUID | Budget to charge against |
-| asset | string | No | 1-24 chars | Asset code (default: XLM) |
+| asset | string | No | `CODE` or `CODE:ISSUER`, max 80 chars | Asset code (default: XLM). A Stellar Anchor ticker (e.g. `USDC`) is resolved to its issuing account when it is configured in `STELLAR_ANCHOR_ASSETS`; an issued asset can always be requested explicitly as `CODE:ISSUER` |
 | amount | string | Yes | Positive decimal, max 7 decimal places | Transaction amount |
 | recipientAddress | string | Yes | Non-empty | Stellar destination address |
 | memo | string | No | Max 28 chars | Transaction memo |
@@ -204,14 +204,40 @@ Create a transaction (runs the full governance pipeline).
 
 **Response:** Transaction object with governance evaluation result
 
+A transaction moves a single asset. A payload that carries a `transfers` array
+is rejected with HTTP `422` and a message pointing at
+`POST /transactions/simulate`, which evaluates a multi-asset transfer against
+the spending policies without moving funds.
+
+**Policy violations:** a transaction blocked by a policy is rejected with HTTP
+`422` and a `POLICY_VIOLATION` problem-details body that lists every violated
+rule, the asset it applies to and the limit that was breached. A blocked
+transaction is never persisted and never reaches the blockchain execution
+queue.
+
 ### POST `/transactions/simulate`
 Dry-run the governance pipeline without moving funds.
 
 **Authentication:** Bearer token required
 
-**Request Body:** Same as POST `/transactions`
+**Request Body:** Either the single-asset body of `POST /transactions` (without
+`metadata` being required) or a multi-asset payload:
 
-**Response:** Simulation result with policy evaluation
+| Field | Type | Required | Constraints | Description |
+|-------|------|----------|-------------|-------------|
+| walletId | string | Yes | Valid UUID | Sender wallet ID |
+| agentId | string | No | Valid UUID | Initiating agent ID |
+| budgetId | string | No | Valid UUID | Budget to charge against |
+| asset | string | No | `CODE` or `CODE:ISSUER` | Asset of a single-asset payload |
+| amount | string | No | Positive decimal, max 7 decimal places | Amount of a single-asset payload |
+| transfers | array | No | 1-10 legs | Multi-asset payload: one `{ asset, amount }` leg per asset. Mutually exclusive with `asset`/`amount` |
+| recipientAddress | string | Yes | Non-empty | Stellar destination address |
+| memo | string | No | Max 28 chars | Transaction memo |
+| purpose | string | No | Max 280 chars | Transaction purpose |
+| metadata | object | No | Arbitrary JSON | Additional metadata |
+
+**Response:** Simulation result with policy evaluation, the evaluated
+`transfers` and the risk assessment of the riskiest leg
 
 ### GET `/transactions/:id`
 Get a specific transaction.
@@ -277,6 +303,8 @@ Create a policy.
 | requiresApproval | boolean | Whether approval is required |
 | approvalThreshold | number | Amount threshold for approval |
 | emergencyLock | boolean | Emergency lock flag (blocks all spending) |
+| assetLimits | object | Per-asset limit overrides keyed by the upper-case asset code (e.g. `{ "USDC": { "maxAmount": 1000, "dailyLimit": 5000 } }`). An issued asset (`USDC:GA5Z…`) matches the `USDC` entry |
+| baseCurrency | string | Currency the amount limits are denominated in (e.g. `USD`). Transfer amounts — and the spend already accumulated for the asset — are converted into that currency before the limits are applied. A missing or stale price rejects the transaction with `PRICE_UNAVAILABLE` (HTTP 503) instead of skipping the limit |
 
 **Response:** Created policy object
 
@@ -290,8 +318,9 @@ Simulate a transaction intent against active policies.
 |-------|------|----------|-------------|-------------|
 | agentId | string | No | Valid UUID | Agent ID |
 | walletId | string | No | Valid UUID | Wallet ID |
-| asset | string | Yes | Non-empty | Asset code |
-| amount | number | Yes | Positive | Transaction amount |
+| asset | string | No | `CODE` or `CODE:ISSUER` | Asset of a single-asset payload |
+| amount | number | No | Positive | Amount of a single-asset payload |
+| transfers | array | No | 1-10 legs | Multi-asset payload: one `{ asset, amount }` leg per asset. Mutually exclusive with `asset`/`amount` |
 | recipientAddress | string | Yes | Non-empty | Destination address |
 | spentToday | number | No | Non-negative | Amount spent today |
 | spentThisWeek | number | No | Non-negative | Amount spent this week |
@@ -397,6 +426,64 @@ List audit records in reverse chronological order using a stable `(createdAt, id
 The response `meta` includes `limit`, `hasNext`, and `nextCursor` (null on the final page). New records inserted after a page is read do not shift subsequent pages.
 
 **Example:** `GET /audit?limit=20&actorId=user-123&action=wallet.created`
+
+### Audit archival
+
+Audit records older than `AUDIT_ARCHIVE_RETENTION_DAYS` (default 30) are moved
+out of the actively queried `audit_logs` table into a compressed archive
+(`audit_log_archives`) by a scheduled background job. The archive keeps the
+full row content, a SHA-256 checksum and the hash-chain anchor of the batch,
+so the audit history is preserved while the hot table — and every query
+against it — stays small.
+
+- The job runs hourly, processes at most `AUDIT_ARCHIVE_BATCH_SIZE` records
+  (default 500) per organization and batch and at most
+  `AUDIT_ARCHIVE_MAX_BATCHES` (default 20) batches per run.
+- A batch is written and read back (checksum and record count verified)
+  *before* the source rows are removed. A failure in between leaves the
+  records in place and the job is retried with the shared queue backoff.
+- The batch id is derived from the archived row ids, so a retried run reuses
+  the existing archive instead of writing a duplicate.
+- Because the oldest rows are archived first, the archived rows of an
+  organization are always a prefix of its hash chain. `GET
+  /audit/integrity/verify` anchors the live rows on the archived prefix and
+  keeps reporting a valid chain across the archive boundary.
+- The hard-delete retention of the cleanup job (`AUDIT_RETENTION_DAYS`,
+  default 90) stays above the archive cutoff, so records are always archived
+  before they are deleted. The configuration is validated at startup.
+
+### GET `/audit/archives`
+Lists the archive batches of the organization, newest first. Only the batch
+metadata is returned — the compressed payload is fetched one batch at a time.
+
+**Query Parameters:** `limit` defaults to 50 and is bounded to 1-100.
+
+**Example:** `GET /audit/archives?limit=10`
+
+### GET `/audit/archives/{batchId}`
+Returns the audit records of one archived batch. The compressed payload is
+decompressed and its checksum verified before it is returned, so a corrupted
+archive answers with an error instead of silently mangled records. A batch of
+another organization is reported as `404`.
+
+**Example:** `GET /audit/archives/8f1c3d…`
+
+### GET `/audit/archives`
+List the archive batches of the organization, newest first. Only the batch
+metadata is returned (batch id, cutoff, record count, checksum, chain anchor);
+the compressed payloads are not loaded.
+
+**Authentication:** Requires roles: OWNER, ADMIN, AUDITOR
+
+**Query Parameters:** `limit` defaults to 50 and is bounded to 1-100.
+
+### GET `/audit/archives/:batchId`
+Read the audit records of one archived batch. The payload is decompressed and
+its checksum verified before it is returned, so a corrupted archive surfaces as
+an error instead of as silently mangled audit records. A batch of another
+organization is reported as `404`.
+
+**Authentication:** Requires roles: OWNER, ADMIN, AUDITOR
 
 ## Outbound Webhook Signatures
 
@@ -599,6 +686,37 @@ All endpoints return errors as [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457
 Unhandled server errors always return `500` with `code: "INTERNAL_ERROR"` and a generic `detail`; internal information is only written to the server logs under the `requestId`. Stack traces are never included in a response.
 
 The same envelope is used for requests rejected before they reach a controller — a malformed JSON body returns `400`, and a body above the parser limit returns `413` — so clients only ever parse one error shape.
+
+A transaction that is blocked by a spending policy returns `422` with
+`code: "POLICY_VIOLATION"`. The `details.violations` array lists every
+violated rule with its `policyId`, `policyName`, `code`, `message` and the
+`asset` the rule applies to:
+
+```json
+{
+  "type": "urn:astroid:problem:policy-violation",
+  "title": "Policy Violation",
+  "status": 422,
+  "code": "POLICY_VIOLATION",
+  "detail": "Transaction blocked by spending limit policy: USDC cap: Projected daily spend 600 USDC exceeds limit 500 USDC",
+  "details": {
+    "violations": [
+      {
+        "policyId": "018f...",
+        "policyName": "USDC cap",
+        "code": "DAILY_LIMIT_EXCEEDED",
+        "message": "Projected daily spend 600 USDC exceeds limit 500 USDC",
+        "asset": "USDC"
+      }
+    ]
+  }
+}
+```
+
+When a policy denominates its limits in a base currency and no usable price is
+available, the transaction is rejected with `503` and
+`code: "PRICE_UNAVAILABLE"` instead of being let through with an unknown
+price.
 
 ### Authentication
 Most endpoints require Bearer token authentication in the format:
