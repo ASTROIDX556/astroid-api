@@ -4,11 +4,12 @@ import { RiskService } from './risk.service';
 import { RiskEngine } from './risk.engine';
 import { RiskRepository } from './risk.repository';
 import { RiskAggregatorService } from './risk-aggregator.service';
+import { RiskAnalysisWorker } from './workers/risk-analysis.worker';
+import { RiskProcessor } from '../../workers/risk.processor';
 import { DatabaseModule } from '../../database/database.module';
 import { BullModule } from '@nestjs/bullmq';
 import { Queues } from '../../queues/queues.constants';
 import { createQueueRegistrationOptions } from '../../queues/queue-policy';
-import { RiskProcessor } from '../../workers/risk.processor';
 
 @Module({
   imports: [
@@ -16,7 +17,14 @@ import { RiskProcessor } from '../../workers/risk.processor';
     BullModule.registerQueue(createQueueRegistrationOptions(Queues.RiskAnalysis)),
   ],
   controllers: [RiskController],
-  providers: [RiskService, RiskAggregatorService, RiskEngine, RiskRepository, RiskProcessor],
+  providers: [
+    RiskService,
+    RiskAggregatorService,
+    RiskEngine,
+    RiskRepository,
+    RiskProcessor,
+    RiskAnalysisWorker,
+  ],
   exports: [RiskService, RiskAggregatorService, RiskEngine, RiskRepository],
 })
 export class RiskModule {}

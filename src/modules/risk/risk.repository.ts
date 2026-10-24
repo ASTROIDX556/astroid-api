@@ -81,6 +81,50 @@ export class RiskRepository {
     });
   }
 
+  /** Require human approval and freeze the originating wallet on critical risk. */
+  async enforceRiskControls(organizationId: string, transactionId: string, critical: boolean) {
+    const tx = await this.prisma.transaction.findFirst({
+      where: { id: transactionId, organizationId }, select: { walletId: true },
+    });
+    if (!tx) throw new Error('Transaction not found for risk controls');
+    await this.prisma.$transaction(async (db) => {
+      await db.transaction.update({
+        where: { id: transactionId }, data: { requiresApproval: true },
+      });
+      if (critical) {
+        await db.wallet.update({
+          where: { id: tx.walletId }, data: { status: 'FROZEN' },
+        });
+      }
+    });
+  }
+
+  /** Derive a 24-hour baseline from prior transactions for this wallet. */
+  async getTransactionBaseline(organizationId: string, transactionId: string) {
+    const current = await this.prisma.transaction.findFirst({
+      where: { id: transactionId, organizationId },
+      select: { walletId: true, recipientAddress: true, createdAt: true },
+    });
+    if (!current) throw new Error('Transaction not found for risk analysis');
+    const since = new Date(current.createdAt.getTime() - 24 * 60 * 60 * 1000);
+    const history = await this.prisma.transaction.findMany({
+      where: {
+        organizationId, walletId: current.walletId,
+        id: { not: transactionId },
+        createdAt: { gte: since, lt: current.createdAt },
+      },
+      select: { amount: true, recipientAddress: true },
+      take: 1000,
+    });
+    const total = history.reduce((sum, item) => sum + Number(item.amount), 0);
+    return {
+      recentTransactionCount: history.length + 1,
+      baselineTransactionCount: history.length,
+      baselineAmount: history.length ? total / history.length : 0,
+      knownRecipient: history.some((item) => item.recipientAddress === current.recipientAddress),
+    };
+  }
+
   /**
    * Get historical risk assessments for an organization.
    */

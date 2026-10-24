@@ -59,6 +59,7 @@ export const DomainEventName = {
   // Risk
   RiskEvaluated: 'risk.evaluated',
   RiskAlert: 'risk.alert',
+  RiskThresholdExceeded: 'risk.threshold_exceeded',
   TransactionRiskScoringRequested: 'transaction.risk_scoring_requested',
 
   // Notification / audit
