@@ -330,7 +330,7 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
         await this.circuit?.recordSuccess(webhookId, organizationId, endpoint);
       } catch (error) {
         if (error instanceof UnrecoverableError) {
-          if (error instanceof PermanentJobError) {
+          if (error instanceof PermanentJobError && /unavailable/i.test(error.message)) {
             const failedReason = error.message;
             await this.persistState({
               webhookId,
