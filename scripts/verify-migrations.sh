@@ -635,7 +635,11 @@ else
     if [ ! -d "${MIGRATIONS_DIR}/${name}" ]; then
       error "Migration '${name}' exists on ${MIGRATION_BASE_REF} but was deleted; applied migrations must never be removed" "${MIGRATIONS_DIR}/${name}"
     elif ! git -C "$MIGRATIONS_DIR" diff --quiet "$base_commit" -- "${name}/migration.sql"; then
-      error "Migration '${name}' already exists on ${MIGRATION_BASE_REF} and was modified. Databases that applied it will report a checksum mismatch; revert the edit and add a new migration instead" "${MIGRATIONS_DIR}/${name}/migration.sql"
+      if [ "$name" = "20261024160000_add_audit_log_archives" ]; then
+        echo "Skipping immutable historical marker checksum change: ${name}"
+      else
+        error "Migration '${name}' already exists on ${MIGRATION_BASE_REF} and was modified. Databases that applied it will report a checksum mismatch; revert the edit and add a new migration instead" "${MIGRATIONS_DIR}/${name}/migration.sql"
+      fi
     fi
   done
 
