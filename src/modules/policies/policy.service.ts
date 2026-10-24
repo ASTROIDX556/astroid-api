@@ -27,7 +27,7 @@ export class PolicyService {
     private readonly spendingPolicyService: SpendingPolicyService,
     private readonly engine: PolicyEngine,
     private readonly eventBus: EventBusService,
-    ..._compatibilityServices: unknown[],
+    ..._compatibilityServices: unknown[]
   ) {}
 
   async create(organizationId: string, actorId: string, input: CreatePolicyInput) {
