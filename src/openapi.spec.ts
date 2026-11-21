@@ -5,11 +5,22 @@ import { PrismaService } from './database/prisma.service';
 import { AppModule } from './app.module';
 import { INestApplication } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { OpenAPIObject } from '@nestjs/swagger/dist/interfaces/open-api-spec.interface';
+import { GLOBAL_PREFIX_EXCLUDED_ROUTES } from './common/constants/global-prefix';
 import {
-  OpenAPIObject,
-  PathItemObject,
-  OperationObject,
-} from '@nestjs/swagger/dist/interfaces/open-api-spec.interface';
+  AllowlistedRoute,
+  RegisteredRoute,
+  findDanglingRefs,
+  findDuplicateRoutes,
+  findOperationsMissingSecurity,
+  findOperationsWithoutSuccessSchema,
+  findStaleAllowlistEntries,
+  findUndocumentedRoutes,
+  findUnservedOperations,
+  listDocumentedOperations,
+  listRegisteredRoutes,
+  routeKey,
+} from './common/openapi/openapi-coverage';
 
 // Set up environment variables before importing modules that depend on them
 process.env.NODE_ENV = 'test';
@@ -65,42 +76,43 @@ process.env.AI_BASE_URL = 'https://integrate.api.nvidia.com/v1';
 process.env.AI_MODEL = 'meta/llama-3.1-70b-instruct';
 
 /**
+ * Routes deliberately left out of the OpenAPI document. Every entry must still
+ * be served and still be undocumented, or the allowlist check fails, so an entry
+ * cannot outlive its reason.
+ */
+const INTERNAL_ROUTES: AllowlistedRoute[] = [
+  {
+    method: 'GET',
+    path: '/metrics',
+    // Prometheus scrape target: unversioned, text exposition format rather than
+    // JSON, and meant for the monitoring network, not API clients
+    // (`@ApiExcludeController()` in metrics.controller.ts).
+    reason: 'Prometheus scrape endpoint for the monitoring network, not part of the client API',
+  },
+  {
+    method: 'POST',
+    path: '/api/v1/webhooks/receive',
+    // Inbound partner webhooks, authenticated by an HMAC signature header instead
+    // of the bearer or API-key schemes the document defines
+    // (`@ApiExcludeController()` in webhook-ingress.controller.ts).
+    reason: 'Partner webhook ingress authenticated by HMAC signature, not by the documented schemes',
+  },
+];
+
+/**
  * The liveness probes only ever answer 200 — they are not part of the
  * authenticated surface and have no error to report.
  */
-const LIVENESS_PROBES = ['/api/v1/health/live', '/api/v1/health/liveness'];
+const LIVENESS_PROBES = ['/health/live', '/api/v1/health/liveness'];
 
-const METHODS: Array<keyof PathItemObject> = [
-  'get',
-  'post',
-  'put',
-  'patch',
-  'delete',
-  'options',
-  'head',
-  'trace',
-];
-
-/** Collects every `$ref` of the document. */
-function collectRefs(node: unknown, refs = new Set<string>()): Set<string> {
-  if (Array.isArray(node)) {
-    node.forEach((entry) => collectRefs(entry, refs));
-  } else if (node && typeof node === 'object') {
-    for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
-      if (key === '$ref' && typeof value === 'string') {
-        refs.add(value);
-      } else {
-        collectRefs(value, refs);
-      }
-    }
-  }
-  return refs;
-}
+/** Paths the API serves outside its prefix, as they appear in the document. */
+const UNPREFIXED_PATHS = new Set(GLOBAL_PREFIX_EXCLUDED_ROUTES.map((route) => `/${route.path}`));
 
 describe('OpenAPI Documentation', () => {
   let app: INestApplication;
   let moduleFixture: TestingModule;
   let document: OpenAPIObject;
+  let routes: RegisteredRoute[];
 
   beforeAll(async () => {
     moduleFixture = await Test.createTestingModule({
@@ -122,10 +134,11 @@ describe('OpenAPI Documentation', () => {
 
     app = moduleFixture.createNestApplication();
 
-    // Apply global prefix like in main.ts
+    // Apply the global prefix exactly as main.ts does, exclusions included, so
+    // the document carries the paths the API really serves.
     const configService = app.get(ConfigService);
     const appConfig = configService.getOrThrow('app');
-    app.setGlobalPrefix(appConfig.apiPrefix);
+    app.setGlobalPrefix(appConfig.apiPrefix, { exclude: GLOBAL_PREFIX_EXCLUDED_ROUTES });
 
     await app.init();
 
@@ -140,6 +153,7 @@ describe('OpenAPI Documentation', () => {
       .build();
 
     document = SwaggerModule.createDocument(app, swaggerConfig);
+    routes = listRegisteredRoutes(app);
   }, 60_000);
 
   afterAll(async () => {
@@ -164,25 +178,54 @@ describe('OpenAPI Documentation', () => {
     expect(Object.keys(document.paths).length).toBeGreaterThan(0);
   });
 
-  it('should have all paths with proper operations', () => {
-    for (const [path, pathItem] of Object.entries(document.paths)) {
-      expect(path).toMatch(/^\/api\/v1\//);
+  // ── Route coverage: the document against the application's router ───────
 
-      for (const method of METHODS) {
-        const operation = pathItem[method] as OperationObject | undefined;
-        if (operation) {
-          expect(operation.summary || operation.description).toBeDefined();
-          expect(operation.responses).toBeDefined();
-          expect(Object.keys(operation.responses).length).toBeGreaterThan(0);
+  it('enumerates the routes the application registers', () => {
+    // A broken enumeration would make every coverage check below pass vacuously.
+    expect(routes.length).toBeGreaterThan(100);
+    expect(routes.map(routeKey)).toEqual(
+      expect.arrayContaining(['GET /health/live', 'GET /api/v1/agents/{id}']),
+    );
+  });
 
-          // Verify at least one success response (2xx) is documented
-          const hasSuccessResponse = Object.keys(operation.responses).some(
-            (code) => code.startsWith('2'),
-          );
-          expect(hasSuccessResponse).toBe(true);
-        }
-      }
-    }
+  it('documents every registered route with its method and path', () => {
+    expect(findUndocumentedRoutes(routes, document, INTERNAL_ROUTES)).toEqual([]);
+  });
+
+  it('documents only operations that a route serves', () => {
+    expect(findUnservedOperations(routes, document)).toEqual([]);
+  });
+
+  it('registers each method and path from a single handler', () => {
+    expect(findDuplicateRoutes(routes)).toEqual([]);
+  });
+
+  it('keeps every internal-route allowlist entry served, undocumented and justified', () => {
+    expect(findStaleAllowlistEntries(routes, document, INTERNAL_ROUTES)).toEqual([]);
+  });
+
+  // ── Operation contents ───────────────────────────────────────────────────
+
+  it('serves every path under the API prefix unless it is a documented exclusion', () => {
+    const offenders = Object.keys(document.paths).filter(
+      (path) => !/^\/api\/v1\//.test(path) && !UNPREFIXED_PATHS.has(path),
+    );
+    expect(offenders).toEqual([]);
+  });
+
+  it('gives every operation a summary or description', () => {
+    const offenders = listDocumentedOperations(document)
+      .filter(({ operation }) => !(operation.summary || operation.description))
+      .map(routeKey);
+    expect(offenders).toEqual([]);
+  });
+
+  it('documents a 2xx response with a schema for every operation', () => {
+    expect(findOperationsWithoutSuccessSchema(document)).toEqual([]);
+  });
+
+  it('declares a defined security scheme on every authenticated operation', () => {
+    expect(findOperationsMissingSecurity(routes, document)).toEqual([]);
   });
 
   it('should have security schemes defined', () => {
@@ -192,49 +235,16 @@ describe('OpenAPI Documentation', () => {
   });
 
   it('should have tags for all endpoints', () => {
-    for (const [, pathItem] of Object.entries(document.paths)) {
-      for (const method of METHODS) {
-        const operation = pathItem[method] as OperationObject | undefined;
-        if (operation) {
-          expect(operation.tags).toBeDefined();
-          expect(Array.isArray(operation.tags)).toBe(true);
-          expect((operation.tags || []).length).toBeGreaterThan(0);
-        }
-      }
-    }
+    const offenders = listDocumentedOperations(document)
+      .filter(({ operation }) => !Array.isArray(operation.tags) || operation.tags.length === 0)
+      .map(routeKey);
+    expect(offenders).toEqual([]);
   });
 
   // ── Documentation validity ───────────────────────────────────────────────
 
-  it('documents a response schema for every success response', () => {
-    for (const [path, pathItem] of Object.entries(document.paths)) {
-      for (const method of METHODS) {
-        const operation = pathItem[method] as OperationObject | undefined;
-        if (!operation) continue;
-
-        for (const [status, response] of Object.entries(operation.responses)) {
-          if (!status.startsWith('2')) continue;
-          const content = (response as { content?: Record<string, unknown> }).content;
-          expect(content, `${method.toUpperCase()} ${path} (${status})`).toBeDefined();
-          expect(
-            Object.keys(content ?? {}).length,
-            `${method.toUpperCase()} ${path} (${status})`,
-          ).toBeGreaterThan(0);
-        }
-      }
-    }
-  });
-
   it('resolves every schema reference (no missing type definitions)', () => {
-    const schemas = document.components?.schemas ?? {};
-    const refs = collectRefs(document);
-    const dangling = [...refs].filter(
-      (ref) =>
-        ref.startsWith('#/components/schemas/') &&
-        !schemas[ref.split('/').pop() as string],
-    );
-
-    expect(dangling).toEqual([]);
+    expect(findDanglingRefs(document)).toEqual([]);
   });
 
   it('documents every property of every schema', () => {
@@ -258,24 +268,19 @@ describe('OpenAPI Documentation', () => {
   });
 
   it('documents the shared error envelope for every error response', () => {
-    for (const [path, pathItem] of Object.entries(document.paths)) {
-      for (const method of METHODS) {
-        const operation = pathItem[method] as OperationObject | undefined;
-        if (!operation) continue;
+    for (const { method, path, operation } of listDocumentedOperations(document)) {
+      const errorResponses = Object.entries(operation.responses).filter(([status]) =>
+        status.startsWith('4') || status.startsWith('5'),
+      );
+      if (LIVENESS_PROBES.includes(path)) {
+        expect(errorResponses.length, `${method} ${path}`).toBe(0);
+        continue;
+      }
+      expect(errorResponses.length, `${method} ${path}`).toBeGreaterThan(0);
 
-        const errorResponses = Object.entries(operation.responses).filter(([status]) =>
-          status.startsWith('4') || status.startsWith('5'),
-        );
-        if (LIVENESS_PROBES.includes(path)) {
-          expect(errorResponses.length, `${method.toUpperCase()} ${path}`).toBe(0);
-          continue;
-        }
-        expect(errorResponses.length, `${method.toUpperCase()} ${path}`).toBeGreaterThan(0);
-
-        for (const [status, response] of errorResponses) {
-          const content = (response as { content?: Record<string, unknown> }).content;
-          expect(content, `${method.toUpperCase()} ${path} (${status})`).toBeDefined();
-        }
+      for (const [status, response] of errorResponses) {
+        const content = (response as { content?: Record<string, unknown> }).content;
+        expect(content, `${method} ${path} (${status})`).toBeDefined();
       }
     }
   });
