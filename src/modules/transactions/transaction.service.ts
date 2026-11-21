@@ -34,7 +34,6 @@ import {
   toPrismaPagination,
 } from '../../common/helpers/pagination';
 import { Paginated } from '../../common/interfaces/api-response.interface';
-import { DEFAULT_IDEMPOTENCY_TTL_MS } from '../../common/decorators/idempotent.decorator';
 import { EventBusService } from '../../events/event-bus.service';
 import { DomainEventName } from '../../events/event-names';
 import { PrismaService } from '../../database/prisma.service';
@@ -57,7 +56,6 @@ const CANCELLABLE_STATUSES: readonly TransactionStatus[] = [
 ];
 const Decimal = Prisma.Decimal;
 const IDEMPOTENCY_OPERATION = 'transactions.create';
-const IDEMPOTENCY_RETENTION_MS = DEFAULT_IDEMPOTENCY_TTL_MS;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
