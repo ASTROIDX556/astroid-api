@@ -7,6 +7,7 @@ import {
   ApiBody,
 } from '@nestjs/swagger';
 import { ApiErrorResponses } from '../../common/decorators/api-error-responses.decorator';
+import { SensitiveRateLimit } from '../../common/decorators/sensitive-rate-limit.decorator';
 import { ApiEnvelope, ApiPaginatedEnvelope } from '../../common/decorators/api-envelope.decorator';
 import { UserRole } from '@prisma/client';
 import { ApiKeyService } from './api-key.service';
@@ -47,6 +48,7 @@ export class ApiKeyController {
 
   @Post()
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.DEVELOPER)
+  @SensitiveRateLimit('apiKeyCreate')
   @AuditAction('AGENT_KEY_ROTATED')
   @AuditLog({ action: 'AGENT_KEY_CREATED', entity: 'ApiKey' })
   @ApiOperation({
@@ -64,7 +66,9 @@ export class ApiKeyController {
     validation: true,
     unauthorized: true,
     forbidden: true,
+    tooManyRequests: true,
     serverError: true,
+    serviceUnavailable: 'Rate limiting is unavailable, so the endpoint refuses requests (fails closed)',
   })
   create(
     @CurrentUser() user: AuthenticatedUser,

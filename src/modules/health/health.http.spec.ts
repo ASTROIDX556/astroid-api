@@ -1,20 +1,38 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { INestApplication, RequestMethod } from '@nestjs/common';
+import { Controller, Get, INestApplication } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
+import { ConfigService } from '@nestjs/config';
 import { Test } from '@nestjs/testing';
 import { AddressInfo } from 'net';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { PublicRateLimitGuard } from '../../common/guards/public-rate-limit.guard';
+import { Public } from '../../common/decorators/public.decorator';
+import { REDIS_CLIENT } from '../../common/locks/locks.constants';
+import { GLOBAL_PREFIX_EXCLUDED_ROUTES } from '../../common/constants/global-prefix';
 import { HealthController } from './health.controller';
 import { PrismaHealthIndicator } from './indicators/prisma.health';
 import { RedisHealthIndicator } from './indicators/redis.health';
 import { StellarHealthIndicator } from './indicators/stellar.health';
 import { DatabaseMigrationHealthIndicator } from './indicators/database-migration.health';
 
+/** A public route that is not a probe, to prove the public limiter is live here. */
+@Controller('probe-control')
+@Public()
+class PublicControlController {
+  @Get()
+  ping() {
+    return { ok: true };
+  }
+}
+
+/** Public limit used here: low enough that a burst of probes would hit it. */
+const PUBLIC_LIMIT = 2;
+
 /**
  * HTTP-level coverage for the orchestrator probes: real routing, the global
- * authentication guard, and the same prefix exclusions `main.ts` applies. The
- * indicators are stubbed so dependency outages can be simulated
- * deterministically.
+ * authentication guard, the global per-IP public rate limiter, and the same
+ * prefix exclusions `main.ts` applies. The indicators are stubbed so dependency
+ * outages can be simulated deterministically.
  */
 describe('Health probes over HTTP', () => {
   let app: INestApplication;
@@ -31,9 +49,27 @@ describe('Health probes over HTTP', () => {
 
   beforeAll(async () => {
     const moduleRef = await Test.createTestingModule({
-      controllers: [HealthController],
+      controllers: [HealthController, PublicControlController],
       providers: [
+        { provide: APP_GUARD, useClass: PublicRateLimitGuard },
         { provide: APP_GUARD, useClass: JwtAuthGuard },
+        {
+          provide: ConfigService,
+          useValue: {
+            getOrThrow: () => ({
+              public: {
+                enabled: true,
+                maxRequests: PUBLIC_LIMIT,
+                windowSeconds: 60,
+                trustProxy: false,
+                clientIdentifiers: [],
+              },
+            }),
+            get: () => ({ apiPrefix: 'api/v1' }),
+          },
+        },
+        // A closed client: the public limiter falls back to its in-memory window.
+        { provide: REDIS_CLIENT, useValue: { status: 'end' } },
         { provide: PrismaHealthIndicator, useValue: dbIndicator },
         { provide: RedisHealthIndicator, useValue: redisIndicator },
         { provide: StellarHealthIndicator, useValue: stellarIndicator },
@@ -42,12 +78,7 @@ describe('Health probes over HTTP', () => {
     }).compile();
 
     app = moduleRef.createNestApplication({ logger: false });
-    app.setGlobalPrefix('api/v1', {
-      exclude: [
-        { path: 'health/live', method: RequestMethod.GET },
-        { path: 'health/ready', method: RequestMethod.GET },
-      ],
-    });
+    app.setGlobalPrefix('api/v1', { exclude: GLOBAL_PREFIX_EXCLUDED_ROUTES });
     await app.listen(0, '127.0.0.1');
     const { port } = app.getHttpServer().address() as AddressInfo;
     baseUrl = `http://127.0.0.1:${port}`;
@@ -66,7 +97,12 @@ describe('Health probes over HTTP', () => {
     const res = await fetch(`${baseUrl}/health/live`);
 
     expect(res.status).toBe(200);
-    expect(await res.json()).toMatchObject({ status: 'up' });
+    expect(await res.json()).toMatchObject({
+      success: true,
+      data: { status: 'up' },
+      meta: {},
+      requestId: expect.any(String),
+    });
   });
 
   it('serves GET /health/ready without credentials with 200 when dependencies are up', async () => {
@@ -74,8 +110,11 @@ describe('Health probes over HTTP', () => {
 
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({
-      status: 'up',
-      services: { database: { status: 'up' }, cache: { status: 'up' } },
+      success: true,
+      data: {
+        status: 'up',
+        services: { database: { status: 'up', latencyMs: 3 }, cache: { status: 'up', latencyMs: 1 } },
+      },
     });
   });
 
@@ -94,12 +133,41 @@ describe('Health probes over HTTP', () => {
 
     expect(res.status).toBe(503);
     expect(await res.json()).toMatchObject({
-      status: 'down',
-      services: {
-        database: { status: 'down', error: 'Database health check timed out after 2000ms' },
-        cache: { status: 'up' },
+      success: false,
+      data: {
+        status: 'down',
+        services: {
+          database: { status: 'down', error: 'timeout' },
+          cache: { status: 'up' },
+        },
       },
     });
+  });
+
+  it('carries the caller request id in the probe envelope', async () => {
+    const res = await fetch(`${baseUrl}/health/live`, { headers: { 'x-request-id': 'req-probe-7' } });
+
+    expect(await res.json()).toMatchObject({ requestId: 'req-probe-7' });
+  });
+
+  it('never answers a probe with 429, however often it is called', async () => {
+    const statuses: number[] = [];
+    for (let i = 0; i < PUBLIC_LIMIT * 5; i++) {
+      statuses.push((await fetch(`${baseUrl}/health/live`)).status);
+      statuses.push((await fetch(`${baseUrl}/health/ready`)).status);
+      statuses.push((await fetch(`${baseUrl}/api/v1/health/database`)).status);
+    }
+
+    expect(statuses.filter((status) => status !== 200)).toEqual([]);
+  });
+
+  it('still limits a public route that is not a probe (control)', async () => {
+    const statuses: number[] = [];
+    for (let i = 0; i < PUBLIC_LIMIT + 1; i++) {
+      statuses.push((await fetch(`${baseUrl}/api/v1/probe-control`)).status);
+    }
+
+    expect(statuses.at(-1)).toBe(429);
   });
 
   it('keeps GET /health/live at 200 during a database outage', async () => {

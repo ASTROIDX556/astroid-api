@@ -149,6 +149,14 @@ are rejected:
 | `AUDIT_ARCHIVE_MAX_BATCHES` | `20` | Maximum batches per archival run. |
 | `AUDIT_RETENTION_DAYS` | `90` | Hard-delete retention for audit records. |
 
+### Transaction idempotency
+
+| Variable | Default | Description |
+| -------- | ------- | ----------- |
+| `IDEMPOTENCY_KEY_TTL_HOURS` | `24` | How long a completed `Idempotency-Key` record stays replayable; after this window the key is ignored and a fresh submission is processed. |
+| `IDEMPOTENCY_WAIT_TIMEOUT_MS` | `5000` | How long a duplicate request waits for the in-flight original to finish before returning `409`. `0` returns the conflict immediately. |
+| `IDEMPOTENCY_POLL_INTERVAL_MS` | `100` | Poll interval used while waiting for the in-flight original. |
+
 ### Storage (S3-compatible)
 
 | Variable             | Default                 | Description              |
@@ -231,6 +239,16 @@ deliveries of a failing endpoint instead of hammering it.
 | `PUBLIC_RATE_LIMIT_WINDOW_SECONDS` | `60` | Sliding-window size for the public-route rate limiter. |
 | `PUBLIC_RATE_LIMIT_TRUST_PROXY` | `false` | Reads client IP from `X-Forwarded-For`. Only enable behind a trusted reverse proxy. |
 | `PUBLIC_RATE_LIMIT_CLIENT_IDENTIFIERS` | _(empty)_ | Comma-separated client identifiers to add to the IP bucket, currently `apiKey`. |
+| `RATE_LIMIT_LOGIN_MAX` | `5` | `POST /auth/login` requests per client IP per window. |
+| `RATE_LIMIT_LOGIN_WINDOW_SECONDS` | `60` | Window of the login limit. |
+| `RATE_LIMIT_REFRESH_MAX` | `30` | `POST /auth/refresh` requests per client IP per window. |
+| `RATE_LIMIT_REFRESH_WINDOW_SECONDS` | `60` | Window of the refresh limit. |
+| `RATE_LIMIT_API_KEY_CREATE_MAX` | `10` | `POST /developer/api-keys` requests per API key or user per window. |
+| `RATE_LIMIT_API_KEY_CREATE_WINDOW_SECONDS` | `3600` | Window of the API-key creation limit. |
+| `RATE_LIMIT_WEBHOOK_CREATE_MAX` | `20` | `POST /webhooks` requests per API key or user per window. |
+| `RATE_LIMIT_WEBHOOK_CREATE_WINDOW_SECONDS` | `3600` | Window of the webhook creation limit. |
+| `RATE_LIMIT_WEBHOOK_ROTATE_MAX` | `10` | `POST /webhooks/:id/rotate-secret` requests per API key or user per window. |
+| `RATE_LIMIT_WEBHOOK_ROTATE_WINDOW_SECONDS` | `3600` | Window of the webhook secret rotation limit. |
 
 ### Metrics
 

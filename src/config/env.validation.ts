@@ -123,6 +123,17 @@ export const storageEnvSchema = z.object({
   STORAGE_SECRET_KEY: z.string().default('astroid-secret'),
 });
 
+export const idempotencyEnvSchema = z.object({
+  // How long a completed idempotency record stays replayable. After this window
+  // the key is ignored and a fresh request is processed and stored.
+  IDEMPOTENCY_KEY_TTL_HOURS: z.coerce.number().int().positive().max(720).default(24),
+  // How long a duplicate request waits for the in-flight original to finish
+  // before giving up with 409. 0 returns the conflict immediately.
+  IDEMPOTENCY_WAIT_TIMEOUT_MS: z.coerce.number().int().nonnegative().max(60_000).default(5_000),
+  // Poll interval while waiting for an in-flight duplicate request (ms).
+  IDEMPOTENCY_POLL_INTERVAL_MS: z.coerce.number().int().positive().max(5_000).default(100),
+});
+
 export const queueEnvSchema = z.object({
   QUEUE_PREFIX: z.string().default('astroid'),
   QUEUE_CONCURRENCY: z.coerce.number().int().positive().default(5),
@@ -198,6 +209,19 @@ export const rateLimitEnvSchema = z.object({
     .enum(['true', 'false'])
     .default('false')
     .transform((value) => value === 'true'),
+  // Per-route limits of the sensitive-route limiter (`@SensitiveRateLimit`). Each
+  // pair is requests allowed per sliding window of that many seconds, counted per
+  // route and per caller (the client IP before login, the principal after it).
+  RATE_LIMIT_LOGIN_MAX: z.coerce.number().int().positive().default(5),
+  RATE_LIMIT_LOGIN_WINDOW_SECONDS: z.coerce.number().int().positive().default(60),
+  RATE_LIMIT_REFRESH_MAX: z.coerce.number().int().positive().default(30),
+  RATE_LIMIT_REFRESH_WINDOW_SECONDS: z.coerce.number().int().positive().default(60),
+  RATE_LIMIT_API_KEY_CREATE_MAX: z.coerce.number().int().positive().default(10),
+  RATE_LIMIT_API_KEY_CREATE_WINDOW_SECONDS: z.coerce.number().int().positive().default(3600),
+  RATE_LIMIT_WEBHOOK_CREATE_MAX: z.coerce.number().int().positive().default(20),
+  RATE_LIMIT_WEBHOOK_CREATE_WINDOW_SECONDS: z.coerce.number().int().positive().default(3600),
+  RATE_LIMIT_WEBHOOK_ROTATE_MAX: z.coerce.number().int().positive().default(10),
+  RATE_LIMIT_WEBHOOK_ROTATE_WINDOW_SECONDS: z.coerce.number().int().positive().default(3600),
 });
 
 export const metricsEnvSchema = z.object({
@@ -275,6 +299,7 @@ export const environmentSchema = z
     ...priceOracleEnvSchema.shape,
     ...auditEnvSchemaBase.shape,
     ...queueEnvSchema.shape,
+    ...idempotencyEnvSchema.shape,
     ...webhookEnvSchema.shape,
     ...throttleEnvSchema.shape,
     ...rateLimitEnvSchema.shape,

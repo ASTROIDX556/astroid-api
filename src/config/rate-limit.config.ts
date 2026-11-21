@@ -1,5 +1,6 @@
 import { registerAs } from '@nestjs/config';
 import { rateLimitEnvSchema, validateEnv } from './env.validation';
+import { SensitiveRoute } from '../common/throttler/sensitive-route-policy';
 
 /** Client identifiers that can participate in the public rate-limit bucket. */
 export type PublicRateLimitIdentifier = 'ip' | 'apiKey';
@@ -18,10 +19,18 @@ export type PublicRateLimitConfig = {
   clientIdentifiers: PublicRateLimitIdentifier[];
 };
 
+/** Limit of one sensitive route: requests per sliding window. */
+export type SensitiveRouteLimit = {
+  maxRequests: number;
+  windowSeconds: number;
+};
+
 export type RateLimitConfig = {
   windowSeconds: number;
   maxRequests: number;
   public: PublicRateLimitConfig;
+  /** Per-route limits of the `@SensitiveRateLimit` guard. */
+  sensitive: Record<SensitiveRoute, SensitiveRouteLimit>;
 };
 
 /**
@@ -46,8 +55,9 @@ function parseClientIdentifiers(raw: string | undefined): PublicRateLimitIdentif
 
 /**
  * Config for the Redis-backed sliding-window rate limiters: the per-route
- * `SlidingWindowThrottlerGuard` (top-level fields) and the IP-based
- * `PublicRateLimitGuard` for public endpoints (`public`).
+ * `SlidingWindowThrottlerGuard` (top-level fields), the IP-based
+ * `PublicRateLimitGuard` for public endpoints (`public`) and the
+ * `SensitiveRateLimitGuard` for credential and webhook routes (`sensitive`).
  */
 export const rateLimitConfig = registerAs('rateLimit', (): RateLimitConfig => {
   const env = validateEnv(rateLimitEnvSchema, process.env);
@@ -60,6 +70,28 @@ export const rateLimitConfig = registerAs('rateLimit', (): RateLimitConfig => {
       windowSeconds: env.PUBLIC_RATE_LIMIT_WINDOW_SECONDS,
       trustProxy: env.PUBLIC_RATE_LIMIT_TRUST_PROXY,
       clientIdentifiers: parseClientIdentifiers(process.env.PUBLIC_RATE_LIMIT_CLIENT_IDENTIFIERS),
+    },
+    sensitive: {
+      login: {
+        maxRequests: env.RATE_LIMIT_LOGIN_MAX,
+        windowSeconds: env.RATE_LIMIT_LOGIN_WINDOW_SECONDS,
+      },
+      refresh: {
+        maxRequests: env.RATE_LIMIT_REFRESH_MAX,
+        windowSeconds: env.RATE_LIMIT_REFRESH_WINDOW_SECONDS,
+      },
+      apiKeyCreate: {
+        maxRequests: env.RATE_LIMIT_API_KEY_CREATE_MAX,
+        windowSeconds: env.RATE_LIMIT_API_KEY_CREATE_WINDOW_SECONDS,
+      },
+      webhookCreate: {
+        maxRequests: env.RATE_LIMIT_WEBHOOK_CREATE_MAX,
+        windowSeconds: env.RATE_LIMIT_WEBHOOK_CREATE_WINDOW_SECONDS,
+      },
+      webhookRotateSecret: {
+        maxRequests: env.RATE_LIMIT_WEBHOOK_ROTATE_MAX,
+        windowSeconds: env.RATE_LIMIT_WEBHOOK_ROTATE_WINDOW_SECONDS,
+      },
     },
   };
 });

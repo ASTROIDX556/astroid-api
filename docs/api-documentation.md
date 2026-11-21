@@ -8,15 +8,47 @@ it is validated in CI.
 npm run docs:check   # generates the document and asserts that it is complete
 ```
 
-The check builds the real `AppModule`, generates the document and asserts that:
+The check builds the real `AppModule`, applies the global prefix with the same
+exclusions as `main.ts` (`src/common/constants/global-prefix.ts`), generates the
+document and compares it with the routes the application registers. Those routes
+come from Nest's router metadata, not from Swagger, so a route hidden with
+`@ApiExcludeEndpoint()` or `@ApiExcludeController()` is still counted. It asserts
+that:
 
-- every operation has a tag, a summary and at least one documented response,
-- every success response documents a response **schema**,
+- every registered route appears in the document with the same method and path
+  (path parameters included), unless it is on the internal-route allowlist,
+- every documented operation is served by a route, so a wrong prefix or a stale
+  path cannot hide,
+- no method and path is registered by two handlers (Express serves the first,
+  while the document may describe the other),
+- every operation has a tag, a summary and a 2xx response with a **schema**,
+- every operation of an authenticated (not `@Public()`) route declares a security
+  scheme that the document defines (`access-token` or `api-key`),
 - every error response documents a body,
-- every `$ref` of the document resolves to a schema that exists — there are no
-  missing type definitions,
+- every `$ref` of the document resolves — there are no missing type definitions,
 - every property of every schema is documented (directly or through the schema
   it references).
+
+A failure names the offending endpoint as `METHOD /path`, together with the
+handler for routes missing from the document, for example:
+
+```
++   "DELETE /api/v1/developer/api-keys/{id} (ApiKeyController.revoke) is not in the OpenAPI document",
+```
+
+The helpers live in `src/common/openapi/openapi-coverage.ts`; their own tests
+(`openapi-coverage.spec.ts`) run them against deliberately broken documents and a
+small application with an undocumented route.
+
+### Internal routes
+
+A route that must stay out of the published document goes on the
+`INTERNAL_ROUTES` allowlist in `src/openapi.spec.ts`, with a comment and a
+`reason`. Today that is `GET /metrics` (the Prometheus scrape endpoint) and
+`POST /api/v1/webhooks/receive` (partner webhook ingress authenticated by HMAC
+signature). The check fails when an entry has no reason, no longer matches a
+route, or matches a route that is now documented, so the list cannot go stale.
+Everything else is documented; do not add an entry to make the check pass.
 
 ## Conventions
 
