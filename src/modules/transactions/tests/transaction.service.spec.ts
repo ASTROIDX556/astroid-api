@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { Test, TestingModule } from '@nestjs/testing';
+import { ConfigService } from '@nestjs/config';
 import { TransactionService } from '../transaction.service';
 import { TransactionRepository } from '../transaction.repository';
 import { WalletService } from '../../wallets/wallet.service';
@@ -159,6 +160,11 @@ describe('TransactionService - create', () => {
   let service: TransactionService;
   let stellarService: StellarService;
   let transactionRepository: TransactionRepository;
+  let idempotencySettings: {
+    keyTtlMs: number;
+    waitTimeoutMs: number;
+    pollIntervalMs: number;
+  };
 
   const wallet = {
     id: 'wallet_1',
@@ -169,9 +175,18 @@ describe('TransactionService - create', () => {
   };
 
   beforeEach(async () => {
+    idempotencySettings = {
+      keyTtlMs: 24 * 60 * 60 * 1000,
+      waitTimeoutMs: 1_000,
+      pollIntervalMs: 5,
+    };
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         TransactionService,
+        {
+          provide: ConfigService,
+          useValue: { get: vi.fn(() => idempotencySettings) },
+        },
         {
           provide: TransactionRepository,
           useValue: (() => {
@@ -190,7 +205,11 @@ describe('TransactionService - create', () => {
               reserveIdempotencyKey: vi.fn().mockImplementation((input: Record<string, unknown>) => {
                 const recordKey = `${input.principalId}:${input.operation}:${input.keyHash}`;
                 const existing = idempotencyRecords.get(recordKey);
-                if (existing) return Promise.resolve({ record: existing, created: false });
+                if (existing && (existing.expiresAt as Date).getTime() <= Date.now()) {
+                  idempotencyRecords.delete(recordKey);
+                }
+                const current = idempotencyRecords.get(recordKey);
+                if (current) return Promise.resolve({ record: current, created: false });
                 const record = {
                   id: `idempotency_${idempotencyRecords.size + 1}`,
                   ...input,
@@ -450,6 +469,60 @@ describe('TransactionService - create', () => {
         key: 'transaction-key-2',
       }),
     ).rejects.toMatchObject({ status: 409 });
+    expect(transactionRepository.create).toHaveBeenCalledTimes(1);
+    expect(stellarService.submitPayment).toHaveBeenCalledTimes(1);
+  });
+
+  it('stores the configured retention window as the record expiry', async () => {
+    idempotencySettings.keyTtlMs = 3_600_000;
+    const before = Date.now();
+
+    await service.create('org_1', 'user_1', input, {
+      principalId: 'principal_1',
+      key: 'transaction-key-ttl',
+    });
+
+    const expiresAt = vi.mocked(transactionRepository.reserveIdempotencyKey).mock.calls[0][0].expiresAt;
+    expect(expiresAt.getTime()).toBeGreaterThanOrEqual(before + 3_600_000);
+    expect(expiresAt.getTime()).toBeLessThanOrEqual(Date.now() + 3_600_000);
+  });
+
+  it('ignores an expired key and processes a fresh transaction', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+      await service.create('org_1', 'user_1', input, {
+        principalId: 'principal_1',
+        key: 'transaction-key-expired',
+      });
+
+      // One millisecond past the 24h retention window.
+      vi.setSystemTime(new Date('2026-01-02T00:00:00.001Z'));
+      await service.create('org_1', 'user_1', input, {
+        principalId: 'principal_1',
+        key: 'transaction-key-expired',
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(transactionRepository.create).toHaveBeenCalledTimes(2);
+    expect(stellarService.submitPayment).toHaveBeenCalledTimes(2);
+  });
+
+  it('executes exactly once when concurrent requests share a key', async () => {
+    const [first, second] = await Promise.all([
+      service.create('org_1', 'user_1', input, {
+        principalId: 'principal_1',
+        key: 'transaction-key-concurrent',
+      }),
+      service.create('org_1', 'user_1', input, {
+        principalId: 'principal_1',
+        key: 'transaction-key-concurrent',
+      }),
+    ]);
+
+    expect(second.transaction.id).toBe(first.transaction.id);
     expect(transactionRepository.create).toHaveBeenCalledTimes(1);
     expect(stellarService.submitPayment).toHaveBeenCalledTimes(1);
   });

@@ -204,6 +204,16 @@ Create a transaction (runs the full governance pipeline).
 
 **Response:** Transaction object with governance evaluation result
 
+**Idempotency:** send an optional `Idempotency-Key` header (1-128 ASCII
+letters, digits, dots, underscores, tildes or hyphens) to make submission
+replay-safe. A repeat request with the same key and payload returns the original
+result without persisting or submitting a second transaction; a repeat that
+arrives while the first is still processing waits up to
+`IDEMPOTENCY_WAIT_TIMEOUT_MS` for that result. Reusing a key with a different
+payload returns HTTP `409` (`CONFLICT`). Keys are scoped to the authenticated
+principal and expire after `IDEMPOTENCY_KEY_TTL_HOURS`. See
+`docs/transaction-idempotency.md`.
+
 A transaction moves a single asset. A payload that carries a `transfers` array
 is rejected with HTTP `422` and a message pointing at
 `POST /transactions/simulate`, which evaluates a multi-asset transfer against

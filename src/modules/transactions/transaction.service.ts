@@ -1,4 +1,5 @@
 import { Injectable, Logger, Optional } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { createHash } from 'node:crypto';
 import {
   Agent,
@@ -37,6 +38,7 @@ import { EventBusService } from '../../events/event-bus.service';
 import { DomainEventName } from '../../events/event-names';
 import { PrismaService } from '../../database/prisma.service';
 import { PrismaTransactionService } from '../../database/prisma-transaction.service';
+import { idempotencyConfig, IdempotencyConfig } from '../../config/idempotency.config';
 
 const SORTABLE = ['createdAt', 'amount', 'status', 'riskScore'];
 
@@ -54,7 +56,10 @@ const CANCELLABLE_STATUSES: readonly TransactionStatus[] = [
 ];
 const Decimal = Prisma.Decimal;
 const IDEMPOTENCY_OPERATION = 'transactions.create';
-const IDEMPOTENCY_RETENTION_MS = 24 * 60 * 60 * 1000;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 function normalizeAmount(amount: string): string {
   const [whole, fraction = ''] = amount.split('.');
@@ -95,6 +100,11 @@ function transactionRequestHash(input: CreateTransactionInput): string {
  *      else -> execute on-chain immediately
  * Execution is idempotent-ish and also callable by the approvals module once a
  * proposal is approved.
+ *
+ * Callers may pass an Idempotency-Key: the first request for a key reserves a
+ * record, and repeats with the same key/payload either replay the stored result
+ * or wait for the in-flight original. A key reused with a different payload is
+ * rejected with 409. Records expire after the configured retention window.
  */
 @Injectable()
 export class TransactionService {
@@ -112,6 +122,7 @@ export class TransactionService {
     private readonly prisma: PrismaService,
     private readonly spendingLimits: SpendingLimitService,
     @Optional() private readonly transactions?: PrismaTransactionService,
+    @Optional() private readonly config?: ConfigService,
   ) {}
 
   async create(
@@ -122,15 +133,17 @@ export class TransactionService {
   ) {
     if (!idempotency) return this.createTransaction(organizationId, actorId, input);
 
+    const { keyTtlMs, waitTimeoutMs, pollIntervalMs } = this.idempotencySettings();
     const keyHash = createHash('sha256').update(idempotency.key).digest('hex');
     const requestHash = transactionRequestHash(input);
-    const reservation = await this.repository.reserveIdempotencyKey({
+    const reservationInput = {
       principalId: idempotency.principalId,
       operation: IDEMPOTENCY_OPERATION,
       keyHash,
       requestHash,
-      expiresAt: new Date(Date.now() + IDEMPOTENCY_RETENTION_MS),
-    });
+      expiresAt: new Date(Date.now() + keyTtlMs),
+    };
+    const reservation = await this.repository.reserveIdempotencyKey(reservationInput);
 
     if (!reservation.created) {
       if (reservation.record.requestHash !== requestHash) {
@@ -139,10 +152,19 @@ export class TransactionService {
         );
       }
       if (reservation.record.status === 'COMPLETED' && reservation.record.response !== null) {
-        return reservation.record.response as unknown as Awaited<
-          ReturnType<TransactionService['createTransaction']>
-        >;
+        return this.replayStoredResponse(reservation.record.response);
       }
+
+      // The original submission is still in flight. Rather than failing the
+      // retrying client outright, wait for it to finish and replay its result;
+      // only one request is ever allowed to execute, so the database write and
+      // the on-chain submission still happen exactly once.
+      const replayed = await this.waitForIdempotencyResult(
+        reservationInput,
+        waitTimeoutMs,
+        pollIntervalMs,
+      );
+      if (replayed !== undefined) return this.replayStoredResponse(replayed);
       throw new ConflictException(
         'A transaction submission with this Idempotency-Key is currently being processed; retry shortly',
       );
@@ -159,13 +181,52 @@ export class TransactionService {
         reservation.record.id,
         transactionId!,
         response,
-        new Date(Date.now() + IDEMPOTENCY_RETENTION_MS),
+        new Date(Date.now() + keyTtlMs),
       );
       return result;
     } catch (error) {
       if (!transactionId) await this.repository.releaseIdempotencyKey(reservation.record.id);
       throw error;
     }
+  }
+
+  /** Idempotency retention/wait settings, falling back to their env defaults. */
+  private idempotencySettings(): IdempotencyConfig {
+    return this.config?.get<IdempotencyConfig>('idempotency') ?? idempotencyConfig();
+  }
+
+  /** Rehydrates the response persisted on a completed idempotency record. */
+  private replayStoredResponse(
+    response: Prisma.JsonValue,
+  ): Awaited<ReturnType<TransactionService['createTransaction']>> {
+    return response as unknown as Awaited<ReturnType<TransactionService['createTransaction']>>;
+  }
+
+  /**
+   * Polls an in-flight idempotency record until it completes, the wait window
+   * elapses, or the reservation disappears (the original failed and released
+   * it). Uses the same atomic reserve-or-read primitive as the initial lookup,
+   * so a record that expired mid-wait is re-reserved and reported as `created`
+   * — in that case the abandoned reservation is released and the caller retries.
+   */
+  private async waitForIdempotencyResult(
+    reservationInput: Parameters<TransactionRepository['reserveIdempotencyKey']>[0],
+    waitTimeoutMs: number,
+    pollIntervalMs: number,
+  ): Promise<Prisma.JsonValue | undefined> {
+    const deadline = Date.now() + waitTimeoutMs;
+    while (Date.now() < deadline) {
+      await sleep(Math.min(pollIntervalMs, Math.max(1, deadline - Date.now())));
+      const current = await this.repository.reserveIdempotencyKey(reservationInput);
+      if (current.created) {
+        await this.repository.releaseIdempotencyKey(current.record.id);
+        return undefined;
+      }
+      if (current.record.status === 'COMPLETED' && current.record.response !== null) {
+        return current.record.response;
+      }
+    }
+    return undefined;
   }
 
   private async createTransaction(

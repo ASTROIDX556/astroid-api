@@ -149,6 +149,14 @@ are rejected:
 | `AUDIT_ARCHIVE_MAX_BATCHES` | `20` | Maximum batches per archival run. |
 | `AUDIT_RETENTION_DAYS` | `90` | Hard-delete retention for audit records. |
 
+### Transaction idempotency
+
+| Variable | Default | Description |
+| -------- | ------- | ----------- |
+| `IDEMPOTENCY_KEY_TTL_HOURS` | `24` | How long a completed `Idempotency-Key` record stays replayable; after this window the key is ignored and a fresh submission is processed. |
+| `IDEMPOTENCY_WAIT_TIMEOUT_MS` | `5000` | How long a duplicate request waits for the in-flight original to finish before returning `409`. `0` returns the conflict immediately. |
+| `IDEMPOTENCY_POLL_INTERVAL_MS` | `100` | Poll interval used while waiting for the in-flight original. |
+
 ### Storage (S3-compatible)
 
 | Variable             | Default                 | Description              |
