@@ -6,6 +6,7 @@ import {
   ApiBody,
 } from '@nestjs/swagger';
 import { ApiErrorResponses } from '../../common/decorators/api-error-responses.decorator';
+import { SensitiveRateLimit } from '../../common/decorators/sensitive-rate-limit.decorator';
 import { ApiEnvelope } from '../../common/decorators/api-envelope.decorator';
 import { Request } from 'express';
 import { AuthService } from './auth.service';
@@ -69,6 +70,7 @@ export class AuthController {
   @Public()
   @Post('login')
   @ThrottleTierDecorator('auth')
+  @SensitiveRateLimit('login')
   @ApiOperation({
     summary: 'Authenticate with email and password',
     description: 'Validates credentials and returns a JWT access/refresh token pair.',
@@ -80,6 +82,7 @@ export class AuthController {
     unauthorized: 'Invalid email or password',
     tooManyRequests: true,
     serverError: true,
+    serviceUnavailable: 'Rate limiting is unavailable, so the endpoint refuses requests (fails closed)',
   })
   login(
     @Body(new ZodValidationPipe(loginSchema)) body: LoginInput,
@@ -91,6 +94,7 @@ export class AuthController {
   @Public()
   @Post('refresh')
   @ThrottleTierDecorator('auth')
+  @SensitiveRateLimit('refresh')
   @ApiOperation({
     summary: 'Rotate an access/refresh token pair',
     description:
@@ -103,6 +107,7 @@ export class AuthController {
     unauthorized: 'Invalid or expired refresh token',
     tooManyRequests: true,
     serverError: true,
+    serviceUnavailable: 'Rate limiting is unavailable, so the endpoint refuses requests (fails closed)',
   })
   refresh(@Body(new ZodValidationPipe(refreshSchema)) body: RefreshInput) {
     return this.authService.refresh(body.refreshToken);

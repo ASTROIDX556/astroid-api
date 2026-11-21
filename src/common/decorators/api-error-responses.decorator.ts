@@ -64,6 +64,8 @@ export interface ApiErrorResponsesOptions {
   tooManyRequests?: ApiErrorStatus;
   /** 500 — the request failed because of an unexpected server error. */
   serverError?: ApiErrorStatus;
+  /** 503 — a dependency the endpoint cannot run without is unavailable. */
+  serviceUnavailable?: ApiErrorStatus;
 }
 
 /** Default descriptions of the standard error responses. */
@@ -76,6 +78,7 @@ const ERROR_DESCRIPTIONS: Record<number, string> = {
   422: 'Request rejected by a policy',
   429: 'Rate limit exceeded',
   500: 'Unexpected server error',
+  503: 'Temporarily unavailable',
 };
 
 /** Status code of every documented error, in the order they are emitted. */
@@ -88,6 +91,7 @@ const ERROR_STATUSES: Array<[keyof ApiErrorResponsesOptions, number]> = [
   ['unprocessable', 422],
   ['tooManyRequests', 429],
   ['serverError', 500],
+  ['serviceUnavailable', 503],
 ];
 
 /**

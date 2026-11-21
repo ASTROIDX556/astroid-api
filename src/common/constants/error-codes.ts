@@ -10,6 +10,11 @@ export enum ErrorCode {
   CONFLICT = 'CONFLICT',
   BAD_REQUEST = 'BAD_REQUEST',
   RATE_LIMITED = 'RATE_LIMITED',
+  /**
+   * A credential route cannot check its rate limit (Redis is down), so it
+   * refuses the request rather than run without one.
+   */
+  RATE_LIMIT_UNAVAILABLE = 'RATE_LIMIT_UNAVAILABLE',
   NOT_IMPLEMENTED = 'NOT_IMPLEMENTED',
 
   // Auth / authz
@@ -55,6 +60,7 @@ export const ERROR_STATUS: Record<ErrorCode, number> = {
   [ErrorCode.CONFLICT]: 409,
   [ErrorCode.BAD_REQUEST]: 400,
   [ErrorCode.RATE_LIMITED]: 429,
+  [ErrorCode.RATE_LIMIT_UNAVAILABLE]: 503,
   [ErrorCode.NOT_IMPLEMENTED]: 501,
   [ErrorCode.UNAUTHORIZED]: 401,
   [ErrorCode.FORBIDDEN]: 403,
@@ -96,6 +102,7 @@ export const ERROR_TITLE: Record<ErrorCode, string> = {
   [ErrorCode.CONFLICT]: 'Conflict',
   [ErrorCode.BAD_REQUEST]: 'Bad Request',
   [ErrorCode.RATE_LIMITED]: 'Too Many Requests',
+  [ErrorCode.RATE_LIMIT_UNAVAILABLE]: 'Rate Limiter Unavailable',
   [ErrorCode.NOT_IMPLEMENTED]: 'Not Implemented',
   [ErrorCode.UNAUTHORIZED]: 'Unauthorized',
   [ErrorCode.FORBIDDEN]: 'Forbidden',

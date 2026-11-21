@@ -11,6 +11,55 @@ service.
 | `SlidingWindowThrottlerGuard` | Per acting agent → per API key → per organization → per IP | Transaction submission, agent commands, webhook ingress |
 | `PublicRateLimiterGuard` | Per IP (and API key when present) | Unauthenticated routes |
 | `AgentRateLimiterGuard` | Per agent, with the limit taken from the agent metadata | `POST /agents/:id/execute` |
+| `SensitiveRateLimitGuard` | Per route, then per client IP or per API key / user | Login, refresh, API-key creation, webhook creation and secret rotation |
+
+## Sensitive routes
+
+Credential and webhook-management routes carry a dedicated, per-route budget
+on top of the tier throttlers, declared with `@SensitiveRateLimit(route)`:
+
+```ts
+@Post('login')
+@SensitiveRateLimit('login') // also attaches SensitiveRateLimitGuard
+login() {}
+```
+
+The guard is applied route by route, never globally, so normal agent traffic
+and the health and readiness probes are never counted against it. Each request
+is counted in a Redis sliding window keyed by
+`rate-limit:sensitive:<route>:<caller>`, where the caller is the client IP for
+the routes reached before authentication and the authenticated API key
+(`apikey:<id>`) or user (`user:<id>`) otherwise.
+
+| Route | Key | Default limit | Redis unavailable |
+| --- | --- | --- | --- |
+| `POST /auth/login` | client IP | 5 per 60 s | **fails closed**: 503 `RATE_LIMIT_UNAVAILABLE` |
+| `POST /auth/refresh` | client IP | 30 per 60 s | **fails closed**: 503 `RATE_LIMIT_UNAVAILABLE` |
+| `POST /developer/api-keys` | API key or user | 10 per hour | **fails closed**: 503 `RATE_LIMIT_UNAVAILABLE` |
+| `POST /webhooks` | API key or user | 20 per hour | fails open, logs a warning |
+| `POST /webhooks/:id/rotate-secret` | API key or user | 10 per hour | fails open, logs a warning |
+
+The limits are configurable with the `RATE_LIMIT_<ROUTE>_MAX` and
+`RATE_LIMIT_<ROUTE>_WINDOW_SECONDS` variables (see the table below). The failure
+mode is not configurable: it is fixed per route in
+`src/common/throttler/sensitive-route-policy.ts`. The routes that issue or
+refresh credentials fail closed, because running them without a limit during an
+outage would let an attacker guess passwords or mint keys without bound. The
+webhook routes already require an authenticated organization member and are
+low volume, so an outage of the cache should not block them. "Redis
+unavailable" means the shared client is not `ready` or the check itself fails;
+the guard never waits on a reconnecting client.
+
+An exceeded limit answers **HTTP 429** (`RATE_LIMITED`) with `Retry-After` (the
+seconds until the oldest counted request leaves the window), the
+`X-RateLimit-Limit`, `X-RateLimit-Remaining` and `X-RateLimit-Reset` headers and
+the standard problem-details body, whose `details` carry `limit`,
+`windowSeconds` and `retryAfterSeconds`. Rejected requests are not counted, so a
+client that keeps retrying regains capacity as soon as its oldest request ages
+out.
+
+API keys have no regeneration route today: a key is revoked and a new one is
+created, so the `POST /developer/api-keys` limit also bounds key replacement.
 
 ## Sliding window limiter
 
@@ -102,6 +151,11 @@ exhaust the budget of another.
 | `THROTTLE_TTL` | `60` | Window of the tier throttlers. |
 | `PUBLIC_RATE_LIMIT_MAX_REQUESTS` | `60` | Limit of the public IP limiter. |
 | `PUBLIC_RATE_LIMIT_WINDOW_SECONDS` | `60` | Window of the public IP limiter. |
+| `RATE_LIMIT_LOGIN_MAX` / `RATE_LIMIT_LOGIN_WINDOW_SECONDS` | `5` / `60` | Login limit per client IP. |
+| `RATE_LIMIT_REFRESH_MAX` / `RATE_LIMIT_REFRESH_WINDOW_SECONDS` | `30` / `60` | Token refresh limit per client IP. |
+| `RATE_LIMIT_API_KEY_CREATE_MAX` / `RATE_LIMIT_API_KEY_CREATE_WINDOW_SECONDS` | `10` / `3600` | API-key creation limit per API key or user. |
+| `RATE_LIMIT_WEBHOOK_CREATE_MAX` / `RATE_LIMIT_WEBHOOK_CREATE_WINDOW_SECONDS` | `20` / `3600` | Webhook creation limit per API key or user. |
+| `RATE_LIMIT_WEBHOOK_ROTATE_MAX` / `RATE_LIMIT_WEBHOOK_ROTATE_WINDOW_SECONDS` | `10` / `3600` | Webhook secret rotation limit per API key or user. |
 
 The limit of a single agent can be lowered further with the `rateLimit` entry
 of its metadata (`{ "rateLimit": 5 }`); `AgentRateLimiterGuard` reads it and
@@ -119,3 +173,9 @@ caches it in Redis for five minutes.
 - `src/common/guards/throttler.guard.spec.ts` — the tier routing, the API key
   scope tier and the rate-limit exhaustion of a scope-derived tier.
 - `src/common/throttler/api-key-scope-tier.spec.ts` — the scope → tier table.
+- `src/common/guards/sensitive-rate-limit.guard.spec.ts` — allowed and blocked
+  requests, the window reset, per-route and per-caller budgets, both Redis
+  failure modes, and which routes carry `@SensitiveRateLimit`.
+- `src/common/guards/sensitive-route-rate-limit.http.spec.ts` — requests past
+  the limit over HTTP (429, `Retry-After`, problem details) and the 503 and
+  fail-open behaviour while Redis is down.

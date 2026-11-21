@@ -17,6 +17,7 @@ import {
   ApiQuery,
 } from '@nestjs/swagger';
 import { ApiErrorResponses } from '../../common/decorators/api-error-responses.decorator';
+import { SensitiveRateLimit } from '../../common/decorators/sensitive-rate-limit.decorator';
 import { ApiEnvelope, ApiPaginatedEnvelope } from '../../common/decorators/api-envelope.decorator';
 import { UserRole } from '@prisma/client';
 import { WebhookService } from './webhook.service';
@@ -63,6 +64,7 @@ export class WebhookController {
 
   @Post()
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.DEVELOPER)
+  @SensitiveRateLimit('webhookCreate')
   @AuditAction('WEBHOOK_CREATED')
   @ApiOperation({
     summary: 'Create a webhook',
@@ -80,6 +82,7 @@ export class WebhookController {
     unauthorized: true,
     forbidden: true,
     unprocessable: 'Invalid URL or event types',
+    tooManyRequests: true,
     serverError: true,
   })
   create(
@@ -134,6 +137,7 @@ export class WebhookController {
 
   @Post(':id/rotate-secret')
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.DEVELOPER)
+  @SensitiveRateLimit('webhookRotateSecret')
   @AuditAction('WEBHOOK_SECRET_ROTATED')
   @ApiOperation({
     summary: 'Rotate the signing secret (returned once)',
@@ -147,6 +151,7 @@ export class WebhookController {
     unauthorized: true,
     forbidden: true,
     notFound: true,
+    tooManyRequests: true,
     serverError: true,
   })
   rotate(@CurrentUser('organizationId') organizationId: string, @Param('id') id: string) {

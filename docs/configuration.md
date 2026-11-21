@@ -231,6 +231,16 @@ deliveries of a failing endpoint instead of hammering it.
 | `PUBLIC_RATE_LIMIT_WINDOW_SECONDS` | `60` | Sliding-window size for the public-route rate limiter. |
 | `PUBLIC_RATE_LIMIT_TRUST_PROXY` | `false` | Reads client IP from `X-Forwarded-For`. Only enable behind a trusted reverse proxy. |
 | `PUBLIC_RATE_LIMIT_CLIENT_IDENTIFIERS` | _(empty)_ | Comma-separated client identifiers to add to the IP bucket, currently `apiKey`. |
+| `RATE_LIMIT_LOGIN_MAX` | `5` | `POST /auth/login` requests per client IP per window. |
+| `RATE_LIMIT_LOGIN_WINDOW_SECONDS` | `60` | Window of the login limit. |
+| `RATE_LIMIT_REFRESH_MAX` | `30` | `POST /auth/refresh` requests per client IP per window. |
+| `RATE_LIMIT_REFRESH_WINDOW_SECONDS` | `60` | Window of the refresh limit. |
+| `RATE_LIMIT_API_KEY_CREATE_MAX` | `10` | `POST /developer/api-keys` requests per API key or user per window. |
+| `RATE_LIMIT_API_KEY_CREATE_WINDOW_SECONDS` | `3600` | Window of the API-key creation limit. |
+| `RATE_LIMIT_WEBHOOK_CREATE_MAX` | `20` | `POST /webhooks` requests per API key or user per window. |
+| `RATE_LIMIT_WEBHOOK_CREATE_WINDOW_SECONDS` | `3600` | Window of the webhook creation limit. |
+| `RATE_LIMIT_WEBHOOK_ROTATE_MAX` | `10` | `POST /webhooks/:id/rotate-secret` requests per API key or user per window. |
+| `RATE_LIMIT_WEBHOOK_ROTATE_WINDOW_SECONDS` | `3600` | Window of the webhook secret rotation limit. |
 
 ### Metrics
 

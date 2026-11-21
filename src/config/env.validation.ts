@@ -198,6 +198,19 @@ export const rateLimitEnvSchema = z.object({
     .enum(['true', 'false'])
     .default('false')
     .transform((value) => value === 'true'),
+  // Per-route limits of the sensitive-route limiter (`@SensitiveRateLimit`). Each
+  // pair is requests allowed per sliding window of that many seconds, counted per
+  // route and per caller (the client IP before login, the principal after it).
+  RATE_LIMIT_LOGIN_MAX: z.coerce.number().int().positive().default(5),
+  RATE_LIMIT_LOGIN_WINDOW_SECONDS: z.coerce.number().int().positive().default(60),
+  RATE_LIMIT_REFRESH_MAX: z.coerce.number().int().positive().default(30),
+  RATE_LIMIT_REFRESH_WINDOW_SECONDS: z.coerce.number().int().positive().default(60),
+  RATE_LIMIT_API_KEY_CREATE_MAX: z.coerce.number().int().positive().default(10),
+  RATE_LIMIT_API_KEY_CREATE_WINDOW_SECONDS: z.coerce.number().int().positive().default(3600),
+  RATE_LIMIT_WEBHOOK_CREATE_MAX: z.coerce.number().int().positive().default(20),
+  RATE_LIMIT_WEBHOOK_CREATE_WINDOW_SECONDS: z.coerce.number().int().positive().default(3600),
+  RATE_LIMIT_WEBHOOK_ROTATE_MAX: z.coerce.number().int().positive().default(10),
+  RATE_LIMIT_WEBHOOK_ROTATE_WINDOW_SECONDS: z.coerce.number().int().positive().default(3600),
 });
 
 export const metricsEnvSchema = z.object({
