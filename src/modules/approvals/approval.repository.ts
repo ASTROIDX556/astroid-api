@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { Approval, Prisma, Proposal } from '@prisma/client';
+import { Approval, Prisma, Proposal, ProposalStatus } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { PrismaPagination } from '../../common/helpers/pagination';
 
@@ -42,5 +42,48 @@ export class ApprovalRepository {
 
   updateProposalStatus(id: string, data: Prisma.ProposalUpdateInput): Promise<Proposal> {
     return this.prisma.proposal.update({ where: { id }, data });
+  }
+
+  /**
+   * Pending proposals whose `expiresAt` has already passed, oldest first.
+   * Used by the sweeper that moves stale approvals to their terminal state.
+   */
+  findExpiring(now: Date, limit: number): Promise<Proposal[]> {
+    return this.prisma.proposal.findMany({
+      where: { status: ProposalStatus.PENDING, expiresAt: { lte: now } },
+      orderBy: { expiresAt: 'asc' },
+      take: limit,
+    });
+  }
+
+  /**
+   * Conditional `PENDING -> EXPIRED` transition. The `status` predicate makes
+   * the write race safe: a proposal approved (or rejected) concurrently no
+   * longer matches, so it is never both approved and expired.
+   *
+   * @returns the number of rows changed — 1 when this call won the race, 0 when
+   * another writer already moved the proposal out of `PENDING`.
+   */
+  async expireIfPending(id: string): Promise<number> {
+    const result = await this.prisma.proposal.updateMany({
+      where: { id, status: ProposalStatus.PENDING },
+      data: { status: ProposalStatus.EXPIRED },
+    });
+    return result.count;
+  }
+
+  /**
+   * Conditional transition out of `PENDING` for the decision path, so a
+   * decision that loses a race against the sweeper cannot re-open a terminal
+   * proposal.
+   *
+   * @returns the number of rows changed (1 when the caller won, 0 otherwise).
+   */
+  async transitionFromPending(id: string, status: ProposalStatus): Promise<number> {
+    const result = await this.prisma.proposal.updateMany({
+      where: { id, status: ProposalStatus.PENDING },
+      data: { status },
+    });
+    return result.count;
   }
 }

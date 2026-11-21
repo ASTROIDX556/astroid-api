@@ -56,6 +56,16 @@ export const redisEnvSchema = z.object({
   REDIS_DB: z.coerce.number().int().nonnegative().default(0),
 });
 
+export const balanceCacheEnvSchema = z.object({
+  // Seconds a cached Stellar balance may be served before it is re-read from
+  // the RPC. Keep it short: a confirmed transaction deletes the key, so the TTL
+  // only bounds the staleness window when an invalidation is missed.
+  BALANCE_CACHE_TTL: z.coerce.number().int().min(1).max(3600).default(30),
+  // Namespace of the cache entries. Two deployments (staging, production, …)
+  // that share a Redis instance never share a balance entry.
+  BALANCE_CACHE_ENV: z.string().min(1).default(process.env.NODE_ENV ?? 'development'),
+});
+
 export const authEnvSchema = z.object({
   JWT_ACCESS_SECRET: z.string().min(16, 'JWT_ACCESS_SECRET must be >= 16 chars'),
   JWT_REFRESH_SECRET: z.string().min(16, 'JWT_REFRESH_SECRET must be >= 16 chars'),

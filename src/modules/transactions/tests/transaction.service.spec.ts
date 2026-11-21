@@ -95,7 +95,7 @@ describe('TransactionService', () => {
         {} as BudgetService,
         stellarService as unknown as StellarService,
         eventBus as unknown as EventBusService,
-        {} as PrismaService,
+        { proposal: { findUnique: vi.fn().mockResolvedValue(null) } } as unknown as PrismaService,
         {
           aggregateSpend: vi.fn().mockResolvedValue({
             spentToday: 0,
@@ -300,7 +300,10 @@ describe('TransactionService - create', () => {
           },
         },
         { provide: EventBusService, useValue: { emit: vi.fn().mockResolvedValue(undefined) } },
-        { provide: PrismaService, useValue: {} },
+        {
+          provide: PrismaService,
+          useValue: { proposal: { findUnique: vi.fn().mockResolvedValue(null) } },
+        },
         { provide: PrismaTransactionService, useValue: passthroughTxService },
         {
           provide: SpendingLimitService,
@@ -565,7 +568,10 @@ describe('TransactionService - create', () => {
         { provide: BudgetService, useValue: { assertWithinBudget: vi.fn(), consume: vi.fn() } },
         { provide: StellarService, useValue: { submitPayment: vi.fn() } },
         { provide: EventBusService, useValue: { emit: vi.fn().mockResolvedValue(undefined) } },
-        { provide: PrismaService, useValue: {} },
+        {
+          provide: PrismaService,
+          useValue: { proposal: { findUnique: vi.fn().mockResolvedValue(null) } },
+        },
         { provide: PrismaTransactionService, useValue: passthroughTxService },
         {
           provide: SpendingLimitService,

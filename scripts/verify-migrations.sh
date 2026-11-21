@@ -640,7 +640,13 @@ if [ -f "$SCHEMA_PATH" ] && [ -d "$MIGRATIONS_DIR" ]; then
     in_model && /^[[:space:]]*\}[[:space:]]*$/ { emit_model(); model = ""; table = ""; field_count = 0; in_model = 0; next }
     in_enum && /^[[:space:]]*\}[[:space:]]*$/ { emit_enum(); enum_name = ""; in_enum = 0; next }
     in_model && /^[[:space:]]*@@map[[:space:]]*\(/ {
-      if (match($0, /@@map[[:space:]]*\([[:space:]]*"([^"]+)"/, m)) table = m[1]
+      # POSIX awk (mawk) has no three-argument match(), so extract the quoted
+      # name with substr() and strip the surrounding punctuation manually.
+      if (match($0, /@@map[[:space:]]*\([[:space:]]*"[^"]+"/)) {
+        table = substr($0, RSTART, RLENGTH)
+        sub(/^[^"]*"/, "", table)
+        sub(/"$/, "", table)
+      }
       next
     }
     in_model && /^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*[[:space:]]+[A-Za-z_][A-Za-z0-9_]*(\?|\[\])?/ {

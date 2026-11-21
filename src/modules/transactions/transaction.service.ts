@@ -5,6 +5,7 @@ import {
   Agent,
   AgentStatus,
   Prisma,
+  ProposalStatus,
   RiskBand,
   Transaction,
   TransactionStatus,
@@ -364,6 +365,26 @@ export class TransactionService {
     if (EXECUTED_STATUSES.includes(tx.status)) {
       throw new ConflictException(`Transaction '${transactionId}' has already been executed`);
     }
+
+    // An approval-gated transaction is only executable while its proposal is
+    // APPROVED. Checking the proposal *status* — not merely the existence of an
+    // approval record — keeps an EXPIRED (or otherwise terminal) proposal from
+    // being submitted by a stale or racing caller. ApprovalService moves the
+    // proposal to APPROVED before calling execute(); auto-executable
+    // transactions have no proposal at all.
+    const proposal = await this.prisma.proposal.findUnique({
+      where: { transactionId },
+      select: { id: true, status: true },
+    });
+    if (proposal && proposal.status !== ProposalStatus.APPROVED) {
+      throw new DomainException(
+        proposal.status === ProposalStatus.EXPIRED
+          ? ErrorCode.PROPOSAL_EXPIRED
+          : ErrorCode.PROPOSAL_NOT_PENDING,
+        `Transaction '${transactionId}' cannot be executed while its approval proposal is '${proposal.status}'`,
+      );
+    }
+
     const wallet = await this.wallets.getOrThrow(organizationId, tx.walletId);
     this.assertWalletSpendable(wallet);
 
