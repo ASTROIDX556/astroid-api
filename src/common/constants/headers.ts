@@ -9,5 +9,7 @@ export const WEBHOOK_DELIVERY_HEADER = 'x-astroid-delivery';
 export const WEBHOOK_EVENT_HEADER = 'x-astroid-event';
 export const WEBHOOK_SIGNATURE_VERSION_HEADER = 'x-astroid-signature-version';
 export const IDEMPOTENCY_KEY_HEADER = 'idempotency-key';
+/** Set to `true` when a response was replayed from an idempotency record. */
+export const IDEMPOTENCY_REPLAYED_HEADER = 'idempotency-replayed';
 /** Total number of rows matching a list request, set on every paginated response. */
 export const TOTAL_COUNT_HEADER = 'x-total-count';

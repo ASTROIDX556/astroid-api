@@ -19,6 +19,9 @@ import { Queues } from '../../queues/queues.constants';
 import { createQueueRegistrationOptions } from '../../queues/queue-policy';
 import { TransactionWorker } from './workers/transaction.worker';
 import { TransactionIdempotencyCleanupService } from './transaction-idempotency-cleanup.service';
+import { TransactionIdempotencyStore } from './idempotency/transaction-idempotency.store';
+import { IdempotencyInterceptor } from '../../common/interceptors/idempotency.interceptor';
+import { IDEMPOTENCY_STORE } from '../../common/interceptors/idempotency-store';
 
 /**
  * Transaction pipeline module. Pulls together wallets, agents, policies, risk
@@ -56,6 +59,9 @@ import { TransactionIdempotencyCleanupService } from './transaction-idempotency-
     SpendingLimitGuard,
     TransactionWorker,
     TransactionIdempotencyCleanupService,
+    TransactionIdempotencyStore,
+    IdempotencyInterceptor,
+    { provide: IDEMPOTENCY_STORE, useExisting: TransactionIdempotencyStore },
   ],
   exports: [TransactionService, SorobanSimulationService, StellarSimulationService, GasEstimationService, SpendingLimitService],
 })

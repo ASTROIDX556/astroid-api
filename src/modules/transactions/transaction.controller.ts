@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Headers, Param, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Query, UseGuards, UseInterceptors } from '@nestjs/common';
 import {
   ApiOperation,
   ApiTags,
@@ -20,7 +20,6 @@ import {
   TransactionSubmissionDto,
   simulateTransactionSchema,
   SimulateTransactionInput,
-  parseIdempotencyKey,
 } from './transaction.dto';
 import { SpendingLimitGuard, RequireSpendingLimitCheck } from './guards/spending-limit.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -35,7 +34,8 @@ import { PaginationQuery, paginationQuerySchema } from '../../common/helpers/pag
 import { ApiPaginationQuery } from '../../common/decorators/api-pagination-query.decorator';
 import { ApiEnvelope, ApiPaginatedEnvelope } from '../../common/decorators/api-envelope.decorator';
 import { ApiErrorResponses } from '../../common/decorators/api-error-responses.decorator';
-import { IDEMPOTENCY_KEY_HEADER } from '../../common/constants/headers';
+import { Idempotent } from '../../common/decorators/idempotent.decorator';
+import { IdempotencyInterceptor } from '../../common/interceptors/idempotency.interceptor';
 import {
   SlidingWindowThrottlerGuard,
   SlidingWindowLimit,
@@ -76,6 +76,8 @@ export class TransactionController {
   @RequireSpendingLimitCheck()
   @UseWalletLock()
   @UseTransactionLock({ attempts: 3, retryDelayMs: 50 })
+  @UseInterceptors(IdempotencyInterceptor)
+  @Idempotent()
   @AuditAction('TRANSFER_FUNDS')
   @ApiOperation({
     summary: 'Create a transaction (runs the full governance pipeline)',
@@ -88,15 +90,19 @@ export class TransactionController {
   @ApiBody({ type: CreateTransactionDto })
   @ApiHeader({
     name: 'Idempotency-Key',
-    required: false,
-    description: 'Optional key for replay-safe transaction submission (1-128 allowed ASCII characters).',
+    required: true,
+    description:
+      'Required key for replay-safe transaction submission (1-128 allowed ASCII characters). ' +
+      'Repeating the same key with the same body replays the original response with ' +
+      '`Idempotency-Replayed: true`; reusing it with a different body answers 409 without ' +
+      'creating another transaction.',
   })
   @ApiEnvelope(TransactionSubmissionDto, {
     status: 201,
     description: 'Transaction created (may require approval)',
   })
   @ApiErrorResponses({
-    validation: 'Validation error',
+    validation: 'Validation error, or a missing/malformed Idempotency-Key header',
     unauthorized: true,
     forbidden: true,
     conflict: 'Insufficient budget, risk threshold exceeded, or the idempotency key is in use',
@@ -107,16 +113,9 @@ export class TransactionController {
   create(
     @CurrentUser() user: AuthenticatedUser,
     @Body(new ZodValidationPipe(createTransactionSchema)) body: CreateTransactionInput,
-    @Headers(IDEMPOTENCY_KEY_HEADER) rawIdempotencyKey?: string,
   ) {
     const actorId = user.isApiKey ? user.createdById ?? user.id : user.id;
-    const key = parseIdempotencyKey(rawIdempotencyKey);
-    return this.transactionService.create(
-      user.organizationId,
-      actorId,
-      body,
-      key ? { principalId: user.id, key } : undefined,
-    );
+    return this.transactionService.create(user.organizationId, actorId, body);
   }
 
   @Post('simulate')

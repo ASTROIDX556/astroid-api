@@ -639,8 +639,13 @@ if [ -f "$SCHEMA_PATH" ] && [ -d "$MIGRATIONS_DIR" ]; then
     }
     in_model && /^[[:space:]]*\}[[:space:]]*$/ { emit_model(); model = ""; table = ""; field_count = 0; in_model = 0; next }
     in_enum && /^[[:space:]]*\}[[:space:]]*$/ { emit_enum(); enum_name = ""; in_enum = 0; next }
-    in_model && /^[[:space:]]*@@map[[:space:]]*\(/ {
-      if (match($0, /@@map[[:space:]]*\([[:space:]]*"([^"]+)"/, m)) table = m[1]
+    in_model && /^[[:space:]]*@@map[[:space:]]*\([[:space:]]*"/ {
+      # Extract the quoted table name without the gawk-only match(..., m)
+      # extension, which mawk (the default awk on several images) rejects.
+      mapped = $0
+      sub(/^[^"]*"/, "", mapped)
+      sub(/".*$/, "", mapped)
+      table = mapped
       next
     }
     in_model && /^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*[[:space:]]+[A-Za-z_][A-Za-z0-9_]*(\?|\[\])?/ {
