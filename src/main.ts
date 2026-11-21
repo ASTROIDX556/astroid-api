@@ -1,5 +1,5 @@
 import { NestFactory } from '@nestjs/core';
-import { RequestMethod, ValidationPipe } from '@nestjs/common';
+import { ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { Logger as PinoLogger } from 'nestjs-pino';
@@ -9,6 +9,7 @@ import { AppModule } from './app.module';
 import { ShutdownCoordinator } from './common/shutdown/shutdown-coordinator.service';
 import { AppConfig } from './config/app.config';
 import { TOTAL_COUNT_HEADER } from './common/constants/headers';
+import { GLOBAL_PREFIX_EXCLUDED_ROUTES } from './common/constants/global-prefix';
 import { assertValidEnvironment, EnvironmentValidationError } from './config/env.validation';
 import { PrismaService } from './database/prisma.service';
 
@@ -89,17 +90,9 @@ async function bootstrap() {
 
   // API prefix (e.g. api/v1). Versioning is expressed via this stable prefix
   // rather than Nest URI versioning to avoid a duplicated version segment.
-  // `/metrics` is excluded so it stays at a fixed, unversioned path for
-  // Prometheus scrape configs. The liveness/readiness probes are excluded for
-  // the same reason: orchestrator and load-balancer probe paths must not change
-  // when the API version does.
-  app.setGlobalPrefix(appConfig.apiPrefix, {
-    exclude: [
-      { path: 'metrics', method: RequestMethod.GET },
-      { path: 'health/live', method: RequestMethod.GET },
-      { path: 'health/ready', method: RequestMethod.GET },
-    ],
-  });
+  // `/metrics` and the liveness/readiness probes stay at fixed, unversioned
+  // paths; the list is shared with the OpenAPI check (see global-prefix.ts).
+  app.setGlobalPrefix(appConfig.apiPrefix, { exclude: GLOBAL_PREFIX_EXCLUDED_ROUTES });
 
   // OpenAPI / Swagger documentation
   if (appConfig.nodeEnv !== 'production') {

@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { Controller, Get, INestApplication, RequestMethod } from '@nestjs/common';
+import { Controller, Get, INestApplication } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
 import { ConfigService } from '@nestjs/config';
 import { Test } from '@nestjs/testing';
@@ -8,6 +8,7 @@ import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { PublicRateLimitGuard } from '../../common/guards/public-rate-limit.guard';
 import { Public } from '../../common/decorators/public.decorator';
 import { REDIS_CLIENT } from '../../common/locks/locks.constants';
+import { GLOBAL_PREFIX_EXCLUDED_ROUTES } from '../../common/constants/global-prefix';
 import { HealthController } from './health.controller';
 import { PrismaHealthIndicator } from './indicators/prisma.health';
 import { RedisHealthIndicator } from './indicators/redis.health';
@@ -77,12 +78,7 @@ describe('Health probes over HTTP', () => {
     }).compile();
 
     app = moduleRef.createNestApplication({ logger: false });
-    app.setGlobalPrefix('api/v1', {
-      exclude: [
-        { path: 'health/live', method: RequestMethod.GET },
-        { path: 'health/ready', method: RequestMethod.GET },
-      ],
-    });
+    app.setGlobalPrefix('api/v1', { exclude: GLOBAL_PREFIX_EXCLUDED_ROUTES });
     await app.listen(0, '127.0.0.1');
     const { port } = app.getHttpServer().address() as AddressInfo;
     baseUrl = `http://127.0.0.1:${port}`;
