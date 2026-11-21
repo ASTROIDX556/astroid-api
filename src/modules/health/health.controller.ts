@@ -1,15 +1,37 @@
-import { Controller, Get, Res, HttpStatus } from '@nestjs/common';
-import { ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
+import { Controller, Get, Req, Res, HttpStatus } from '@nestjs/common';
+import { ApiExtraModels, ApiOperation, ApiResponse, ApiTags, getSchemaPath } from '@nestjs/swagger';
 import { HealthIndicatorResult } from '@nestjs/terminus';
 import { SkipThrottle } from '@nestjs/throttler';
-import { Response } from 'express';
+import { Request, Response } from 'express';
 import { Public } from '../../common/decorators/public.decorator';
 import { SkipAudit } from '../../common/decorators/skip-audit.decorator';
+import { SkipPublicRateLimit } from '../../common/decorators/skip-public-rate-limit.decorator';
+import { ApiEnvelope, ApiEnvelopeDto } from '../../common/decorators/api-envelope.decorator';
+import { REQUEST_ID_HEADER } from '../../common/constants/headers';
+import { ApiMeta } from '../../common/interfaces/api-response.interface';
 import { PrismaHealthIndicator } from './indicators/prisma.health';
 import { RedisHealthIndicator } from './indicators/redis.health';
 import { StellarHealthIndicator } from './indicators/stellar.health';
 import { DatabaseMigrationHealthIndicator } from './indicators/database-migration.health';
-import { HealthStatusDto, StellarHealthDto } from './health.dto';
+import {
+  DependencyProbeDto,
+  HealthStatusDto,
+  LivenessDto,
+  ReadinessDto,
+  StellarHealthDto,
+} from './health.dto';
+
+/**
+ * Body of the orchestrator probes: the standard `{ success, data, meta, requestId }`
+ * envelope. The readiness probe answers 503 with `success: false` and the same
+ * `data`, so a client reads one shape whatever the outcome.
+ */
+interface ProbeEnvelope<T> {
+  success: boolean;
+  data: T;
+  meta: ApiMeta;
+  requestId: string;
+}
 
 /** Per-dependency report shape returned under `services` in the readiness body. */
 interface ReadinessServiceReport {
@@ -21,8 +43,10 @@ interface ReadinessServiceReport {
 /**
  * Health and probe endpoints. Public (orchestrators and load balancers carry no
  * credentials), excluded from rate limiting so frequent probes can never be
- * answered with a 429, and excluded from the audit trail so probes do not write
- * a row per request — or attempt to while the database is down.
+ * answered with a 429 (both the tier throttlers and the per-IP public limiter,
+ * which would otherwise apply to every `@Public()` route), and excluded from the
+ * audit trail so probes do not write a row per request — or attempt to while the
+ * database is down.
  *
  * `GET /health/live` and `GET /health/ready` are the orchestrator probes and are
  * served outside the global API prefix (see `main.ts`); the remaining routes are
@@ -32,7 +56,9 @@ interface ReadinessServiceReport {
 @Controller('health')
 @Public()
 @SkipAudit()
+@SkipPublicRateLimit()
 @SkipThrottle({ api: true, auth: true })
+@ApiExtraModels(ApiEnvelopeDto, ReadinessDto, DependencyProbeDto)
 export class HealthController {
   constructor(
     private readonly dbIndicator: PrismaHealthIndicator,
@@ -49,48 +75,59 @@ export class HealthController {
       'dependency checks, so a downstream outage never causes the orchestrator to restart ' +
       'an otherwise healthy process.',
   })
-  @ApiResponse({ status: 200, description: 'Process is alive', type: HealthStatusDto })
-  live(@Res() res: Response) {
-    return res.status(HttpStatus.OK).json({
+  @ApiEnvelope(LivenessDto, { description: 'Process is alive' })
+  live(@Req() req: Request, @Res() res: Response) {
+    const data: LivenessDto = {
       status: 'up',
       timestamp: new Date().toISOString(),
       uptimeSeconds: Math.floor(process.uptime()),
-    });
+    };
+    return sendProbe(req, res, HttpStatus.OK, data);
   }
 
   @Get('ready')
   @ApiOperation({
     summary: 'Readiness probe',
     description:
-      'Probes the critical dependencies (database and cache) in parallel. Returns 200 when ' +
-      'every dependency is up and 503 when any is down, with per-dependency status, latency ' +
-      'and error detail under `services`.',
+      'Probes the critical dependencies (database and cache) in parallel, each bounded by a ' +
+      'timeout. Returns 200 when every dependency is up and 503 when any is down, with ' +
+      'per-dependency status and latency under `data.services`. A failure is reported as ' +
+      '`timeout` or `unavailable` only; driver messages stay in the server log.',
   })
-  @ApiResponse({ status: 200, description: 'All critical dependencies are reachable', type: HealthStatusDto })
+  @ApiEnvelope(ReadinessDto, { description: 'All critical dependencies are reachable' })
   @ApiResponse({
     status: 503,
-    description: 'At least one critical dependency is unreachable',
-    type: HealthStatusDto,
+    description: 'At least one critical dependency is unreachable (`success` is false)',
+    schema: {
+      allOf: [
+        { $ref: getSchemaPath(ApiEnvelopeDto) },
+        {
+          properties: {
+            success: { type: 'boolean', example: false },
+            data: { $ref: getSchemaPath(ReadinessDto) },
+          },
+        },
+      ],
+    },
   })
-  async ready(@Res() res: Response) {
+  async ready(@Req() req: Request, @Res() res: Response) {
     const [database, cache] = await Promise.all([
       this.dbIndicator.check('database'),
       this.redisIndicator.checkHealth(),
     ]);
 
     const services = {
-      database: unwrap(database, 'database'),
-      cache,
+      database: toProbe(unwrap(database, 'database')),
+      cache: toProbe(cache),
     };
 
     const isReady = Object.values(services).every((s) => s.status === 'up');
-    const statusCode = isReady ? HttpStatus.OK : HttpStatus.SERVICE_UNAVAILABLE;
-
-    return res.status(statusCode).json({
+    const data: ReadinessDto = {
       status: isReady ? 'up' : 'down',
       timestamp: new Date().toISOString(),
       services,
-    });
+    };
+    return sendProbe(req, res, isReady ? HttpStatus.OK : HttpStatus.SERVICE_UNAVAILABLE, data);
   }
 
   @Get('liveness')
@@ -103,7 +140,10 @@ export class HealthController {
     };
   }
 
-  @Get(['ready', 'readiness'])
+  // Served only as `readiness`: `GET /health/ready` is the orchestrator probe above,
+  // and registering `ready` here as well put a second, unreachable handler on that
+  // route whose richer schema the OpenAPI document then showed in its place.
+  @Get('readiness')
   @ApiOperation({ summary: 'Application readiness check' })
   @ApiResponse({ status: 200, description: 'Application is ready', type: HealthStatusDto })
   @ApiResponse({
@@ -236,5 +276,45 @@ function unwrap(result: HealthIndicatorResult, key: string): ReadinessServiceRep
     status: entry.status,
     timestamp: entry.timestamp ?? new Date().toISOString(),
     ...(message ?? error ? { error: message ?? error } : {}),
+  };
+}
+
+/**
+ * Writes a probe answer in the standard envelope. The probes reply through `@Res()`
+ * because readiness must set 503 itself, which also bypasses the global
+ * `ResponseInterceptor`; the envelope is built here with the same request id
+ * resolution that interceptor uses.
+ */
+function sendProbe<T>(req: Request, res: Response, status: HttpStatus, data: T) {
+  const header = req.headers?.[REQUEST_ID_HEADER];
+  const body: ProbeEnvelope<T> = {
+    success: status < HttpStatus.BAD_REQUEST,
+    data,
+    meta: {},
+    requestId: (Array.isArray(header) ? header[0] : header) ?? 'unknown',
+  };
+  return res.status(status).json(body);
+}
+
+/** Matches the messages both indicators produce when their timeout fires. */
+const TIMEOUT_MESSAGE = /timed out/i;
+
+/**
+ * Reduces a dependency report to what a public probe may show: status, latency,
+ * time and a coarse reason. The indicators already log the full failure detail.
+ */
+function toProbe(report: {
+  status: string;
+  timestamp?: string;
+  latencyMs?: unknown;
+  error?: unknown;
+}): DependencyProbeDto {
+  const up = report.status === 'up';
+  const reason = TIMEOUT_MESSAGE.test(String(report.error ?? '')) ? 'timeout' : 'unavailable';
+  return {
+    status: up ? 'up' : 'down',
+    latencyMs: typeof report.latencyMs === 'number' ? report.latencyMs : 0,
+    timestamp: report.timestamp ?? new Date().toISOString(),
+    ...(up ? {} : { error: reason }),
   };
 }

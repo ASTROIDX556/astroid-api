@@ -1,6 +1,10 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PATH_METADATA } from '@nestjs/common/constants';
-import { Response } from 'express';
+import { Request, Response } from 'express';
+import Redis from 'ioredis';
+import { IS_PUBLIC_KEY } from '../../common/decorators/public.decorator';
+import { SKIP_PUBLIC_RATE_LIMIT_KEY } from '../../common/decorators/skip-public-rate-limit.decorator';
+import { PrismaService } from '../../database/prisma.service';
 import { HealthController } from './health.controller';
 import { PrismaHealthIndicator } from './indicators/prisma.health';
 import { RedisHealthIndicator } from './indicators/redis.health';
@@ -14,6 +18,7 @@ describe('HealthController', () => {
   let stellarHealth: { checkHealth: ReturnType<typeof vi.fn> };
   let migrationHealth: { isEnabled: boolean; checkHealth: ReturnType<typeof vi.fn> };
   let res: Partial<Response>;
+  const req = { headers: { 'x-request-id': 'req-health-1' } } as Partial<Request>;
 
   /** Builds the Terminus result map the Prisma indicator returns. */
   const terminus = (overrides: Record<string, unknown> = {}) => ({
@@ -70,17 +75,20 @@ describe('HealthController', () => {
   });
 
   describe('GET /health/live', () => {
-    it('returns 200 with process uptime without probing any dependency', () => {
-      controller.live(res as Response);
+    it('returns 200 in the standard envelope without probing any dependency', () => {
+      controller.live(req as Request, res as Response);
 
       expect(res.status).toHaveBeenCalledWith(200);
-      expect(res.json).toHaveBeenCalledWith(
-        expect.objectContaining({
+      expect(res.json).toHaveBeenCalledWith({
+        success: true,
+        data: {
           status: 'up',
           timestamp: expect.any(String),
           uptimeSeconds: expect.any(Number),
-        }),
-      );
+        },
+        meta: {},
+        requestId: 'req-health-1',
+      });
       expect(dbHealth.check).not.toHaveBeenCalled();
       expect(redisHealth.checkHealth).not.toHaveBeenCalled();
     });
@@ -88,50 +96,92 @@ describe('HealthController', () => {
     it('stays 200 during a database outage', () => {
       dbHealth.check.mockRejectedValue(new Error('ECONNREFUSED'));
 
-      controller.live(res as Response);
+      controller.live(req as Request, res as Response);
 
       expect(res.status).toHaveBeenCalledWith(200);
+    });
+
+    it('falls back to `unknown` when the request carries no request id', () => {
+      controller.live({ headers: {} } as Request, res as Response);
+
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ requestId: 'unknown' }));
     });
   });
 
   describe('GET /health/ready', () => {
-    it('returns 200 with per-dependency status when database and cache are up', async () => {
-      await controller.ready(res as Response);
+    const body = () => (res.json as ReturnType<typeof vi.fn>).mock.calls[0][0];
+
+    it('returns 200 with per-dependency status and latency when database and cache are up', async () => {
+      await controller.ready(req as Request, res as Response);
 
       expect(res.status).toHaveBeenCalledWith(200);
       expect(res.json).toHaveBeenCalledWith({
-        status: 'up',
-        timestamp: expect.any(String),
-        services: {
-          database: expect.objectContaining({ status: 'up', latencyMs: 5 }),
-          cache: expect.objectContaining({ status: 'up', latencyMs: 2 }),
+        success: true,
+        data: {
+          status: 'up',
+          timestamp: expect.any(String),
+          services: {
+            database: { status: 'up', latencyMs: 5, timestamp: expect.any(String) },
+            cache: { status: 'up', latencyMs: 2, timestamp: expect.any(String) },
+          },
+        },
+        meta: {},
+        requestId: 'req-health-1',
+      });
+    });
+
+    it('returns 503 with success false during a simulated database outage', async () => {
+      dbHealth.check.mockResolvedValue(
+        terminus({
+          status: 'down',
+          latencyMs: 40,
+          error: 'PrismaClientInitializationError',
+          message: "Can't reach database server at `db.internal:5432`",
+        }),
+      );
+
+      await controller.ready(req as Request, res as Response);
+
+      expect(res.status).toHaveBeenCalledWith(503);
+      expect(body()).toMatchObject({
+        success: false,
+        data: {
+          status: 'down',
+          services: {
+            database: { status: 'down', latencyMs: 40, error: 'unavailable' },
+            cache: { status: 'up' },
+          },
         },
       });
     });
 
-    it('returns 503 during a simulated database outage', async () => {
+    it('returns 503 during a simulated cache outage', async () => {
+      redisHealth.checkHealth.mockResolvedValue({
+        status: 'down',
+        latencyMs: 3,
+        timestamp: new Date().toISOString(),
+        error: 'connect ECONNREFUSED 10.0.4.12:6379',
+      });
+
+      await controller.ready(req as Request, res as Response);
+
+      expect(res.status).toHaveBeenCalledWith(503);
+      expect(body()).toMatchObject({
+        success: false,
+        data: {
+          status: 'down',
+          services: {
+            database: { status: 'up' },
+            cache: { status: 'down', error: 'unavailable' },
+          },
+        },
+      });
+    });
+
+    it('reports a hit timeout as `timeout` for either dependency', async () => {
       dbHealth.check.mockResolvedValue(
         terminus({ status: 'down', error: 'Error', message: 'Database health check timed out after 2000ms' }),
       );
-
-      await controller.ready(res as Response);
-
-      expect(res.status).toHaveBeenCalledWith(503);
-      expect(res.json).toHaveBeenCalledWith(
-        expect.objectContaining({
-          status: 'down',
-          services: {
-            database: expect.objectContaining({
-              status: 'down',
-              error: 'Database health check timed out after 2000ms',
-            }),
-            cache: expect.objectContaining({ status: 'up' }),
-          },
-        }),
-      );
-    });
-
-    it('returns 503 during a simulated cache outage', async () => {
       redisHealth.checkHealth.mockResolvedValue({
         status: 'down',
         latencyMs: 2000,
@@ -139,37 +189,117 @@ describe('HealthController', () => {
         error: 'Redis health check timed out after 2000ms',
       });
 
-      await controller.ready(res as Response);
+      await controller.ready(req as Request, res as Response);
 
       expect(res.status).toHaveBeenCalledWith(503);
-      expect(res.json).toHaveBeenCalledWith(
-        expect.objectContaining({
+      expect(body().data.services).toMatchObject({
+        database: { status: 'down', error: 'timeout' },
+        cache: { status: 'down', error: 'timeout', latencyMs: 2000 },
+      });
+    });
+
+    it('never puts driver messages, hosts or connection strings in the body', async () => {
+      dbHealth.check.mockResolvedValue(
+        terminus({
           status: 'down',
-          services: expect.objectContaining({
-            database: expect.objectContaining({ status: 'up' }),
-            cache: expect.objectContaining({ status: 'down' }),
-          }),
+          error: 'PrismaClientInitializationError',
+          message: 'Authentication failed for postgresql://astroid:s3cret@db.internal:5432/astroid',
         }),
       );
+      redisHealth.checkHealth.mockResolvedValue({
+        status: 'down',
+        latencyMs: 1,
+        timestamp: new Date().toISOString(),
+        error: 'connect ECONNREFUSED 10.0.4.12:6379',
+      });
+
+      await controller.ready(req as Request, res as Response);
+
+      const serialized = JSON.stringify(body());
+      for (const leaked of ['postgresql://', 's3cret', 'db.internal', '10.0.4.12', '6379', 'Prisma']) {
+        expect(serialized).not.toContain(leaked);
+      }
     });
 
     it('returns 503 when the database indicator produces no result', async () => {
       dbHealth.check.mockResolvedValue({});
 
-      await controller.ready(res as Response);
+      await controller.ready(req as Request, res as Response);
 
       expect(res.status).toHaveBeenCalledWith(503);
+      expect(body().data.services.database).toMatchObject({
+        status: 'down',
+        error: 'unavailable',
+      });
     });
 
     it('probes only critical dependencies, so an external Stellar outage cannot fail readiness', async () => {
       stellarHealth.checkHealth.mockResolvedValue({ status: 'down', timestamp: 'now' });
 
-      await controller.ready(res as Response);
+      await controller.ready(req as Request, res as Response);
 
       expect(stellarHealth.checkHealth).not.toHaveBeenCalled();
       expect(migrationHealth.checkHealth).not.toHaveBeenCalled();
       expect(res.status).toHaveBeenCalledWith(200);
     });
+  });
+
+  describe('readiness timeouts with the real indicators', () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('answers 503 once the 2s timeout fires when the database hangs', async () => {
+      vi.useFakeTimers();
+      const hung = new Promise<never>(() => undefined);
+      const prisma = { $queryRaw: vi.fn(() => hung) } as unknown as PrismaService;
+      const redis = { status: 'ready', ping: vi.fn().mockResolvedValue('PONG') } as unknown as Redis;
+      const real = new HealthController(
+        new PrismaHealthIndicator(prisma),
+        new RedisHealthIndicator(redis),
+        stellarHealth as unknown as StellarHealthIndicator,
+        migrationHealth as unknown as DatabaseMigrationHealthIndicator,
+      );
+
+      const pending = real.ready(req as Request, res as Response);
+      await vi.advanceTimersByTimeAsync(PrismaHealthIndicator.DEFAULT_TIMEOUT_MS);
+      await pending;
+
+      expect(res.status).toHaveBeenCalledWith(503);
+      expect(body().data.services).toMatchObject({
+        database: { status: 'down', error: 'timeout' },
+        cache: { status: 'up' },
+      });
+    });
+
+    it('answers 503 once the 2s timeout fires when Redis hangs', async () => {
+      vi.useFakeTimers();
+      const prisma = { $queryRaw: vi.fn().mockResolvedValue([{ '?column?': 1 }]) } as unknown as PrismaService;
+      const redis = {
+        status: 'ready',
+        ping: vi.fn(() => new Promise<never>(() => undefined)),
+      } as unknown as Redis;
+      const real = new HealthController(
+        new PrismaHealthIndicator(prisma),
+        new RedisHealthIndicator(redis),
+        stellarHealth as unknown as StellarHealthIndicator,
+        migrationHealth as unknown as DatabaseMigrationHealthIndicator,
+      );
+
+      const pending = real.ready(req as Request, res as Response);
+      await vi.advanceTimersByTimeAsync(RedisHealthIndicator.DEFAULT_TIMEOUT_MS);
+      await pending;
+
+      expect(res.status).toHaveBeenCalledWith(503);
+      expect(body().data.services).toMatchObject({
+        database: { status: 'up' },
+        cache: { status: 'down', error: 'timeout' },
+      });
+    });
+
+    function body() {
+      return (res.json as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    }
   });
 
   it('returns liveness payload with status up', () => {
@@ -178,11 +308,20 @@ describe('HealthController', () => {
     expect(response.timestamp).toBeDefined();
   });
 
-  it('exposes the orchestration liveness and readiness routes', () => {
-    expect(Reflect.getMetadata(PATH_METADATA, HealthController.prototype.getLiveness))
-      .toContain('live');
-    expect(Reflect.getMetadata(PATH_METADATA, HealthController.prototype.getReadiness))
-      .toContain('ready');
+  it('serves each orchestrator probe from exactly one handler', () => {
+    const path = (handler: unknown) => Reflect.getMetadata(PATH_METADATA, handler as object);
+
+    expect(path(HealthController.prototype.live)).toBe('live');
+    expect(path(HealthController.prototype.ready)).toBe('ready');
+    expect(path(HealthController.prototype.getLiveness)).toBe('liveness');
+    // A second `ready` path here is shadowed by `ready()` at runtime, while the
+    // OpenAPI document describes this handler in its place.
+    expect(path(HealthController.prototype.getReadiness)).toBe('readiness');
+  });
+
+  it('is exempt from authentication and from the public IP limiter', () => {
+    expect(Reflect.getMetadata(IS_PUBLIC_KEY, HealthController)).toBe(true);
+    expect(Reflect.getMetadata(SKIP_PUBLIC_RATE_LIMIT_KEY, HealthController)).toBe(true);
   });
 
   describe('GET /health/database', () => {

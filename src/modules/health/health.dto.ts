@@ -50,3 +50,70 @@ export class StellarHealthDto {
   @ApiProperty({ description: 'Health of the Soroban RPC node', type: StellarEndpointHealthDto })
   sorobanRpc!: StellarEndpointHealthDto;
 }
+
+/** Payload of the liveness probe. */
+export class LivenessDto {
+  @ApiProperty({
+    description: 'Always `up` while the process can answer HTTP',
+    enum: ['up'],
+    example: 'up',
+  })
+  status!: 'up';
+
+  @ApiProperty({ description: 'Moment the probe answered', example: '2026-01-15T10:30:00.000Z' })
+  timestamp!: string;
+
+  @ApiProperty({ description: 'Seconds since the process started', example: 42 })
+  uptimeSeconds!: number;
+}
+
+/**
+ * Outcome of one dependency check in the readiness probe. The probe is public, so
+ * a failure is reported only as a coarse reason; the driver message, which can
+ * name hosts, ports or connection strings, stays in the server log.
+ */
+export class DependencyProbeDto {
+  @ApiProperty({ description: 'Health of the dependency', enum: ['up', 'down'], example: 'up' })
+  status!: 'up' | 'down';
+
+  @ApiProperty({ description: 'Round-trip time of the check, in milliseconds', example: 3 })
+  latencyMs!: number;
+
+  @ApiProperty({ description: 'Moment the check ran', example: '2026-01-15T10:30:00.000Z' })
+  timestamp!: string;
+
+  @ApiPropertyOptional({
+    description: 'Why the dependency is down: the check hit its timeout, or it failed',
+    enum: ['timeout', 'unavailable'],
+    example: 'timeout',
+  })
+  error?: 'timeout' | 'unavailable';
+}
+
+/** Per-dependency results of the readiness probe. */
+export class ReadinessServicesDto {
+  @ApiProperty({ description: 'PostgreSQL, probed with `SELECT 1`', type: DependencyProbeDto })
+  database!: DependencyProbeDto;
+
+  @ApiProperty({
+    description: 'Redis, probed with `PING` on the shared client',
+    type: DependencyProbeDto,
+  })
+  cache!: DependencyProbeDto;
+}
+
+/** Payload of the readiness probe. */
+export class ReadinessDto {
+  @ApiProperty({
+    description: '`up` when every required dependency is up',
+    enum: ['up', 'down'],
+    example: 'up',
+  })
+  status!: 'up' | 'down';
+
+  @ApiProperty({ description: 'Moment the probe answered', example: '2026-01-15T10:30:00.000Z' })
+  timestamp!: string;
+
+  @ApiProperty({ description: 'Result of each dependency check', type: ReadinessServicesDto })
+  services!: ReadinessServicesDto;
+}

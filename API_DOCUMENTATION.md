@@ -554,8 +554,11 @@ before JSON parsing so whitespace and key order are preserved for verification.
 
 The liveness and readiness probes are served **outside** the API prefix, so
 orchestrator and load-balancer probe paths do not change with the API version.
-Both are public, exempt from rate limiting, excluded from the audit trail, and
-return raw JSON (no success envelope).
+Both are public (no JWT or API key), exempt from every rate limiter (the tier
+throttlers and the per-IP public limiter, so frequent probes never get a `429`),
+excluded from the audit trail, and answer in the standard
+`{ success, data, meta, requestId }` envelope. Orchestrators only need the status
+code; the body is for operators and dashboards.
 
 ### GET `/health/live`
 Liveness probe. Returns `200` whenever the process is running. It performs no
@@ -566,30 +569,64 @@ healthy process to be restarted.
 
 **Response (200):**
 ```json
-{ "status": "up", "timestamp": "2026-09-28T10:00:00.000Z", "uptimeSeconds": 42 }
+{
+  "success": true,
+  "data": { "status": "up", "timestamp": "2026-09-28T10:00:00.000Z", "uptimeSeconds": 42 },
+  "meta": {},
+  "requestId": "req_018f..."
+}
 ```
 
 ### GET `/health/ready`
-Readiness probe. Probes the database (`SELECT 1`) and cache (Redis `PING`) in
-parallel, each bounded by a 2 second timeout. Returns `200` when every
-dependency is up and `503` when any is down.
+Readiness probe. Probes the database (Prisma `SELECT 1`) and cache (`PING` on the
+shared Redis client) in parallel, each bounded by a 2 second timeout so a hung
+dependency cannot hang the probe. Returns `200` when every dependency is up and
+`503` when any is down; on `503` the envelope carries `"success": false` with
+the same `data`.
+
+Each dependency reports its `status`, `latencyMs` and `timestamp`. A failed check
+says only **why** it failed: `timeout` when the 2 second limit fired, otherwise
+`unavailable`. Driver messages are logged server-side and never returned, because
+they can name hosts, ports or connection strings.
 
 **Authentication:** Public
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "data": {
+    "status": "up",
+    "timestamp": "2026-09-28T10:00:00.000Z",
+    "services": {
+      "database": { "status": "up", "latencyMs": 3, "timestamp": "2026-09-28T10:00:00.000Z" },
+      "cache": { "status": "up", "latencyMs": 1, "timestamp": "2026-09-28T10:00:00.000Z" }
+    }
+  },
+  "meta": {},
+  "requestId": "req_018f..."
+}
+```
 
 **Response (503 example):**
 ```json
 {
-  "status": "down",
-  "timestamp": "2026-09-28T10:00:00.000Z",
-  "services": {
-    "database": {
-      "status": "down",
-      "latencyMs": 2001,
-      "timestamp": "2026-09-28T10:00:00.000Z",
-      "error": "Database health check timed out after 2000ms"
-    },
-    "cache": { "status": "up", "latencyMs": 1, "timestamp": "2026-09-28T10:00:00.000Z" }
-  }
+  "success": false,
+  "data": {
+    "status": "down",
+    "timestamp": "2026-09-28T10:00:00.000Z",
+    "services": {
+      "database": {
+        "status": "down",
+        "latencyMs": 2001,
+        "timestamp": "2026-09-28T10:00:00.000Z",
+        "error": "timeout"
+      },
+      "cache": { "status": "up", "latencyMs": 1, "timestamp": "2026-09-28T10:00:00.000Z" }
+    }
+  },
+  "meta": {},
+  "requestId": "req_018f..."
 }
 ```
 
