@@ -9,6 +9,8 @@ export const Queues = {
   Webhooks: 'webhooks',
   /** Periodic Stellar balance + state synchronization. */
   StellarSync: 'stellar-sync',
+  /** Scheduled reconciliation of stored wallet balances against Stellar. */
+  WalletReconciliation: 'wallet-reconciliation',
   /** Analytics roll-ups and precomputed aggregates. */
   Analytics: 'analytics',
   /** Long-running exports and scheduled reports. */

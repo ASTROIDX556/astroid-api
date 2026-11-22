@@ -33,6 +33,7 @@ import { AuthModule } from './modules/auth/auth.module';
 import { OrganizationModule } from './modules/organizations/organization.module';
 import { AgentModule } from './modules/agents/agent.module';
 import { WalletModule } from './modules/wallets/wallet.module';
+import { WalletReconciliationModule } from './modules/wallets/wallet-reconciliation.module';
 import { PolicyModule } from './modules/policies/policy.module';
 import { RiskModule } from './modules/risk/risk.module';
 import { BudgetModule } from './modules/budgets/budget.module';
@@ -131,6 +132,7 @@ import { sanitizeAuditPayload, sanitizeLogArguments } from './common/helpers/aud
     OrganizationModule,
     AgentModule,
     WalletModule,
+    WalletReconciliationModule,
     PolicyModule,
     RiskModule,
     BudgetModule,
