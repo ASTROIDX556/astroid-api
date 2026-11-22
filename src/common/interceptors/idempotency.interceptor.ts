@@ -1,26 +1,35 @@
 import {
   BadRequestException,
   CallHandler,
-  ConflictException,
   ExecutionContext,
   Injectable,
   NestInterceptor,
+  Optional,
 } from '@nestjs/common';
 import { HTTP_CODE_METADATA } from '@nestjs/common/constants';
+import { ConfigService } from '@nestjs/config';
 import { Reflector } from '@nestjs/core';
 import { Request, Response } from 'express';
 import { Observable, from, of } from 'rxjs';
 import { lastValueFrom } from 'rxjs';
+import type { ZodTypeAny } from 'zod';
 
-import { REQUEST_ID_HEADER } from '../constants/headers';
+import { ErrorCode } from '../constants/error-codes';
+import {
+  IDEMPOTENT_REPLAY_HEADER,
+  REQUEST_ID_HEADER,
+} from '../constants/headers';
+import { DomainException } from '../exceptions/domain.exception';
 import { IDEMPOTENT_KEY, IdempotentOptions } from '../decorators/idempotent.decorator';
 import { IdempotencyService } from '../idempotency/idempotency.service';
 import {
   IdempotencyInFlightError,
   IdempotencyMismatchError,
 } from '../idempotency/idempotency.types';
+import { idempotencyConfig, IdempotencyConfig } from '../../config/idempotency.config';
 
-const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9._~-]{1,128}$/;
+const MIN_KEY_LENGTH = 8;
+const MAX_KEY_LENGTH = 255;
 
 /**
  * HTTP adapter for the shared {@link IdempotencyService}.
@@ -32,7 +41,8 @@ const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9._~-]{1,128}$/;
  * Responses:
  * - **409 + Retry-After** when a duplicate arrives while the original runs.
  * - **409** when the key was already used with a different request body.
- * - The original status, body and request id on replay.
+ * - The original status, body and request id on replay, plus
+ *   `Idempotent-Replay: true`.
  *
  * Streaming and multipart/file-upload requests are deliberately excluded:
  * buffering their bodies for hashing (and replaying their streams) is not
@@ -43,6 +53,7 @@ export class IdempotencyInterceptor implements NestInterceptor {
   constructor(
     private readonly reflector: Reflector,
     private readonly idempotency: IdempotencyService,
+    @Optional() private readonly config?: ConfigService,
   ) {}
 
   async intercept(context: ExecutionContext, next: CallHandler): Promise<Observable<unknown>> {
@@ -53,38 +64,41 @@ export class IdempotencyInterceptor implements NestInterceptor {
     if (!options) return next.handle();
 
     const http = context.switchToHttp();
-    const request = http.getRequest<Request & { user?: { id?: string } }>();
+    const request = http.getRequest<Request & { user?: { id?: string; isApiKey?: boolean; apiKeyId?: string } }>();
     const response = http.getResponse<Response>();
 
-    const rawKey = request.headers['idempotency-key'];
-    const key = Array.isArray(rawKey) ? rawKey[0] : rawKey;
-    if (!key) return next.handle();
+    const settings = this.settings();
+    const rawKey = request.headers[settings.headerName.toLowerCase()];
+    if (rawKey === undefined) return next.handle();
 
-    if (!IDEMPOTENCY_KEY_PATTERN.test(key)) {
+    const key = Array.isArray(rawKey) ? rawKey[0]?.trim() : rawKey.trim();
+    if (!key || key.length < MIN_KEY_LENGTH || key.length > MAX_KEY_LENGTH) {
       throw new BadRequestException(
-        'Idempotency-Key must contain 1 to 128 ASCII letters, digits, dots, underscores, tildes, or hyphens',
+        `${settings.headerName} must be 8 to 255 characters after trimming whitespace`,
       );
     }
 
     if (!isReplayableJsonRequest(request)) return next.handle();
 
-    const principalId = request.user?.id;
-    if (!principalId) {
+    const user = request.user;
+    if (!user?.id) {
       // The routes that opt in are authenticated; without a principal the key
       // cannot be scoped, so fall back to normal execution rather than sharing
       // a namespace between callers.
       return next.handle();
     }
 
+    const scope = user.isApiKey ? `apikey:${user.apiKeyId ?? user.id}` : `user:${user.id}`;
     const route = `${request.method} ${request.baseUrl ?? ''}${request.path}`;
 
     let handle: Awaited<ReturnType<IdempotencyService['begin']>>;
     try {
       handle = await this.idempotency.begin({
-        principalId,
+        principalId: user.id,
+        scope,
         route,
         key,
-        requestBody: request.body,
+        requestBody: normalizedBody(options.bodySchema, request.body),
       });
     } catch (error) {
       if (error instanceof IdempotencyInFlightError) {
@@ -95,16 +109,23 @@ export class IdempotencyInterceptor implements NestInterceptor {
 
     if (handle.replay) {
       response.status(handle.replay.statusCode);
+      response.setHeader(IDEMPOTENT_REPLAY_HEADER, 'true');
       if (handle.replay.requestId) {
         // Preserve the original request id in the envelope and on the wire.
         request.headers[REQUEST_ID_HEADER] = handle.replay.requestId;
         response.setHeader(REQUEST_ID_HEADER, handle.replay.requestId);
       }
-      return of(handle.replay.body);
+      // The global response interceptor reads replay metadata from the request
+      // context before this interceptor runs, so publish it there as well.
+      return of(this.idempotency.replay<unknown>(handle.replay));
     }
 
     const statusCode = this.resolveStatusCode(context, request, response);
-    return from(this.execute(next, handle, response, statusCode));
+    return from(this.execute(next, handle, response, statusCode, request));
+  }
+
+  private settings(): IdempotencyConfig {
+    return this.config?.get<IdempotencyConfig>('idempotency') ?? idempotencyConfig();
   }
 
   /**
@@ -131,6 +152,7 @@ export class IdempotencyInterceptor implements NestInterceptor {
     handle: Awaited<ReturnType<IdempotencyService['begin']>>,
     response: Response,
     statusCode: number,
+    request: Request,
   ): Promise<unknown> {
     try {
       const body = await lastValueFrom(next.handle());
@@ -139,6 +161,7 @@ export class IdempotencyInterceptor implements NestInterceptor {
         body,
         requestId:
           (response.getHeader(REQUEST_ID_HEADER) as string | undefined) ??
+          (request.headers[REQUEST_ID_HEADER] as string | undefined) ??
           null,
       });
       return body;
@@ -151,6 +174,18 @@ export class IdempotencyInterceptor implements NestInterceptor {
   }
 }
 
+/**
+ * Uses the route's Zod schema when present so defaults and normalization are
+ * applied before hashing. A schema mismatch is left to the validation pipe:
+ * the raw body is hashed only long enough for that pipe to reject the request
+ * and release the reservation.
+ */
+function normalizedBody(schema: ZodTypeAny | undefined, body: unknown): unknown {
+  if (!schema) return body;
+  const parsed = schema.safeParse(body);
+  return parsed.success ? parsed.data : body;
+}
+
 /** True only for JSON bodies we can hash and replay safely. */
 function isReplayableJsonRequest(request: Request): boolean {
   if (request.is?.('multipart/form-data')) return false;
@@ -161,10 +196,10 @@ function isReplayableJsonRequest(request: Request): boolean {
 
 function toHttpException(error: unknown): Error {
   if (error instanceof IdempotencyMismatchError) {
-    return new ConflictException(error.message);
+    return new DomainException(ErrorCode.IDEMPOTENCY_KEY_MISMATCH, error.message);
   }
   if (error instanceof IdempotencyInFlightError) {
-    return new ConflictException(error.message);
+    return new DomainException(ErrorCode.IDEMPOTENCY_KEY_IN_FLIGHT, error.message);
   }
   return error instanceof Error ? error : new Error('Idempotency check failed');
 }
