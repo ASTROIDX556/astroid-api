@@ -29,6 +29,8 @@ export const Queues = {
   AuditCleanup: 'audit-cleanup',
   /** Audit log archival: moves expired audit rows into the compressed archive. */
   AuditArchive: 'audit-archive',
+  /** Periodic close/reopen of elapsed budget periods. */
+  BudgetRollover: 'budget-rollover',
 } as const;
 
 export type QueueName = (typeof Queues)[keyof typeof Queues];

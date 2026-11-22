@@ -223,6 +223,26 @@ export interface BudgetThresholdReachedPayload extends Record<string, unknown> {
   currency: string;
 }
 
+export interface BudgetPeriodRolloverPayload extends Record<string, unknown> {
+  budgetId: string;
+  organizationId: string;
+  /** Period that was closed by this rollover. */
+  closedPeriodStart: string;
+  closedPeriodEnd: string;
+  /** Final spend snapshot of the closed period. */
+  spent: string;
+  /** Period opened by this rollover. */
+  periodStart: string;
+  periodEnd: string;
+  /** Carry-over applied to the new period (negative when overspend carried). */
+  carryOverAmount: string;
+  carryOverRule: string;
+  timezone: string;
+  currency: string;
+  /** Number of elapsed periods closed in this run (more than one after downtime). */
+  periodsClosed: number;
+}
+
 export interface ProposalCreatedPayload extends Record<string, unknown> {
   proposalId: string;
   transactionId: string;

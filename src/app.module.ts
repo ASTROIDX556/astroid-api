@@ -39,6 +39,7 @@ import { WalletReconciliationModule } from './modules/wallets/wallet-reconciliat
 import { PolicyModule } from './modules/policies/policy.module';
 import { RiskModule } from './modules/risk/risk.module';
 import { BudgetModule } from './modules/budgets/budget.module';
+import { BudgetRolloverModule } from './modules/budgets/budget-rollover.module';
 import { TransactionModule } from './modules/transactions/transaction.module';
 import { ApprovalModule } from './modules/approvals/approval.module';
 import { AnalyticsModule } from './modules/analytics/analytics.module';
@@ -120,6 +121,7 @@ import { RequestIdInterceptor } from './common/interceptors/request-id.intercept
     PolicyModule,
     RiskModule,
     BudgetModule,
+    BudgetRolloverModule,
     TransactionModule,
     ApprovalModule,
     AnalyticsModule,

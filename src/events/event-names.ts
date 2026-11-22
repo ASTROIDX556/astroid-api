@@ -44,6 +44,8 @@ export const DomainEventName = {
   BudgetWarning: 'budget.warning',
   /** A spend crossed a configured percentage threshold of a budget period. */
   BudgetThresholdReached: 'budget.threshold_reached',
+  /** A scheduled job closed an elapsed budget period and opened the next one. */
+  BudgetPeriodRollover: 'budget.period_rollover',
 
   // Proposal / approval
   ProposalCreated: 'proposal.created',

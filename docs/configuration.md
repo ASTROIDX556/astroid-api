@@ -270,6 +270,10 @@ deliveries of a failing endpoint instead of hammering it.
 | Variable | Default | Description |
 | --- | --- | --- |
 | `BUDGET_ALERT_THRESHOLDS` | `80,100` | Comma-separated budget-utilisation percentages that emit a `budget.threshold_reached` event once per budget period. A budget's own `alertThresholds` overrides this list. |
+| `BUDGET_ROLLOVER_ENABLED` | `true` | Register the repeatable budget period rollover job at boot. |
+| `BUDGET_ROLLOVER_INTERVAL_MINUTES` | `1` | Cadence of the repeatable rollover job. |
+| `BUDGET_ROLLOVER_BATCH_SIZE` | `100` | Budgets loaded per page (1–1000). |
+| `BUDGET_ROLLOVER_MAX_BATCHES` | `20` | Maximum pages processed in one run; later ticks pick up the rest. |
 
 ### Metrics
 

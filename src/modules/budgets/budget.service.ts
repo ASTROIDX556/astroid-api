@@ -1,5 +1,5 @@
 import { Injectable, Optional } from '@nestjs/common';
-import { Budget, Prisma } from '@prisma/client';
+import { Budget, BudgetPeriod, Prisma } from '@prisma/client';
 import { BudgetRepository } from './budget.repository';
 import { AllocateBudgetInput, CreateBudgetInput, UpdateBudgetInput } from './budget.dto';
 import {
@@ -19,6 +19,7 @@ import { DomainEventName } from '../../events/event-names';
 import { RedisLock } from '../../common/locks/redis-lock.util';
 import { PrismaTransactionService } from '../../database/prisma-transaction.service';
 import { BudgetAlertService } from './services/budget-alert.service';
+import { getPeriodBounds } from './utils/period.util';
 
 const SORTABLE = ['createdAt', 'name', 'limitAmount', 'spent', 'period'];
 const Decimal = Prisma.Decimal;
@@ -49,6 +50,8 @@ export class BudgetService {
     if (input.parentBudgetId) {
       await this.getOrThrow(organizationId, input.parentBudgetId);
     }
+    const periodStart = input.periodStart ?? new Date();
+    const bounds = getPeriodBounds(input.period, periodStart, input.timezone);
     const budget = await this.repository.create({
       organization: { connect: { id: organizationId } },
       ...(input.parentBudgetId ? { parentBudget: { connect: { id: input.parentBudgetId } } } : {}),
@@ -57,6 +60,12 @@ export class BudgetService {
       currency: input.currency,
       limitAmount: new Decimal(input.limitAmount),
       period: input.period,
+      periodStart,
+      periodEnd: input.period === BudgetPeriod.ONE_TIME ? null : bounds.end,
+      periodAnchor: periodStart,
+      periodIndex: 0,
+      timezone: input.timezone,
+      carryOverRule: input.carryOverRule,
       rollover: input.rollover,
       enabled: input.enabled,
     });
@@ -98,13 +107,26 @@ export class BudgetService {
   }
 
   async update(organizationId: string, actorId: string, id: string, input: UpdateBudgetInput) {
-    await this.getOrThrow(organizationId, id);
+    const current = await this.getOrThrow(organizationId, id);
+    const period = input.period ?? current.period;
+    const timezone = input.timezone ?? (current.timezone || 'UTC');
     const data: Prisma.BudgetUpdateInput = {
       name: input.name,
       period: input.period,
+      timezone: input.timezone,
+      carryOverRule: input.carryOverRule,
       rollover: input.rollover,
       enabled: input.enabled,
     };
+    if (input.period !== undefined || input.timezone !== undefined) {
+      data.periodEnd =
+        period === BudgetPeriod.ONE_TIME
+          ? null
+          : getPeriodBounds(period, current.periodStart, timezone).end;
+      // A period-type/timezone change starts a fresh anchored sequence.
+      data.periodAnchor = current.periodStart;
+      data.periodIndex = 0;
+    }
     if (input.limitAmount !== undefined) {
       data.limitAmount = new Decimal(input.limitAmount);
     }
