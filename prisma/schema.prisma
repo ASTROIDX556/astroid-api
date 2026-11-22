@@ -123,6 +123,7 @@ enum TransactionStatus {
 enum IdempotencyStatus {
   PROCESSING
   COMPLETED
+  FAILED
 }
 
 enum RiskBand {
@@ -298,6 +299,11 @@ model Wallet {
   walletType     WalletType     @default(AGENT)
   network        StellarNetwork @default(TESTNET)
   status         WalletStatus   @default(ACTIVE)
+  /// Last reconciled native (XLM) balance snapshot. Null until the first
+  /// successful reconciliation; never overwritten by a failed fetch.
+  balance        Decimal?       @db.Decimal(20, 7)
+  /// When `balance` was last successfully reconciled against Horizon.
+  lastSyncedAt   DateTime?
   createdAt      DateTime       @default(now())
   updatedAt      DateTime       @updatedAt
   deletedAt      DateTime?
@@ -443,18 +449,27 @@ model Transaction {
 }
 
 model TransactionIdempotencyRecord {
-  id            String            @id @default(uuid(7))
-  principalId   String
-  operation     String
-  keyHash       String
-  requestHash   String
-  status        IdempotencyStatus @default(PROCESSING)
-  transactionId String?
-  response      Json?
-  createdAt     DateTime          @default(now())
-  expiresAt     DateTime
+  id             String            @id @default(uuid(7))
+  principalId    String
+  /// Legacy operation name. Always mirrors `route` for rows written since
+  /// route scoping was introduced; kept so older rows remain readable.
+  operation      String
+  /// Route the key is scoped to, e.g. `POST /transactions`.
+  route          String            @default("transactions.create")
+  keyHash        String
+  requestHash    String
+  status         IdempotencyStatus @default(PROCESSING)
+  transactionId  String?
+  response       Json?
+  /// HTTP status the cached response must be replayed with.
+  responseStatus Int?
+  /// Request id of the original request, replayed on a cached response.
+  requestId      String?
+  createdAt      DateTime          @default(now())
+  completedAt    DateTime?
+  expiresAt      DateTime
 
-  @@unique([principalId, operation, keyHash])
+  @@unique([principalId, route, keyHash])
   @@index([expiresAt])
   @@map("transaction_idempotency_records")
 }

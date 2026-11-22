@@ -36,6 +36,7 @@ import { ApiPaginationQuery } from '../../common/decorators/api-pagination-query
 import { ApiEnvelope, ApiPaginatedEnvelope } from '../../common/decorators/api-envelope.decorator';
 import { ApiErrorResponses } from '../../common/decorators/api-error-responses.decorator';
 import { IDEMPOTENCY_KEY_HEADER } from '../../common/constants/headers';
+import { TRANSACTION_CREATE_ROUTE } from '../../common/idempotency/idempotency.constants';
 import {
   SlidingWindowThrottlerGuard,
   SlidingWindowLimit,
@@ -115,7 +116,7 @@ export class TransactionController {
       user.organizationId,
       actorId,
       body,
-      key ? { principalId: user.id, key } : undefined,
+      key ? { principalId: user.id, key, route: TRANSACTION_CREATE_ROUTE } : undefined,
     );
   }
 
