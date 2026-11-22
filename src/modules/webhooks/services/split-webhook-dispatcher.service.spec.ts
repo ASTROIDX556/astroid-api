@@ -35,7 +35,7 @@ describe('SplitWebhookDispatcherService (#312)', () => {
 
     expect(results).toHaveLength(1);
     expect(results[0].delivered).toBe(true);
-    expect(results[0].signature).toMatch(/^sha256=[a-f0-9]{64}$/);
+    expect(results[0].signature).toMatch(/^t=\d+,v1=[a-f0-9]{64}$/);
     expect(transport).toHaveBeenCalledTimes(1);
   });
 });

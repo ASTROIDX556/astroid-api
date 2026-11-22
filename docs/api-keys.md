@@ -9,7 +9,7 @@ Astroid API supports four standard scopes for API keys:
 | Scope | Description | Allowed Operations |
 |---|---|---|
 | `read` | Read-only access to resources | `GET /developer/api-keys`, `GET /webhooks`, `GET /webhooks/deliveries`, `GET /webhooks/:id` |
-| `write` | Developer surface configuration mutations | `POST /developer/api-keys`, `DELETE /developer/api-keys/:id` |
+| `write` | Developer surface configuration mutations | `POST /developer/api-keys`, `POST /developer/api-keys/:id/rotate`, `DELETE /developer/api-keys/:id` |
 | `transactions:execute` | Submit on-chain transactions | `POST /transactions` |
 | `webhooks:manage` | Manage organization webhooks | `POST /webhooks`, `PATCH /webhooks/:id`, `POST /webhooks/:id/rotate-secret`, `DELETE /webhooks/:id` |
 
@@ -56,3 +56,21 @@ Routes requiring authorization are decorated with `@RequiredScopes(...)`. When a
 | `POST /transactions` | `transactions:execute` |
 | `GET /webhooks`, `GET /webhooks/deliveries`, `GET /webhooks/:id` | `read` |
 | `POST /webhooks`, `PATCH /webhooks/:id`, `POST /webhooks/:id/rotate-secret`, `DELETE /webhooks/:id` | `webhooks:manage` |
+
+## API Key Rotation & Grace Period
+
+Integrators can rotate API keys without breaking live traffic via `POST /developer/api-keys/:id/rotate`.
+
+- **Rotation Flow**:
+  - Mints a replacement key with the same scopes, permissions, and IP restrictions as the original key.
+  - The previous key is marked `status: 'rotating'` and assigned an `expiresAt` timestamp matching the grace period (default: 86,400 seconds / 24 hours, or customizable via `gracePeriodSeconds`).
+  - The new key is returned in plaintext exactly once in the response along with the previous key's `expiresAt`.
+- **Grace Period Authentication**:
+  - Both the new key and the rotating key remain valid for authentication until `expiresAt`.
+  - Once `expiresAt` passes, authentication with the rotating key fails with standard `401 Unauthorized`.
+- **Conflict Prevention**:
+  - Attempting to rotate a key that is already rotating, revoked, or expired immediately returns `409 Conflict`.
+- **Immediate Revocation**:
+  - Revoking a key (`DELETE /developer/api-keys/:id`) is immediate and rejects authentication immediately, regardless of any active grace period.
+- **Audit Logging**:
+  - Key rotations are recorded in the immutable audit log (`AGENT_KEY_ROTATED`), tracking the actor ID, organization ID, previous key ID, and prefix.

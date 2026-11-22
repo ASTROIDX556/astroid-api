@@ -92,6 +92,25 @@ export class SpendingPolicyRepository {
     );
   }
 
+  /**
+   * All applicable policies (enabled AND disabled) scoped to the
+   * organization and, optionally, the agent. Used by the evaluation path so
+   * the engine can fail closed on disabled policies. Soft-deleted policies
+   * are excluded ("expired").
+   */
+  findApplicableForEvaluation(organizationId: string, agentId?: string) {
+    return this.execute('findApplicableForEvaluation', () =>
+      this.prisma.policy.findMany({
+        where: {
+          organizationId,
+          deletedAt: null,
+          OR: [{ agentId: null }, ...(agentId ? [{ agentId }] : [])],
+        },
+        orderBy: { priority: 'asc' },
+      }),
+    );
+  }
+
   /** Paginated policy list plus total count, read inside one transaction. */
   findManyAndCount(where: Prisma.PolicyWhereInput, pagination: PrismaPagination) {
     return this.execute('findManyAndCount', async () => {

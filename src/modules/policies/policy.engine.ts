@@ -30,6 +30,32 @@ interface LocalTime {
  * the set of applicable policies, it returns every violation and whether human
  * approval is required. Contains NO I/O — it is trivially unit-testable and is
  * the heart of Astroid's "AI should never spend money freely" guarantee.
+ *
+ * Enforced semantics (documented here so callers can rely on them):
+ *
+ * - **Exact-limit allowed, over-limit denied.** For amount limits: a spend
+ *   equal to the effective maximum passes; anything above it violates
+ *   (`>` comparison). The same holds for the periodic windows
+ *   (daily/weekly/monthly): `spent + amount` equal to the limit passes,
+ *   anything above it violates.
+ * - **Zero-limit policies deny all spending.** When the configured limit is
+ *   0, the transaction is denied — including zero-amount spends — via the
+ *   `ZERO_LIMIT_DENIED` violation.
+ * - **Disabled policies fail closed.** A policy that applies to the intent
+ *   but is `enabled: false` denies the transaction (`POLICY_DISABLED`).
+ *   "Expired" (soft-deleted) policies are excluded upstream by the
+ *   repository's `deletedAt: null` filter; the engine is total over the
+ *   policies it receives.
+ * - **Period windows reset at UTC boundaries.** The window spans for the
+ *   daily/weekly/monthly aggregates are computed by the spending-limit
+ *   service (`SpendingLimitService.windowBounds`); the engine evaluates the
+ *   caller-supplied `spentToday/spentThisWeek/spentThisMonth`.
+ * - **Currency mismatch: conversion is required, never silent.** A policy
+ *   without `baseCurrency` compares limits in the transaction's native
+ *   asset (the "no conversion" case — see `PolicyConfiguration.baseCurrency`).
+ *   A policy with `baseCurrency` has limits denominated in that currency and
+ *   callers must convert the transaction amounts via the price oracle
+ *   (fail closed when a quote is unavailable).
  */
 @Injectable()
 export class PolicyEngine {
@@ -39,12 +65,17 @@ export class PolicyEngine {
    * higher priority). Approval is required if ANY policy demands it.
    */
   evaluate(intent: TransactionIntent, policies: EvaluablePolicy[]): PolicyEvaluationResult {
-    const active = policies
-      .filter((policy) => policy.enabled)
+    const applicable = policies
       .filter((policy) => this.appliesToAgent(policy, intent))
       .sort((a, b) => a.priority - b.priority);
 
-    const violations: PolicyViolation[] = [];
+    // Fail closed: a policy that applies but is disabled denies the spend.
+    const disabled = applicable.filter((policy) => !policy.enabled);
+    const active = applicable.filter((policy) => policy.enabled);
+
+    const violations: PolicyViolation[] = disabled.map((policy) =>
+      this.violation(policy, 'POLICY_DISABLED', 'Policy is disabled and fails closed'),
+    );
     let requiresApproval = false;
     const at = intent.at ?? new Date();
 
@@ -83,7 +114,7 @@ export class PolicyEngine {
       passed: violations.length === 0,
       requiresApproval,
       violations,
-      evaluatedPolicyIds: active.map((policy) => policy.id),
+      evaluatedPolicyIds: applicable.map((policy) => policy.id),
       matchedPolicyId: active[0]?.id,
     };
   }
@@ -102,7 +133,14 @@ export class PolicyEngine {
     const out: PolicyViolation[] = [];
     const effectiveMax = this.effectiveMaxAmount(policy, config, at);
     const violationAsset = intent.transfers?.length ? intent.asset.split(':', 1)[0].toUpperCase() : undefined;
-    if (effectiveMax !== undefined && intent.amount > effectiveMax) {
+    // Zero-limit semantics: a zero maximum denies every spend (even
+    // zero-amount ones). Otherwise: a spend equal to the limit passes, one
+    // unit over is denied.
+    if (effectiveMax === 0) {
+      out.push(
+        this.violation(policy, 'ZERO_LIMIT_DENIED', 'Zero-limit policy denies all spending', violationAsset),
+      );
+    } else if (effectiveMax !== undefined && intent.amount > effectiveMax) {
       out.push(
         this.violation(
           policy,
@@ -199,7 +237,16 @@ export class PolicyEngine {
       if (limit === undefined) {
         continue;
       }
+      // Zero-limit semantics: a zero periodic limit denies every spend.
+      if (limit === 0) {
+        out.push(
+          this.violation(policy, 'ZERO_LIMIT_DENIED', `Zero-limit policy denies all spending (limit 0)`),
+        );
+        continue;
+      }
       const projected = (spent ?? 0) + intent.amount;
+      // Boundary semantics: a spend equal to the limit is allowed; anything
+      // above it (one unit over) is denied.
       if (projected > limit) {
         out.push(
           this.violation(

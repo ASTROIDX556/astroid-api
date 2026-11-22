@@ -162,6 +162,15 @@ describe('SpendingLimitService', () => {
       const result = await service.hasSpendingLimitPolicy('org-1', 'agent-1');
       expect(result).toBe(false);
     });
+
+    it('returns true when only a disabled policy declares a dailyLimit (fail closed)', async () => {
+      mockPrismaService.policy.findMany.mockResolvedValue([
+        { enabled: false, configuration: { dailyLimit: 500 } },
+      ]);
+
+      const result = await service.hasSpendingLimitPolicy('org-1', 'agent-1');
+      expect(result).toBe(true);
+    });
   });
 
   // ── evaluateSpendingLimits ────────────────────────────────────────────────

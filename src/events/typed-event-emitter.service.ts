@@ -71,6 +71,9 @@ export interface DomainEventMap {
   // Audit
   'audit.recorded': PayloadTypes.AuditRecordedPayload;
 
+  // Session / refresh-token reuse
+  'session.family_revoked': PayloadTypes.SessionFamilyRevokedPayload;
+
   // Webhook delivery / circuit breaker
   'webhook.circuit_opened': PayloadTypes.WebhookCircuitOpenedPayload;
   'webhook.circuit_closed': PayloadTypes.WebhookCircuitClosedPayload;
