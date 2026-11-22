@@ -19,6 +19,40 @@ Queue registrations use `createQueueRegistrationOptions` from `src/queues/queue-
 
 Terminal failures are observed by `QueueFailureListener` and include the queue, job type and ID, attempt count, safe organization/agent identifiers, and request ID when available. Failure reasons, stacks, and payload metadata pass through the shared redactor before logging, DLQ storage, or audit-event persistence.
 
+## Request correlation
+
+A job carries the ids of the request that caused it, so a worker failure can be
+traced back to the HTTP response (`requestId` in the envelope) without guessing
+from timestamps.
+
+| Field | Meaning |
+| --- | --- |
+| `requestId` | Id of the originating request, the same value as in the API logs and the response envelope. |
+| `correlationId`, `traceId` | The request's correlation and trace ids. |
+| `actorId` | The acting user, or the agent for agent traffic that has no user. |
+| `apiKeyId` | Id of the API key the request authenticated with. Only the id; never the key or its prefix material. |
+
+**Writing.** Producers read the ambient `RequestContext` through
+`withJobMetadata()` / `currentJobMetadata()` (`src/queues/job-correlation.ts`)
+and store the fields under the payload's `metadata`. Fields a producer already
+set win, so an event handler can pass what its domain event carries. The risk
+analysis and webhook delivery producers do this. `metadata` is only written when
+there is something to put in it.
+
+**Reading.** Every field is optional on read. Jobs enqueued before these fields
+existed, and jobs enqueued outside a request (the audit archive scheduler, cron,
+seeds), have none, and workers run them exactly as before.
+
+**Worker logs.** `runWorkerJob` adds a flat `requestId` to every
+`job.completed`, `job.retrying` and `job.dead-lettered` record, the same field
+name the API's request log line uses, plus `actorId` and `apiKeyId` when present.
+A job without a request id logs `requestId: "no-request-context"`, which is not
+shaped like a real request id. The handler also runs inside a request context
+rebuilt from the job, so a job it enqueues in turn inherits the same ids.
+
+Correlation is observability only: it does not change how a job is retried,
+backed off or dead-lettered.
+
 ## Webhook retry backoff
 
 The webhook queue registers a jittered exponential backoff strategy

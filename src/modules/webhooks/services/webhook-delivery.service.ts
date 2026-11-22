@@ -3,7 +3,7 @@ import { InjectQueue } from '@nestjs/bullmq';
 import { ConfigService } from '@nestjs/config';
 import { Queue } from 'bullmq';
 
-import { Queues } from '../../../queues/queues.constants';
+import { QueueJobMetadata, Queues } from '../../../queues/queues.constants';
 import { WEBHOOK_JOB_NAME, webhookJobOptions, webhookJobOptionsFor } from '../../../queues/webhook.queue';
 import { DEFAULT_WEBHOOK_CONFIG, WebhookConfig } from '../../../config/webhook.config';
 import { WebhookJobData } from '../types/webhook-job.types';
@@ -48,11 +48,16 @@ export class WebhookDeliveryService {
    */
   async queueDelivery(data: WebhookJobData): Promise<void> {
     try {
-      const metadata = {
+      // Who caused the delivery: ids only, never credentials.
+      const actorId = data.metadata?.actorId ?? RequestContext.getActorId();
+      const apiKeyId = data.metadata?.apiKeyId ?? RequestContext.getApiKeyId();
+      const metadata: QueueJobMetadata = {
         ...data.metadata,
         requestId: data.metadata?.requestId ?? RequestContext.getRequestId() ?? resolveRequestId(undefined),
         correlationId: data.metadata?.correlationId ?? RequestContext.getCorrelationId(),
         traceId: data.metadata?.traceId ?? RequestContext.getTraceId(),
+        ...(actorId ? { actorId } : {}),
+        ...(apiKeyId ? { apiKeyId } : {}),
       };
       metadata.correlationId ??= metadata.requestId;
       metadata.traceId ??= metadata.correlationId;
