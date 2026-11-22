@@ -71,6 +71,10 @@ export const DomainEventName = {
   AuditRecorded: 'audit.recorded',
   WebhookPermanentlyFailed: 'webhook.permanently_failed',
 
+  // Session / refresh-token reuse detection
+  /** A rotated refresh token was presented again (reuse): the token family was revoked. */
+  SessionFamilyRevoked: 'session.family_revoked',
+
   // Webhook delivery / circuit breaker
   /** The circuit of a webhook endpoint opened: deliveries are paused for the cooldown. */
   WebhookCircuitOpened: 'webhook.circuit_opened',

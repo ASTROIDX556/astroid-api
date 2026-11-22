@@ -813,22 +813,37 @@ model WebhookCircuitState {
 // ---------------------------------------------------------------------------
 
 model Session {
-  id               String    @id @default(uuid(7))
-  userId           String
-  device           String?
-  browser          String?
-  ipAddress        String?
-  location         String?
-  refreshTokenHash String    @unique
-  lastActivityAt   DateTime  @default(now())
-  expiresAt        DateTime
-  revokedAt        DateTime?
-  createdAt        DateTime  @default(now())
+  id                String    @id @default(uuid(7))
+  userId            String
+  device            String?
+  browser           String?
+  ipAddress         String?
+  location          String?
+  refreshTokenHash  String    @unique
+  // Token-family reuse detection (refresh-token rotation).
+  //
+  // `familyId` persists across rotations: every session minted during a
+  // rotation inherits the family of the session it replaces, so presenting
+  // any token of the family revokes them all on reuse.
+  //
+  // `consumedAt` is set atomically when the refresh token is rotated
+  // (conditional update), so a replayed token is detectable.
+  //
+  // `replacedByTokenId` records, on the replaced session, the id of the
+  // session that replaced it.
+  familyId          String
+  consumedAt        DateTime?
+  replacedByTokenId String?
+  lastActivityAt    DateTime  @default(now())
+  expiresAt         DateTime
+  revokedAt         DateTime?
+  createdAt         DateTime  @default(now())
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
   @@index([expiresAt])
+  @@index([familyId])
   @@map("sessions")
 }
 

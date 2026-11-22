@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
-import { User, UserRole, UserStatus } from '@prisma/client';
+import { Session, User, UserRole, UserStatus } from '@prisma/client';
 import * as argon2 from 'argon2';
 import { PrismaService } from '../../database/prisma.service';
 import { AuthConfig } from '../../config/auth.config';
@@ -21,6 +21,21 @@ import { DomainEventName } from '../../events/event-names';
 import { LoginInput, RegisterInput } from './auth.dto';
 import { TokenBlacklistService } from './services/token-blacklist.service';
 import { TokenVerificationCacheService } from './services/token-verification-cache.service';
+import { AuthRepository } from './auth.repository';
+
+/**
+ * Grace window after a session's refresh token is consumed during which a
+ * replayed (already-rotated) token is treated as a benign race — rejected
+ * with 401 without revoking the family. Presenting the token after the grace
+ * window is reuse: the whole family is revoked (see `refresh`).
+ */
+export const REFRESH_REUSE_GRACE_MS = 5 * 60_000;
+
+/**
+ * Small leeway applied when comparing a session's expiry against the wall
+ * clock, so clock skew between processes does not instantly expire sessions.
+ */
+const SESSION_EXPIRY_SKEW_MS = 30_000;
 
 export interface TokenPair {
   accessToken: string;
@@ -52,7 +67,9 @@ interface SessionContext {
  * Authentication and session management. Passwords are hashed with argon2id and
  * never stored or logged in plaintext. Refresh tokens are opaque random secrets;
  * only their SHA-256 hash is persisted (rotated on every refresh), so a database
- * leak cannot be used to mint access tokens.
+ * leak cannot be used to mint access tokens. Every session carries a
+ * `familyId` that persists across rotations; presenting an already-rotated
+ * token revokes the whole family (reuse detection).
  */
 @Injectable()
 export class AuthService {
@@ -66,6 +83,7 @@ export class AuthService {
     private readonly tokenBlacklist: TokenBlacklistService,
     private readonly verificationCache: TokenVerificationCacheService,
     config: ConfigService,
+    private readonly sessionRepository: AuthRepository,
   ) {
     this.auth = config.getOrThrow<AuthConfig>('auth');
   }
@@ -111,7 +129,7 @@ export class AuthService {
       },
     );
 
-    const tokens = await this.issueTokens(user, context);
+    const { tokens } = await this.issueTokens(user, context);
     return { user: this.toPublicUser(user), tokens };
   }
 
@@ -136,14 +154,26 @@ export class AuthService {
       data: { lastLogin: new Date() },
     });
 
-    const tokens = await this.issueTokens(user, context);
+    const { tokens } = await this.issueTokens(user, context);
     return { user: this.toPublicUser(user), tokens };
   }
 
   /**
    * Rotates a refresh token: verifies the presented token against its stored
-   * hash, revokes the old session, and issues a new pair. Reuse of a revoked or
-   * expired token is rejected.
+   * hash, revokes the old session, and issues a new pair.
+   *
+   * Reuse detection (see {@link REFRESH_REUSE_GRACE_MS}): every session
+   * carries a `familyId` that persists across rotations. Presenting an
+   * already-rotated token — its session shows `consumedAt` set — is reuse
+   * once the grace window has passed: the whole family is revoked, a domain
+   * event is emitted, and 401 is returned. Within the grace window the same
+   * presentation is treated as a benign race instead (duplicate submission).
+   *
+   * Concurrency: rotation consumes the token atomically
+   * ({@link AuthRepository.consumeRefreshToken} — a conditional update on
+   * `consumedAt IS NULL`), so of any number of concurrent refreshes with the
+   * same token exactly one succeeds; the others are rejected as races, not
+   * treated as reuse.
    */
   async refresh(refreshToken: string): Promise<TokenPair> {
     let payload: JwtRefreshPayload;
@@ -169,16 +199,51 @@ export class AuthService {
       throw new UnauthorizedException('Session is no longer valid', ErrorCode.SESSION_REVOKED);
     }
 
+    if (!session) {
+      throw new UnauthorizedException('Session is no longer valid', ErrorCode.SESSION_REVOKED);
+    }
+
+    // Reuse detection: presenting an already-consumed token is reuse once the
+    // grace window has passed — revoke the family before responding so a
+    // race cannot leave a valid token behind.
+    if (session.consumedAt) {
+      const withinGrace = Date.now() - session.consumedAt.getTime() <= REFRESH_REUSE_GRACE_MS;
+      if (!withinGrace) {
+        await this.sessionRepository.revokeFamily(session.familyId);
+        await this.eventBus.emit(
+          DomainEventName.SessionFamilyRevoked,
+          {
+            familyId: session.familyId,
+            sessionId: session.id,
+            userId: session.userId,
+          },
+          {
+            organizationId: session.user?.organizationId,
+            aggregateType: 'session',
+            aggregateId: session.id,
+            actorId: session.userId,
+          },
+        );
+      }
+      throw new UnauthorizedException('Session is no longer valid', ErrorCode.SESSION_REVOKED);
+    }
+
     if (
-      !session ||
       session.revokedAt ||
-      session.expiresAt.getTime() < Date.now() ||
+      session.expiresAt.getTime() + SESSION_EXPIRY_SKEW_MS < Date.now() ||
       session.refreshTokenHash !== presentedHash
     ) {
       throw new UnauthorizedException('Session is no longer valid', ErrorCode.SESSION_REVOKED);
     }
 
-    // Revoke the old session and mint a replacement (token rotation).
+    // Atomically consume the presented token; a zero-count result means a
+    // concurrent refresh won — a race, not reuse.
+    const consumed = await this.sessionRepository.consumeRefreshToken(session.id, presentedHash);
+    if (!consumed) {
+      throw new UnauthorizedException('Session is no longer valid', ErrorCode.SESSION_REVOKED);
+    }
+
+    // Revoke the old session and mint the replacement pair in the same family.
     await this.prisma.session.update({
       where: { id: session.id },
       data: { revokedAt: new Date() },
@@ -187,11 +252,19 @@ export class AuthService {
     // the blacklist instead of a cached answer.
     await this.verificationCache.invalidateOnRefreshRotation(session.id);
 
-    return this.issueTokens(session.user, {
+    const { tokens, session: newSession } = await this.issueTokens(session.user, {
       device: session.device ?? undefined,
       browser: session.browser ?? undefined,
       ipAddress: session.ipAddress ?? undefined,
+    }, session.familyId);
+
+    // Record the replacement on the replaced session (reuse-detection trail).
+    await this.prisma.session.update({
+      where: { id: session.id },
+      data: { replacedByTokenId: newSession.id },
     });
+
+    return tokens;
   }
 
   /**
@@ -239,14 +312,21 @@ export class AuthService {
     }
   }
 
-  private async issueTokens(user: User, context: SessionContext): Promise<TokenPair> {
-    // Create the session first so the refresh token can embed its id.
+  private async issueTokens(
+    user: User,
+    context: SessionContext,
+    familyId?: string,
+  ): Promise<{ tokens: TokenPair; session: Session }> {
+    // Create the session first so the refresh token can embed its id. New
+    // sessions inherit the family of the session they replace (rotation);
+    // logins start a fresh family.
     const session = await this.prisma.session.create({
       data: {
         userId: user.id,
         device: context.device ?? null,
         browser: context.browser ?? null,
         ipAddress: context.ipAddress ?? null,
+        familyId: familyId ?? generateToken(16),
         refreshTokenHash: sha256(generateToken(8)), // placeholder, replaced below
         expiresAt: new Date(Date.now() + this.auth.refreshTtl * 1000),
       },
@@ -277,10 +357,13 @@ export class AuthService {
     });
 
     return {
-      accessToken,
-      refreshToken,
-      expiresIn: this.auth.accessTtl,
-      tokenType: 'Bearer',
+      tokens: {
+        accessToken,
+        refreshToken,
+        expiresIn: this.auth.accessTtl,
+        tokenType: 'Bearer',
+      },
+      session,
     };
   }
 
