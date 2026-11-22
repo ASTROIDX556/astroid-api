@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
 import { Budget, Prisma } from '@prisma/client';
 import { BudgetRepository } from './budget.repository';
 import { AllocateBudgetInput, CreateBudgetInput, UpdateBudgetInput } from './budget.dto';
@@ -18,6 +18,7 @@ import { EventBusService } from '../../events/event-bus.service';
 import { DomainEventName } from '../../events/event-names';
 import { RedisLock } from '../../common/locks/redis-lock.util';
 import { PrismaTransactionService } from '../../database/prisma-transaction.service';
+import { BudgetAlertService } from './services/budget-alert.service';
 
 const SORTABLE = ['createdAt', 'name', 'limitAmount', 'spent', 'period'];
 const Decimal = Prisma.Decimal;
@@ -41,6 +42,7 @@ export class BudgetService {
     private readonly eventBus: EventBusService,
     private readonly redisLock: RedisLock,
     private readonly transactions: PrismaTransactionService,
+    @Optional() private readonly budgetAlerts?: BudgetAlertService,
   ) {}
 
   async create(organizationId: string, actorId: string, input: CreateBudgetInput): Promise<Budget> {
@@ -258,10 +260,16 @@ export class BudgetService {
    */
   async reserveBudget(organizationId: string, budgetId: string, amount: number) {
     try {
-      return await this.transactions.run(
+      const budget = await this.transactions.run(
         (tx) => this.repository.reserveBudget(organizationId, budgetId, new Decimal(amount), tx),
         { name: 'budget.reserve' },
       );
+      // Reservations also count as spend for threshold alerting. Evaluation is
+      // best-effort and cannot fail the committed reservation.
+      if (this.budgetAlerts) {
+        await this.budgetAlerts.evaluate(organizationId, budget, new Decimal(budget.spent));
+      }
+      return budget;
     } catch (error: unknown) {
       const err = error as Error;
       if (err.message && err.message.includes('NotFoundException')) {
@@ -294,6 +302,12 @@ export class BudgetService {
           { budgetId, utilisation: utilisation.toFixed(4) },
           { organizationId, aggregateType: 'budget', aggregateId: budgetId },
         );
+      }
+      // Threshold alerting is best-effort and never fails the committed spend.
+      // The service swallows its own errors; the guard keeps a missing
+      // dependency (unit tests, older wiring) from breaking consumption.
+      if (this.budgetAlerts) {
+        await this.budgetAlerts.evaluate(organizationId, budget, new Decimal(budget.spent));
       }
       return budget;
     });

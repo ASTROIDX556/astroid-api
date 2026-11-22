@@ -204,6 +204,25 @@ export interface BudgetWarningPayload extends Record<string, unknown> {
   walletId?: string;
 }
 
+export interface BudgetThresholdReachedPayload extends Record<string, unknown> {
+  /** Budget whose period usage crossed the threshold. */
+  budgetId: string;
+  /** Budget period the alert belongs to (DAILY, WEEKLY, MONTHLY, …). */
+  period: string;
+  /** Start of the budget period, ISO-8601. Resets alert tracking per period. */
+  periodStart: string;
+  /** Percentage of the limit that was crossed (e.g. 80 or 100). */
+  threshold: number;
+  /** Current usage as a fixed 7-decimal string. */
+  usage: string;
+  /** Budget limit as a fixed 7-decimal string. */
+  limit: string;
+  /** Usage as a percentage of the limit, fixed 2 decimals. */
+  utilisation: string;
+  /** Budget currency (e.g. USDC). */
+  currency: string;
+}
+
 export interface ProposalCreatedPayload extends Record<string, unknown> {
   proposalId: string;
   transactionId: string;

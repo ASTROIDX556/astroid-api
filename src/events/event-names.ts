@@ -42,6 +42,8 @@ export const DomainEventName = {
   BudgetConsumed: 'budget.consumed',
   BudgetExceeded: 'budget.exceeded',
   BudgetWarning: 'budget.warning',
+  /** A spend crossed a configured percentage threshold of a budget period. */
+  BudgetThresholdReached: 'budget.threshold_reached',
 
   // Proposal / approval
   ProposalCreated: 'proposal.created',
@@ -95,4 +97,5 @@ export const WEBHOOK_EVENTS: DomainEventNameType[] = [
   DomainEventName.TransactionFailed,
   DomainEventName.PolicyViolated,
   DomainEventName.BudgetExceeded,
+  DomainEventName.BudgetThresholdReached,
 ];

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { TransactionIdempotencyRecord } from '@prisma/client';
+import { IdempotencyRecord } from '@prisma/client';
 import { IdempotencyService } from './idempotency.service';
 import { PrismaService } from '../../database/prisma.service';
 import { RequestContext, RequestContextData } from '../context/request-context';
@@ -17,10 +17,10 @@ const OTHER_ROUTE = 'POST /transactions/execute';
  * (principal, route, keyHash) uniqueness as the database constraint.
  */
 function createPrisma() {
-  const rows = new Map<string, TransactionIdempotencyRecord>();
+  const rows = new Map<string, IdempotencyRecord>();
   let sequence = 0;
 
-  const matchesIdentity = (row: TransactionIdempotencyRecord, where: Record<string, unknown>) =>
+  const matchesIdentity = (row: IdempotencyRecord, where: Record<string, unknown>) =>
     (typeof where.principalId !== 'string' || row.principalId === where.principalId) &&
     (typeof where.route !== 'string' || row.route === where.route) &&
     (typeof where.keyHash !== 'string' || row.keyHash === where.keyHash);
@@ -28,7 +28,7 @@ function createPrisma() {
   return {
     rows,
     prisma: {
-      transactionIdempotencyRecord: {
+      idempotencyRecord: {
         deleteMany: vi.fn(async ({ where }: { where: Record<string, unknown> }) => {
           let count = 0;
           for (const [id, row] of rows) {
@@ -52,20 +52,19 @@ function createPrisma() {
               row.keyHash === data.keyHash,
           );
           if (duplicate) throw { code: 'P2002' };
-          const row: TransactionIdempotencyRecord = {
+          const row: IdempotencyRecord = {
             id: `idem_${(sequence += 1)}`,
             principalId: data.principalId as string,
-            operation: data.operation as string,
             route: data.route as string,
             keyHash: data.keyHash as string,
             requestHash: data.requestHash as string,
             status: 'PROCESSING',
             transactionId: null,
-            response: null,
+            responseBody: null,
             responseStatus: null,
             requestId: null,
             createdAt: new Date(),
-            completedAt: null,
+            updatedAt: new Date(),
             expiresAt: data.expiresAt as Date,
           };
           rows.set(row.id, row);
@@ -82,7 +81,7 @@ function createPrisma() {
           async ({ where, data }: { where: { id: string }; data: Record<string, unknown> }) => {
             const row = rows.get(where.id);
             if (!row) throw new Error(`missing record ${where.id}`);
-            const updated = { ...row, ...data } as TransactionIdempotencyRecord;
+            const updated = { ...row, ...data } as IdempotencyRecord;
             rows.set(row.id, updated);
             return updated;
           },
@@ -93,7 +92,7 @@ function createPrisma() {
               (row) => row.transactionId === where.transactionId && row.status === where.status,
             );
             for (const row of matching) {
-              rows.set(row.id, { ...row, ...data } as TransactionIdempotencyRecord);
+              rows.set(row.id, { ...row, ...data } as IdempotencyRecord);
             }
             return { count: matching.length };
           },

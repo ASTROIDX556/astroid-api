@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { scrubForLog, scrubString } from './log-scrubber.util';
+import { sanitizeLogArguments } from '../common/helpers/audit-sanitizer';
 
 const STELLAR_SEED = 'SCZANGBA5YHTNYVVV4C3U252E2B6P6F5T3U6MM63WBSBZATAQI3EBTQ4';
 
@@ -91,5 +92,82 @@ describe('scrubForLog', () => {
     expect(scrubForLog(undefined)).toBeUndefined();
     expect(scrubForLog(42)).toBe(42);
     expect(scrubForLog(false)).toBe(false);
+  });
+});
+
+describe('log redaction regression', () => {
+  const secrets = {
+    password: 'p@ssw0rd-1',
+    secret: 'whsec_live_secret',
+    apiKey: 'api-key-value',
+    api_key: 'snake-api-key',
+    authorization: 'Bearer header-token',
+    refreshToken: 'refresh-token-value',
+    accessToken: 'access-token-value',
+    privateKey: 'SDFGHJKLPRIVATEKEY',
+    signature: 'v1=deadbeef',
+    'x-api-key': 'x-api-value',
+    'idempotency-key': 'idem-value',
+  };
+
+  it('never serializes any sensitive value', () => {
+    const log = {
+      level: 'info',
+      requestId: 'req-1',
+      actorId: 'user-1',
+      module: 'WebhooksProcessor',
+      headers: { ...secrets, 'Content-Type': 'application/json' },
+      nested: { list: [{ ...secrets }] },
+    };
+
+    const serialized = JSON.stringify(scrubForLog(log));
+
+    for (const value of Object.values(secrets)) {
+      expect(serialized).not.toContain(value);
+    }
+    // Tracing fields survive redaction.
+    expect(serialized).toContain('req-1');
+    expect(serialized).toContain('user-1');
+    expect(serialized).toContain('WebhooksProcessor');
+  });
+
+  it('redacts headers case-insensitively', () => {
+    expect(scrubForLog({ headers: { Authorization: 'Bearer abc', 'X-Api-Key': 'key' } })).toEqual({
+      headers: { Authorization: '[REDACTED]', 'X-Api-Key': '[REDACTED]' },
+    });
+  });
+
+  it('redacts request context attached to an error', () => {
+    const error = Object.assign(new Error('upstream said password=hunter2'), {
+      request: { headers: { authorization: 'Bearer abc', 'x-api-key': 'key' }, body: { secret: 's' } },
+    });
+
+    const out = JSON.stringify(scrubForLog(error));
+    expect(out).not.toContain('Bearer abc');
+    expect(out).not.toContain('hunter2');
+    expect(out).not.toContain('"s"');
+  });
+
+  it('truncates oversized binary payloads with a documented marker', () => {
+    const base64 = Buffer.alloc(4_096, 1).toString('base64');
+    const out = scrubForLog({ signedXdr: base64, payload: 'y'.repeat(5_000) }) as {
+      signedXdr: string;
+      payload: string;
+    };
+
+    expect(out.signedXdr).toContain('...[truncated binary, ');
+    expect(out.signedXdr.length).toBeLessThan(400);
+    expect(out.payload).toContain('...[truncated]');
+  });
+
+  it('truncates raw binary buffers instead of expanding them', () => {
+    expect(scrubForLog({ blob: Buffer.alloc(1_024) })).toEqual({ blob: '[Binary 1024 bytes]' });
+  });
+
+  it('uses the same policy for HTTP and worker log arguments', () => {
+    const args = [{ password: 'p@ss', requestId: 'req-9' }, 'Authorization: Bearer abc'];
+
+    expect(sanitizeLogArguments(args)).toEqual(scrubForLog(args));
+    expect(JSON.stringify(sanitizeLogArguments(args))).not.toContain('p@ss');
   });
 });

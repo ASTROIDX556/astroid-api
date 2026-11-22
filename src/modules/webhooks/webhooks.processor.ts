@@ -28,7 +28,12 @@ import {
 import { WebhookCircuitService } from './services/webhook-circuit.service';
 import { EventBusService } from '../../events/event-bus.service';
 import { DomainEventName } from '../../events/event-names';
-import { classifyWebhookFailure, WebhookFailureCategory } from './utils/failure-classification';
+import {
+  classifyWebhookFailure,
+  isRetryableWebhookStatus,
+  WebhookFailureCategory,
+} from './utils/failure-classification';
+import { WebhookAttemptService } from './services/webhook-attempt.service';
 
 /**
  * BullMQ job processor for webhook event delivery with exponential backoff + jitter.
@@ -132,6 +137,7 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
     compatibilityService?: WebhookCircuitService | EventBusService | ConfigService,
     @Optional() @Inject(ConfigService) private readonly configService?: ConfigService,
     @Optional() eventBusService?: EventBusService,
+    @Optional() private readonly deliveryAttempts?: WebhookAttemptService,
   ) {
     super();
     this.circuit = compatibilityService && 'beforeAttempt' in compatibilityService
@@ -275,6 +281,8 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
       let responseStatus: number | undefined;
       let errorMessage: string | undefined;
       let endpoint = job.data.url;
+      const attemptStartedAt = Date.now();
+      let attemptRecorded = false;
       try {
         const body = Buffer.from(JSON.stringify(payload), 'utf8');
         const timestamp = Math.floor(Date.now() / 1000).toString();
@@ -298,14 +306,26 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
         });
 
         responseStatus = response.status;
-        if (response.status < 200 || response.status >= 300) {
+        const succeeded = response.status >= 200 && response.status < 300;
+        await this.recordAttempt({
+          webhookId,
+          organizationId,
+          eventId,
+          attemptNumber: job.attemptsMade + 1,
+          status: succeeded ? 'SUCCEEDED' : 'FAILED',
+          responseStatus,
+          durationMs: Date.now() - attemptStartedAt,
+          ...(succeeded
+            ? {}
+            : { errorCode: `HTTP_${response.status}`, errorMessage: `HTTP ${response.status}` }),
+        });
+        attemptRecorded = true;
+        if (!succeeded) {
           const isRedirect = response.status >= 300 && response.status < 400;
           errorMessage = isRedirect ? 'Webhook endpoint redirects are not supported' : `HTTP ${response.status}`;
-          const isNonTransient =
-            isRedirect ||
-            (response.status >= 400 &&
-              response.status < 500 &&
-              ![408, 425, 429].includes(response.status));
+          // Only 408, 429 and 5xx are retryable. Every other 4xx (and any
+          // redirect) is a permanent rejection: retrying cannot change it.
+          const isNonTransient = isRedirect || !isRetryableWebhookStatus(response.status);
           this.logger.warn(`Webhook ${webhookId} responded ${response.status}${requestTrace}`);
           if (isNonTransient) {
             throw new PermanentJobError(errorMessage);
@@ -315,6 +335,21 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
         this.logger.debug(`Webhook ${webhookId} delivered successfully${requestTrace}`);
         await this.circuit?.recordSuccess(webhookId, organizationId, endpoint);
       } catch (error) {
+        if (!attemptRecorded) {
+          attemptRecorded = true;
+          const attemptClassification = classifyWebhookFailure(error, responseStatus);
+          await this.recordAttempt({
+            webhookId,
+            organizationId,
+            eventId,
+            attemptNumber: job.attemptsMade + 1,
+            status: 'FAILED',
+            responseStatus,
+            durationMs: Date.now() - attemptStartedAt,
+            errorCode: attemptClassification.code,
+            errorMessage: error instanceof Error ? error.message : 'Webhook delivery failed',
+          });
+        }
         if (error instanceof UnrecoverableError) {
           if (error instanceof PermanentJobError) {
             const failedReason = error.message;
@@ -421,6 +456,20 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
       return this.workerMetrics.instrumentJob(Queues.Webhooks, jobName, execute);
     }
     return execute();
+  }
+
+  /** Appends the attempt row; never lets bookkeeping mask the delivery result. */
+  private async recordAttempt(
+    attempt: Parameters<WebhookAttemptService['record']>[0],
+  ): Promise<void> {
+    if (!this.deliveryAttempts) return;
+    try {
+      await this.deliveryAttempts.record(attempt);
+    } catch (error) {
+      this.logger.warn(
+        `Could not record webhook delivery attempt: ${scrubString((error as Error).message)}`,
+      );
+    }
   }
 
   private async persistState(data: {

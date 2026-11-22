@@ -1,4 +1,13 @@
-import { Body, Controller, Get, Param, Post, Query, UseGuards, UseInterceptors } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  Post,
+  Query,
+  UseGuards,
+  UseInterceptors,
+} from '@nestjs/common';
 import {
   ApiOperation,
   ApiTags,
@@ -36,8 +45,6 @@ import { cursorPaginationQuerySchema, CursorPaginationQuery } from '../../common
 import { ApiErrorResponses } from '../../common/decorators/api-error-responses.decorator';
 import { Idempotent } from '../../common/decorators/idempotent.decorator';
 import { IdempotencyInterceptor } from '../../common/interceptors/idempotency.interceptor';
-import { IDEMPOTENCY_KEY_HEADER } from '../../common/constants/headers';
-import { TRANSACTION_CREATE_ROUTE } from '../../common/idempotency/idempotency.constants';
 import {
   SlidingWindowThrottlerGuard,
   SlidingWindowLimit,
@@ -117,14 +124,10 @@ export class TransactionController {
     @Body(new ZodValidationPipe(createTransactionSchema)) body: CreateTransactionInput,
   ) {
     const actorId = user.isApiKey ? user.createdById ?? user.id : user.id;
+    // Idempotency is enforced at the HTTP boundary by IdempotencyInterceptor
+    // with the reusable IdempotencyService, so the service call stays focused on
+    // the governance pipeline.
     return this.transactionService.create(user.organizationId, actorId, body);
-    const key = parseIdempotencyKey(rawIdempotencyKey);
-    return this.transactionService.create(
-      user.organizationId,
-      actorId,
-      body,
-      key ? { principalId: user.id, key, route: TRANSACTION_CREATE_ROUTE } : undefined,
-    );
   }
 
   @Post('simulate')

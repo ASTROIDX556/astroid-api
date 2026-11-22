@@ -1,226 +1,173 @@
 import {
+  BadRequestException,
   CallHandler,
+  ConflictException,
   ExecutionContext,
-  Inject,
   Injectable,
   NestInterceptor,
-  Optional,
+  UnprocessableEntityException,
 } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
+import { HTTP_CODE_METADATA } from '@nestjs/common/constants';
 import { Reflector } from '@nestjs/core';
 import { createHash } from 'node:crypto';
 import { Request, Response } from 'express';
-import { Observable, of, throwError } from 'rxjs';
-import { catchError, concatMap, mergeMap } from 'rxjs/operators';
+import { Observable, from, of } from 'rxjs';
+import { lastValueFrom } from 'rxjs';
 
-import { IDEMPOTENCY_KEY_HEADER, IDEMPOTENCY_REPLAYED_HEADER } from '../constants/headers';
-import { ErrorCode } from '../constants/error-codes';
+import { REQUEST_ID_HEADER } from '../constants/headers';
+import { IDEMPOTENT_KEY, IdempotentOptions } from '../decorators/idempotent.decorator';
+import { IdempotencyService } from '../idempotency/idempotency.service';
 import {
-  DEFAULT_IDEMPOTENCY_TTL_MS,
-  IDEMPOTENT_KEY,
-  IdempotentOptions,
-} from '../decorators/idempotent.decorator';
-import { DomainException, ConflictException } from '../exceptions/domain.exception';
-import { AuthenticatedUser } from '../interfaces/authenticated-user.interface';
-import {
-  IDEMPOTENCY_STORE,
-  IdempotencyIdentity,
-  IdempotencyRecord,
-  IdempotencyStore,
-} from './idempotency-store';
+  IdempotencyInFlightError,
+  IdempotencyMismatchError,
+} from '../idempotency/idempotency.types';
 
-/** `Idempotency-Key` grammar: 1-128 URL-safe ASCII characters. */
 const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9._~-]{1,128}$/;
-const DEFAULT_WAIT_FOR_COMPLETION_MS = 2_000;
-const COMPLETION_POLL_INTERVAL_MS = 50;
-
-interface IdempotentRequest extends Request {
-  user?: AuthenticatedUser;
-}
 
 /**
- * Stable JSON serialisation with sorted object keys, so semantically equal
- * payloads (`{ a: 1, b: 2 }` and `{ b: 2, a: 1 }`) fingerprint identically.
- */
-export function canonicalJson(value: unknown): string {
-  if (Array.isArray(value)) {
-    return `[${value.map((entry) => canonicalJson(entry)).join(',')}]`;
-  }
-  if (value !== null && typeof value === 'object') {
-    const entries = Object.entries(value as Record<string, unknown>)
-      .filter(([, nested]) => nested !== undefined)
-      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
-      .map(([key, nested]) => `${JSON.stringify(key)}:${canonicalJson(nested)}`);
-    return `{${entries.join(',')}}`;
-  }
-  return JSON.stringify(value) ?? 'null';
-}
-
-/** SHA-256 of the stable body representation; raw bodies are never stored. */
-export function hashRequestBody(body: unknown): string {
-  return createHash('sha256').update(canonicalJson(body)).digest('hex');
-}
-
-/**
- * Enforces idempotent request handling for endpoints marked with
- * `@Idempotent()`.
+ * HTTP adapter for the shared {@link IdempotencyService}.
  *
- * - First request: reserves the key, executes the handler and stores the
- *   status code + response body.
- * - Repeat with the same payload: replays the stored status/body and sets the
- *   `Idempotency-Replayed: true` header.
- * - Repeat with a different payload: 409 without executing anything.
- * - Concurrent duplicates: only the caller that wins the store's unique
- *   constraint executes; the others wait briefly and replay (or 409).
+ * Honoured only on handlers decorated with `@Idempotent()`, so existing routes
+ * keep their exact behaviour. Requests without an `Idempotency-Key` bypass the
+ * mechanism entirely.
  *
- * The `Idempotency-Key` itself is only ever persisted as a SHA-256 hash and is
- * never logged alongside the request body.
+ * Responses:
+ * - **409 + Retry-After** when a duplicate arrives while the original runs.
+ * - **422** when the key was already used with a different request body.
+ * - The original status, body and request id on replay.
+ *
+ * Streaming and multipart/file-upload requests are deliberately excluded:
+ * buffering their bodies for hashing (and replaying their streams) is not
+ * safe, so they always execute normally.
  */
 @Injectable()
 export class IdempotencyInterceptor implements NestInterceptor {
   constructor(
     private readonly reflector: Reflector,
-    @Optional()
-    @Inject(IDEMPOTENCY_STORE)
-    private readonly store?: IdempotencyStore,
-    @Optional() private readonly config?: ConfigService,
+    private readonly idempotency: IdempotencyService,
   ) {}
 
   async intercept(context: ExecutionContext, next: CallHandler): Promise<Observable<unknown>> {
-    const options = this.reflector.getAllAndOverride<IdempotentOptions | undefined>(
-      IDEMPOTENT_KEY,
-      [context.getHandler(), context.getClass()],
-    );
-    if (!options) {
-      return next.handle();
-    }
+    const options = this.reflector.getAllAndOverride<IdempotentOptions | undefined>(IDEMPOTENT_KEY, [
+      context.getHandler(),
+      context.getClass(),
+    ]);
+    if (!options) return next.handle();
 
     const http = context.switchToHttp();
-    const request = http.getRequest<IdempotentRequest>();
+    const request = http.getRequest<Request & { user?: { id?: string } }>();
     const response = http.getResponse<Response>();
-    const key = this.parseKey(request.headers[IDEMPOTENCY_KEY_HEADER], options);
 
-    // An unguarded key (required: false) keeps the endpoint's old behaviour.
-    if (!key || !this.store) {
-      return next.handle();
-    }
+    const rawKey = request.headers['idempotency-key'];
+    const key = Array.isArray(rawKey) ? rawKey[0] : rawKey;
+    if (!key) return next.handle();
 
-    const identity: IdempotencyIdentity = {
-      principalId: resolvePrincipal(request.user),
-      operation: this.resolveOperation(context),
-      keyHash: createHash('sha256').update(key).digest('hex'),
-    };
-    const requestHash = hashRequestBody(request.body);
-    const ttlMs = options.ttlMs ?? this.defaultTtlMs();
-    const reservation = await this.store.reserve({
-      ...identity,
-      requestHash,
-      expiresAt: new Date(Date.now() + ttlMs),
-    });
-
-    if (!reservation.created) {
-      return this.replay(reservation.record, identity, requestHash, response, options);
-    }
-
-    return next.handle().pipe(
-      concatMap(async (body: unknown) => {
-        await this.store!.complete(
-          reservation.record.id,
-          { statusCode: response.statusCode || 201, body: serialisable(body) },
-          new Date(Date.now() + ttlMs),
-        );
-        return body;
-      }),
-      catchError((error: unknown) =>
-        // The handler failed, so the key must not stay reserved: a client
-        // retry is allowed to execute (the endpoint's own retry semantics apply).
-        fromPromise(this.store!.release(reservation.record.id)).pipe(
-          catchError(() => of(undefined)),
-          mergeMap(() => throwError(() => error)),
-        ),
-      ),
-    );
-  }
-
-  /** Validates the header, answering 400 for missing/malformed guarded keys. */
-  private parseKey(rawHeader: string | string[] | undefined, options: IdempotentOptions): string | undefined {
-    const raw = Array.isArray(rawHeader) ? rawHeader[0] : rawHeader;
-    if (raw === undefined || raw === '') {
-      if (options.required === false) return undefined;
-      throw new DomainException(
-        ErrorCode.BAD_REQUEST,
-        'Idempotency-Key header is required for this endpoint',
-      );
-    }
-    if (typeof raw !== 'string' || !IDEMPOTENCY_KEY_PATTERN.test(raw)) {
-      throw new DomainException(
-        ErrorCode.BAD_REQUEST,
+    if (!IDEMPOTENCY_KEY_PATTERN.test(key)) {
+      throw new BadRequestException(
         'Idempotency-Key must contain 1 to 128 ASCII letters, digits, dots, underscores, tildes, or hyphens',
       );
     }
-    return raw;
-  }
 
-  /** Replays a completed record, or resolves the concurrent-duplicate case. */
-  private async replay(
-    record: IdempotencyRecord,
-    identity: IdempotencyIdentity,
-    requestHash: string,
-    response: Response,
-    options: IdempotentOptions,
-  ): Promise<Observable<unknown>> {
-    if (record.requestHash !== requestHash) {
-      throw new ConflictException(
-        'Idempotency-Key was already used with a different request payload',
-      );
+    if (!isReplayableJsonRequest(request)) return next.handle();
+
+    const principalId = request.user?.id;
+    if (!principalId) {
+      // The routes that opt in are authenticated; without a principal the key
+      // cannot be scoped, so fall back to normal execution rather than sharing
+      // a namespace between callers.
+      return next.handle();
     }
 
-    const completed = await this.waitForCompletion(record, identity, options);
-    if (!completed?.response) {
-      throw new ConflictException(
-        'A request with this Idempotency-Key is currently being processed; retry shortly',
-      );
+    const route = `${request.method} ${request.baseUrl ?? ''}${request.path}`;
+
+    let handle: Awaited<ReturnType<IdempotencyService['begin']>>;
+    try {
+      handle = await this.idempotency.begin({
+        principalId,
+        route,
+        key,
+        requestBody: request.body,
+      });
+    } catch (error) {
+      if (error instanceof IdempotencyInFlightError) {
+        response.setHeader('Retry-After', String(error.retryAfterSeconds));
+      }
+      throw toHttpException(error);
     }
 
-    response.setHeader(IDEMPOTENCY_REPLAYED_HEADER, 'true');
-    response.status(completed.response.statusCode);
-    return of(completed.response.body);
+    if (handle.replay) {
+      response.status(handle.replay.statusCode);
+      if (handle.replay.requestId) {
+        // Preserve the original request id in the envelope and on the wire.
+        request.headers[REQUEST_ID_HEADER] = handle.replay.requestId;
+        response.setHeader(REQUEST_ID_HEADER, handle.replay.requestId);
+      }
+      return of(handle.replay.body);
+    }
+
+    const statusCode = this.resolveStatusCode(context, request, response);
+    return from(this.execute(next, handle, response, statusCode));
   }
 
   /**
-   * Two requests with the same key can overlap. The loser waits a bounded time
-   * for the winner to store its response, then replays it; if the winner is
-   * still running, the duplicate is rejected with 409 rather than enqueuing a
-   * second transaction.
+   * The status Nest will send. Router-level defaults (201 for POST) are applied
+   * after the interceptor chain, so they are derived here from the handler
+   * metadata and the HTTP method instead of reading `response.statusCode`.
    */
-  private async waitForCompletion(
-    record: IdempotencyRecord,
-    identity: IdempotencyIdentity,
-    options: IdempotentOptions,
-  ): Promise<IdempotencyRecord | null> {
-    if (record.status === 'COMPLETED') return record;
+  private resolveStatusCode(
+    context: ExecutionContext,
+    request: Request,
+    response: Response,
+  ): number {
+    const explicit = this.reflector.getAllAndOverride<number | undefined>(HTTP_CODE_METADATA, [
+      context.getHandler(),
+      context.getClass(),
+    ]);
+    if (explicit) return explicit;
+    if (response.statusCode && response.statusCode !== 200) return response.statusCode;
+    return request.method === 'POST' ? 201 : response.statusCode || 200;
+  }
 
-    const waitMs = options.waitForCompletionMs ?? DEFAULT_WAIT_FOR_COMPLETION_MS;
-    const deadline = Date.now() + waitMs;
-    let current: IdempotencyRecord | null = record;
-    while (current?.status !== 'COMPLETED' && Date.now() < deadline) {
-      await waitForNextPoll(COMPLETION_POLL_INTERVAL_MS);
-      current = await this.store!.find(identity);
-      if (!current) return null;
+  private async execute(
+    next: CallHandler,
+    handle: Awaited<ReturnType<IdempotencyService['begin']>>,
+    response: Response,
+    statusCode: number,
+  ): Promise<unknown> {
+    try {
+      const body = await lastValueFrom(next.handle());
+      await handle.complete({
+        statusCode,
+        body,
+        requestId:
+          (response.getHeader(REQUEST_ID_HEADER) as string | undefined) ??
+          null,
+      });
+      return body;
+    } catch (error) {
+      // Release the reservation so a client may retry after a failed request,
+      // including a 5xx that rolled nothing back.
+      await handle.fail();
+      throw error;
     }
-    return current;
   }
+}
 
-  private resolveOperation(context: ExecutionContext): string {
-    const controller = context.getClass().name;
-    const handler = context.getHandler().name;
-    return `${controller}.${handler}`;
-  }
+/** True only for JSON bodies we can hash and replay safely. */
+function isReplayableJsonRequest(request: Request): boolean {
+  if (request.is?.('multipart/form-data')) return false;
+  const body: unknown = request.body;
+  return typeof body === 'object' && body !== null && !Array.isArray(body) && !Buffer.isBuffer(body);
+}
 
-  private defaultTtlMs(): number {
-    const configured = Number(this.config?.get<string | number>('IDEMPOTENCY_TTL_MS'));
-    return Number.isFinite(configured) && configured > 0 ? configured : DEFAULT_IDEMPOTENCY_TTL_MS;
+function toHttpException(error: unknown): Error {
+  if (error instanceof IdempotencyMismatchError) {
+    return new UnprocessableEntityException(error.message);
   }
+  if (error instanceof IdempotencyInFlightError) {
+    return new ConflictException(error.message);
+  }
+  return error instanceof Error ? error : new Error('Idempotency check failed');
 }
 
 /**

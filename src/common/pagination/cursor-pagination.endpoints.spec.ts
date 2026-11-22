@@ -18,6 +18,7 @@ import { SlidingWindowThrottlerGuard } from '../guards/sliding-window-throttler.
 import { SensitiveRateLimitGuard } from '../guards/sensitive-rate-limit.guard';
 import { SpendingLimitGuard } from '../../modules/transactions/guards/spending-limit.guard';
 import { AgentBudgetGuard } from '../../modules/budgets/guards/agent-budget.guard';
+import { IdempotencyService } from '../idempotency/idempotency.service';
 import { CursorPaginated } from '../interfaces/api-response.interface';
 import { decodeCursor, encodeCursor } from './cursor-pagination';
 
@@ -112,6 +113,17 @@ describe('Cursor pagination endpoints', () => {
         { provide: AuditArchiveService, useValue: {} },
         { provide: TransactionService, useValue: { list: transactionList } },
         { provide: WebhookService, useValue: { listDeliveries: deliveryList } },
+        // The controllers register IdempotencyInterceptor, which needs the
+        // shared service; these list routes never send an Idempotency-Key, so
+        // the engine is replaced with an inert stub.
+        {
+          provide: IdempotencyService,
+          useValue: {
+            begin: vi.fn(async () => {
+              throw new Error('idempotency is not exercised by the list routes');
+            }),
+          },
+        },
         { provide: APP_FILTER, useClass: AllExceptionsFilter },
       ],
     })
