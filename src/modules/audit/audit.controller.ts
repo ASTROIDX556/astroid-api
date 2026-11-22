@@ -11,6 +11,7 @@ import {
 import { ApiErrorResponses } from '../../common/decorators/api-error-responses.decorator';
 import {
   ApiPageOrCursorPaginatedEnvelope,
+  ApiCursorPaginatedEnvelope,
   ApiEnvelope,
 } from '../../common/decorators/api-envelope.decorator';
 import { ApiPaginationQuery } from '../../common/decorators/api-pagination-query.decorator';
@@ -31,6 +32,11 @@ import {
 } from './audit-export.dto';
 import { AuditListQuery, auditListQuerySchema } from './audit-list.dto';
 import { AuditLogEntryDto, AuditExportDto, AuditIntegrityDto } from './audit-list.dto';
+import {
+  AuditTimelineQuery,
+  auditResourceIdParamSchema,
+  auditTimelineQuerySchema,
+} from './audit-timeline.dto';
 
 /** Read-only access to the append-only audit trail. Restricted to auditors/admins. */
 @ApiTags('audit')
@@ -87,12 +93,13 @@ export class AuditController {
   @ApiOperation({
     summary: 'List audit log entries for the organization',
     description:
-      'Returns a cursor-paginated list of audit log entries, newest first. Supports filtering by actor, action, resource and date range.',
+      'Returns audit log entries, newest first. Pass `cursor` from `meta.nextCursor` for stable keyset pagination; page/offset mode is kept for backwards compatibility. Supports filtering by actor, action, resource type, resource id and an inclusive date range.',
   })
   @ApiPaginationQuery()
-  @ApiQuery({ name: 'cursor', required: false, type: String, description: 'Legacy cursor pagination mode' })
+  @ApiQuery({ name: 'cursor', required: false, type: String, description: 'Opaque keyset cursor from meta.nextCursor' })
   @ApiQuery({ name: 'actorId', required: false, type: String, description: 'Filter by acting user UUID' })
   @ApiQuery({ name: 'action', required: false, type: String, description: 'Filter by audit action type' })
+  @ApiQuery({ name: 'resourceType', required: false, type: String, description: 'Filter by affected entity type (resource type)' })
   @ApiQuery({ name: 'resourceId', required: false, type: String, description: 'Filter by affected entity UUID' })
   @ApiQuery({ name: 'from', required: false, type: String, description: 'ISO 8601 start of the date range' })
   @ApiQuery({ name: 'to', required: false, type: String, description: 'ISO 8601 end of the date range' })
@@ -100,6 +107,7 @@ export class AuditController {
     description: 'Paginated list of audit log entries',
   })
   @ApiErrorResponses({
+    validation: 'Malformed cursor or invalid filter',
     unauthorized: true,
     forbidden: true,
     serverError: true,
@@ -109,6 +117,34 @@ export class AuditController {
     @Query(new ZodValidationPipe(auditListQuerySchema)) query: AuditListQuery,
   ) {
     return this.auditService.list(organizationId, query);
+  }
+
+  @Get('resources/:resourceId/timeline')
+  @ApiOperation({
+    summary: 'List the audit timeline for a resource',
+    description:
+      'Returns every audit entry for one resource id in ascending creation order. Uses the same opaque `(createdAt, id)` cursor as the audit listing, with the comparison direction inverted.',
+  })
+  @ApiParam({ name: 'resourceId', description: 'Affected entity id whose timeline is requested' })
+  @ApiQuery({ name: 'cursor', required: false, type: String, description: 'Opaque keyset cursor from meta.nextCursor' })
+  @ApiQuery({ name: 'limit', required: false, type: Number, description: 'Page size, bounded by AUDIT_PAGE_SIZE_MAX' })
+  @ApiQuery({ name: 'from', required: false, type: String, description: 'Inclusive ISO 8601 start of the range' })
+  @ApiQuery({ name: 'to', required: false, type: String, description: 'Inclusive ISO 8601 end of the range' })
+  @ApiCursorPaginatedEnvelope(AuditLogEntryDto, {
+    description: 'Ascending audit timeline for the requested resource',
+  })
+  @ApiErrorResponses({
+    validation: 'Malformed cursor or invalid filter',
+    unauthorized: true,
+    forbidden: true,
+    serverError: true,
+  })
+  timeline(
+    @CurrentUser('organizationId') organizationId: string,
+    @Param('resourceId', new ZodValidationPipe(auditResourceIdParamSchema)) resourceId: string,
+    @Query(new ZodValidationPipe(auditTimelineQuerySchema)) query: AuditTimelineQuery,
+  ) {
+    return this.auditService.timeline(organizationId, resourceId, query);
   }
 
   @Get('export/stream')

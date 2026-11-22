@@ -139,7 +139,7 @@ are rejected:
 | `PRICE_ORACLE_MAX_AGE_MS` | `300000` | Maximum accepted quote age in milliseconds. |
 | `PRICE_ORACLE_STATIC_PRICES` | _(empty)_ | Comma-separated static `ASSET=PRICE` fallback quotes. |
 
-### Audit archival
+### Audit
 
 | Variable | Default | Description |
 | -------- | ------- | ----------- |
@@ -148,6 +148,8 @@ are rejected:
 | `AUDIT_ARCHIVE_BATCH_SIZE` | `500` | Maximum records per archival batch. |
 | `AUDIT_ARCHIVE_MAX_BATCHES` | `20` | Maximum batches per archival run. |
 | `AUDIT_RETENTION_DAYS` | `90` | Hard-delete retention for audit records. |
+| `AUDIT_PAGE_SIZE_DEFAULT` | `20` | Default page size for audit listing and resource timelines. |
+| `AUDIT_PAGE_SIZE_MAX` | `100` | Hard upper bound for audit page sizes; larger values return 400. |
 
 ### Transaction idempotency
 

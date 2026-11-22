@@ -132,20 +132,38 @@ export class AuditRepository {
     return { items, total };
   }
 
-  findPage(where: Prisma.AuditLogWhereInput, cursor: CursorPayload | undefined, limit: number) {
+  /**
+   * Keyset page over `(createdAt, id)`. `order` selects the comparison
+   * direction: `desc` for the newest-first listing, `asc` for resource
+   * timelines. The cursor is a pure sort tuple, so it works even if the row it
+   * came from was archived or deleted after the previous page was fetched.
+   */
+  findPage(
+    where: Prisma.AuditLogWhereInput,
+    cursor: CursorPayload | undefined,
+    limit: number,
+    order: 'asc' | 'desc' = 'desc',
+  ) {
     const cursorWhere: Prisma.AuditLogWhereInput | undefined = cursor
-      ? {
-          OR: [
-            { createdAt: { lt: cursor.createdAt } },
-            { createdAt: cursor.createdAt, id: { lt: cursor.id } },
-          ],
-        }
+      ? order === 'asc'
+        ? {
+            OR: [
+              { createdAt: { gt: cursor.createdAt } },
+              { createdAt: cursor.createdAt, id: { gt: cursor.id } },
+            ],
+          }
+        : {
+            OR: [
+              { createdAt: { lt: cursor.createdAt } },
+              { createdAt: cursor.createdAt, id: { lt: cursor.id } },
+            ],
+          }
       : undefined;
 
     return this.prisma.auditLog.findMany({
       where: cursorWhere ? { AND: [where, cursorWhere] } : where,
       take: limit,
-      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      orderBy: [{ createdAt: order }, { id: order }],
     });
   }
 

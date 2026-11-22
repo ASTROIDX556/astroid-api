@@ -97,12 +97,35 @@ export const priceOracleEnvSchema = z.object({
   PRICE_ORACLE_STATIC_PRICES: z.string().default(''),
 });
 
+/** Page-size bounds for audit log cursor listing and resource timelines. */
+export const auditPaginationEnvSchemaBase = z.object({
+  AUDIT_PAGE_SIZE_DEFAULT: z.coerce.number().int().min(1).max(1000).default(20),
+  AUDIT_PAGE_SIZE_MAX: z.coerce.number().int().min(1).max(1000).default(100),
+});
+
+function validateAuditPaginationRange(
+  env: { AUDIT_PAGE_SIZE_DEFAULT: number; AUDIT_PAGE_SIZE_MAX: number },
+  ctx: z.RefinementCtx,
+): void {
+  if (env.AUDIT_PAGE_SIZE_DEFAULT > env.AUDIT_PAGE_SIZE_MAX) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['AUDIT_PAGE_SIZE_DEFAULT'],
+      message: `must be less than or equal to AUDIT_PAGE_SIZE_MAX (${env.AUDIT_PAGE_SIZE_MAX})`,
+    });
+  }
+}
+
+/** Standalone schema used by the audit DTOs to read the configured bounds. */
+export const auditPaginationEnvSchema = auditPaginationEnvSchemaBase.superRefine(validateAuditPaginationRange);
+
 export const auditEnvSchemaBase = z.object({
     AUDIT_ARCHIVE_ENABLED: z.enum(['true', 'false']).default('true').transform((value) => value === 'true'),
     AUDIT_ARCHIVE_RETENTION_DAYS: z.coerce.number().int().positive().max(3650).default(30),
     AUDIT_ARCHIVE_BATCH_SIZE: z.coerce.number().int().positive().max(5_000).default(500),
     AUDIT_ARCHIVE_MAX_BATCHES: z.coerce.number().int().positive().max(1_000).default(20),
     AUDIT_RETENTION_DAYS: z.coerce.number().int().positive().max(3650).default(90),
+    ...auditPaginationEnvSchemaBase.shape,
 });
 
 export const auditEnvSchema = auditEnvSchemaBase.superRefine((env, ctx) => {
@@ -113,6 +136,7 @@ export const auditEnvSchema = auditEnvSchemaBase.superRefine((env, ctx) => {
         message: `must be lower than AUDIT_RETENTION_DAYS (${env.AUDIT_RETENTION_DAYS}) so records are archived before they are deleted`,
       });
     }
+    validateAuditPaginationRange(env, ctx);
   });
 
 export const storageEnvSchema = z.object({
@@ -354,6 +378,7 @@ export const environmentSchema = z
         message: `must be lower than AUDIT_RETENTION_DAYS (${env.AUDIT_RETENTION_DAYS}) so records are archived before they are deleted`,
       });
     }
+    validateAuditPaginationRange(env, ctx);
     if (env.NODE_ENV !== 'production') {
       return;
     }
