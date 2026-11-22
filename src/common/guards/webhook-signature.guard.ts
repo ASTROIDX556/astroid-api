@@ -14,7 +14,7 @@ import {
   WEBHOOK_SIGNATURE_HEADER,
   WEBHOOK_TIMESTAMP_HEADER,
 } from '../constants/headers';
-import { verifyWebhookSignature } from '../../modules/webhooks/utils/signing';
+import { parseWebhookSignatureHeader, verifyWebhookSignature } from '../../modules/webhooks/utils/signing';
 
 export type WebhookSecretResolver = (
   request: Request,
@@ -46,10 +46,27 @@ export class WebhookSignatureGuard implements CanActivate {
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest<Request & { rawBody?: Buffer }>();
-    const signature = request.headers[WEBHOOK_SIGNATURE_HEADER];
-    const timestamp = request.headers[WEBHOOK_TIMESTAMP_HEADER];
+    const rawSignature = request.headers[WEBHOOK_SIGNATURE_HEADER];
+    const rawTimestamp = request.headers[WEBHOOK_TIMESTAMP_HEADER];
 
-    if (typeof signature !== 'string' || typeof timestamp !== 'string') {
+    if (typeof rawSignature !== 'string') {
+      throw new UnauthorizedException('Missing webhook signature headers');
+    }
+
+    let timestamp = typeof rawTimestamp === 'string' ? rawTimestamp : undefined;
+    let signature = rawSignature;
+
+    if (rawSignature.includes('t=') || rawSignature.includes(',')) {
+      const parsed = parseWebhookSignatureHeader(rawSignature);
+      if (parsed.timestamp) {
+        timestamp = parsed.timestamp;
+      }
+      if (parsed.v1) {
+        signature = `v1=${parsed.v1}`;
+      }
+    }
+
+    if (typeof timestamp !== 'string') {
       throw new UnauthorizedException('Missing webhook signature headers');
     }
     if (!/^\d{1,12}$/.test(timestamp)) {
