@@ -1,5 +1,5 @@
 import { applyDecorators, Type } from '@nestjs/common';
-import { ApiExtraModels, ApiProperty, ApiResponse, getSchemaPath } from '@nestjs/swagger';
+import { ApiExtraModels, ApiProperty, ApiPropertyOptional, ApiResponse, getSchemaPath } from '@nestjs/swagger';
 import { TOTAL_COUNT_HEADER } from '../constants/headers';
 
 /** Generic OpenAPI model describing the success envelope for a given data type. */
@@ -15,6 +15,13 @@ export class ApiEnvelopeDto {
 
   @ApiProperty({ example: 'req_018f...', description: 'Correlation id, also sent as the x-request-id header' })
   requestId!: string;
+}
+
+/** Cursor pagination fields placed in the shared response envelope's `meta`. */
+export class CursorPaginationMetaDto {
+  @ApiProperty({ example: 20, description: 'Page size (maximum number of items returned).' }) limit!: number;
+  @ApiProperty({ example: true, description: 'Whether another page is available.' }) hasMore!: boolean;
+  @ApiPropertyOptional({ example: 'eyJ2IjoxLCJjcmVhdGVkQXQiOiIyMDI2LTAxLTAxVDAwOjAwOjAwLjAwMFoiLCJpZCI6ImFiYyJ9', nullable: true, type: String, description: 'Opaque cursor for the next page, or null when there are no more results.' }) nextCursor!: string | null;
 }
 
 /** Options for the {@link ApiEnvelope} decorator. */
@@ -81,4 +88,19 @@ export function ApiPaginatedEnvelope<TModel extends Type<unknown>>(
       },
     },
   });
+}
+
+/** Documents a cursor-paginated list while preserving the standard envelope. */
+export function ApiCursorPaginatedEnvelope<TModel extends Type<unknown>>(
+  model: TModel,
+  options: Omit<ApiEnvelopeOptions, 'isArray'> = {},
+) {
+  return applyDecorators(
+    ApiExtraModels(ApiEnvelopeDto, CursorPaginationMetaDto, model),
+    ApiResponse({
+      status: options.status ?? 200,
+      description: options.description ?? 'Cursor-paginated response',
+      schema: { allOf: [{ $ref: getSchemaPath(ApiEnvelopeDto) }, { properties: { data: { type: 'array', items: { $ref: getSchemaPath(model) } }, meta: { $ref: getSchemaPath(CursorPaginationMetaDto) } } }] },
+    }),
+  );
 }

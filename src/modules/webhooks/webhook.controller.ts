@@ -19,7 +19,9 @@ import {
 } from '@nestjs/swagger';
 import { ApiErrorResponses } from '../../common/decorators/api-error-responses.decorator';
 import { SensitiveRateLimit } from '../../common/decorators/sensitive-rate-limit.decorator';
-import { ApiEnvelope, ApiPaginatedEnvelope } from '../../common/decorators/api-envelope.decorator';
+import { ApiCursorPaginatedEnvelope, ApiEnvelope, ApiPaginatedEnvelope } from '../../common/decorators/api-envelope.decorator';
+import { ApiCursorPaginationQuery } from '../../common/decorators/api-cursor-pagination-query.decorator';
+import { cursorPaginationQuerySchema, CursorPaginationQuery } from '../../common/pagination/cursor-pagination';
 import { UserRole } from '@prisma/client';
 import { WebhookService } from './webhook.service';
 import {
@@ -36,9 +38,7 @@ import { AuditAction } from '../../common/decorators/audit-action.decorator';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 import { PaginationQuery, paginationQuerySchema } from '../../common/helpers/pagination';
 import { ApiPaginationQuery } from '../../common/decorators/api-pagination-query.decorator';
-import { WebhookResponseDto } from './webhook.dto';
-import { Idempotent } from '../../common/decorators/idempotent.decorator';
-import { IdempotencyInterceptor } from '../../common/interceptors/idempotency.interceptor';
+import { WebhookDeliveryDto, WebhookResponseDto } from './webhook.dto';
 
 @ApiTags('webhooks')
 @ApiBearerAuth('access-token')
@@ -64,6 +64,17 @@ export class WebhookController {
   ) {
     return this.webhookService.list(organizationId, query);
   }
+
+  @Get('deliveries')
+  @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.DEVELOPER)
+  @ApiOperation({ summary: 'List webhook delivery logs', description: 'Returns cursor-paginated webhook delivery history, newest first.' })
+  @ApiCursorPaginationQuery()
+  @ApiCursorPaginatedEnvelope(WebhookDeliveryDto, { description: 'Cursor-paginated webhook delivery logs' })
+  @ApiErrorResponses({ unauthorized: true, forbidden: true, validation: 'Invalid cursor or limit', serverError: true })
+  listDeliveries(
+    @CurrentUser('organizationId') organizationId: string,
+    @Query(new ZodValidationPipe(cursorPaginationQuerySchema)) query: CursorPaginationQuery,
+  ) { return this.webhookService.listDeliveries(organizationId, query); }
 
   @Post()
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.DEVELOPER)

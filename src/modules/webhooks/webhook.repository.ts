@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma, Webhook } from '@prisma/client';
+import { CursorPayload } from '../../common/pagination/cursor-pagination';
 import { PrismaService } from '../../database/prisma.service';
 import { PrismaPagination } from '../../common/helpers/pagination';
 
@@ -50,5 +51,10 @@ export class WebhookRepository {
 
   delete(id: string): Promise<Webhook> {
     return this.prisma.webhook.delete({ where: { id } });
+  }
+
+  findDeliveryPage(organizationId: string, cursor: CursorPayload | undefined, take: number) {
+    const cursorWhere: Prisma.WebhookDeliveryWhereInput | undefined = cursor ? { OR: [{ createdAt: { lt: cursor.createdAt } }, { createdAt: cursor.createdAt, id: { lt: cursor.id } }] } : undefined;
+    return this.prisma.webhookDelivery.findMany({ where: cursorWhere ? { AND: [{ organizationId }, cursorWhere] } : { organizationId }, take, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }] });
   }
 }

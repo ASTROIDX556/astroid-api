@@ -27,12 +27,8 @@ import {
   ConflictException,
   NotFoundException,
 } from '../../common/exceptions/domain.exception';
-import {
-  buildPaginationMeta,
-  PaginationQuery,
-  toPrismaPagination,
-} from '../../common/helpers/pagination';
-import { Paginated } from '../../common/interfaces/api-response.interface';
+import { CursorPaginated } from '../../common/interfaces/api-response.interface';
+import { CursorPaginationQuery, decodeCursor, encodeCursor } from '../../common/pagination/cursor-pagination';
 import { EventBusService } from '../../events/event-bus.service';
 import { DomainEventName } from '../../events/event-names';
 import { PrismaService } from '../../database/prisma.service';
@@ -44,8 +40,6 @@ import {
   TRANSACTION_CREATE_ROUTE,
 } from '../../common/idempotency/idempotency.constants';
 import { RequestContext } from '../../common/context/request-context';
-
-const SORTABLE = ['createdAt', 'amount', 'status', 'riskScore'];
 
 /** Statuses that may never leave the execution pipeline once they got there. */
 const EXECUTED_STATUSES: readonly TransactionStatus[] = [
@@ -430,7 +424,7 @@ export class TransactionService {
     };
   }
 
-  async list(organizationId: string, query: PaginationQuery) {
+  async list(organizationId: string, query: CursorPaginationQuery & { search?: string; filter?: string }) {
     const where: Prisma.TransactionWhereInput = { organizationId, deletedAt: null };
     if (query.search) {
       where.OR = [
@@ -442,9 +436,11 @@ export class TransactionService {
     if (query.filter) {
       where.status = query.filter as TransactionStatus;
     }
-    const pagination = toPrismaPagination(query, SORTABLE);
-    const { items, total } = await this.repository.findManyAndCount(where, pagination);
-    return new Paginated(items, buildPaginationMeta(total, query));
+    const rows = await this.repository.findCursorPage(where, query.cursor ? decodeCursor(query.cursor) : undefined, query.limit + 1);
+    const hasMore = rows.length > query.limit;
+    const items = hasMore ? rows.slice(0, query.limit) : rows;
+    const last = items[items.length - 1];
+    return new CursorPaginated(items, { limit: query.limit, hasMore, nextCursor: hasMore && last ? encodeCursor(last) : null });
   }
 
   async getOrThrow(organizationId: string, id: string): Promise<Transaction> {

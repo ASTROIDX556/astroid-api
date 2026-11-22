@@ -75,3 +75,12 @@ export class WebhookResponseDto {
   @ApiProperty({ description: 'Creation timestamp', example: '2026-01-15T10:30:00.000Z' })
   createdAt!: string;
 }
+
+export class WebhookDeliveryDto {
+  @ApiProperty({ description: 'Delivery id', format: 'uuid' }) id!: string;
+  @ApiProperty({ description: 'Webhook id', format: 'uuid' }) webhookId!: string;
+  @ApiProperty({ description: 'Domain event delivered to the webhook.' }) eventName!: string;
+  @ApiProperty({ enum: ['PENDING', 'RETRYING', 'FAILED', 'DELIVERED'], description: 'Latest delivery state.' }) status!: string;
+  @ApiProperty({ description: 'Number of delivery attempts.' }) attempts!: number;
+  @ApiProperty({ description: 'Creation timestamp' }) createdAt!: string;
+}

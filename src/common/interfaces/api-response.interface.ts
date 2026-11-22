@@ -22,7 +22,7 @@ export interface PaginationMeta extends ApiMeta {
 
 export interface CursorPaginationMeta extends ApiMeta {
   limit: number;
-  hasNext: boolean;
+  hasMore: boolean;
   nextCursor: string | null;
 }
 
