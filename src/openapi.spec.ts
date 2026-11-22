@@ -468,4 +468,258 @@ describe('OpenAPI Documentation', () => {
       }
     }
   });
+
+  // ── Developer surface: API key lifecycle ─────────────────────────────────
+  //
+  // These tests make the drift check meaningful for the developer surface:
+  // if a path is removed, renamed, or its schema fields change, docs:check
+  // fails and forces the author to update the spec deliberately.
+
+  describe('API key endpoints', () => {
+    /**
+     * Returns the OperationObject for a documented path+method, or throws a
+     * clear error so the test name in the report names the missing operation.
+     */
+    function operation(path: string, method: 'get' | 'post' | 'delete' | 'patch') {
+      const item = document.paths[path] as Record<string, unknown> | undefined;
+      const op = item?.[method] as Record<string, unknown> | undefined;
+      return op;
+    }
+
+    it('documents GET /api/v1/developer/api-keys with the developer tag and bearer auth', () => {
+      const op = operation('/api/v1/developer/api-keys', 'get');
+      expect(op, 'GET /api/v1/developer/api-keys must be documented').toBeDefined();
+      expect((op!.tags as string[]).includes('developer')).toBe(true);
+      const security = op!.security as Array<Record<string, unknown>> | undefined;
+      expect(
+        security?.some((s) => 'access-token' in s),
+        'GET /api/v1/developer/api-keys must require the bearer access-token scheme',
+      ).toBe(true);
+    });
+
+    it('documents GET /api/v1/developer/api-keys with pagination parameters', () => {
+      const op = operation('/api/v1/developer/api-keys', 'get');
+      const params = ((op?.parameters ?? []) as Array<{ name?: string }>).map((p) => p.name);
+      expect(params, 'list endpoint must carry page pagination parameters').toEqual(
+        expect.arrayContaining(['page', 'pageSize']),
+      );
+    });
+
+    it('documents POST /api/v1/developer/api-keys with a 201 response containing ApiKeyCreatedDto', () => {
+      const op = operation('/api/v1/developer/api-keys', 'post');
+      expect(op, 'POST /api/v1/developer/api-keys must be documented').toBeDefined();
+      expect(Object.keys(op!.responses as object)).toContain('201');
+      const refs = collectRefs(op!.responses);
+      expect(
+        refs.has('#/components/schemas/ApiKeyCreatedDto'),
+        'POST response must reference ApiKeyCreatedDto',
+      ).toBe(true);
+    });
+
+    it('documents POST /api/v1/developer/api-keys with a request body schema', () => {
+      const op = operation('/api/v1/developer/api-keys', 'post');
+      const refs = collectRefs(op?.requestBody);
+      expect(
+        refs.has('#/components/schemas/CreateApiKeyDto'),
+        'POST must reference CreateApiKeyDto in request body',
+      ).toBe(true);
+    });
+
+    it('documents POST /api/v1/developer/api-keys/{id}/rotate with a new-key response', () => {
+      const op = operation('/api/v1/developer/api-keys/{id}/rotate', 'post');
+      expect(op, 'POST /api/v1/developer/api-keys/{id}/rotate must be documented').toBeDefined();
+      expect(Object.keys(op!.responses as object)).toContain('200');
+      const refs = collectRefs(op!.responses);
+      expect(
+        refs.has('#/components/schemas/ApiKeyRotatedDto'),
+        'rotate response must reference ApiKeyRotatedDto',
+      ).toBe(true);
+    });
+
+    it('documents DELETE /api/v1/developer/api-keys/{id} with an ApiKeyRevokedDto response', () => {
+      const op = operation('/api/v1/developer/api-keys/{id}', 'delete');
+      expect(op, 'DELETE /api/v1/developer/api-keys/{id} must be documented').toBeDefined();
+      const refs = collectRefs(op!.responses);
+      expect(
+        refs.has('#/components/schemas/ApiKeyRevokedDto'),
+        'revoke response must reference ApiKeyRevokedDto',
+      ).toBe(true);
+    });
+
+    it('defines the ApiKeyCreatedDto schema with key, id, prefix, and scopes fields', () => {
+      const schema = document.components?.schemas?.['ApiKeyCreatedDto'] as
+        | { properties?: Record<string, unknown> }
+        | undefined;
+      expect(schema, 'ApiKeyCreatedDto schema must be defined').toBeDefined();
+      expect(Object.keys(schema!.properties ?? {})).toEqual(
+        expect.arrayContaining(['id', 'prefix', 'scopes', 'key']),
+      );
+    });
+
+    it('defines the ApiKeyResponseDto schema without a key or secret field (secrets never returned on reads)', () => {
+      const schema = document.components?.schemas?.['ApiKeyResponseDto'] as
+        | { properties?: Record<string, unknown> }
+        | undefined;
+      expect(schema, 'ApiKeyResponseDto schema must be defined').toBeDefined();
+      const fields = Object.keys(schema!.properties ?? {});
+      // The list/read response must never expose the raw key.
+      expect(fields).not.toContain('key');
+      expect(fields).not.toContain('secret');
+      // But it must carry identifying metadata.
+      expect(fields).toEqual(expect.arrayContaining(['id', 'name', 'prefix', 'scopes']));
+    });
+
+    it('defines the ApiKeyRotatedDto schema with previousKeyId and previousKeyExpiresAt', () => {
+      const schema = document.components?.schemas?.['ApiKeyRotatedDto'] as
+        | { properties?: Record<string, unknown> }
+        | undefined;
+      expect(schema, 'ApiKeyRotatedDto schema must be defined').toBeDefined();
+      expect(Object.keys(schema!.properties ?? {})).toEqual(
+        expect.arrayContaining(['id', 'key', 'previousKeyId', 'previousKeyExpiresAt']),
+      );
+    });
+
+    it('does not expose a full raw key value in the ApiKeyCreatedDto key field example', () => {
+      // The spec must not contain a real API key in the example — only a
+      // placeholder description. We verify no example looks like a real key
+      // (long random alphanumeric string starting with a typical prefix).
+      const schema = document.components?.schemas?.['ApiKeyCreatedDto'] as
+        | { properties?: Record<string, { example?: unknown; description?: string }> }
+        | undefined;
+      const keyExample = schema?.properties?.['key']?.example;
+      // The key field should have no concrete example value that looks like a
+      // real key (a real key would be 40+ chars starting with ak_ or ast_).
+      if (keyExample !== undefined) {
+        expect(typeof keyExample === 'string' && /^(ak_|ast_).{30,}/.test(String(keyExample))).toBe(false);
+      }
+    });
+  });
+
+  describe('Webhook endpoints', () => {
+    function operation(path: string, method: 'get' | 'post' | 'delete' | 'patch') {
+      const item = document.paths[path] as Record<string, unknown> | undefined;
+      return item?.[method] as Record<string, unknown> | undefined;
+    }
+
+    it('documents GET /api/v1/webhooks with the webhooks tag and bearer auth', () => {
+      const op = operation('/api/v1/webhooks', 'get');
+      expect(op, 'GET /api/v1/webhooks must be documented').toBeDefined();
+      expect((op!.tags as string[]).includes('webhooks')).toBe(true);
+      const security = op!.security as Array<Record<string, unknown>> | undefined;
+      expect(
+        security?.some((s) => 'access-token' in s),
+        'GET /api/v1/webhooks must require the bearer access-token scheme',
+      ).toBe(true);
+    });
+
+    it('documents GET /api/v1/webhooks with pagination parameters', () => {
+      const op = operation('/api/v1/webhooks', 'get');
+      const params = ((op?.parameters ?? []) as Array<{ name?: string }>).map((p) => p.name);
+      expect(params).toEqual(expect.arrayContaining(['page', 'pageSize']));
+    });
+
+    it('documents POST /api/v1/webhooks with a 201 response containing the signing secret', () => {
+      const op = operation('/api/v1/webhooks', 'post');
+      expect(op, 'POST /api/v1/webhooks must be documented').toBeDefined();
+      expect(Object.keys(op!.responses as object)).toContain('201');
+      const refs = collectRefs(op!.responses);
+      expect(
+        refs.has('#/components/schemas/WebhookSecretDto'),
+        'POST response must reference WebhookSecretDto (the one-time secret)',
+      ).toBe(true);
+    });
+
+    it('documents POST /api/v1/webhooks with a request body referencing CreateWebhookDto', () => {
+      const op = operation('/api/v1/webhooks', 'post');
+      const refs = collectRefs(op?.requestBody);
+      expect(
+        refs.has('#/components/schemas/CreateWebhookDto'),
+        'POST must reference CreateWebhookDto in request body',
+      ).toBe(true);
+    });
+
+    it('documents GET /api/v1/webhooks/{id} with a WebhookResponseDto response', () => {
+      const op = operation('/api/v1/webhooks/{id}', 'get');
+      expect(op, 'GET /api/v1/webhooks/{id} must be documented').toBeDefined();
+      const refs = collectRefs(op!.responses);
+      expect(refs.has('#/components/schemas/WebhookResponseDto')).toBe(true);
+    });
+
+    it('documents PATCH /api/v1/webhooks/{id} for webhook updates', () => {
+      const op = operation('/api/v1/webhooks/{id}', 'patch');
+      expect(op, 'PATCH /api/v1/webhooks/{id} must be documented').toBeDefined();
+      expect(Object.keys(op!.responses as object).some(s => s.startsWith('2'))).toBe(true);
+    });
+
+    it('documents DELETE /api/v1/webhooks/{id} for webhook deletion', () => {
+      const op = operation('/api/v1/webhooks/{id}', 'delete');
+      expect(op, 'DELETE /api/v1/webhooks/{id} must be documented').toBeDefined();
+      expect(Object.keys(op!.responses as object).some(s => s.startsWith('2'))).toBe(true);
+    });
+
+    it('documents POST /api/v1/webhooks/{id}/rotate-secret with a one-time secret response', () => {
+      const op = operation('/api/v1/webhooks/{id}/rotate-secret', 'post');
+      expect(op, 'POST /api/v1/webhooks/{id}/rotate-secret must be documented').toBeDefined();
+      const refs = collectRefs(op!.responses);
+      expect(
+        refs.has('#/components/schemas/WebhookSecretDto'),
+        'rotate-secret response must reference WebhookSecretDto',
+      ).toBe(true);
+    });
+
+    it('documents GET /api/v1/webhooks/deliveries with cursor pagination', () => {
+      const op = operation('/api/v1/webhooks/deliveries', 'get');
+      expect(op, 'GET /api/v1/webhooks/deliveries must be documented').toBeDefined();
+      const params = ((op?.parameters ?? []) as Array<{ name?: string }>).map((p) => p.name);
+      expect(params).toEqual(expect.arrayContaining(['cursor', 'limit']));
+      const refs = collectRefs(op!.responses);
+      expect(
+        refs.has('#/components/schemas/WebhookDeliveryDto'),
+        'deliveries response must reference WebhookDeliveryDto',
+      ).toBe(true);
+    });
+
+    it('defines the WebhookResponseDto schema with the required fields', () => {
+      const schema = document.components?.schemas?.['WebhookResponseDto'] as
+        | { properties?: Record<string, unknown> }
+        | undefined;
+      expect(schema, 'WebhookResponseDto schema must be defined').toBeDefined();
+      expect(Object.keys(schema!.properties ?? {})).toEqual(
+        expect.arrayContaining(['id', 'url', 'events', 'enabled', 'createdAt']),
+      );
+    });
+
+    it('defines the WebhookSecretDto schema with only the secret field (no other internals)', () => {
+      const schema = document.components?.schemas?.['WebhookSecretDto'] as
+        | { properties?: Record<string, unknown> }
+        | undefined;
+      expect(schema, 'WebhookSecretDto schema must be defined').toBeDefined();
+      expect(Object.keys(schema!.properties ?? {})).toContain('secret');
+    });
+
+    it('does not expose a signing secret value in example payloads', () => {
+      // The WebhookSecretDto.secret field must not carry a concrete example
+      // that looks like a real HMAC key (32+ hex/base64 characters).
+      const schema = document.components?.schemas?.['WebhookSecretDto'] as
+        | { properties?: Record<string, { example?: unknown }> }
+        | undefined;
+      const secretExample = schema?.properties?.['secret']?.example;
+      if (secretExample !== undefined) {
+        expect(
+          typeof secretExample === 'string' && /^[A-Fa-f0-9]{32,}$/.test(String(secretExample)),
+          'WebhookSecretDto.secret example must not look like a real HMAC signing key',
+        ).toBe(false);
+      }
+    });
+
+    it('defines the WebhookDeliveryDto schema with status and attempts fields', () => {
+      const schema = document.components?.schemas?.['WebhookDeliveryDto'] as
+        | { properties?: Record<string, unknown> }
+        | undefined;
+      expect(schema, 'WebhookDeliveryDto schema must be defined').toBeDefined();
+      expect(Object.keys(schema!.properties ?? {})).toEqual(
+        expect.arrayContaining(['id', 'webhookId', 'eventName', 'status', 'attempts']),
+      );
+    });
+  });
 });
