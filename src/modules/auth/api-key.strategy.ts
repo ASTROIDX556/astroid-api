@@ -76,7 +76,10 @@ export class ApiKeyStrategy extends PassportStrategy(HeaderApiKeyPassportStrateg
       name: apiKey.name,
       prefix: apiKey.prefix,
       permissions: apiKey.permissions ?? [],
-      scopes: apiKey.permissions ?? [],
+      scopes:
+        apiKey.scopes && apiKey.scopes.length > 0
+          ? apiKey.scopes
+          : (apiKey.permissions ?? []),
       allowedIps: apiKey.allowedIps ?? [],
       isApiKey: true,
       role: UserRole.DEVELOPER,

@@ -34,6 +34,7 @@ import {
 } from './webhook.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
+import { RequiredScopes } from '../../common/decorators/scopes.decorator';
 import { AuditAction } from '../../common/decorators/audit-action.decorator';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 import { PaginationQuery, paginationQuerySchema } from '../../common/helpers/pagination';
@@ -50,6 +51,7 @@ export class WebhookController {
 
   @Get()
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.DEVELOPER)
+  @RequiredScopes('read')
   @ApiOperation({
     summary: 'List webhooks (signing secrets are never returned)',
     description:
@@ -69,6 +71,7 @@ export class WebhookController {
 
   @Get('deliveries')
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.DEVELOPER)
+  @RequiredScopes('read')
   @ApiOperation({ summary: 'List webhook delivery logs', description: 'Returns cursor-paginated webhook delivery history, newest first.' })
   @ApiCursorPaginationQuery()
   @ApiCursorPaginatedEnvelope(WebhookDeliveryDto, { description: 'Cursor-paginated webhook delivery logs' })
@@ -80,6 +83,7 @@ export class WebhookController {
 
   @Post()
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.DEVELOPER)
+  @RequiredScopes('webhooks:manage')
   @SensitiveRateLimit('webhookCreate')
   @UseInterceptors(IdempotencyInterceptor)
   @Idempotent()
@@ -112,6 +116,7 @@ export class WebhookController {
 
   @Get(':id')
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.DEVELOPER)
+  @RequiredScopes('read')
   @ApiOperation({
     summary: 'Get a webhook',
     description: 'Returns full details of a single webhook by ID.',
@@ -130,6 +135,7 @@ export class WebhookController {
 
   @Patch(':id')
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.DEVELOPER)
+  @RequiredScopes('webhooks:manage')
   @AuditAction('WEBHOOK_UPDATED')
   @ApiOperation({
     summary: 'Update a webhook',
@@ -155,6 +161,7 @@ export class WebhookController {
 
   @Post(':id/rotate-secret')
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.DEVELOPER)
+  @RequiredScopes('webhooks:manage')
   @SensitiveRateLimit('webhookRotateSecret')
   @AuditAction('WEBHOOK_SECRET_ROTATED')
   @ApiOperation({
@@ -178,6 +185,7 @@ export class WebhookController {
 
   @Delete(':id')
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.DEVELOPER)
+  @RequiredScopes('webhooks:manage')
   @AuditAction('WEBHOOK_DELETED')
   @ApiOperation({
     summary: 'Delete a webhook',

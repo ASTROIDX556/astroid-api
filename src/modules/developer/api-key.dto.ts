@@ -1,21 +1,39 @@
 import { z } from 'zod';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import {
+  API_KEY_SCOPES,
+  ApiKeyScope,
+  DEFAULT_API_KEY_SCOPES,
+} from '../../common/constants/scopes';
 
 export const createApiKeySchema = z
   .object({
     name: z.string().min(1).max(120),
+    scopes: z
+      .array(z.enum(API_KEY_SCOPES))
+      .min(1)
+      .max(API_KEY_SCOPES.length)
+      .default([...DEFAULT_API_KEY_SCOPES]),
     permissions: z.array(z.string().max(60)).max(50).default([]),
     allowedIps: z.array(z.string().max(45)).max(50).default([]),
     expiresInDays: z.number().int().positive().max(365).optional(),
   })
   .strict();
-export type CreateApiKeyInput = z.infer<typeof createApiKeySchema>;
+export type CreateApiKeyInput = z.input<typeof createApiKeySchema>;
 
 // ── Swagger DTOs ──
 
 export class CreateApiKeyDto {
   @ApiProperty({ example: 'CI pipeline', description: 'Human-readable name of the key' })
   name!: string;
+
+  @ApiPropertyOptional({
+    type: [String],
+    enum: API_KEY_SCOPES,
+    example: ['read', 'transactions:execute'],
+    description: 'Permission scopes the key grants (default: ["read"])',
+  })
+  scopes?: ApiKeyScope[];
 
   @ApiPropertyOptional({
     type: [String],
@@ -43,6 +61,13 @@ export class ApiKeyCreatedDto {
   prefix!: string;
 
   @ApiProperty({
+    type: [String],
+    example: ['read'],
+    description: 'Permission scopes granted to the key',
+  })
+  scopes!: string[];
+
+  @ApiProperty({
     description:
       'The full API key. Returned exactly once — it is hashed before storage and can never be retrieved again.',
   })
@@ -60,6 +85,13 @@ export class ApiKeyResponseDto {
 
   @ApiProperty({ description: 'Public prefix of the key, used to identify it in logs', example: 'ast_live_ab12' })
   prefix!: string;
+
+  @ApiProperty({
+    type: [String],
+    description: 'Permission scopes granted to the key',
+    example: ['read', 'transactions:execute'],
+  })
+  scopes!: string[];
 
   @ApiProperty({
     type: [String],
