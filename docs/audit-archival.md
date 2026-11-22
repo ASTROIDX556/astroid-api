@@ -65,7 +65,8 @@ them.
   one organization fails, the organizations that were already archived stay
   archived and the run is retried; the failed organization keeps its records.
 - **Chain preserving.** The oldest records are archived first, so the archived
-  rows of an organization are always a *prefix* of its hash chain. The hash of
+  rows of an organization are always a *prefix* of its organization-scoped
+  hash chain. The hash of
   the last archived entry is stored with the batch and anchors the live rows,
   which keeps `GET /audit/integrity/verify` meaningful across the archive
   boundary.

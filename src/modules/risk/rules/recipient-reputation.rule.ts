@@ -25,6 +25,9 @@ export const RecipientReputationRule: RiskRule = {
 
     if (total <= 0) {
       return {
+        code: 'destinationReputation',
+        description: 'No payment history for this destination',
+        value: null,
         factor: 'destinationReputation',
         weight,
         contribution: 0,
@@ -41,6 +44,9 @@ export const RecipientReputationRule: RiskRule = {
         config.reputationShallowWeight * shallowness);
 
     return {
+      code: 'destinationReputation',
+      description: `${total} prior payment(s) to this destination, ${failed} failed`,
+      value: failureRate,
       factor: 'destinationReputation',
       weight,
       contribution: (clamp(risk, 0, 100) / 100) * weight,

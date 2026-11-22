@@ -57,7 +57,7 @@ export class ApiKeyAuthGuard implements CanActivate {
       name: apiKey.name,
       prefix: apiKey.prefix,
       permissions: apiKey.permissions ?? [],
-      scopes: apiKey.permissions ?? [],
+      scopes: apiKey.scopes ?? [],
       allowedIps: apiKey.allowedIps ?? [],
       isApiKey: true,
       role: UserRole.DEVELOPER,

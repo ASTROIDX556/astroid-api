@@ -2,11 +2,12 @@ import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { AuditRepository, CreateAuditLogData } from './audit.repository';
 import { AuditHashService } from './audit-hash.service';
-import { CursorPaginated } from '../../common/interfaces/api-response.interface';
+import { CursorPaginated, Paginated } from '../../common/interfaces/api-response.interface';
 import { AuditListQuery } from './audit-list.dto';
 import { decodeCursor, encodeCursor } from '../../common/pagination/cursor-pagination';
 import { ExportAuditLogsQuery, StreamAuditLogsQuery } from './audit-export.dto';
 import { sanitizeAuditPayload } from '../../common/helpers/audit-sanitizer';
+import { buildPaginationMeta } from '../../common/helpers/pagination';
 
 /** An audit row as returned by `AuditRepository.exportLogs`, with its joined user. */
 type ExportedAuditLog = Prisma.AuditLogGetPayload<{
@@ -31,11 +32,12 @@ export class AuditService {
       ...(data.oldValue === undefined ? {} : { oldValue: sanitizeAuditPayload(data.oldValue) }),
       ...(data.newValue === undefined ? {} : { newValue: sanitizeAuditPayload(data.newValue) }),
     };
-    const previousHash = await this.hashService.getLatestHash(safeData.organizationId);
-    const createdAt = new Date();
-
-    const hashResult = this.hashService.computeEntryHash(
+    return this.repository.createChained({
+      ...safeData,
+      requestId: data.requestId ?? null,
+    }, (id, prevHash, timestamp) => this.hashService.computeEntryHash(
       {
+        id,
         organizationId: safeData.organizationId,
         userId: safeData.userId,
         action: safeData.action,
@@ -45,32 +47,42 @@ export class AuditService {
         newValue: safeData.newValue,
         ipAddress: safeData.ipAddress,
         device: safeData.device,
-        createdAt,
+        createdAt: timestamp,
       },
-      previousHash,
-    );
-
-    return this.repository.create({
-      ...safeData,
-      requestId: data.requestId ?? null,
-      previousHash: hashResult.previousHash,
-      hash: hashResult.hash,
-    });
+      prevHash,
+    ).hash);
   }
 
-  /** Cursor-paginated audit log listing, newest first. */
-  async list(organizationId: string, query: AuditListQuery): Promise<CursorPaginated<ExportedAuditLog>> {
+  /** Audit log listing, preserving cursor mode and adding standard page mode. */
+  async list(
+    organizationId: string,
+    query: AuditListQuery & { cursor: string },
+  ): Promise<CursorPaginated<ExportedAuditLog>>;
+  async list(
+    organizationId: string,
+    query: AuditListQuery,
+  ): Promise<CursorPaginated<ExportedAuditLog> | Paginated<ExportedAuditLog>>;
+  async list(organizationId: string, query: AuditListQuery): Promise<CursorPaginated<ExportedAuditLog> | Paginated<ExportedAuditLog>> {
     const where = this.buildFilterWhere(organizationId, query);
+    if (!query.cursor) {
+      const { items, total } = await this.repository.findManyAndCount(where, {
+        skip: query.offset ?? 0,
+        take: query.limit ?? 20,
+        orderBy: { createdAt: 'desc' },
+      });
+      return new Paginated(items as ExportedAuditLog[], buildPaginationMeta(total, query));
+    }
     const cursor = query.cursor ? decodeCursor(query.cursor) : undefined;
-    const take = query.limit + 1;
+    const limit = query.limit ?? 20;
+    const take = limit + 1;
 
     const rows = (await this.repository.findPage(where, cursor, take)) as ExportedAuditLog[];
-    const hasMore = rows.length > query.limit;
-    const items = hasMore ? rows.slice(0, query.limit) : rows;
+    const hasMore = rows.length > limit;
+    const items = hasMore ? rows.slice(0, limit) : rows;
     const last = items[items.length - 1];
     const nextCursor = hasMore && last ? encodeCursor({ createdAt: last.createdAt, id: last.id }) : null;
 
-    return new CursorPaginated(items, { limit: query.limit, hasMore, nextCursor });
+    return new CursorPaginated(items, { limit, hasMore, nextCursor });
   }
 
   async export(organizationId: string, query: ExportAuditLogsQuery) {

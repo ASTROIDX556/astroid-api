@@ -39,6 +39,32 @@ export class AssessRiskDto {
 
 /** One factor of a risk assessment. */
 export class RiskFactorDto {
+  @ApiProperty({
+    description: 'Stable machine-readable factor code',
+    enum: [
+      'amount',
+      'amountAnomaly',
+      'unknownRecipient',
+      'destinationReputation',
+      'velocity',
+      'walletAge',
+      'policyViolations',
+      'suspiciousTiming',
+    ],
+    example: 'velocity',
+  })
+  code!: string;
+
+  @ApiProperty({ description: 'Human-readable explanation of the factor result', example: '4 recent transactions, 900 total value' })
+  description!: string;
+
+  @ApiProperty({
+    description: 'Raw non-sensitive value used by the rule',
+    nullable: true,
+    example: 4,
+  })
+  value!: number | boolean | null;
+
   @ApiProperty({ description: 'Name of the factor', example: 'velocity' })
   factor!: string;
 

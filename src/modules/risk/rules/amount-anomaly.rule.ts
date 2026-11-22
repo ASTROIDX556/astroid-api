@@ -22,6 +22,9 @@ export const AmountAnomalyRule: RiskRule = {
 
     if (baseline === undefined || baseline <= 0) {
       return {
+        code: 'amountAnomaly',
+        description: 'No historical amount baseline for this wallet',
+        value: null,
         factor: 'amountAnomaly',
         weight,
         contribution: 0,
@@ -32,6 +35,9 @@ export const AmountAnomalyRule: RiskRule = {
     const ratio = input.amount / baseline;
     if (ratio <= 1) {
       return {
+        code: 'amountAnomaly',
+        description: `Amount is ${ratio.toFixed(2)}x the historical average`,
+        value: ratio,
         factor: 'amountAnomaly',
         weight,
         contribution: 0,
@@ -43,6 +49,9 @@ export const AmountAnomalyRule: RiskRule = {
     const risk = clamp((ratio - 1) / (saturation - 1), 0, 1) * 100;
 
     return {
+      code: 'amountAnomaly',
+      description: `Amount is ${ratio.toFixed(2)}x the historical average`,
+      value: ratio,
       factor: 'amountAnomaly',
       weight,
       contribution: (risk / 100) * weight,

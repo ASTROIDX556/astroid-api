@@ -63,7 +63,7 @@ describe('ResponseInterceptor', () => {
     it('extracts items and meta from Paginated responses', async () => {
       const paginated = new Paginated(
         [{ id: '1' }, { id: '2' }],
-        { total: 2, page: 1, limit: 10, offset: 0, totalPages: 1, hasNext: false, hasPrev: false },
+        { total: 2, page: 1, pageSize: 10, totalPages: 1, hasNextPage: false, hasPreviousPage: false },
       );
 
       const context = createMockContext('test-request-id');
@@ -75,7 +75,7 @@ describe('ResponseInterceptor', () => {
       expect(result).toEqual({
         success: true,
         data: [{ id: '1' }, { id: '2' }],
-        meta: { total: 2, page: 1, limit: 10, offset: 0, totalPages: 1, hasNext: false, hasPrev: false },
+        meta: { total: 2, page: 1, pageSize: 10, totalPages: 1, hasNextPage: false, hasPreviousPage: false },
         requestId: 'test-request-id',
       });
     });

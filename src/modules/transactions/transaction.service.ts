@@ -27,8 +27,8 @@ import {
   ConflictException,
   NotFoundException,
 } from '../../common/exceptions/domain.exception';
-import { CursorPaginated } from '../../common/interfaces/api-response.interface';
-import { CursorPaginationQuery, decodeCursor, encodeCursor } from '../../common/pagination/cursor-pagination';
+import { CursorPaginated, Paginated } from '../../common/interfaces/api-response.interface';
+import { decodeCursor, encodeCursor } from '../../common/pagination/cursor-pagination';
 import { EventBusService } from '../../events/event-bus.service';
 import { DomainEventName } from '../../events/event-names';
 import { PrismaService } from '../../database/prisma.service';
@@ -40,6 +40,7 @@ import {
   TRANSACTION_CREATE_ROUTE,
 } from '../../common/idempotency/idempotency.constants';
 import { RequestContext } from '../../common/context/request-context';
+import { buildPaginationMeta, PaginationQuery, toPrismaPagination } from '../../common/helpers/pagination';
 
 /** Statuses that may never leave the execution pipeline once they got there. */
 const EXECUTED_STATUSES: readonly TransactionStatus[] = [
@@ -424,7 +425,7 @@ export class TransactionService {
     };
   }
 
-  async list(organizationId: string, query: CursorPaginationQuery & { search?: string; filter?: string }) {
+  async list(organizationId: string, query: PaginationQuery & { cursor?: string; status?: string; search?: string; filter?: string }) {
     const where: Prisma.TransactionWhereInput = { organizationId, deletedAt: null };
     if (query.search) {
       where.OR = [
@@ -433,14 +434,27 @@ export class TransactionService {
         { stellarHash: { contains: query.search, mode: 'insensitive' } },
       ];
     }
-    if (query.filter) {
-      where.status = query.filter as TransactionStatus;
+    const status = query.status ?? query.filter;
+    if (status) where.status = status as TransactionStatus;
+    if (query.cursor) {
+      const cursorLimit = query.limit ?? 20;
+      const rows = await this.repository.findCursorPage(
+        where,
+        decodeCursor(query.cursor),
+        cursorLimit + 1,
+      );
+      const hasMore = rows.length > cursorLimit;
+      const items = hasMore ? rows.slice(0, cursorLimit) : rows;
+      const last = items[items.length - 1];
+      return new CursorPaginated(items, {
+        limit: cursorLimit,
+        hasMore,
+        nextCursor: hasMore && last ? encodeCursor(last) : null,
+      });
     }
-    const rows = await this.repository.findCursorPage(where, query.cursor ? decodeCursor(query.cursor) : undefined, query.limit + 1);
-    const hasMore = rows.length > query.limit;
-    const items = hasMore ? rows.slice(0, query.limit) : rows;
-    const last = items[items.length - 1];
-    return new CursorPaginated(items, { limit: query.limit, hasMore, nextCursor: hasMore && last ? encodeCursor(last) : null });
+    const pagination = toPrismaPagination(query, ['createdAt', 'amount', 'status']);
+    const { items, total } = await this.repository.findManyAndCount(where, pagination);
+    return new Paginated(items, buildPaginationMeta(total, query));
   }
 
   async getOrThrow(organizationId: string, id: string): Promise<Transaction> {

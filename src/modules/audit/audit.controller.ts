@@ -9,7 +9,11 @@ import {
   ApiResponse,
 } from '@nestjs/swagger';
 import { ApiErrorResponses } from '../../common/decorators/api-error-responses.decorator';
-import { ApiCursorPaginatedEnvelope, ApiEnvelope } from '../../common/decorators/api-envelope.decorator';
+import {
+  ApiPageOrCursorPaginatedEnvelope,
+  ApiEnvelope,
+} from '../../common/decorators/api-envelope.decorator';
+import { ApiPaginationQuery } from '../../common/decorators/api-pagination-query.decorator';
 import { UserRole } from '@prisma/client';
 import { Response } from 'express';
 import { AuditService } from './audit.service';
@@ -85,15 +89,15 @@ export class AuditController {
     description:
       'Returns a cursor-paginated list of audit log entries, newest first. Supports filtering by actor, action, resource and date range.',
   })
-  @ApiQuery({ name: 'cursor', required: false, type: String, description: 'Opaque pagination cursor from a previous page' })
-  @ApiQuery({ name: 'limit', required: false, type: Number, description: 'Max entries to return (default 20, max 100)' })
+  @ApiPaginationQuery()
+  @ApiQuery({ name: 'cursor', required: false, type: String, description: 'Legacy cursor pagination mode' })
   @ApiQuery({ name: 'actorId', required: false, type: String, description: 'Filter by acting user UUID' })
   @ApiQuery({ name: 'action', required: false, type: String, description: 'Filter by audit action type' })
   @ApiQuery({ name: 'resourceId', required: false, type: String, description: 'Filter by affected entity UUID' })
   @ApiQuery({ name: 'from', required: false, type: String, description: 'ISO 8601 start of the date range' })
   @ApiQuery({ name: 'to', required: false, type: String, description: 'ISO 8601 end of the date range' })
-  @ApiCursorPaginatedEnvelope(AuditLogEntryDto, {
-    description: 'Cursor-paginated list of audit log entries',
+  @ApiPageOrCursorPaginatedEnvelope(AuditLogEntryDto, {
+    description: 'Paginated list of audit log entries',
   })
   @ApiErrorResponses({
     unauthorized: true,
