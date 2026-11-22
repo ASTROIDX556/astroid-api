@@ -43,8 +43,8 @@ import { PaginationQuery, paginationQuerySchema } from '../../common/helpers/pag
 import { ApiPaginationQuery } from '../../common/decorators/api-pagination-query.decorator';
 import { ApiEnvelope, ApiPaginatedEnvelope } from '../../common/decorators/api-envelope.decorator';
 import { ApiErrorResponses } from '../../common/decorators/api-error-responses.decorator';
-import { IDEMPOTENCY_KEY_HEADER } from '../../common/constants/headers';
-import { TRANSACTION_CREATE_ROUTE } from '../../common/idempotency/idempotency.constants';
+import { Idempotent } from '../../common/decorators/idempotent.decorator';
+import { IdempotencyInterceptor } from '../../common/interceptors/idempotency.interceptor';
 import {
   SlidingWindowThrottlerGuard,
   SlidingWindowLimit,
@@ -120,13 +120,10 @@ export class TransactionController {
     @Body(new ZodValidationPipe(createTransactionSchema)) body: CreateTransactionInput,
   ) {
     const actorId = user.isApiKey ? user.createdById ?? user.id : user.id;
-    const key = parseIdempotencyKey(rawIdempotencyKey);
-    return this.transactionService.create(
-      user.organizationId,
-      actorId,
-      body,
-      key ? { principalId: user.id, key, route: TRANSACTION_CREATE_ROUTE } : undefined,
-    );
+    // Idempotency is enforced at the HTTP boundary by IdempotencyInterceptor
+    // with the reusable IdempotencyService, so the service call stays focused on
+    // the governance pipeline.
+    return this.transactionService.create(user.organizationId, actorId, body);
   }
 
   @Post('simulate')

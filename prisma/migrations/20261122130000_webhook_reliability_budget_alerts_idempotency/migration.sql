@@ -57,6 +57,7 @@ CREATE TABLE "idempotency_records" (
     "responseStatus" INTEGER,
     "responseBody" JSONB,
     "requestId" TEXT,
+    "transactionId" TEXT,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
     "expiresAt" TIMESTAMP(3) NOT NULL,
@@ -66,3 +67,4 @@ CREATE TABLE "idempotency_records" (
 
 CREATE UNIQUE INDEX "idempotency_records_principalId_route_keyHash_key" ON "idempotency_records"("principalId", "route", "keyHash");
 CREATE INDEX "idempotency_records_expiresAt_idx" ON "idempotency_records"("expiresAt");
+CREATE INDEX "idempotency_records_transactionId_idx" ON "idempotency_records"("transactionId");

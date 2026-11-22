@@ -492,12 +492,16 @@ model IdempotencyRecord {
   responseBody   Json?
   // Request id of the original execution, replayed to the caller.
   requestId      String?
+  // Set when the reserved work is a transaction, so async workers can finalize
+  // (or fail) the record once its terminal result is known.
+  transactionId  String?
   createdAt      DateTime          @default(now())
   updatedAt      DateTime          @updatedAt
   expiresAt      DateTime
 
   @@unique([principalId, route, keyHash])
   @@index([expiresAt])
+  @@index([transactionId])
   @@map("idempotency_records")
 }
 
