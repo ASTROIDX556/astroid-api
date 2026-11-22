@@ -46,6 +46,7 @@ export interface DomainEventMap {
   'budget.consumed': PayloadTypes.BudgetConsumedPayload;
   'budget.exceeded': PayloadTypes.BudgetExceededPayload;
   'budget.warning': PayloadTypes.BudgetWarningPayload;
+  'budget.threshold_reached': PayloadTypes.BudgetThresholdReachedPayload;
 
   // Proposal / Approval
   'proposal.created': PayloadTypes.ProposalCreatedPayload;

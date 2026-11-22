@@ -157,6 +157,14 @@ are rejected:
 | `IDEMPOTENCY_WAIT_TIMEOUT_MS` | `5000` | How long a duplicate request waits for the in-flight original to finish before returning `409`. `0` returns the conflict immediately. |
 | `IDEMPOTENCY_POLL_INTERVAL_MS` | `100` | Poll interval used while waiting for the in-flight original. |
 
+### Budget threshold alerts
+
+| Variable | Default | Description |
+|---|---|---|
+| `BUDGET_ALERT_THRESHOLDS` | `80,100` | Comma-separated percentage thresholds of a budget limit. A spend that crosses a threshold emits `budget.threshold_reached` once per budget period. Invalid or non-positive entries are dropped; at least one valid threshold is required. A budget's `alertThresholds` column overrides this list for that budget. |
+
+See [budget-alerts.md](budget-alerts.md) for the evaluation and notification flow.
+
 ### Storage (S3-compatible)
 
 | Variable             | Default                 | Description              |

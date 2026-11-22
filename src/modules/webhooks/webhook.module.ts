@@ -9,6 +9,7 @@ import { WebhookRepository } from './webhook.repository';
 import { WebhookDispatcher } from './webhook.dispatcher';
 import { WebhookDeliveryService } from './services/webhook-delivery.service';
 import { WebhookAuditService } from './services/webhook-audit.service';
+import { WebhookAttemptService } from './services/webhook-attempt.service';
 import { WebhookCircuitService } from './services/webhook-circuit.service';
 import { WebhooksProcessor } from './webhooks.processor';
 import { createWebhookQueueOptions } from '../../queues/webhook.queue';
@@ -58,6 +59,7 @@ import { WebhookDestinationPolicy } from './webhook-destination.policy';
     WebhookDispatcher,
     WebhookDeliveryService,
     WebhookAuditService,
+    WebhookAttemptService,
     WebhookCircuitService,
     WebhooksProcessor,
     WebhookIngressService,

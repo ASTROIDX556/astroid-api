@@ -31,8 +31,8 @@ describe('classifyHttpStatus', () => {
     });
   });
 
-  it('keeps 408, 425 and 429 retryable', () => {
-    for (const status of [408, 425, 429]) {
+  it('keeps only 408, 429 and 5xx retryable', () => {
+    for (const status of [408, 429, 500, 502, 503, 599]) {
       const result = classifyHttpStatus(status);
       expect(result.transient).toBe(true);
       expect(result.category).toBe(WebhookFailureCategory.Transient);
@@ -58,9 +58,11 @@ describe('classifyHttpStatus', () => {
     }
   });
 
-  it('keeps the remaining 4xx statuses retryable, like the worker does', () => {
-    for (const status of [405, 409, 410, 415, 429]) {
-      expect(classifyHttpStatus(status).transient).toBe(true);
+  it('never retries other 4xx statuses', () => {
+    for (const status of [405, 409, 410, 415, 425, 451]) {
+      const result = classifyHttpStatus(status);
+      expect(result.transient).toBe(false);
+      expect(result.category).toBe(WebhookFailureCategory.Permanent);
     }
   });
 });
