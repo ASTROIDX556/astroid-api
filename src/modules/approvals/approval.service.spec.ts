@@ -22,7 +22,7 @@ function proposal(overrides: Partial<Proposal> = {}): Proposal {
 
 describe('ApprovalService lifecycle guards', () => {
   it('allows only one of two concurrent threshold approvals to execute', async () => {
-    let status = ProposalStatus.PENDING;
+    let status: ProposalStatus = ProposalStatus.PENDING;
     const current = proposal();
     const repository = {
       findById: vi.fn(async () => ({ ...current, status })),

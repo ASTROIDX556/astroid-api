@@ -146,18 +146,38 @@ export class ApprovalService {
     const changed = await this.repository.transitionStatus(proposal.id, proposal.status, to);
     if (!changed) throw new InvalidProposalTransitionException(proposal.status, to);
 
-    const event = {
-      [ProposalStatus.APPROVED]: DomainEventName.ProposalApproved,
-      [ProposalStatus.REJECTED]: DomainEventName.ProposalRejected,
-      [ProposalStatus.EXPIRED]: DomainEventName.ProposalExpired,
-      [ProposalStatus.EXECUTED]: DomainEventName.ProposalExecuted,
-    }[to];
-    if (!event) return;
-
-    await this.eventBus.emit(
-      event,
-      { proposalId: proposal.id, transactionId: proposal.transactionId, ...extra },
-      { organizationId, actorId, aggregateType: 'proposal', aggregateId: proposal.id },
-    );
+    const options = { organizationId, actorId, aggregateType: 'proposal', aggregateId: proposal.id };
+    switch (to) {
+      case ProposalStatus.APPROVED:
+        await this.eventBus.emit(
+          DomainEventName.ProposalApproved,
+          { proposalId: proposal.id, transactionId: proposal.transactionId, ...extra },
+          options,
+        );
+        return;
+      case ProposalStatus.REJECTED:
+        await this.eventBus.emit(
+          DomainEventName.ProposalRejected,
+          { proposalId: proposal.id, transactionId: proposal.transactionId },
+          options,
+        );
+        return;
+      case ProposalStatus.EXPIRED:
+        await this.eventBus.emit(
+          DomainEventName.ProposalExpired,
+          { proposalId: proposal.id, transactionId: proposal.transactionId },
+          options,
+        );
+        return;
+      case ProposalStatus.EXECUTED:
+        await this.eventBus.emit(
+          DomainEventName.ProposalExecuted,
+          { proposalId: proposal.id, transactionId: proposal.transactionId },
+          options,
+        );
+        return;
+      default:
+        return;
+    }
   }
 }
