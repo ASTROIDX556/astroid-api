@@ -3,35 +3,37 @@
 ## Signature format
 
 Every delivery is signed with the endpoint's own `secret` using HMAC-SHA256.
-The signed string is:
+The canonical signed message is:
 
 ```
-v1.<timestamp>.<eventId>.<raw request body>
+<timestamp>.<raw request body>
 ```
 
-- `<timestamp>` is Unix time in **seconds**, also sent as `X-Astroid-Timestamp`.
-- `<eventId>` is sent as `X-Astroid-Event-Id` (and `X-Astroid-Delivery`).
+- `<timestamp>` is the Unix time in **seconds** of the attempt.
 - `<raw request body>` is the exact bytes sent, with no re-serialization.
 
-The digest is hex-encoded and sent as:
+The header carries the timestamp inside the signature (Stripe-style):
 
 ```
-X-Astroid-Signature: v1=<hex digest>
-X-Astroid-Timestamp: <unix seconds>
+X-Astroid-Signature: t=<unix-seconds>,v1=<hex-hmac>
 X-Astroid-Signature-Version: v1
+X-Astroid-Event: <domain-event-name>
 ```
 
-The same payload is also described by `X-Astroid-Event`.
+`X-Astroid-Event-Id` (and its alias `X-Astroid-Delivery`) still carry the
+globally unique event identifier; the HMAC itself is computed only over the
+canonical signed message above, so `v1` is the hex HMAC of
+`${t}.${rawBody}` where `t` is the same timestamp as in the header.
 
 ### Consumer verification
 
 1. Read the **raw** request body bytes before JSON parsing.
-2. Read `X-Astroid-Timestamp`, `X-Astroid-Event-Id` and `X-Astroid-Signature`.
-3. Build `v1.<timestamp>.<eventId>.` followed by the raw body.
-4. Compute `HMAC-SHA256(secret, signedString)` and compare it with the hex
-   digest in constant time.
-5. Reject stale timestamps (a small tolerance such as 5 minutes limits replay)
-   and reject deliveries whose signature does not match.
+2. Parse `X-Astroid-Signature` into `t` and `v1`.
+3. Reject stale timestamps: `|now − t|` must be within the tolerance window
+   (the docs recommend **5 minutes**, 300 seconds).
+4. Compute `expected = HMAC-SHA256(secret, `${t}.${rawBody}`)` and compare it
+   with the received `v1` digest in constant time (check both lengths first).
+5. Reject anything that does not match.
 
 Node example:
 
@@ -39,15 +41,24 @@ Node example:
 import { createHmac, timingSafeEqual } from 'crypto';
 
 function verify(rawBody: Buffer, headers: Record<string, string>, secret: string) {
-  const timestamp = headers['x-astroid-timestamp'];
-  const eventId = headers['x-astroid-event-id'];
   const signature = headers['x-astroid-signature'];
-  if (!timestamp || !eventId || !signature?.startsWith('v1=')) return false;
-
-  const signed = Buffer.concat([Buffer.from(`v1.${timestamp}.${eventId}.`), rawBody]);
-  const expected = createHmac('sha256', secret).update(signed).digest();
-  const received = Buffer.from(signature.slice(3), 'hex');
+  if (typeof signature !== 'string') return false;
+  const { t, v1 } = parseSignatureHeader(signature); // t=<unix-seconds>,v1=<hex>
+  if (!t || !/^\d{1,12}$/.test(t) || !v1 || !/^[0-9a-f]{64}$/.test(v1)) return false;
+  if (Math.abs(Math.floor(Date.now() / 1000) - Number(t)) > 300) return false;
+  const expected = createHmac('sha256', secret).update(Buffer.concat([Buffer.from(`${t}.`), rawBody])).digest();
+  const received = Buffer.from(v1, 'hex');
   return expected.length === received.length && timingSafeEqual(expected, received);
+}
+
+function parseSignatureHeader(header: string): { t?: string; v1?: string } {
+  const out: { t?: string; v1?: string } = {};
+  for (const part of header.split(',')) {
+    const [key, ...rest] = part.trim().split('=');
+    if (key === 't') out.t = rest.join('=');
+    if (key === 'v1') out.v1 = rest.join('=');
+  }
+  return out;
 }
 ```
 
@@ -95,6 +106,11 @@ its failure is only logged.
 
 ## Backward compatibility
 
-The payload shape, endpoint CRUD API and header names are unchanged. The only
-behavioural change is that a delivery previously retried on `425`, `405`, `409`,
-`410` and `415` is now abandoned immediately, as required by the retry contract.
+The payload shape, endpoint CRUD API and header names are unchanged; the
+`X-Astroid-Signature` header format is the canonical Stripe-style
+`t=<unix-seconds>,v1=<hex-hmac>` where the HMAC is over `${t}.${rawBody}`
+(previously `v1=<hex>` over `v1.<t>.<eventId>.<body>`; the separate
+`X-Astroid-Timestamp` header is still sent for convenience). The other
+behavioural change is that a delivery previously retried on `425`, `405`,
+`409`, `410` and `415` is now abandoned immediately, as required by the retry
+contract.

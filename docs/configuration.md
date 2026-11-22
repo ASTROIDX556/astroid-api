@@ -112,6 +112,7 @@ are rejected:
 | `PASSKEY_RP_ID`   | `localhost`             | WebAuthn relying-party ID.           |
 | `PASSKEY_RP_NAME` | `Astroid`               | WebAuthn relying-party display name. |
 | `PASSKEY_ORIGIN`  | `http://localhost:3001` | Expected WebAuthn origin.            |
+| `API_KEY_ROTATION_GRACE_PERIOD_SECONDS` | `86400` | Default grace period in seconds during which a rotating API key remains valid alongside its replacement. |
 
 ### Stellar
 

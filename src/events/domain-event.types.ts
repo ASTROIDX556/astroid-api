@@ -439,6 +439,15 @@ export interface JobRequeuedPayload extends Record<string, unknown> {
   reason?: string;
 }
 
+export interface SessionFamilyRevokedPayload extends Record<string, unknown> {
+  /** Identifier of the token family whose sessions were revoked. */
+  familyId: string;
+  /** The session that presented the reused token, when known. */
+  sessionId?: string;
+  /** The user owning the family, when known. */
+  userId?: string | null;
+}
+
 export interface WebhookPermanentlyFailedPayload extends Record<string, unknown> {
   webhookId: string;
   organizationId: string;
