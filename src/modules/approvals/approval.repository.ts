@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { Approval, Prisma, Proposal } from '@prisma/client';
+import { Approval, Prisma, ProposalStatus } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { PrismaPagination } from '../../common/helpers/pagination';
 
@@ -40,7 +40,15 @@ export class ApprovalRepository {
     return this.prisma.approval.count({ where: { proposalId, decision } });
   }
 
-  updateProposalStatus(id: string, data: Prisma.ProposalUpdateInput): Promise<Proposal> {
-    return this.prisma.proposal.update({ where: { id }, data });
+  /**
+   * Compare-and-set status transition. The database is the concurrency arbiter:
+   * at most one caller observing `from` can win this mutation.
+   */
+  async transitionStatus(id: string, from: ProposalStatus, to: ProposalStatus): Promise<boolean> {
+    const result = await this.prisma.proposal.updateMany({
+      where: { id, status: from },
+      data: { status: to },
+    });
+    return result.count === 1;
   }
 }

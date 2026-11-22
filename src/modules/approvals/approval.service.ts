@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { ApprovalDecision, Prisma, ProposalStatus } from '@prisma/client';
+import { ApprovalDecision, Prisma, Proposal, ProposalStatus } from '@prisma/client';
 import { ApprovalRepository } from './approval.repository';
 import { DecideProposalInput } from './approval.dto';
 import { TransactionService } from '../transactions/transaction.service';
@@ -17,6 +17,10 @@ import {
 import { Paginated } from '../../common/interfaces/api-response.interface';
 import { EventBusService } from '../../events/event-bus.service';
 import { DomainEventName } from '../../events/event-names';
+import {
+  assertTransition,
+  InvalidProposalTransitionException,
+} from './approval-state-machine';
 
 const SORTABLE = ['createdAt', 'status', 'approvalType'];
 
@@ -41,6 +45,7 @@ export class ApprovalService {
     }
     const pagination = toPrismaPagination(query, SORTABLE);
     const { items, total } = await this.repository.findManyAndCount(where, pagination);
+    await Promise.all(items.map((proposal) => this.expireIfNeeded(proposal, organizationId)));
     return new Paginated(items, buildPaginationMeta(total, query));
   }
 
@@ -49,6 +54,7 @@ export class ApprovalService {
     if (!proposal) {
       throw new NotFoundException('Proposal', id);
     }
+    await this.expireIfNeeded(proposal, organizationId);
     return proposal;
   }
 
@@ -59,22 +65,17 @@ export class ApprovalService {
     proposalId: string,
     input: DecideProposalInput,
   ) {
-    const proposal = await this.getOrThrow(organizationId, proposalId);
+    // Do not use getOrThrow here: action-time expiry must itself own the
+    // PENDING -> EXPIRED compare-and-set transition.
+    const proposal = await this.repository.findById(organizationId, proposalId);
+    if (!proposal) throw new NotFoundException('Proposal', proposalId);
 
-    if (proposal.status !== ProposalStatus.PENDING) {
-      throw new DomainException(
-        ErrorCode.PROPOSAL_NOT_PENDING,
-        `Proposal is '${proposal.status}' and can no longer be decided`,
-      );
-    }
     if (proposal.expiresAt && proposal.expiresAt.getTime() < Date.now()) {
-      await this.repository.updateProposalStatus(proposalId, { status: ProposalStatus.EXPIRED });
-      await this.eventBus.emit(
-        DomainEventName.ProposalExpired,
-        { proposalId },
-        { organizationId, actorId, aggregateType: 'proposal', aggregateId: proposalId },
-      );
+      await this.transition(proposal, ProposalStatus.EXPIRED, organizationId, actorId);
       throw new DomainException(ErrorCode.PROPOSAL_EXPIRED, 'Proposal has expired');
+    }
+    if (proposal.status !== ProposalStatus.PENDING) {
+      throw new InvalidProposalTransitionException(proposal.status, ProposalStatus.APPROVED);
     }
 
     const already = await this.repository.findApprovalByUser(proposalId, actorId);
@@ -91,13 +92,8 @@ export class ApprovalService {
 
     // A single rejection rejects the whole proposal.
     if (input.decision === ApprovalDecision.REJECTED) {
-      await this.repository.updateProposalStatus(proposalId, { status: ProposalStatus.REJECTED });
+      await this.transition(proposal, ProposalStatus.REJECTED, organizationId, actorId);
       await this.transactions.cancel(organizationId, actorId, proposal.transactionId);
-      await this.eventBus.emit(
-        DomainEventName.ProposalRejected,
-        { proposalId, transactionId: proposal.transactionId },
-        { organizationId, actorId, aggregateType: 'proposal', aggregateId: proposalId },
-      );
       return this.getOrThrow(organizationId, proposalId);
     }
 
@@ -108,21 +104,60 @@ export class ApprovalService {
     }
 
     // Threshold reached: approve, execute the transaction, then mark executed.
-    await this.repository.updateProposalStatus(proposalId, { status: ProposalStatus.APPROVED });
-    await this.eventBus.emit(
-      DomainEventName.ProposalApproved,
-      { proposalId, transactionId: proposal.transactionId, approvals },
-      { organizationId, actorId, aggregateType: 'proposal', aggregateId: proposalId },
-    );
+    await this.transition(proposal, ProposalStatus.APPROVED, organizationId, actorId, { approvals });
 
     await this.transactions.execute(organizationId, proposal.transactionId, actorId);
-    await this.repository.updateProposalStatus(proposalId, { status: ProposalStatus.EXECUTED });
-    await this.eventBus.emit(
-      DomainEventName.ProposalExecuted,
-      { proposalId, transactionId: proposal.transactionId },
-      { organizationId, actorId, aggregateType: 'proposal', aggregateId: proposalId },
+    await this.transition(
+      { ...proposal, status: ProposalStatus.APPROVED },
+      ProposalStatus.EXECUTED,
+      organizationId,
+      actorId,
     );
 
     return this.getOrThrow(organizationId, proposalId);
+  }
+
+  /** Expires stale proposals during reads as well as state-changing actions. */
+  private async expireIfNeeded(
+    proposal: Proposal,
+    organizationId: string,
+  ): Promise<void> {
+    if (proposal.status !== ProposalStatus.PENDING || !proposal.expiresAt || proposal.expiresAt >= new Date()) {
+      return;
+    }
+    try {
+      await this.transition(proposal, ProposalStatus.EXPIRED, organizationId);
+      proposal.status = ProposalStatus.EXPIRED;
+    } catch (error) {
+      // Another concurrent reader/action already expired it; its event is authoritative.
+      if (!(error instanceof InvalidProposalTransitionException)) throw error;
+    }
+  }
+
+  /** The single service path for every Proposal status mutation and its event. */
+  private async transition(
+    proposal: Proposal,
+    to: ProposalStatus,
+    organizationId: string,
+    actorId?: string,
+    extra: { approvals?: number } = {},
+  ): Promise<void> {
+    assertTransition(proposal.status, to);
+    const changed = await this.repository.transitionStatus(proposal.id, proposal.status, to);
+    if (!changed) throw new InvalidProposalTransitionException(proposal.status, to);
+
+    const event = {
+      [ProposalStatus.APPROVED]: DomainEventName.ProposalApproved,
+      [ProposalStatus.REJECTED]: DomainEventName.ProposalRejected,
+      [ProposalStatus.EXPIRED]: DomainEventName.ProposalExpired,
+      [ProposalStatus.EXECUTED]: DomainEventName.ProposalExecuted,
+    }[to];
+    if (!event) return;
+
+    await this.eventBus.emit(
+      event,
+      { proposalId: proposal.id, transactionId: proposal.transactionId, ...extra },
+      { organizationId, actorId, aggregateType: 'proposal', aggregateId: proposal.id },
+    );
   }
 }
