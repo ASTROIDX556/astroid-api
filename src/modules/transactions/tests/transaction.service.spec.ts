@@ -20,7 +20,7 @@ import { ErrorCode } from '../../../common/constants/error-codes';
 import { parseIdempotencyKey } from '../transaction.dto';
 import { PrismaTransactionService } from '../../../database/prisma-transaction.service';
 import { IdempotencyService } from '../../../common/idempotency/idempotency.service';
-import { TransactionIdempotencyRecord } from '@prisma/client';
+import { IdempotencyRecord } from '@prisma/client';
 
 /**
  * Stand-in transaction manager that runs the callback straight through with a
@@ -37,7 +37,7 @@ const passthroughTxService = {
  * reservation/replay logic without a database.
  */
 function createIdempotencyPrisma(): PrismaService {
-  const rows = new Map<string, TransactionIdempotencyRecord>();
+  const rows = new Map<string, IdempotencyRecord>();
   let sequence = 0;
   const findByIdentity = (where: Record<string, unknown>) =>
     [...rows.values()].find(
@@ -48,7 +48,7 @@ function createIdempotencyPrisma(): PrismaService {
     );
 
   return {
-    transactionIdempotencyRecord: {
+    idempotencyRecord: {
       deleteMany: vi.fn(async ({ where }: { where: Record<string, unknown> }) => {
         let count = 0;
         for (const [id, row] of rows) {
@@ -68,20 +68,20 @@ function createIdempotencyPrisma(): PrismaService {
       }),
       create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
         if (findByIdentity(data)) throw { code: 'P2002' };
-        const row: TransactionIdempotencyRecord = {
+        const row: IdempotencyRecord = {
           id: `idempotency_${(sequence += 1)}`,
           principalId: data.principalId as string,
-          operation: data.operation as string,
+
           route: data.route as string,
           keyHash: data.keyHash as string,
           requestHash: data.requestHash as string,
           status: 'PROCESSING',
           transactionId: null,
-          response: null,
+          responseBody: null,
           responseStatus: null,
           requestId: null,
           createdAt: new Date(),
-          completedAt: null,
+          updatedAt: new Date(),
           expiresAt: data.expiresAt as Date,
         };
         rows.set(row.id, row);
@@ -95,7 +95,7 @@ function createIdempotencyPrisma(): PrismaService {
       update: vi.fn(async ({ where, data }: { where: { id: string }; data: Record<string, unknown> }) => {
         const row = rows.get(where.id);
         if (!row) throw new Error(`missing idempotency record ${where.id}`);
-        const updated = { ...row, ...data } as TransactionIdempotencyRecord;
+        const updated = { ...row, ...data } as IdempotencyRecord;
         rows.set(row.id, updated);
         return updated;
       }),
@@ -104,7 +104,7 @@ function createIdempotencyPrisma(): PrismaService {
           (row) => row.transactionId === where.transactionId && row.status === where.status,
         );
         for (const row of matching) {
-          rows.set(row.id, { ...row, ...data } as TransactionIdempotencyRecord);
+          rows.set(row.id, { ...row, ...data } as IdempotencyRecord);
         }
         return { count: matching.length };
       }),

@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { PrismaPagination } from '../../common/helpers/pagination';
-import { AuditCursor } from './audit-cursor';
+import { CursorPayload } from '../../common/pagination/cursor-pagination';
 
 export interface CreateAuditLogData {
   organizationId: string;
@@ -63,7 +63,7 @@ export class AuditRepository {
     return { items, total };
   }
 
-  findPage(where: Prisma.AuditLogWhereInput, cursor: AuditCursor | undefined, limit: number) {
+  findPage(where: Prisma.AuditLogWhereInput, cursor: CursorPayload | undefined, limit: number) {
     const cursorWhere: Prisma.AuditLogWhereInput | undefined = cursor
       ? {
           OR: [

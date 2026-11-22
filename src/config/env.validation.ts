@@ -191,6 +191,27 @@ export const webhookEnvSchema = z.object({
   WEBHOOK_CIRCUIT_COOLDOWN_MS: z.coerce.number().int().min(1_000).max(86_400_000).default(300_000),
 });
 
+export const budgetAlertEnvSchema = z.object({
+  // Comma-separated percentage thresholds (e.g. "80,100") at which a budget
+  // spend emits an alert. Sorted ascending and de-duplicated after parsing.
+  BUDGET_ALERT_THRESHOLDS: z
+    .string()
+    .default('80,100')
+    .transform((value) =>
+      Array.from(
+        new Set(
+          value
+            .split(',')
+            .map((part) => Number(part.trim()))
+            .filter((threshold) => Number.isInteger(threshold) && threshold > 0 && threshold <= 1_000),
+        ),
+      ).sort((a, b) => a - b),
+    )
+    .refine((thresholds) => thresholds.length > 0, {
+      message: 'must contain at least one positive integer threshold',
+    }),
+});
+
 export const throttleEnvSchema = z.object({
   THROTTLE_AUTH_LIMIT: z.coerce.number().int().positive().default(10),
   THROTTLE_API_LIMIT: z.coerce.number().int().positive().default(120),
@@ -318,6 +339,7 @@ export const environmentSchema = z
     ...idempotencyEnvSchema.shape,
     ...walletReconciliationEnvSchema.shape,
     ...webhookEnvSchema.shape,
+    ...budgetAlertEnvSchema.shape,
     ...throttleEnvSchema.shape,
     ...rateLimitEnvSchema.shape,
     ...metricsEnvSchema.shape,

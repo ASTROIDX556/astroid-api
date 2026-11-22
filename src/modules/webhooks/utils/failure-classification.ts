@@ -4,13 +4,20 @@ import {
 } from '../webhook-destination.policy';
 
 /**
- * HTTP statuses a webhook delivery is **not** retried on.
+ * The only HTTP statuses a webhook delivery is retried on: request timeout
+ * (408), rate limiting (429) and every 5xx. All other 4xx responses and every
+ * redirect are permanent rejections — retrying them cannot change the outcome.
  *
- * The set is the single source of truth for the retry decision: the worker
- * aborts a delivery on these statuses and the failure classifier reports them
- * as permanent, so the delivery log, the circuit and the emitted events always
- * describe what actually happened.
+ * This predicate is the single source of truth for the retry decision: the
+ * worker aborts a delivery when it returns false and the failure classifier
+ * reports the same answer, so the delivery log, the circuit and the emitted
+ * events always describe what actually happened.
  */
+export function isRetryableWebhookStatus(status: number): boolean {
+  return status === 408 || status === 429 || (status >= 500 && status <= 599);
+}
+
+/** @deprecated Use {@link isRetryableWebhookStatus}; kept for compatibility. */
 export const NON_TRANSIENT_WEBHOOK_STATUSES = new Set([400, 401, 403, 404, 422]);
 
 /**
@@ -43,10 +50,9 @@ export interface WebhookFailureClassification {
 /**
  * Classifies a failed delivery attempt.
  *
- * The rules mirror the worker's own retry decision: a redirect or one of the
- * {@link NON_TRANSIENT_WEBHOOK_STATUSES} abandons the delivery, every other
- * response (including the remaining 4xx statuses) is retried, and a DNS
- * failure, a timeout or a network error is retried as well.
+ * The rules mirror the worker's own retry decision: only 408, 429 and 5xx are
+ * retried, while a redirect, any other 4xx, or a rejected destination abandons
+ * the delivery. A DNS failure, a timeout or a network error is retried.
  *
  * @param error          the error thrown by the delivery attempt
  * @param responseStatus the HTTP status the endpoint answered with, when any
@@ -107,17 +113,17 @@ export function classifyHttpStatus(status: number): WebhookFailureClassification
     };
   }
 
-  if (NON_TRANSIENT_WEBHOOK_STATUSES.has(status)) {
+  if (isRetryableWebhookStatus(status)) {
     return {
-      category: WebhookFailureCategory.Permanent,
+      category: WebhookFailureCategory.Transient,
       code: `HTTP_${status}`,
-      transient: false,
+      transient: true,
     };
   }
 
   return {
-    category: WebhookFailureCategory.Transient,
+    category: WebhookFailureCategory.Permanent,
     code: `HTTP_${status}`,
-    transient: true,
+    transient: false,
   };
 }

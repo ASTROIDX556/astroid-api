@@ -262,6 +262,12 @@ deliveries of a failing endpoint instead of hammering it.
 | `RATE_LIMIT_WEBHOOK_ROTATE_MAX` | `10` | `POST /webhooks/:id/rotate-secret` requests per API key or user per window. |
 | `RATE_LIMIT_WEBHOOK_ROTATE_WINDOW_SECONDS` | `3600` | Window of the webhook secret rotation limit. |
 
+### Budgets
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `BUDGET_ALERT_THRESHOLDS` | `80,100` | Comma-separated budget-utilisation percentages that emit a `budget.threshold_reached` event once per budget period. A budget's own `alertThresholds` overrides this list. |
+
 ### Metrics
 
 | Variable              | Default                      | Description                                                   |

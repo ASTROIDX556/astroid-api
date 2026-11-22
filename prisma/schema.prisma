@@ -205,6 +205,7 @@ model Organization {
   apiKeys              ApiKey[]
   webhooks             Webhook[]
   webhookDeliveries    WebhookDelivery[]
+  budgetAlerts         BudgetAlert[]
   webhookCircuitStates WebhookCircuitState[]
   notifications        Notification[]
   memoryRecords        MemoryRecord[]
@@ -375,6 +376,9 @@ model Budget {
   periodStart    DateTime     @default(now())
   rollover       Boolean      @default(false)
   enabled        Boolean      @default(true)
+  // Per-budget override of the percentage thresholds that emit budget alerts.
+  // Empty means "use the global defaults" (BUDGET_ALERT_THRESHOLDS).
+  alertThresholds Int[]       @default([])
   createdAt      DateTime     @default(now())
   updatedAt      DateTime     @updatedAt
   deletedAt      DateTime?
@@ -384,6 +388,7 @@ model Budget {
   children     Budget[]      @relation("BudgetHierarchy")
   agent        Agent?        @relation(fields: [agentId], references: [id])
   transactions Transaction[]
+  budgetAlerts BudgetAlert[]
 
   @@index([organizationId])
   @@index([parentBudgetId])
@@ -470,6 +475,59 @@ model TransactionIdempotencyRecord {
   @@unique([principalId, route, keyHash])
   @@index([expiresAt])
   @@map("transaction_idempotency_records")
+}
+
+// Durable, reusable Idempotency-Key record for mutating HTTP endpoints. Keys are
+// scoped by authenticated principal and route; the Redis lock is only the
+// short-lived in-progress guard, this row is the replayable source of truth.
+model IdempotencyRecord {
+  id             String            @id @default(uuid(7))
+  principalId    String
+  // Normalised route identity, e.g. "POST /api/v1/transactions".
+  route          String
+  keyHash        String
+  requestHash    String
+  status         IdempotencyStatus @default(PROCESSING)
+  responseStatus Int?
+  responseBody   Json?
+  // Request id of the original execution, replayed to the caller.
+  requestId      String?
+  // Set when the reserved work is a transaction, so async workers can finalize
+  // (or fail) the record once its terminal result is known.
+  transactionId  String?
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+  expiresAt      DateTime
+
+  @@unique([principalId, route, keyHash])
+  @@index([expiresAt])
+  @@index([transactionId])
+  @@map("idempotency_records")
+}
+
+// Ledger of budget-threshold alerts already emitted for one budget period.
+// The unique constraint makes threshold evaluation idempotent: a spend that
+// crosses 80% twice in the same period emits the alert exactly once. A new
+// period produces new rows, which resets the tracking automatically.
+model BudgetAlert {
+  id             String    @id @default(uuid(7))
+  budgetId       String
+  organizationId String
+  periodStart    DateTime
+  // Percentage of the limit that was crossed (80, 100, or a configured value).
+  threshold      Int
+  currency       String
+  usageAmount    Decimal   @db.Decimal(30, 7)
+  // Set once the notification consumer has created the notification records.
+  notifiedAt     DateTime?
+  createdAt      DateTime  @default(now())
+
+  budget       Budget       @relation(fields: [budgetId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([budgetId, periodStart, threshold])
+  @@index([organizationId, createdAt])
+  @@map("budget_alerts")
 }
 
 // ---------------------------------------------------------------------------
@@ -635,9 +693,10 @@ model Webhook {
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
-  organization Organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  deliveries   WebhookDelivery[]
-  circuitState WebhookCircuitState?
+  organization     Organization             @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  deliveries       WebhookDelivery[]
+  deliveryAttempts WebhookDeliveryAttempt[]
+  circuitState     WebhookCircuitState?
 
   @@index([organizationId])
   @@index([enabled])
@@ -676,6 +735,34 @@ model WebhookDelivery {
   @@index([eventId])
   @@index([createdAt])
   @@map("webhook_deliveries")
+}
+
+// One row per delivery attempt (initial + every retry). Kept separately from
+// WebhookDelivery, which holds the current state of a delivery: this table is
+// the append-only attempt history an operator needs to explain a failure.
+model WebhookDeliveryAttempt {
+  id             String   @id @default(uuid(7))
+  webhookId      String
+  organizationId String
+  eventId        String
+  // 1-based index of the attempt within the delivery.
+  attemptNumber  Int
+  // SUCCEEDED or FAILED.
+  status         String
+  responseStatus Int?
+  // Wall-clock duration of the HTTP request, in milliseconds.
+  durationMs     Int
+  errorCode      String?
+  errorMessage   String?
+  createdAt      DateTime @default(now())
+
+  webhook Webhook @relation(fields: [webhookId], references: [id], onDelete: Cascade)
+
+  @@index([webhookId])
+  @@index([organizationId])
+  @@index([eventId])
+  @@index([createdAt])
+  @@map("webhook_delivery_attempts")
 }
 
 // State of the per-endpoint circuit breaker. One row per webhook endpoint so

@@ -4,7 +4,7 @@ import { AuditRepository, CreateAuditLogData } from './audit.repository';
 import { AuditHashService } from './audit-hash.service';
 import { CursorPaginated } from '../../common/interfaces/api-response.interface';
 import { AuditListQuery } from './audit-list.dto';
-import { decodeAuditCursor, encodeAuditCursor } from './audit-cursor';
+import { decodeCursor, encodeCursor } from '../../common/pagination/cursor-pagination';
 import { ExportAuditLogsQuery, StreamAuditLogsQuery } from './audit-export.dto';
 import { sanitizeAuditPayload } from '../../common/helpers/audit-sanitizer';
 
@@ -61,16 +61,16 @@ export class AuditService {
   /** Cursor-paginated audit log listing, newest first. */
   async list(organizationId: string, query: AuditListQuery): Promise<CursorPaginated<ExportedAuditLog>> {
     const where = this.buildFilterWhere(organizationId, query);
-    const cursor = query.cursor ? decodeAuditCursor(query.cursor) : undefined;
+    const cursor = query.cursor ? decodeCursor(query.cursor) : undefined;
     const take = query.limit + 1;
 
     const rows = (await this.repository.findPage(where, cursor, take)) as ExportedAuditLog[];
-    const hasNext = rows.length > query.limit;
-    const items = hasNext ? rows.slice(0, query.limit) : rows;
+    const hasMore = rows.length > query.limit;
+    const items = hasMore ? rows.slice(0, query.limit) : rows;
     const last = items[items.length - 1];
-    const nextCursor = hasNext && last ? encodeAuditCursor({ createdAt: last.createdAt, id: last.id }) : null;
+    const nextCursor = hasMore && last ? encodeCursor({ createdAt: last.createdAt, id: last.id }) : null;
 
-    return new CursorPaginated(items, { limit: query.limit, hasNext, nextCursor });
+    return new CursorPaginated(items, { limit: query.limit, hasMore, nextCursor });
   }
 
   async export(organizationId: string, query: ExportAuditLogsQuery) {
