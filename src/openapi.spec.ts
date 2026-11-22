@@ -213,6 +213,19 @@ describe('OpenAPI Documentation', () => {
     expect(offenders).toEqual([]);
   });
 
+  it('documents the optional Idempotency-Key header on transaction creation', () => {
+    const operation = document.paths['/api/v1/transactions']?.post;
+    const parameters = (operation?.parameters ?? []) as Array<{
+      name?: string;
+      in?: string;
+      required?: boolean;
+    }>;
+
+    expect(
+      parameters.find((parameter) => parameter.in === 'header' && parameter.name === 'Idempotency-Key'),
+    ).toMatchObject({ required: false });
+  });
+
   it('gives every operation a summary or description', () => {
     const offenders = listDocumentedOperations(document)
       .filter(({ operation }) => !(operation.summary || operation.description))

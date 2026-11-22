@@ -1,13 +1,13 @@
 import { Injectable } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
-import { TransactionRepository } from './transaction.repository';
+import { IdempotencyService } from '../../common/idempotency/idempotency.service';
 
 @Injectable()
 export class TransactionIdempotencyCleanupService {
-  constructor(private readonly repository: TransactionRepository) {}
+  constructor(private readonly idempotency: IdempotencyService) {}
 
   @Cron(CronExpression.EVERY_HOUR)
   async removeExpiredRecords(): Promise<void> {
-    await this.repository.deleteExpiredIdempotencyKeys();
+    await this.idempotency.deleteExpired();
   }
 }

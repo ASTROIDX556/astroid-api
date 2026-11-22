@@ -7,6 +7,7 @@ import { Queues } from '../../../queues/queues.constants';
 import { EventBusService } from '../../../events/event-bus.service';
 import { DomainEventName } from '../../../events/event-names';
 import { PermanentJobError } from '../../../queues/queue-policy';
+import { IdempotencyService } from '../../../common/idempotency/idempotency.service';
 
 function buildJob(overrides: Partial<Job> = {}): Job {
   return {
@@ -48,6 +49,51 @@ describe('TransactionWorker', () => {
     await worker.process(buildJob());
 
     expect(eventBus.emit).not.toHaveBeenCalled();
+  });
+
+  it('finalizes the idempotency record when a job reports a terminal result', async () => {
+    const idempotency = {
+      finalizeTransaction: vi.fn().mockResolvedValue(1),
+      failTransaction: vi.fn().mockResolvedValue(0),
+    };
+    const idempotentWorker = new TransactionWorker(
+      eventBus as unknown as EventBusService,
+      idempotency as unknown as IdempotencyService,
+    );
+
+    await idempotentWorker.process(
+      buildJob({
+        data: {
+          organizationId: 'org-1',
+          transactionId: 'tx-1',
+          result: { statusCode: 201, body: { ok: true }, requestId: 'req-1' },
+        },
+      }),
+    );
+
+    expect(idempotency.finalizeTransaction).toHaveBeenCalledWith('tx-1', {
+      statusCode: 201,
+      body: { ok: true },
+      requestId: 'req-1',
+    });
+    expect(idempotency.failTransaction).not.toHaveBeenCalled();
+  });
+
+  it('frees the idempotency key when a job fails terminally', async () => {
+    const idempotency = {
+      finalizeTransaction: vi.fn().mockResolvedValue(0),
+      failTransaction: vi.fn().mockResolvedValue(1),
+    };
+    const failing = new TransactionWorker(
+      eventBus as unknown as EventBusService,
+      idempotency as unknown as IdempotencyService,
+    );
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (failing as any).execute = vi.fn().mockRejectedValue(new UnrecoverableError('boom'));
+
+    await expect(failing.process(buildJob({ attemptsMade: 0 }))).rejects.toThrow('boom');
+
+    expect(idempotency.failTransaction).toHaveBeenCalledWith('tx-1');
   });
 
   it('rethrows a transient failure so BullMQ retries it with backoff', async () => {
