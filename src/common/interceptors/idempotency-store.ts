@@ -15,7 +15,7 @@ export interface StoredIdempotentResponse {
   body: unknown;
 }
 
-/** A stored idempotency key, scoped to one actor and one logical operation. */
+/** A stored idempotency key, scoped to one actor and one route. */
 export interface IdempotencyRecord {
   id: string;
   requestHash: string;
@@ -24,14 +24,15 @@ export interface IdempotencyRecord {
   expiresAt: Date;
 }
 
-/** Identity of an idempotent request: tenant-scoped actor + operation + key. */
+/** Identity of an idempotent request: tenant-scoped actor + route + key. */
 export interface IdempotencyIdentity {
   /**
    * Tenant-scoped actor (`<organizationId>:<userId|apiKeyId>`), so keys from
    * different tenants or API keys can never collide.
    */
   principalId: string;
-  operation: string;
+  /** Route the key is scoped to, e.g. `POST /transactions`. */
+  route: string;
   /** SHA-256 of the raw `Idempotency-Key` header; the key itself is never stored. */
   keyHash: string;
 }

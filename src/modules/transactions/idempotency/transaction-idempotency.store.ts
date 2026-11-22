@@ -15,7 +15,7 @@ import { TransactionRepository } from '../transaction.repository';
  * Prisma-backed {@link IdempotencyStore} for transaction submission.
  *
  * The uniqueness guarantee lives in the database
- * (`@@unique([principalId, operation, keyHash])`): a racing request that loses
+ * (`@@unique([principalId, route, keyHash])`): a racing request that loses
  * the insert is detected through P2002 and resolved to the winner's record
  * instead of executing a second transaction.
  */

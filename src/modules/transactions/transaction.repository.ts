@@ -20,14 +20,14 @@ export class TransactionRepository {
 
   async reserveIdempotencyKey(input: {
     principalId: string;
-    operation: string;
+    route: string;
     keyHash: string;
     requestHash: string;
     expiresAt: Date;
   }) {
     const identity = {
       principalId: input.principalId,
-      operation: input.operation,
+      route: input.route,
       keyHash: input.keyHash,
     };
     // Expired records are treated as absent, so a retry after the retention
@@ -39,7 +39,12 @@ export class TransactionRepository {
     for (let attempt = 0; attempt < 2; attempt += 1) {
       try {
         const record = await this.prisma.transactionIdempotencyRecord.create({
-          data: { ...input },
+          data: {
+            // `operation` is the legacy column; it mirrors the route for rows
+            // written since keys became route-scoped.
+            operation: input.route,
+            ...input,
+          },
         });
         return { record, created: true };
       } catch (error) {
@@ -55,7 +60,7 @@ export class TransactionRepository {
         // A concurrent request won the unique constraint. Resolve to its
         // record instead of a read-then-write check, which would race.
         const record = await this.prisma.transactionIdempotencyRecord.findUnique({
-          where: { principalId_operation_keyHash: identity },
+          where: { principalId_route_keyHash: identity },
         });
         if (!record) throw error;
         if (record.expiresAt <= new Date()) {
@@ -73,11 +78,11 @@ export class TransactionRepository {
 
   findIdempotencyKey(identity: {
     principalId: string;
-    operation: string;
+    route: string;
     keyHash: string;
   }) {
     return this.prisma.transactionIdempotencyRecord.findUnique({
-      where: { principalId_operation_keyHash: identity },
+      where: { principalId_route_keyHash: identity },
     });
   }
 

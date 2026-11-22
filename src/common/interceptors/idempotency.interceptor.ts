@@ -168,10 +168,3 @@ function toHttpException(error: unknown): Error {
   }
   return error instanceof Error ? error : new Error('Idempotency check failed');
 }
-
-/**
- * Tenant-scoped actor. API-key requests are scoped by the API key itself so
- * two keys belonging to the same user do not share replay records; JWT
- * requests are scoped by the authenticated user.
- */
-}
