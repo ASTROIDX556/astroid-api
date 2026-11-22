@@ -33,10 +33,21 @@ export const Queues = {
 
 export type QueueName = (typeof Queues)[keyof typeof Queues];
 
+/**
+ * Correlation fields carried by a job so a worker failure can be tied back to
+ * the request that caused it. Every field is optional on read: jobs enqueued
+ * before these fields existed, and jobs enqueued outside a request (schedulers,
+ * cron, seeds), do not have them. Producers always populate what the current
+ * request context offers. Only ids are stored, never credentials.
+ */
 export interface QueueJobMetadata {
   requestId?: string;
   correlationId?: string;
   traceId?: string;
+  /** The acting user (or agent) of the originating request. */
+  actorId?: string;
+  /** Id of the API key the originating request authenticated with. */
+  apiKeyId?: string;
 }
 
 /** Standard payload stored when a job is dead-lettered. */

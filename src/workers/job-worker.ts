@@ -4,6 +4,9 @@ import { DEFAULT_JOB_OPTIONS } from '../queues/queue.module';
 import { classifyJobError } from '../queues/queue-policy';
 import type { WorkerMetricsService } from '../modules/metrics/worker-metrics.service';
 import { scrubForLog, scrubString } from '../utils/log-scrubber.util';
+import { RequestContext } from '../common/context/request-context';
+import { NO_REQUEST_CONTEXT, readJobMetadata } from '../queues/job-correlation';
+import type { QueueJobMetadata } from '../queues/queues.constants';
 import { isTerminalJobFailure } from './dlq.processor';
 
 /**
@@ -51,6 +54,17 @@ export interface WorkerJobLogRecord {
   unrecoverable?: boolean;
   error?: { name: string; message: string; stack?: string };
   payload?: unknown;
+  /**
+   * Id of the request that enqueued the job, in the same flat `requestId` field
+   * the API's request log lines use. {@link NO_REQUEST_CONTEXT} when the job
+   * carries none (scheduler, cron, seed, or enqueued before correlation fields
+   * existed).
+   */
+  requestId: string;
+  /** The acting user or agent of the originating request, when there was one. */
+  actorId?: string;
+  /** Id (never the secret) of the API key the originating request used. */
+  apiKeyId?: string;
   trace?: Record<string, string>;
   timestamp: string;
 }
@@ -74,7 +88,15 @@ export interface RunWorkerJobOptions<TData, TResult> {
 }
 
 /** Payload keys lifted into `trace` so a failure can be tied to its origin. */
-const TRACE_KEYS = ['traceId', 'correlationId', 'requestId', 'organizationId', 'agentId'] as const;
+const TRACE_KEYS = [
+  'traceId',
+  'correlationId',
+  'requestId',
+  'organizationId',
+  'agentId',
+  'actorId',
+  'apiKeyId',
+] as const;
 
 /**
  * Runs a background job handler with centralized error handling and
@@ -100,6 +122,8 @@ export async function runWorkerJob<TData, TResult>(
   const attempt = (job.attemptsMade ?? 0) + 1;
   const maxAttempts = job.opts?.attempts ?? DEFAULT_JOB_OPTIONS.attempts;
   const startedAt = Date.now();
+  const correlation = readJobMetadata(job.data);
+  const trace = extractTrace(job.data);
 
   const base = () => ({
     queue,
@@ -108,11 +132,15 @@ export async function runWorkerJob<TData, TResult>(
     attempt,
     maxAttempts,
     durationMs: Date.now() - startedAt,
-    trace: extractTrace(job.data),
+    requestId: correlation.requestId ?? NO_REQUEST_CONTEXT,
+    ...(correlation.actorId ? { actorId: correlation.actorId } : {}),
+    ...(correlation.apiKeyId ? { apiKeyId: correlation.apiKeyId } : {}),
+    trace,
   });
 
   try {
-    const result = metrics ? await metrics.instrumentJob(queue, jobName, handler) : await handler();
+    const execute = () => (metrics ? metrics.instrumentJob(queue, jobName, handler) : handler());
+    const result = await runInJobContext(queue, jobName, correlation, trace?.organizationId, execute);
 
     emit(() => {
       const record: WorkerJobLogRecord = {
@@ -179,6 +207,51 @@ export async function runWorkerJob<TData, TResult>(
     }
     throw error;
   }
+}
+
+/**
+ * Runs the handler inside a request context rebuilt from the job's correlation
+ * fields, so code that reads `RequestContext` (and any job it enqueues in turn)
+ * sees the originating request's id instead of nothing. A job without a request
+ * id runs as it always did.
+ */
+function runInJobContext<R>(
+  queue: string,
+  jobName: string,
+  correlation: QueueJobMetadata,
+  organizationId: string | undefined,
+  fn: () => Promise<R>,
+): Promise<R> {
+  const { requestId } = correlation;
+  if (!requestId) return fn();
+
+  const origin = `queue:${queue}/${jobName}`;
+  return RequestContext.run(
+    {
+      identity: {
+        requestId,
+        correlationId: correlation.correlationId ?? requestId,
+        traceId: correlation.traceId ?? correlation.correlationId ?? requestId,
+        method: 'JOB',
+        path: origin,
+        url: origin,
+        ip: null,
+        userAgent: null,
+        startedAt: Date.now(),
+      },
+      // The actor is restored as the principal's id: `RequestContext.getActorId()`
+      // is what producers read, whether the actor was a user or an agent.
+      principal: {
+        authMethod: 'service',
+        ...(organizationId ? { organizationId } : {}),
+        ...(correlation.actorId ? { userId: correlation.actorId } : {}),
+        ...(correlation.apiKeyId ? { apiKeyId: correlation.apiKeyId } : {}),
+      },
+      timings: {},
+      data: {},
+    },
+    fn,
+  );
 }
 
 /** Runs a logging side effect, swallowing anything it throws. */
