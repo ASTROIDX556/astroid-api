@@ -27,7 +27,7 @@ import { AstroidThrottlerGuard } from './common/guards/throttler.guard';
 import { PublicRateLimitGuard } from './common/guards/public-rate-limit.guard';
 import { ResponseInterceptor } from './common/interceptors/response.interceptor';
 import { AuditInterceptor } from './common/interceptors/audit.interceptor';
-import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
+import { GlobalExceptionFilter } from './common/filters/global-exception.filter';
 import { PrismaExceptionFilter } from './common/filters/prisma-exception.filter';
 import { AgentPolicyGuard } from './modules/policies/guards/agent-policy.guard';
 
@@ -150,7 +150,7 @@ import { RequestIdInterceptor } from './common/interceptors/request-id.intercept
     { provide: APP_INTERCEPTOR, useClass: AuditInterceptor },
     { provide: APP_INTERCEPTOR, useClass: StructuredAuditInterceptor },
     { provide: APP_INTERCEPTOR, useClass: MetricsInterceptor },
-    { provide: APP_FILTER, useClass: AllExceptionsFilter },
+    { provide: APP_FILTER, useClass: GlobalExceptionFilter },
     { provide: APP_FILTER, useClass: PrismaExceptionFilter },
   ],
 })

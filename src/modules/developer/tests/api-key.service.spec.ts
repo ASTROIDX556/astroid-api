@@ -107,6 +107,58 @@ describe('ApiKeyService', () => {
       expect(repository.create).toHaveBeenCalledWith(
         expect.objectContaining({
           expiresAt: null,
+          scopes: ['read'],
+        }),
+      );
+    });
+
+    it('applies the default scope set ["read"] when scopes is omitted', async () => {
+      repository.create.mockImplementation((data) =>
+        Promise.resolve({
+          id: 'key-default-scope',
+          ...data,
+          lastUsedAt: null,
+          revokedAt: null,
+          createdAt: new Date(),
+        }),
+      );
+
+      const result = await service.create(orgId, userId, {
+        name: 'Default Scope Key',
+        permissions: [],
+        allowedIps: [],
+      });
+
+      expect(result.scopes).toEqual(['read']);
+      expect(repository.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          scopes: ['read'],
+        }),
+      );
+    });
+
+    it('persists custom scopes when provided', async () => {
+      repository.create.mockImplementation((data) =>
+        Promise.resolve({
+          id: 'key-custom-scopes',
+          ...data,
+          lastUsedAt: null,
+          revokedAt: null,
+          createdAt: new Date(),
+        }),
+      );
+
+      const result = await service.create(orgId, userId, {
+        name: 'Scoped Key',
+        scopes: ['read', 'transactions:execute', 'webhooks:manage'],
+        permissions: [],
+        allowedIps: [],
+      });
+
+      expect(result.scopes).toEqual(['read', 'transactions:execute', 'webhooks:manage']);
+      expect(repository.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          scopes: ['read', 'transactions:execute', 'webhooks:manage'],
         }),
       );
     });
