@@ -1,5 +1,4 @@
 import { Module } from '@nestjs/common';
-import { ScheduleModule } from '@nestjs/schedule';
 import { TransactionController } from './transaction.controller';
 import { TransactionService } from './transaction.service';
 import { TransactionRepository } from './transaction.repository';
@@ -18,7 +17,6 @@ import { BullModule } from '@nestjs/bullmq';
 import { Queues } from '../../queues/queues.constants';
 import { createQueueRegistrationOptions } from '../../queues/queue-policy';
 import { TransactionWorker } from './workers/transaction.worker';
-import { TransactionIdempotencyCleanupService } from './transaction-idempotency-cleanup.service';
 import { IdempotencyModule } from '../../common/idempotency/idempotency.module';
 
 /**
@@ -29,7 +27,6 @@ import { IdempotencyModule } from '../../common/idempotency/idempotency.module';
  */
 @Module({
   imports: [
-    ScheduleModule.forRoot(),
     WalletModule,
     AgentModule,
     PolicyModule,
@@ -57,7 +54,6 @@ import { IdempotencyModule } from '../../common/idempotency/idempotency.module';
     SpendingLimitService,
     SpendingLimitGuard,
     TransactionWorker,
-    TransactionIdempotencyCleanupService,
   ],
   exports: [TransactionService, SorobanSimulationService, StellarSimulationService, GasEstimationService, SpendingLimitService],
 })

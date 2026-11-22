@@ -50,6 +50,16 @@ export class PolicyService {
     return this.spendingPolicyService.getOrThrow(organizationId, id);
   }
 
+  /**
+   * Read endpoint: the used and remaining spend for the daily, weekly and
+   * monthly UTC windows for an agent/asset, derived from its enabled
+   * spending-limit policies and real transaction history. Delegates to
+   * {@link SpendingPolicyService.getSpendAllowance}.
+   */
+  getSpendAllowance(organizationId: string, agentId: string, asset: string) {
+    return this.spendingPolicyService.getSpendAllowance(organizationId, agentId, asset);
+  }
+
   async update(organizationId: string, actorId: string, id: string, input: UpdatePolicyInput) {
     const policy = await this.spendingPolicyService.update(organizationId, id, input);
     await this.eventBus.emit(

@@ -17,6 +17,7 @@ import { TransactionsValidator } from './transactions.validator';
 import { WalletService, toNetworkName } from '../wallets/wallet.service';
 import { PolicyService } from '../policies/policy.service';
 import { RiskAggregatorService } from '../risk/risk-aggregator.service';
+import { RiskAggregation } from '../risk/risk.types';
 import { BudgetService } from '../budgets/budget.service';
 import { StellarService } from '../stellar/stellar.service';
 import { AgentService } from '../agents/agent.service';
@@ -200,88 +201,104 @@ export class TransactionService {
       await this.policies.checkVelocityLimit(organizationId, input.agentId, amount, input.asset, actorId);
     }
 
-    // 2.6. Spending limit evaluation — atomically fetches daily/weekly/monthly
-    //      aggregates and evaluates periodic budget caps. On violation, writes
-    //      an audit log entry and throws PolicyViolationException (HTTP 422).
-    //      Returns the aggregates so we can reuse them in step 3 below.
-    const baseIntent = this.toIntent(organizationId, input, amount);
-    let enrichedIntent = baseIntent;
-    if (input.agentId) {
-      const aggregates = await this.spendingLimits.aggregateSpend(input.agentId, input.asset);
-      enrichedIntent = {
-        ...baseIntent,
-        spentToday: aggregates.spentToday,
-        spentThisWeek: aggregates.spentThisWeek,
-        spentThisMonth: aggregates.spentThisMonth,
-      };
-      // evaluateSpendingLimits uses the enriched intent so periodic limit
-      // checks run against real aggregates — it is a no-op when no periodic
-      // limit policy is configured, so the overhead is minimal.
-      await this.spendingLimits.evaluateSpendingLimits(enrichedIntent, actorId);
-    }
+    // 2.6 – 6. Spend-limit enforcement, full policy evaluation, risk scoring,
+    //       budget headroom and transaction-row persistence. For an agent
+    //       transaction the whole check-then-create section runs inside an
+    //       agent-scoped distributed lock so two concurrent submissions cannot
+    //       both read a stale rolling-window aggregate and both pass (see
+    //       SpendingLimitService.withSpendEnforcementLock). The freshly created
+    //       DRAFT row is counted by the aggregate, so the next serialised caller
+    //       sees it and is denied if it would breach the window.
+    const enforceAndCreate = async (): Promise<{
+      transaction: Transaction;
+      assessment: RiskAggregation;
+      requiresApproval: boolean;
+    }> => {
+      const baseIntent = this.toIntent(organizationId, input, amount);
+      let enrichedIntent = baseIntent;
+      if (input.agentId) {
+        const aggregates = await this.spendingLimits.aggregateSpend(input.agentId, input.asset);
+        enrichedIntent = {
+          ...baseIntent,
+          spentToday: aggregates.spentToday,
+          spentThisWeek: aggregates.spentThisWeek,
+          spentThisMonth: aggregates.spentThisMonth,
+        };
+        // Evaluate the rolling-window budget caps against the real aggregates.
+        // No-op when no periodic limit policy is configured; throws
+        // PolicyViolationException (HTTP 422) on violation.
+        await this.spendingLimits.evaluateSpendingLimits(enrichedIntent, actorId);
+      }
 
-    // 3. Full policy evaluation — evaluates all rule types (maxAmount, assets,
-    //    recipients, time windows, emergency lock, periodic limits) with real
-    //    spend aggregates already embedded in the intent.
-    const policyResult = await this.policies.evaluateIntent(enrichedIntent, actorId);
-    if (!policyResult.passed) {
-      throw new DomainException(
-        ErrorCode.POLICY_VIOLATION,
-        'Transaction blocked by one or more policies',
-        policyResult.violations,
-      );
-    }
+      // 3. Full policy evaluation — evaluates all rule types (maxAmount, assets,
+      //    recipients, time windows, emergency lock, periodic limits) with real
+      //    spend aggregates already embedded in the intent.
+      const policyResult = await this.policies.evaluateIntent(enrichedIntent, actorId);
+      if (!policyResult.passed) {
+        throw new DomainException(
+          ErrorCode.POLICY_VIOLATION,
+          'Transaction blocked by one or more policies',
+          policyResult.violations,
+        );
+      }
 
-    // 4. Risk scoring — the aggregator combines the velocity, destination
-    //    reputation and amount-anomaly signals into the composite score.
-    const assessment = await this.risk.assess({
-      organizationId,
-      walletId: wallet.id,
-      recipientAddress: input.recipientAddress,
-      amount,
-      asset: input.asset,
-      walletAgeDays: this.walletAgeDays(wallet),
-      policyViolations: policyResult.violations.length,
-      hourUtc: new Date().getUTCHours(),
-    });
+      // 4. Risk scoring — the aggregator combines the velocity, destination
+      //    reputation and amount-anomaly signals into the composite score.
+      const assessment = await this.risk.assess({
+        organizationId,
+        walletId: wallet.id,
+        recipientAddress: input.recipientAddress,
+        amount,
+        asset: input.asset,
+        walletAgeDays: this.walletAgeDays(wallet),
+        policyViolations: policyResult.violations.length,
+        hourUtc: new Date().getUTCHours(),
+      });
 
-    // 5. Budget headroom (no mutation yet).
-    if (input.budgetId) {
-      await this.budgets.assertWithinBudget(organizationId, input.budgetId, amount);
-    }
+      // 5. Budget headroom (no mutation yet).
+      if (input.budgetId) {
+        await this.budgets.assertWithinBudget(organizationId, input.budgetId, amount);
+      }
 
-    const requiresApproval = policyResult.requiresApproval || assessment.requiresApproval;
+      const requiresApproval = policyResult.requiresApproval || assessment.requiresApproval;
 
-    // 6. Persist the transaction row.
-    const createTransactionRow = () => this.repository.create({
-      organization: { connect: { id: organizationId } },
-      wallet: { connect: { id: wallet.id } },
-      ...(input.agentId ? { agent: { connect: { id: input.agentId } } } : {}),
-      ...(policyResult.matchedPolicyId
-        ? { policy: { connect: { id: policyResult.matchedPolicyId } } }
-        : {}),
-      ...(input.budgetId ? { budget: { connect: { id: input.budgetId } } } : {}),
-      asset: input.asset,
-      amount: new Decimal(input.amount),
-      senderAddress: wallet.stellarAddress,
-      recipientAddress: input.recipientAddress,
-      memo: memoValue,
-      purpose: input.purpose,
-      status: TransactionStatus.DRAFT,
-      riskScore: assessment.score,
-      riskBand: assessment.band,
-      requiresApproval,
-      metadata: input.metadata as Prisma.InputJsonValue,
-    });
-    const transaction = input.agentId && typeof this.budgets.withAgentBudgetLimit === 'function'
-      ? await this.budgets.withAgentBudgetLimit(
-          organizationId,
-          input.agentId,
-          input.asset,
-          amount,
-          createTransactionRow,
-        )
-      : await createTransactionRow();
+      // 6. Persist the transaction row.
+      const createTransactionRow = () => this.repository.create({
+        organization: { connect: { id: organizationId } },
+        wallet: { connect: { id: wallet.id } },
+        ...(input.agentId ? { agent: { connect: { id: input.agentId } } } : {}),
+        ...(policyResult.matchedPolicyId
+          ? { policy: { connect: { id: policyResult.matchedPolicyId } } }
+          : {}),
+        ...(input.budgetId ? { budget: { connect: { id: input.budgetId } } } : {}),
+        asset: input.asset,
+        amount: new Decimal(input.amount),
+        senderAddress: wallet.stellarAddress,
+        recipientAddress: input.recipientAddress,
+        memo: memoValue,
+        purpose: input.purpose,
+        status: TransactionStatus.DRAFT,
+        riskScore: assessment.score,
+        riskBand: assessment.band,
+        requiresApproval,
+        metadata: input.metadata as Prisma.InputJsonValue,
+      });
+      const transaction = input.agentId && typeof this.budgets.withAgentBudgetLimit === 'function'
+        ? await this.budgets.withAgentBudgetLimit(
+            organizationId,
+            input.agentId,
+            input.asset,
+            amount,
+            createTransactionRow,
+          )
+        : await createTransactionRow();
+      return { transaction, assessment, requiresApproval };
+    };
+
+    const { transaction, assessment, requiresApproval } = input.agentId
+      ? await this.spendingLimits.withSpendEnforcementLock(input.agentId, enforceAndCreate)
+      : await enforceAndCreate();
+
     await onTransactionCreated?.(transaction);
 
     // 6.1. Persist the risk assessment against the transaction and emit the

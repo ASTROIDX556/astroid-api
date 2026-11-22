@@ -72,6 +72,8 @@ export class AuditArchiveService {
         archiveBatchSize: 500,
         archiveMaxBatches: 20,
         retentionDays: 90,
+        pageSizeDefault: 20,
+        pageSizeMax: 100,
       }
     );
   }

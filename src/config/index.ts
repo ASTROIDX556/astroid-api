@@ -16,6 +16,7 @@ import { throttlerConfig } from './throttler.config';
 import { shutdownConfig } from './shutdown.config';
 import { webhookConfig } from './webhook.config';
 import { budgetAlertConfig } from './budget-alert.config';
+import { auditConfig } from './audit.config';
 
 export * from './app.config';
 export * from './database.config';
@@ -34,6 +35,7 @@ export * from './throttler.config';
 export * from './shutdown.config';
 export * from './webhook.config';
 export * from './budget-alert.config';
+export * from './audit.config';
 
 /**
  * Global configuration module. Every slice is registered via `registerAs` and
@@ -61,5 +63,6 @@ export const AppConfigModule = ConfigModule.forRoot({
     shutdownConfig,
     webhookConfig,
     budgetAlertConfig,
+    auditConfig,
   ],
 });

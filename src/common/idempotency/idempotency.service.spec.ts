@@ -22,6 +22,7 @@ function createPrisma() {
 
   const matchesIdentity = (row: IdempotencyRecord, where: Record<string, unknown>) =>
     (typeof where.principalId !== 'string' || row.principalId === where.principalId) &&
+    (typeof where.scope !== 'string' || row.scope === where.scope) &&
     (typeof where.route !== 'string' || row.route === where.route) &&
     (typeof where.keyHash !== 'string' || row.keyHash === where.keyHash);
 
@@ -47,7 +48,7 @@ function createPrisma() {
         create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
           const duplicate = [...rows.values()].some(
             (row) =>
-              row.principalId === data.principalId &&
+              row.scope === data.scope &&
               row.route === data.route &&
               row.keyHash === data.keyHash,
           );
@@ -55,6 +56,7 @@ function createPrisma() {
           const row: IdempotencyRecord = {
             id: `idem_${(sequence += 1)}`,
             principalId: data.principalId as string,
+            scope: (data.scope as string | undefined) ?? (data.principalId as string),
             route: data.route as string,
             keyHash: data.keyHash as string,
             requestHash: data.requestHash as string,
@@ -72,7 +74,7 @@ function createPrisma() {
         }),
         findUnique: vi.fn(async ({ where }: { where: Record<string, unknown> }) => {
           if (typeof where.id === 'string') return rows.get(where.id) ?? null;
-          const identity = where.principalId_route_keyHash as Record<string, unknown>;
+          const identity = where.scope_route_keyHash as Record<string, unknown>;
           return (
             [...rows.values()].find((row) => matchesIdentity(row, identity)) ?? null
           );
@@ -199,6 +201,16 @@ describe('IdempotencyService', () => {
     const other = await service.reserve(reserveInput({ principalId: 'user_2' }));
 
     expect(other.created).toBe(true);
+    expect(store.rows.size).toBe(2);
+  });
+
+  it('scopes the same key to distinct credential namespaces', async () => {
+    const first = await service.reserve(reserveInput({ scope: 'user:same-id' }));
+    const second = await service.reserve(reserveInput({ scope: 'apikey:same-id' }));
+
+    expect(first.record.scope).toBe('user:same-id');
+    expect(second.record.scope).toBe('apikey:same-id');
+    expect(second.created).toBe(true);
     expect(store.rows.size).toBe(2);
   });
 

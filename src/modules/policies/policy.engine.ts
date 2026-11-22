@@ -246,13 +246,17 @@ export class PolicyEngine {
       }
       const projected = (spent ?? 0) + intent.amount;
       // Boundary semantics: a spend equal to the limit is allowed; anything
-      // above it (one unit over) is denied.
+      // above it (one unit over) is denied. The message names the window and
+      // the remaining allowance so a caller can show the client exactly how
+      // much headroom is left before resubmitting a smaller amount.
       if (projected > limit) {
+        const remaining = Math.max(0, limit - (spent ?? 0));
+        const currency = intent.limitCurrency ? ` ${intent.limitCurrency}` : '';
         out.push(
           this.violation(
             policy,
             code,
-            `Projected ${label} spend ${projected} exceeds limit ${limit}`,
+            `Projected ${label} spend ${projected}${currency} exceeds the ${label} limit ${limit}${currency}; remaining ${label} allowance ${remaining}${currency}`,
           ),
         );
       }

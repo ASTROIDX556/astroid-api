@@ -1,16 +1,24 @@
 import { z } from 'zod';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { isValidCursor } from '../../common/pagination/cursor-pagination';
+import { auditPaginationEnvSchema } from '../../config/env.validation';
+import { isValidAuditCursor } from './audit-cursor';
+
+const paginationLimits = auditPaginationEnvSchema.parse(process.env);
+
+/** Configured defaults for audit listing and resource timeline queries. */
+export const AUDIT_DEFAULT_PAGE_SIZE = paginationLimits.AUDIT_PAGE_SIZE_DEFAULT;
+export const AUDIT_MAX_PAGE_SIZE = paginationLimits.AUDIT_PAGE_SIZE_MAX;
 
 export const auditListQuerySchema = z
   .object({
-    cursor: z.string().max(256).refine(isValidCursor, 'Invalid cursor').optional(),
+    cursor: z.string().max(256).refine(isValidAuditCursor, 'Invalid cursor').optional(),
     offset: z.coerce.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
     page: z.coerce.number().int().positive().max(1_000_000_000).optional(),
-    pageSize: z.coerce.number().int().min(1).max(100).optional(),
-    limit: z.coerce.number().int().min(1).max(100).optional(),
+    pageSize: z.coerce.number().int().min(1).max(AUDIT_MAX_PAGE_SIZE).optional(),
+    limit: z.coerce.number().int().min(1).max(AUDIT_MAX_PAGE_SIZE).optional(),
     actorId: z.string().min(1).max(128).optional(),
     action: z.string().min(1).max(120).optional(),
+    resourceType: z.string().min(1).max(120).optional(),
     resourceId: z.string().min(1).max(128).optional(),
     from: z.string().datetime({ offset: true }).optional(),
     to: z.string().datetime({ offset: true }).optional(),
@@ -32,7 +40,7 @@ export const auditListQuerySchema = z
     }
   })
   .transform((query) => {
-    const limit = query.pageSize ?? query.limit ?? 20;
+    const limit = query.pageSize ?? query.limit ?? AUDIT_DEFAULT_PAGE_SIZE;
     const page = query.page ?? (query.offset === undefined ? 1 : Math.floor(query.offset / limit) + 1);
     const offset = query.offset ?? (page - 1) * limit;
     if (!Number.isSafeInteger(offset)) {
@@ -49,6 +57,7 @@ export type AuditListQuery = {
   offset?: number;
   actorId?: string;
   action?: string;
+  resourceType?: string;
   resourceId?: string;
   from?: string;
   to?: string;

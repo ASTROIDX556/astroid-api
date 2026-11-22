@@ -140,7 +140,7 @@ are rejected:
 | `PRICE_ORACLE_MAX_AGE_MS` | `300000` | Maximum accepted quote age in milliseconds. |
 | `PRICE_ORACLE_STATIC_PRICES` | _(empty)_ | Comma-separated static `ASSET=PRICE` fallback quotes. |
 
-### Audit archival
+### Audit
 
 | Variable | Default | Description |
 | -------- | ------- | ----------- |
@@ -149,11 +149,14 @@ are rejected:
 | `AUDIT_ARCHIVE_BATCH_SIZE` | `500` | Maximum records per archival batch. |
 | `AUDIT_ARCHIVE_MAX_BATCHES` | `20` | Maximum batches per archival run. |
 | `AUDIT_RETENTION_DAYS` | `90` | Hard-delete retention for audit records. |
+| `AUDIT_PAGE_SIZE_DEFAULT` | `20` | Default page size for audit listing and resource timelines. |
+| `AUDIT_PAGE_SIZE_MAX` | `100` | Hard upper bound for audit page sizes; larger values return 400. |
 
 ### Transaction idempotency
 
 | Variable | Default | Description |
 | -------- | ------- | ----------- |
+| `IDEMPOTENCY_HEADER_NAME` | `Idempotency-Key` | HTTP header carrying the key on `POST /transactions`. Trimmed; values must be 8–255 characters. |
 | `IDEMPOTENCY_KEY_TTL_HOURS` | `24` | How long a completed `Idempotency-Key` record stays replayable; after this window the key is ignored and a fresh submission is processed. |
 | `IDEMPOTENCY_WAIT_TIMEOUT_MS` | `5000` | How long a duplicate request waits for the in-flight original to finish before returning `409`. `0` returns the conflict immediately. |
 | `IDEMPOTENCY_POLL_INTERVAL_MS` | `100` | Poll interval used while waiting for the in-flight original. |

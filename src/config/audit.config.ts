@@ -12,6 +12,10 @@ export type AuditConfig = {
   archiveMaxBatches: number;
   /** Hard-delete retention applied by the audit cleanup job (days). */
   retentionDays: number;
+  /** Default page size for audit log listing and resource timelines. */
+  pageSizeDefault: number;
+  /** Hard upper bound for audit log page sizes. */
+  pageSizeMax: number;
 };
 
 export const auditConfig = registerAs('audit', (): AuditConfig => {
@@ -22,5 +26,7 @@ export const auditConfig = registerAs('audit', (): AuditConfig => {
     archiveBatchSize: env.AUDIT_ARCHIVE_BATCH_SIZE,
     archiveMaxBatches: env.AUDIT_ARCHIVE_MAX_BATCHES,
     retentionDays: env.AUDIT_RETENTION_DAYS,
+    pageSizeDefault: env.AUDIT_PAGE_SIZE_DEFAULT,
+    pageSizeMax: env.AUDIT_PAGE_SIZE_MAX,
   };
 });

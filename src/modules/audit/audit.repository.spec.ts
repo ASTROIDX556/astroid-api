@@ -202,4 +202,76 @@ describe('AuditRepository.findPage', () => {
       orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
     });
   });
+
+  it('inverts the keyset comparison and ordering for ascending timelines', async () => {
+    const findMany = vi.fn().mockResolvedValue([]);
+    const repository = new AuditRepository({ auditLog: { findMany } } as unknown as PrismaService);
+    const createdAt = new Date('2026-09-29T12:00:00.000Z');
+
+    await repository.findPage({ organizationId: 'org-1', entityId: 'tx-1' }, { createdAt, id: 'audit-20' }, 21, 'asc');
+
+    expect(findMany).toHaveBeenCalledWith({
+      where: {
+        AND: [
+          { organizationId: 'org-1', entityId: 'tx-1' },
+          {
+            OR: [
+              { createdAt: { gt: createdAt } },
+              { createdAt, id: { gt: 'audit-20' } },
+            ],
+          },
+        ],
+      },
+      take: 21,
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+    });
+  });
+
+  it('never looks the cursor row up, so archived or deleted cursors keep working', async () => {
+    const findMany = vi.fn().mockResolvedValue([]);
+    const repository = new AuditRepository({ auditLog: { findMany } } as unknown as PrismaService);
+    const createdAt = new Date('2026-01-01T00:00:00.000Z');
+
+    await repository.findPage({ organizationId: 'org-1' }, { createdAt, id: 'gone' }, 5);
+
+    expect(findMany).toHaveBeenCalledWith({
+      where: {
+        AND: [
+          { organizationId: 'org-1' },
+          {
+            OR: [
+              { createdAt: { lt: createdAt } },
+              { createdAt, id: { lt: 'gone' } },
+            ],
+          },
+        ],
+      },
+      take: 5,
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+    });
+  });
+
+  it('passes composable filters through unchanged', async () => {
+    const findMany = vi.fn().mockResolvedValue([]);
+    const repository = new AuditRepository({ auditLog: { findMany } } as unknown as PrismaService);
+    const where = {
+      organizationId: 'org-1',
+      userId: 'user-1',
+      action: 'TRANSFER',
+      entity: 'Transaction',
+      entityId: 'tx-1',
+      createdAt: {
+        gte: new Date('2026-09-01T00:00:00.000Z'),
+        lte: new Date('2026-09-30T00:00:00.000Z'),
+      },
+    };
+
+    await repository.findPage(where, undefined, 10);
+
+    expect(findMany).toHaveBeenCalledWith({
+      where,
+      take: 10,
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+    });
+  });
 });
