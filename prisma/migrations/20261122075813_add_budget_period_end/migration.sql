@@ -1,0 +1,2 @@
+-- AlterTable
+ALTER TABLE "budgets" ADD COLUMN     "periodEnd" TIMESTAMP(3) DEFAULT CURRENT_TIMESTAMP;

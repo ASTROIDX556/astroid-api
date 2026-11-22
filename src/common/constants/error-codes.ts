@@ -24,6 +24,7 @@ export enum ErrorCode {
   TOKEN_EXPIRED = 'TOKEN_EXPIRED',
   INVALID_TOKEN = 'INVALID_TOKEN',
   SESSION_REVOKED = 'SESSION_REVOKED',
+  REFRESH_TOKEN_REUSED = 'REFRESH_TOKEN_REUSED',
 
   // Financial governance
   POLICY_VIOLATION = 'POLICY_VIOLATION',
@@ -68,6 +69,7 @@ export const ERROR_STATUS: Record<ErrorCode, number> = {
   [ErrorCode.TOKEN_EXPIRED]: 401,
   [ErrorCode.INVALID_TOKEN]: 401,
   [ErrorCode.SESSION_REVOKED]: 401,
+  [ErrorCode.REFRESH_TOKEN_REUSED]: 401,
   [ErrorCode.POLICY_VIOLATION]: 422,
   [ErrorCode.BUDGET_EXCEEDED]: 422,
   [ErrorCode.INSUFFICIENT_FUNDS]: 422,
@@ -110,6 +112,7 @@ export const ERROR_TITLE: Record<ErrorCode, string> = {
   [ErrorCode.TOKEN_EXPIRED]: 'Token Expired',
   [ErrorCode.INVALID_TOKEN]: 'Invalid Token',
   [ErrorCode.SESSION_REVOKED]: 'Session Revoked',
+  [ErrorCode.REFRESH_TOKEN_REUSED]: 'Refresh token reused and family revoked',
   [ErrorCode.POLICY_VIOLATION]: 'Policy Violation',
   [ErrorCode.BUDGET_EXCEEDED]: 'Budget Exceeded',
   [ErrorCode.INSUFFICIENT_FUNDS]: 'Insufficient Funds',

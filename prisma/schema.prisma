@@ -241,6 +241,7 @@ model User {
   apiKeys       ApiKey[]
   credentials         PasskeyCredential[]
   passkeyChallenges   PasskeyChallenge[]
+  refreshTokens RefreshToken[]
 
   @@index([organizationId])
   @@index([status])
@@ -367,6 +368,7 @@ model Budget {
   spent          Decimal      @default(0) @db.Decimal(30, 7)
   period         BudgetPeriod @default(MONTHLY)
   periodStart    DateTime     @default(now())
+  periodEnd      DateTime?    @default(now())
   rollover       Boolean      @default(false)
   enabled        Boolean      @default(true)
   createdAt      DateTime     @default(now())
@@ -722,6 +724,24 @@ model Session {
   @@index([userId])
   @@index([expiresAt])
   @@map("sessions")
+}
+
+model RefreshToken {
+  id              String   @id @default(uuid(7))
+  familyId        String
+  userId          String
+  hashedValue     String
+  issuedAt        DateTime @default(now())
+  expiresAt       DateTime
+  revokedAt       DateTime?
+  replacedById    String?
+
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([familyId, hashedValue])
+  @@index([expiresAt])
+  @@index([userId])
+  @@map("refresh_tokens")
 }
 
 // ---------------------------------------------------------------------------

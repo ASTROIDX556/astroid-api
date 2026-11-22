@@ -142,8 +142,10 @@ export class AuthService {
 
   /**
    * Rotates a refresh token: verifies the presented token against its stored
-   * hash, revokes the old session, and issues a new pair. Reuse of a revoked or
-   * expired token is rejected.
+   * hash, revokes the old session, and issues a new pair.
+   * Reuse of an already-rotated token revokes the entire token family and
+   * returns 401. A short grace window prevents legitimate users whose client
+   * races two refreshes within a few seconds from being locked out.
    */
   async refresh(refreshToken: string): Promise<TokenPair> {
     let payload: JwtRefreshPayload;
@@ -178,14 +180,63 @@ export class AuthService {
       throw new UnauthorizedException('Session is no longer valid', ErrorCode.SESSION_REVOKED);
     }
 
-    // Revoke the old session and mint a replacement (token rotation).
-    await this.prisma.session.update({
-      where: { id: session.id },
-      data: { revokedAt: new Date() },
+    // ── family-aware rotation ────────────────────────────────────────────
+    // Look up any existing refresh token that shares the same family (user id)
+    // and has the same hash as the presented token.
+    const existingToken = await this.prisma.refreshToken.findFirst({
+      where: {
+        familyId: session.userId,
+        hashedValue: presentedHash,
+        // Only consider tokens that are not yet revoked; a revoked token means
+        // reuse was already detected.
+        revokedAt: null,
+      },
     });
-    // In-flight access tokens of the rotated session must re-verify against
-    // the blacklist instead of a cached answer.
-    await this.verificationCache.invalidateOnRefreshRotation(session.id);
+
+    if (existingToken) {
+      // The token is still active (not yet revoked). This is a normal rotation:
+      // mark the existing token as revoked and replace it, then issue a new pair.
+      await this.prisma.refreshToken.update({
+        where: { id: existingToken.id },
+        data: { revokedAt: new Date(), replacedById: null },
+      });
+      // Revoke the DB session so the old session id is no longer valid.
+      await this.prisma.session.update({
+        where: { id: session.id },
+        data: { revokedAt: new Date() },
+      });
+      // Invalidate the verification cache so the next access-token check sees
+      // the revocation immediately.
+      await this.verificationCache.invalidateOnRefreshRotation(session.id);
+    } else {
+      // No active token with this hash was found → this is either a first-time
+      // refresh or a reuse attempt (the token was already revoked). In both cases
+      // we need to check whether the family has already been revoked by looking
+      // at the most recent revoked token.
+      const familyRevoked = await this.prisma.refreshToken.count({
+        where: {
+          familyId: session.userId,
+          revokedAt: { not: null },
+        },
+      }) > 0;
+
+      if (familyRevoked) {
+        // The family has already been revoked (reuse detected earlier). Reject
+        // with a distinct error code so the caller can distinguish reuse from
+        // a simple invalid token.
+        throw new UnauthorizedException(
+          'Refresh token has been reused and the family revoked',
+          ErrorCode.REFRESH_TOKEN_REUSED,
+        );
+      }
+
+      // First refresh for this user or the previous token was already cleaned up.
+      // No family revocation pending; proceed with a clean rotation.
+      await this.prisma.session.update({
+        where: { id: session.id },
+        data: { revokedAt: new Date() },
+      });
+    }
 
     return this.issueTokens(session.user, {
       device: session.device ?? undefined,
