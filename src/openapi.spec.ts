@@ -10,6 +10,7 @@ import { GLOBAL_PREFIX_EXCLUDED_ROUTES } from './common/constants/global-prefix'
 import {
   AllowlistedRoute,
   RegisteredRoute,
+  collectRefs,
   findDanglingRefs,
   findDuplicateRoutes,
   findOperationsMissingSecurity,
@@ -107,6 +108,13 @@ const LIVENESS_PROBES = ['/health/live', '/api/v1/health/liveness'];
 
 /** Paths the API serves outside its prefix, as they appear in the document. */
 const UNPREFIXED_PATHS = new Set(GLOBAL_PREFIX_EXCLUDED_ROUTES.map((route) => `/${route.path}`));
+
+/** List endpoints that page with an opaque cursor rather than an offset. */
+const CURSOR_PAGINATED_ROUTES = [
+  '/api/v1/audit',
+  '/api/v1/transactions',
+  '/api/v1/webhooks/deliveries',
+];
 
 describe('OpenAPI Documentation', () => {
   let app: INestApplication;
@@ -235,6 +243,36 @@ describe('OpenAPI Documentation', () => {
 
   it('documents a 2xx response with a schema for every operation', () => {
     expect(findOperationsWithoutSuccessSchema(document)).toEqual([]);
+  });
+
+  it('documents cursor pagination inputs and meta on the paginated list endpoints', () => {
+    const metaSchema = document.components?.schemas?.['CursorPaginationMetaDto'] as
+      | { properties?: Record<string, unknown> }
+      | undefined;
+    expect(metaSchema).toBeDefined();
+    expect(Object.keys(metaSchema?.properties ?? {})).toEqual(
+      expect.arrayContaining(['limit', 'hasMore', 'nextCursor']),
+    );
+
+    for (const path of CURSOR_PAGINATED_ROUTES) {
+      const operation = document.paths[path]?.get;
+      expect(operation, path).toBeDefined();
+
+      const parameters = (operation?.parameters ?? []).map(
+        (parameter) => (parameter as { name?: string }).name,
+      );
+      expect(parameters, path).toEqual(expect.arrayContaining(['cursor', 'limit']));
+
+      const success = Object.entries(operation?.responses ?? {}).find(([status]) =>
+        status.startsWith('2'),
+      );
+      expect(success, path).toBeDefined();
+      const content = (success![1] as { content?: Record<string, { schema?: unknown }> }).content;
+      const schema = Object.values(content ?? {})[0]?.schema;
+      expect(collectRefs(schema).has('#/components/schemas/CursorPaginationMetaDto'), path).toBe(
+        true,
+      );
+    }
   });
 
   it('declares a defined security scheme on every authenticated operation', () => {
