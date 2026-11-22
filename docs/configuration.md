@@ -157,6 +157,18 @@ are rejected:
 | `IDEMPOTENCY_WAIT_TIMEOUT_MS` | `5000` | How long a duplicate request waits for the in-flight original to finish before returning `409`. `0` returns the conflict immediately. |
 | `IDEMPOTENCY_POLL_INTERVAL_MS` | `100` | Poll interval used while waiting for the in-flight original. |
 
+### Wallet reconciliation
+
+| Variable | Default | Description |
+| -------- | ------- | ----------- |
+| `WALLET_RECONCILIATION_ENABLED` | `true` | Register the repeatable wallet reconciliation job at boot. |
+| `WALLET_RECONCILIATION_INTERVAL_MINUTES` | `15` | Interval between reconciliation runs (1–1440). |
+| `WALLET_RECONCILIATION_CONCURRENCY` | `5` | Wallets reconciled in parallel within one run (1–32). |
+| `WALLET_BALANCE_DRIFT_THRESHOLD` | `0.0000001` | Native (XLM) balance delta above which a `wallet.balance_drift_detected` event is emitted. |
+
+See [`docs/wallet-reconciliation.md`](wallet-reconciliation.md) for the worker,
+queue and event behaviour.
+
 ### Storage (S3-compatible)
 
 | Variable             | Default                 | Description              |
