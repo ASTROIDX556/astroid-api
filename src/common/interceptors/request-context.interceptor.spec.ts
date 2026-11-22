@@ -79,6 +79,90 @@ describe('RequestContextInterceptor', () => {
     expect(captured.ip).toBe('203.0.113.9');
   });
 
+  it('records the API key id and marks the request as API-key authenticated', async () => {
+    const seen: { apiKeyId?: string; actorId?: string; authMethod?: string } = {};
+
+    const mockExecutionContext = {
+      switchToHttp: () => ({
+        getRequest: () => ({
+          headers: { 'x-request-id': 'req-key' },
+          params: {},
+          body: {},
+          query: {},
+          user: {
+            id: 'user-1',
+            organizationId: 'org-1',
+            role: 'ADMIN',
+            isApiKey: true,
+            apiKeyId: 'key-1',
+          },
+          method: 'POST',
+          path: '/api/v1/transactions',
+          originalUrl: '/api/v1/transactions',
+          url: '/api/v1/transactions',
+          socket: {},
+        }),
+      }),
+    } as unknown as ExecutionContext;
+
+    const mockCallHandler: CallHandler = {
+      handle: () => {
+        seen.apiKeyId = RequestContext.getApiKeyId();
+        seen.actorId = RequestContext.getActorId();
+        seen.authMethod = RequestContext.getPrincipal()?.authMethod;
+        return of({ ok: true });
+      },
+    };
+
+    await new Promise<void>((resolve, reject) => {
+      interceptor.intercept(mockExecutionContext, mockCallHandler).subscribe({
+        next: () => resolve(),
+        error: (err) => reject(err),
+      });
+    });
+
+    expect(seen).toEqual({ apiKeyId: 'key-1', actorId: 'user-1', authMethod: 'api-key' });
+  });
+
+  it('does not invent an API key id for a JWT request', async () => {
+    const seen: { apiKeyId?: string; authMethod?: string } = {};
+
+    const mockExecutionContext = {
+      switchToHttp: () => ({
+        getRequest: () => ({
+          headers: {},
+          params: {},
+          body: {},
+          query: {},
+          user: { id: 'user-1', organizationId: 'org-1', role: 'OWNER' },
+          method: 'GET',
+          path: '/api/v1/me',
+          originalUrl: '/api/v1/me',
+          url: '/api/v1/me',
+          socket: {},
+        }),
+      }),
+    } as unknown as ExecutionContext;
+
+    const mockCallHandler: CallHandler = {
+      handle: () => {
+        seen.apiKeyId = RequestContext.getApiKeyId();
+        seen.authMethod = RequestContext.getPrincipal()?.authMethod;
+        return of({ ok: true });
+      },
+    };
+
+    await new Promise<void>((resolve, reject) => {
+      interceptor.intercept(mockExecutionContext, mockCallHandler).subscribe({
+        next: () => resolve(),
+        error: (err) => reject(err),
+      });
+    });
+
+    expect(seen.apiKeyId).toBeUndefined();
+    expect(seen.authMethod).toBe('jwt');
+  });
+
   it('should generate a request id and default correlation/trace when none provided', async () => {
     let capturedRequestId: string | undefined;
     let capturedCorrelation: string | undefined;

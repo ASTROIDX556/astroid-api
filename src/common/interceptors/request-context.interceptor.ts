@@ -68,7 +68,8 @@ export class RequestContextInterceptor implements NestInterceptor {
           userId: user.id,
           organizationId: user.organizationId,
           role: user.role,
-          authMethod: 'jwt',
+          authMethod: user.isApiKey ? 'api-key' : 'jwt',
+          ...(user.apiKeyId ? { apiKeyId: user.apiKeyId } : {}),
         }
       : this.resolveImplicitPrincipal(req);
 

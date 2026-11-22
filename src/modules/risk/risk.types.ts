@@ -1,4 +1,5 @@
 import { RiskBand } from '@prisma/client';
+import type { QueueJobMetadata } from '../../queues/queues.constants';
 
 /** Inputs to the risk engine — all optional except amount. */
 export interface RiskFactorsInput {
@@ -46,6 +47,8 @@ export interface RiskAnalysisJobData {
   transactionId: string;
   actorId?: string;
   input: RiskFactorsInput;
+  /** Correlation fields of the request that caused the evaluation; optional on read. */
+  metadata?: QueueJobMetadata;
 }
 
 /**
