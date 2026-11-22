@@ -22,6 +22,7 @@ type MockRepository = {
   softDelete: ReturnType<typeof vi.fn>;
   sumSpentInWindow: ReturnType<typeof vi.fn>;
   countTransactionsInWindow: ReturnType<typeof vi.fn>;
+  sumSpendSince: ReturnType<typeof vi.fn>;
   recordEvaluationAudit: ReturnType<typeof vi.fn>;
 };
 
@@ -36,6 +37,7 @@ function makeRepository(): MockRepository {
     softDelete: vi.fn().mockResolvedValue({ id: 'policy-1' }),
     sumSpentInWindow: vi.fn().mockResolvedValue(0),
     countTransactionsInWindow: vi.fn().mockResolvedValue(0),
+    sumSpendSince: vi.fn().mockResolvedValue(0),
     recordEvaluationAudit: vi.fn().mockResolvedValue({ id: 'audit-1' }),
   };
 }
@@ -239,6 +241,72 @@ describe('SpendingPolicyService', () => {
         expect.stringContaining('Failed to persist policy evaluation audit log'),
       );
       logger.mockRestore();
+    });
+  });
+
+  describe('getSpendAllowance', () => {
+    it('returns the used and remaining allowance per window from the tightest enabled policy', async () => {
+      repository.findActiveForEvaluation.mockResolvedValue([
+        { id: 'p1', configuration: { dailyLimit: 1000, weeklyLimit: 5000 } },
+        { id: 'p2', configuration: { dailyLimit: 500, monthlyLimit: 20000 } },
+      ]);
+      repository.sumSpendSince
+        .mockResolvedValueOnce(200) // daily
+        .mockResolvedValueOnce(1000) // weekly
+        .mockResolvedValueOnce(5000); // monthly
+
+      const result = await service.getSpendAllowance('org-1', 'agent-1', 'USDC');
+
+      expect(result.agentId).toBe('agent-1');
+      expect(result.asset).toBe('USDC');
+      // Tightest daily limit = min(1000, 500) = 500; used 200 -> remaining 300.
+      expect(result.daily).toEqual({ used: 200, limit: 500, remaining: 300 });
+      // Only p1 declares a weekly limit (5000); used 1000 -> remaining 4000.
+      expect(result.weekly).toEqual({ used: 1000, limit: 5000, remaining: 4000 });
+      // Only p2 declares a monthly limit (20000); used 5000 -> remaining 15000.
+      expect(result.monthly).toEqual({ used: 5000, limit: 20000, remaining: 15000 });
+    });
+
+    it('reports an unlimited window (null limit/remaining) when no enabled policy caps it', async () => {
+      repository.findActiveForEvaluation.mockResolvedValue([
+        { id: 'p1', configuration: { maxAmount: 100 } }, // no periodic limits
+      ]);
+      repository.sumSpendSince.mockResolvedValue(42);
+
+      const result = await service.getSpendAllowance('org-1', 'agent-1', 'XLM');
+
+      expect(result.daily).toEqual({ used: 42, limit: null, remaining: null });
+      expect(result.weekly).toEqual({ used: 42, limit: null, remaining: null });
+      expect(result.monthly).toEqual({ used: 42, limit: null, remaining: null });
+    });
+
+    it('floors remaining at zero when used already exceeds the limit', async () => {
+      repository.findActiveForEvaluation.mockResolvedValue([
+        { id: 'p1', configuration: { dailyLimit: 500 } },
+      ]);
+      repository.sumSpendSince.mockResolvedValue(600);
+
+      const result = await service.getSpendAllowance('org-1', 'agent-1', 'USDC');
+      expect(result.daily).toEqual({ used: 600, limit: 500, remaining: 0 });
+    });
+
+    it('scopes each window aggregate to the org, agent and asset and orders the bounds', async () => {
+      repository.findActiveForEvaluation.mockResolvedValue([
+        { id: 'p1', configuration: { dailyLimit: 500 } },
+      ]);
+      repository.sumSpendSince.mockResolvedValue(0);
+
+      await service.getSpendAllowance('org-1', 'agent-1', 'USDC');
+
+      expect(repository.sumSpendSince).toHaveBeenCalledTimes(3);
+      const calls = repository.sumSpendSince.mock.calls.map((c) => c[0]);
+      for (const call of calls) {
+        expect(call).toMatchObject({ organizationId: 'org-1', agentId: 'agent-1', asset: 'USDC' });
+      }
+      // startOfDay >= startOfWeek >= startOfMonth (monthly bound is the oldest).
+      const [day, week, month] = calls.map((c) => (c.since as Date).getTime());
+      expect(day).toBeGreaterThanOrEqual(week);
+      expect(week).toBeGreaterThanOrEqual(month);
     });
   });
 });

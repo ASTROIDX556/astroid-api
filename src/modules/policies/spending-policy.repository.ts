@@ -3,6 +3,7 @@ import { Prisma, TransactionStatus } from '@prisma/client';
 
 import { PrismaPagination } from '../../common/helpers/pagination';
 import { PrismaService } from '../../database/prisma.service';
+import { EXCLUDED_SPEND_STATUSES } from './spending-window.util';
 
 /** Transaction states that count as real, settled spend for velocity checks. */
 export const SETTLED_TRANSACTION_STATUSES: readonly TransactionStatus[] = [
@@ -173,6 +174,36 @@ export class SpendingPolicyRepository {
         },
       }),
     );
+  }
+
+  /**
+   * Sums the spend already counted toward an agent's rolling-window budget for
+   * one window, scoped to the organisation and asset. The statuses mirror the
+   * enforcement path ({@link EXCLUDED_SPEND_STATUSES}): in-flight and settled
+   * spend counts, terminal-failed does not. Used by the spending-allowance read
+   * endpoint so the "used" figure it returns is exactly what the engine
+   * evaluates against.
+   */
+  async sumSpendSince(query: {
+    organizationId: string;
+    agentId: string;
+    asset: string;
+    since: Date;
+  }): Promise<number> {
+    return this.execute('sumSpendSince', async () => {
+      const { _sum } = await this.prisma.transaction.aggregate({
+        where: {
+          organizationId: query.organizationId,
+          agentId: query.agentId,
+          asset: query.asset,
+          deletedAt: null,
+          status: { notIn: [...EXCLUDED_SPEND_STATUSES] },
+          createdAt: { gte: query.since },
+        },
+        _sum: { amount: true },
+      });
+      return _sum.amount?.toNumber() ?? 0;
+    });
   }
 
   /** Appends a policy-evaluation entry to the immutable audit trail. */

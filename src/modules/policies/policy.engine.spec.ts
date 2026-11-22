@@ -482,6 +482,36 @@ describe('PolicyEngine limit boundary semantics', () => {
       expect(result.violations[0].code).toBe('MONTHLY_LIMIT_EXCEEDED');
     });
 
+    it('names the window and the remaining allowance in the daily violation message', () => {
+      const result = engine.evaluate({ ...baseIntent, spentToday: 300, amount: 250 }, [
+        policy({ configuration: { dailyLimit: 500 } }),
+      ]);
+      expect(result.violations[0].code).toBe('DAILY_LIMIT_EXCEEDED');
+      // Window named ...
+      expect(result.violations[0].message).toContain('daily');
+      // ... and the remaining allowance (500 - 300 = 200) named.
+      expect(result.violations[0].message).toContain('remaining daily allowance 200');
+      // The projected total (300 + 250 = 550) and the limit (500) are present.
+      expect(result.violations[0].message).toContain('550');
+      expect(result.violations[0].message).toContain('limit 500');
+    });
+
+    it('reports a zero remaining allowance when the window is already exhausted', () => {
+      const result = engine.evaluate({ ...baseIntent, spentThisWeek: 2000, amount: 1 }, [
+        policy({ configuration: { weeklyLimit: 2000 } }),
+      ]);
+      expect(result.violations[0].message).toContain('remaining weekly allowance 0');
+    });
+
+    it('suffices the base currency onto the window violation message when set', () => {
+      const result = engine.evaluate(
+        { ...baseIntent, spentToday: 300, amount: 250, limitCurrency: 'USDC' },
+        [policy({ configuration: { dailyLimit: 500 } })],
+      );
+      expect(result.violations[0].message).toContain('remaining daily allowance 200 USDC');
+      expect(result.violations[0].message).toContain('exceeds the daily limit 500 USDC');
+    });
+
     it('allows fresh spend after a window reset (zero spent this period)', () => {
       // A zero spent value means the window reset happened and only the new
       // spend counts.
