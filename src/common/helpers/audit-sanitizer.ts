@@ -49,6 +49,10 @@ const SENSITIVE_TEXT_PATTERNS: ReadonlyArray<[RegExp, string]> = [
   [/\b[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g, REDACTED],
   [/\bwhsec_[A-Za-z0-9_-]+/gi, REDACTED],
   [/\bsk-[A-Za-z0-9_-]{16,}\b/gi, REDACTED],
+  // Platform API keys (`ak_<environment>_<secret>`, see generateApiKey). The
+  // 14-character display prefix that identifies a key in logs is shorter than
+  // the 16-character minimum and stays readable.
+  [/\bak_[a-z]+_[A-Za-z0-9_-]{16,}/gi, REDACTED],
   [/([a-z][a-z0-9+.-]*:\/\/)[^\s/:@]+:[^\s/@]+@/gi, `$1${REDACTED}@`],
 ];
 

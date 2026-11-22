@@ -18,7 +18,7 @@ import { EncryptionModule } from './common/encryption/encryption.module';
 import { RequestIdMiddleware } from './middleware/request-id.middleware';
 import { StructuredRequestLoggingMiddleware } from './middleware/structured-request-logging.middleware';
 import { RawBodyMiddleware } from './common/middleware/raw-body.middleware';
-import { REQUEST_ID_HEADER } from './common/constants/headers';
+import { createPinoHttpOptions } from './common/logging/pino-http.options';
 
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
@@ -58,7 +58,6 @@ import { AuditLogInterceptor } from './common/interceptors/audit-log.interceptor
 import { StructuredAuditInterceptor } from './common/interceptors/structured-audit.interceptor';
 import { MetricsInterceptor } from './common/interceptors/metrics.interceptor';
 import { RequestIdInterceptor } from './common/interceptors/request-id.interceptor';
-import { sanitizeAuditPayload, sanitizeLogArguments } from './common/helpers/audit-sanitizer';
 
 /**
  * Root application module. Wires the global infrastructure (config, logging,
@@ -83,27 +82,9 @@ import { sanitizeAuditPayload, sanitizeLogArguments } from './common/helpers/aud
 @Module({
   imports: [
     AppConfigModule,
-    LoggerModule.forRoot({
-      pinoHttp: {
-        // Reuse the request id set by RequestIdMiddleware for correlated logs.
-        genReqId: (req) => (req.headers[REQUEST_ID_HEADER] as string) ?? undefined,
-        // Never log Authorization headers, cookies or API keys.
-        redact: {
-          paths: ['req.headers.authorization', 'req.headers.cookie', 'req.headers["x-api-key"]'],
-          remove: true,
-        },
-        formatters: {
-          log: (object: Record<string, unknown>) =>
-            sanitizeAuditPayload(object) as Record<string, unknown>,
-        },
-        hooks: {
-          logMethod(args, method) {
-            return method.apply(this, sanitizeLogArguments(args) as typeof args);
-          },
-        },
-        autoLogging: false,
-      },
-    }),
+    // Redaction of credentials and secrets is configured once, at the logger
+    // (see common/logging/pino-http.options.ts and docs/security-redaction.md).
+    LoggerModule.forRoot({ pinoHttp: createPinoHttpOptions() }),
     // Three rate-limit tiers, all driven by THROTTLE_* env vars (see
     // config/throttler.config.ts). Every route is subject to all named
     // throttlers, but AstroidThrottlerGuard enforces only the one matching the

@@ -4,14 +4,52 @@
 
 The policy redacts authorization and cookie values, passwords, passphrases, access/refresh tokens, API keys (`apiKey`, `api_key`, `x-api-key`), private/secret keys, webhook signing secrets, signatures, passkey challenges, credentials, Stellar seeds, Idempotency-Key values, and common credential-shaped text. Header keys are matched case-insensitively after normalising `-`, `_` and spaces, so `Authorization`, `authorization` and `X-Api-Key` are all covered. Add future sensitive field names to `SENSITIVE_FIELDS` or add narrowly scoped free-text patterns to `SENSITIVE_TEXT_PATTERNS`; avoid domain-specific copies of the key list.
 
-Redacted values use `[REDACTED]`. The sanitizer does not mutate input, detects cycles, retains useful error name/message/stack and attached context, and caps recursion depth, collection size, and string length. Correlation IDs, request IDs, actor IDs, module names, log levels, record IDs, status codes, and public Stellar addresses remain available.
+Redacted values use `[REDACTED]`. The sanitizer does not mutate input, detects cycles, retains useful error name/message/stack and attached context, and caps recursion depth, collection size, and string length. Correlation IDs, record IDs, status codes, and public Stellar addresses remain available.
 
-## Size limits
+## Where redaction is applied
 
-A single log string is capped at `MAX_LOG_STRING_LENGTH` (2,048 characters). Values longer than that are truncated with an explicit marker:
+Redaction is configured once, at the logger, in `src/common/logging/pino-http.options.ts`, so every log statement inherits it and call sites never have to remember it:
 
-- ordinary payloads keep the first 2,048 characters followed by `...[truncated]`;
-- base64 blobs, data URIs and signed XDR envelopes keep a 256-character prefix followed by `...[truncated binary, <n> chars]`;
-- `Buffer`/typed-array values are replaced with `[Binary <n> bytes]` without expanding their contents.
+| Layer             | What it does                                                                                                             |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `redact`          | Removes the header paths `req.headers.authorization`, `req.headers.cookie`, `req.headers["x-api-key"]`, `req.headers["idempotency-key"]` and `res.headers["set-cookie"]` from any logged request or response object. |
+| `formatters.log`  | Masks sensitive **keys** in every structured object, at any depth.                                                       |
+| `hooks.logMethod` | Applies the same policy to every argument, including the free-text message, so a token inside an error message is masked. |
 
-The same `sanitizeAuditPayload`/`redactSensitiveText` functions back both HTTP logging (`LoggerModule` formatter and hook in `src/app.module.ts`) and worker logging (`scrubForLog`/`scrubString` in `src/utils/log-scrubber.util.ts`), so an HTTP request and a background worker redact identically.
+## Rules
+
+| Rule                                              | Matches                                                                                                                       |
+| ------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| Sensitive key names (case, `_`, `-` and spaces ignored) | any key containing `password`, `passphrase`, `passkey`, `challenge`, `secret`, `privatekey`, `token`, `apikey`, `authorization`, `cookie`, `credentials`, `signature`, `mnemonic`, `seedphrase`, `hashedkey` — so `refreshToken`, `signingSecret`, `x-api-key` and `webhookSecret` are covered |
+| Bearer / Basic credentials in text                | `Bearer <token>`, `Basic <token>`                                                                                             |
+| `name=value` / `name: value` pairs in text        | the same sensitive names, e.g. `token=abc`, `password: hunter2`                                                               |
+| JWT-shaped strings                                | three base64url segments separated by dots, wherever they appear                                                              |
+| Platform API keys                                 | `ak_<environment>_<secret>`; the 14-character display prefix (`ak_live_ab12cd`) stays readable                                |
+| Webhook signing secrets, provider keys, seeds     | `whsec_…`, `sk-…`, Stellar secret seeds (`S…`, 56 characters)                                                                  |
+| Credentials embedded in URLs                      | `scheme://user:password@host`                                                                                                 |
+
+Fields such as `requestId`, `method`, `path`, `statusCode` and `durationMs` are not matched and stay readable.
+
+## Request bodies are never logged
+
+`autoLogging` is disabled and the request logging middleware
+(`src/middleware/structured-request-logging.middleware.ts`) writes an explicit
+**allow-list** of fields: `requestId`, `method`, `path`, `statusCode` and
+`durationMs`. Nothing from the body, query string or headers can reach the log
+through it, which includes the auth, API-key and webhook-secret endpoints. A test
+pins the allow-list. If body logging is ever needed, add the route to an
+allow-list; do not log bodies and try to mask them afterwards.
+
+## Example
+
+A request that carried `Authorization: Bearer <jwt>` and an API key:
+
+```json
+{"level":30,"requestId":"req-42","method":"POST","path":"/api/v1/transactions","statusCode":201,"durationMs":12.5,"msg":"HTTP request completed"}
+```
+
+The same policy applied to an error that quotes a credential:
+
+```text
+upstream rejected Authorization: [REDACTED]
+```
