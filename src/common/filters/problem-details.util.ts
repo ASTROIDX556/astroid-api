@@ -106,7 +106,13 @@ export function resolveError(exception: unknown): ResolvedError {
     };
   }
 
-  if (exception instanceof Prisma.PrismaClientKnownRequestError) {
+  if (
+    exception instanceof Prisma.PrismaClientKnownRequestError ||
+    exception instanceof Prisma.PrismaClientValidationError ||
+    exception instanceof Prisma.PrismaClientUnknownRequestError ||
+    exception instanceof Prisma.PrismaClientRustPanicError ||
+    exception instanceof Prisma.PrismaClientInitializationError
+  ) {
     return resolvePrisma(exception);
   }
 
@@ -163,25 +169,66 @@ function resolveHttp(exception: HttpException): ResolvedError {
   };
 }
 
-function resolvePrisma(exception: Prisma.PrismaClientKnownRequestError): ResolvedError {
-  if (exception.code === 'P2025') {
+export function resolvePrisma(exception: unknown): ResolvedError {
+  if (exception instanceof Prisma.PrismaClientKnownRequestError) {
+    if (exception.code === 'P2025') {
+      return {
+        status: HttpStatus.NOT_FOUND,
+        code: ErrorCode.NOT_FOUND,
+        detail: 'Resource not found',
+      };
+    }
+    if (exception.code === 'P2002') {
+      const target = exception.meta?.target;
+      let field = '';
+      if (Array.isArray(target) && target.length > 0) {
+        field = target.join(', ');
+      } else if (typeof target === 'string') {
+        field = target;
+      }
+      const detail = field
+        ? `A resource with this ${field} already exists`
+        : 'A resource with these unique attributes already exists';
+      return {
+        status: HttpStatus.CONFLICT,
+        code: ErrorCode.CONFLICT,
+        detail,
+      };
+    }
+    if (exception.code === 'P2003') {
+      return {
+        status: HttpStatus.CONFLICT,
+        code: ErrorCode.CONFLICT,
+        detail:
+          'Foreign key constraint failed: referenced resource does not exist or has dependent records',
+      };
+    }
+    if (exception.code === 'P2000') {
+      return {
+        status: HttpStatus.UNPROCESSABLE_ENTITY,
+        code: ErrorCode.VALIDATION_ERROR,
+        detail: 'Provided value exceeds maximum allowed length for field',
+      };
+    }
     return {
-      status: HttpStatus.NOT_FOUND,
-      code: ErrorCode.NOT_FOUND,
-      detail: 'Resource not found',
+      status: HttpStatus.INTERNAL_SERVER_ERROR,
+      code: ErrorCode.INTERNAL_ERROR,
+      detail: 'An unexpected database error occurred',
     };
   }
-  if (exception.code === 'P2002') {
+
+  if (exception instanceof Prisma.PrismaClientValidationError) {
     return {
-      status: HttpStatus.CONFLICT,
-      code: ErrorCode.CONFLICT,
-      detail: 'A resource with these unique attributes already exists',
+      status: HttpStatus.BAD_REQUEST,
+      code: ErrorCode.BAD_REQUEST,
+      detail: 'Invalid database query or input data',
     };
   }
+
   return {
-    status: HttpStatus.BAD_REQUEST,
-    code: ErrorCode.BAD_REQUEST,
-    detail: 'Database request could not be processed',
+    status: HttpStatus.INTERNAL_SERVER_ERROR,
+    code: ErrorCode.INTERNAL_ERROR,
+    detail: 'An unexpected database error occurred',
   };
 }
 
