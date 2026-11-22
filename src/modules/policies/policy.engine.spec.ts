@@ -128,9 +128,17 @@ describe('PolicyEngine', () => {
     expect(result.passed).toBe(true);
   });
 
-  it('ignores disabled policies', () => {
+  it('fails closed when an applicable policy is disabled', () => {
     const result = engine.evaluate(baseIntent, [
-      policy({ enabled: false, configuration: { maxAmount: 1 } }),
+      policy({ id: 'p1', enabled: false, configuration: { maxAmount: 1 } }),
+    ]);
+    expect(result.passed).toBe(false);
+    expect(result.violations[0].code).toBe('POLICY_DISABLED');
+  });
+
+  it('still allows when the disabled policy applies to another agent', () => {
+    const result = engine.evaluate(baseIntent, [
+      policy({ id: 'p1', agentId: 'other-agent', enabled: false, configuration: { maxAmount: 1 } }),
     ]);
     expect(result.passed).toBe(true);
   });
@@ -389,6 +397,123 @@ describe('PolicyEngine multi-condition rule groups (issue #404)', () => {
       ],
     );
     expect(result.violations[0].code).toBe('RULE_GROUP_VIOLATED');
+  });
+});
+
+describe('PolicyEngine limit boundary semantics', () => {
+  const engine = new PolicyEngine();
+
+  describe('exact-limit allowed, over denied', () => {
+    it('allows a spend equal to the max amount', () => {
+      const result = engine.evaluate({ ...baseIntent, amount: 50 }, [
+        policy({ configuration: { maxAmount: 50 } }),
+      ]);
+      expect(result.passed).toBe(true);
+    });
+
+    it('denies a spend one unit over the max amount', () => {
+      const result = engine.evaluate({ ...baseIntent, amount: 51 }, [
+        policy({ configuration: { maxAmount: 50 } }),
+      ]);
+      expect(result.passed).toBe(false);
+      expect(result.violations[0].code).toBe('MAX_AMOUNT_EXCEEDED');
+    });
+  });
+
+  describe('zero-limit policies deny all', () => {
+    it('denies even a zero-amount spend under a zero maxAmount', () => {
+      const result = engine.evaluate({ ...baseIntent, amount: 0 }, [
+        policy({ configuration: { maxAmount: 0 } }),
+      ]);
+      expect(result.passed).toBe(false);
+      expect(result.violations[0].code).toBe('ZERO_LIMIT_DENIED');
+    });
+
+    it('denies a spend under a zero dailyLimit', () => {
+      const result = engine.evaluate(baseIntent, [
+        policy({ configuration: { dailyLimit: 0 } }),
+      ]);
+      expect(result.passed).toBe(false);
+      expect(result.violations[0].code).toBe('ZERO_LIMIT_DENIED');
+    });
+  });
+
+  describe('period-window boundaries', () => {
+    it('allows a spend equal to the daily limit', () => {
+      const result = engine.evaluate({ ...baseIntent, spentToday: 1000, amount: 0 }, [
+        policy({ configuration: { dailyLimit: 1000 } }),
+      ]);
+      expect(result.passed).toBe(true);
+    });
+
+    it('denies a spend one unit over the daily limit', () => {
+      const result = engine.evaluate({ ...baseIntent, spentToday: 1000, amount: 1 }, [
+        policy({ configuration: { dailyLimit: 1000 } }),
+      ]);
+      expect(result.passed).toBe(false);
+      expect(result.violations[0].code).toBe('DAILY_LIMIT_EXCEEDED');
+    });
+
+    it('allows a spend equal to the weekly limit', () => {
+      const result = engine.evaluate({ ...baseIntent, spentThisWeek: 2000, amount: 0 }, [
+        policy({ configuration: { weeklyLimit: 2000 } }),
+      ]);
+      expect(result.passed).toBe(true);
+    });
+
+    it('denies a spend one unit over the weekly limit', () => {
+      const result = engine.evaluate({ ...baseIntent, spentThisWeek: 2000, amount: 1 }, [
+        policy({ configuration: { weeklyLimit: 2000 } }),
+      ]);
+      expect(result.violations[0].code).toBe('WEEKLY_LIMIT_EXCEEDED');
+    });
+
+    it('allows a spend equal to the monthly limit', () => {
+      const result = engine.evaluate({ ...baseIntent, spentThisMonth: 5000, amount: 0 }, [
+        policy({ configuration: { monthlyLimit: 5000 } }),
+      ]);
+      expect(result.passed).toBe(true);
+    });
+
+    it('denies a spend one unit over the monthly limit', () => {
+      const result = engine.evaluate({ ...baseIntent, spentThisMonth: 5000, amount: 1 }, [
+        policy({ configuration: { monthlyLimit: 5000 } }),
+      ]);
+      expect(result.violations[0].code).toBe('MONTHLY_LIMIT_EXCEEDED');
+    });
+
+    it('allows fresh spend after a window reset (zero spent this period)', () => {
+      // A zero spent value means the window reset happened and only the new
+      // spend counts.
+      const result = engine.evaluate({ ...baseIntent, spentThisMonth: 0 }, [
+        policy({ configuration: { monthlyLimit: 5000 } }),
+      ]);
+      expect(result.passed).toBe(true);
+    });
+  });
+
+  describe('disabled policies fail closed', () => {
+    it('denies when an applicable policy is disabled', () => {
+      const result = engine.evaluate(baseIntent, [
+        policy({ id: 'p1', enabled: false, configuration: { maxAmount: 50 } }),
+      ]);
+      expect(result.passed).toBe(false);
+      expect(result.violations[0].code).toBe('POLICY_DISABLED');
+    });
+
+    it('still allows when the disabled policy applies to another agent', () => {
+      const result = engine.evaluate(baseIntent, [
+        policy({ id: 'p1', agentId: 'other-agent', enabled: false, configuration: { maxAmount: 1 } }),
+      ]);
+      expect(result.passed).toBe(true);
+    });
+
+    it('includes disabled applicable policies in evaluatedPolicyIds', () => {
+      const result = engine.evaluate(baseIntent, [
+        policy({ id: 'p1', enabled: false, configuration: {} }),
+      ]);
+      expect(result.evaluatedPolicyIds).toContain('p1');
+    });
   });
 });
 

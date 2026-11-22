@@ -137,9 +137,13 @@ export class SpendingLimitService {
   }
 
   /**
-   * Returns true if the agent has at least one active spending-limit policy
-   * (a policy with `dailyLimit`, `weeklyLimit`, or `monthlyLimit` configured).
-   * Used to short-circuit the aggregate query when no periodic limits apply.
+   * Returns true if an applicable policy (enabled or disabled) declares a
+   * periodic limit (`dailyLimit`/`weeklyLimit`/`monthlyLimit`, or a matching
+   * per-asset limit). Used to short-circuit the aggregate query.
+   *
+   * A *disabled* policy with limits still counts here: the evaluation path
+   * fails closed on disabled policies, so the aggregate query must run to
+   * produce the denial instead of silently allowing the spend.
    */
   async hasSpendingLimitPolicy(
     organizationId: string,
@@ -148,7 +152,6 @@ export class SpendingLimitService {
     const policies = await this.prisma.policy.findMany({
       where: {
         organizationId,
-        enabled: true,
         deletedAt: null,
         OR: [{ agentId: null }, { agentId }],
       },

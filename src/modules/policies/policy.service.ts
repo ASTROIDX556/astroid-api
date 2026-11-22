@@ -79,7 +79,7 @@ export class PolicyService {
     intent: TransactionIntent,
     actorId?: string,
   ): Promise<PolicyEvaluationResult> {
-    const policies = await this.spendingPolicyService.listActiveForEvaluation(
+    const policies = await this.spendingPolicyService.findApplicableForEvaluation(
       intent.organizationId,
       intent.agentId,
     );
@@ -144,7 +144,7 @@ export class PolicyService {
       spentThisMonth: input.spentThisMonth,
       ...(transfers ? { transfers } : {}),
     };
-    const policies = await this.spendingPolicyService.listActiveForEvaluation(organizationId, input.agentId);
+    const policies = await this.spendingPolicyService.findApplicableForEvaluation(organizationId, input.agentId);
     const result = await this.evaluateAgainstPolicies(intent, policies);
     return {
       passed: result.passed,

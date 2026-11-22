@@ -122,6 +122,16 @@ export class SpendingPolicyService {
     return this.repository.findActiveForEvaluation(organizationId, agentId);
   }
 
+  /**
+   * All applicable policies (enabled and disabled) for evaluation. Deliberate
+   * contrast with {@link listActiveForEvaluation}: the evaluation path passes
+   * disabled policies through so the engine fails closed on them (the
+   * "safer default, deny" semantics for disabled policies).
+   */
+  findApplicableForEvaluation(organizationId: string, agentId?: string) {
+    return this.repository.findApplicableForEvaluation(organizationId, agentId);
+  }
+
   /** Validates a policy configuration against the strict spending-policy schema. */
   private validateConfiguration(
     configuration: CreatePolicyInput['configuration'],
