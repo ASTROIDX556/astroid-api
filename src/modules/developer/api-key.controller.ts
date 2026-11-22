@@ -14,6 +14,7 @@ import { ApiKeyService } from './api-key.service';
 import { createApiKeySchema, CreateApiKeyInput, CreateApiKeyDto, ApiKeyCreatedDto } from './api-key.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
+import { RequiredScopes } from '../../common/decorators/scopes.decorator';
 import { AuditAction } from '../../common/decorators/audit-action.decorator';
 import { AuditLog } from '../../common/decorators/audit-log.decorator';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
@@ -30,6 +31,7 @@ export class ApiKeyController {
 
   @Get()
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.DEVELOPER)
+  @RequiredScopes('read')
   @ApiOperation({
     summary: 'List API keys (secrets are never returned)',
     description:
@@ -48,6 +50,7 @@ export class ApiKeyController {
 
   @Post()
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.DEVELOPER)
+  @RequiredScopes('write')
   @SensitiveRateLimit('apiKeyCreate')
   @AuditAction('AGENT_KEY_ROTATED')
   @AuditLog({ action: 'AGENT_KEY_CREATED', entity: 'ApiKey' })
@@ -79,6 +82,7 @@ export class ApiKeyController {
 
   @Delete(':id')
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.DEVELOPER)
+  @RequiredScopes('write')
   @AuditAction('AGENT_KEY_REVOKED')
   @AuditLog({ action: 'AGENT_KEY_REVOKED', entity: 'ApiKey' })
   @ApiOperation({
