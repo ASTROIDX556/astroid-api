@@ -10,6 +10,7 @@ import {
 } from '../../common/helpers/pagination';
 import { Paginated } from '../../common/interfaces/api-response.interface';
 import { generateApiKey, safeEqual, verifyArgon2, sha256 } from '../../utils/crypto.util';
+import { DEFAULT_API_KEY_SCOPES } from '../../common/constants/scopes';
 
 const SORTABLE = ['createdAt', 'name', 'lastUsedAt'];
 
@@ -35,6 +36,7 @@ export class ApiKeyService {
       name: input.name,
       prefix,
       hashedKey,
+      scopes: input.scopes ?? [...DEFAULT_API_KEY_SCOPES],
       permissions: input.permissions,
       allowedIps: input.allowedIps || [],
       expiresAt,
@@ -45,6 +47,7 @@ export class ApiKeyService {
       id: apiKey.id,
       name: apiKey.name,
       prefix: apiKey.prefix,
+      scopes: apiKey.scopes,
       permissions: apiKey.permissions,
       expiresAt: apiKey.expiresAt,
       key: raw,

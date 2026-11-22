@@ -33,6 +33,7 @@ import {
 import { SpendingLimitGuard, RequireSpendingLimitCheck } from './guards/spending-limit.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
+import { RequiredScopes } from '../../common/decorators/scopes.decorator';
 import { AuditAction } from '../../common/decorators/audit-action.decorator';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 import { UseWalletLock } from '../../common/locks/wallet-lock.decorator';
@@ -80,6 +81,7 @@ export class TransactionController {
 
   @Post()
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.FINANCE, UserRole.DEVELOPER)
+  @RequiredScopes('transactions:execute')
   @UseGuards(SlidingWindowThrottlerGuard, SpendingLimitGuard, AgentBudgetGuard)
   @SlidingWindowLimit(30, 60)
   @RequireSpendingLimitCheck()

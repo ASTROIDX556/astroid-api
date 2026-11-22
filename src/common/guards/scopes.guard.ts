@@ -57,7 +57,7 @@ export class ScopesGuard implements CanActivate {
     const request = context.switchToHttp().getRequest<
       Request & {
         user?: AuthenticatedUser;
-        apiKey?: { permissions?: string[] };
+        apiKey?: { permissions?: string[]; scopes?: string[] };
       }
     >();
 
@@ -77,6 +77,7 @@ export class ScopesGuard implements CanActivate {
     const grantedScopes = [
       ...(user.scopes ?? []),
       ...(user.permissions ?? []),
+      ...(request.apiKey?.scopes ?? []),
       ...(request.apiKey?.permissions ?? []),
     ];
 
@@ -87,6 +88,7 @@ export class ScopesGuard implements CanActivate {
     if (missingScopes.length > 0) {
       throw new ForbiddenException(
         `Insufficient API key permissions. Missing required scope(s): ${missingScopes.join(', ')}`,
+        ErrorCode.FORBIDDEN,
       );
     }
 
