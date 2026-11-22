@@ -107,6 +107,20 @@ enum BudgetPeriod {
   YEARLY
 }
 
+// Carry-over applied when a budget period is closed by the scheduled rollover.
+// NONE is the default so existing budgets keep their reset-to-zero behaviour.
+enum BudgetCarryOverRule {
+  NONE
+  UNUSED
+  OVERSPEND
+  NET
+}
+
+enum BudgetPeriodStatus {
+  OPEN
+  CLOSED
+}
+
 enum TransactionStatus {
   DRAFT
   PENDING
@@ -200,6 +214,7 @@ model Organization {
   wallets              Wallet[]
   policies             Policy[]
   budgets              Budget[]
+  budgetPeriodRecords  BudgetPeriodRecord[]
   transactions         Transaction[]
   auditLogs            AuditLog[]
   apiKeys              ApiKey[]
@@ -374,6 +389,16 @@ model Budget {
   spent          Decimal      @default(0) @db.Decimal(30, 7)
   period         BudgetPeriod @default(MONTHLY)
   periodStart    DateTime     @default(now())
+  // End of the current fixed period; null for ONE_TIME budgets.
+  periodEnd      DateTime?
+  // Immutable first period anchor: month-end clamping is always relative to it.
+  periodAnchor   DateTime?
+  // Number of completed periods since periodAnchor.
+  periodIndex    Int          @default(0)
+  // IANA timezone used for period boundaries (e.g. Africa/Lagos).
+  timezone       String       @default("UTC")
+  // Amount transferred into the next period when one elapses.
+  carryOverRule  BudgetCarryOverRule @default(NONE)
   rollover       Boolean      @default(false)
   enabled        Boolean      @default(true)
   // Per-budget override of the percentage thresholds that emit budget alerts.
@@ -389,12 +414,41 @@ model Budget {
   agent        Agent?        @relation(fields: [agentId], references: [id])
   transactions Transaction[]
   budgetAlerts BudgetAlert[]
+  periodRecords BudgetPeriodRecord[]
 
   @@index([organizationId])
   @@index([parentBudgetId])
   @@index([agentId])
   @@index([organizationId, createdAt])
   @@map("budgets")
+}
+
+// Immutable history of a budget's fixed periods. The unique (budgetId,
+// periodStart) key makes the scheduled rollover idempotent, while the CLOSED
+// rows keep the final spend snapshot needed for audits and carry-over.
+model BudgetPeriodRecord {
+  id             String              @id @default(uuid(7))
+  budgetId       String
+  organizationId String
+  periodStart    DateTime
+  periodEnd      DateTime
+  status         BudgetPeriodStatus  @default(OPEN)
+  // Spend captured when the period was closed; null while still open.
+  finalSpent     Decimal?            @db.Decimal(30, 7)
+  // Amount carried into this period by its opening rollover.
+  openingBalance Decimal             @default(0) @db.Decimal(30, 7)
+  carryOverRule  BudgetCarryOverRule @default(NONE)
+  closedAt       DateTime?
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+
+  budget       Budget       @relation(fields: [budgetId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([budgetId, periodStart])
+  @@index([organizationId, periodEnd])
+  @@index([status, periodEnd])
+  @@map("budget_periods")
 }
 
 // ---------------------------------------------------------------------------

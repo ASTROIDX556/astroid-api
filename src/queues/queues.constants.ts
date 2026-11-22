@@ -29,6 +29,8 @@ export const Queues = {
   AuditCleanup: 'audit-cleanup',
   /** Audit log archival: moves expired audit rows into the compressed archive. */
   AuditArchive: 'audit-archive',
+  /** Periodic close/reopen of elapsed budget periods. */
+  BudgetRollover: 'budget-rollover',
   /** Periodic removal of expired Idempotency-Key records. */
   IdempotencyCleanup: 'idempotency-cleanup',
 } as const;
@@ -73,4 +75,3 @@ export interface DlqJobData {
   /** Additional metadata (organizationId, transactionId, etc.). */
   metadata?: Record<string, unknown>;
 }
-

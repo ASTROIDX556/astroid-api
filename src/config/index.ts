@@ -16,6 +16,7 @@ import { throttlerConfig } from './throttler.config';
 import { shutdownConfig } from './shutdown.config';
 import { webhookConfig } from './webhook.config';
 import { budgetAlertConfig } from './budget-alert.config';
+import { budgetRolloverConfig } from './budget-rollover.config';
 import { auditConfig } from './audit.config';
 
 export * from './app.config';
@@ -35,6 +36,7 @@ export * from './throttler.config';
 export * from './shutdown.config';
 export * from './webhook.config';
 export * from './budget-alert.config';
+export * from './budget-rollover.config';
 export * from './audit.config';
 
 /**
@@ -63,6 +65,7 @@ export const AppConfigModule = ConfigModule.forRoot({
     shutdownConfig,
     webhookConfig,
     budgetAlertConfig,
+    budgetRolloverConfig,
     auditConfig,
   ],
 });

@@ -1,6 +1,15 @@
 import { z } from 'zod';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { BudgetPeriod } from '@prisma/client';
+import { BudgetCarryOverRule, BudgetPeriod } from '@prisma/client';
+import { isValidTimezone } from './utils/period.util';
+
+const timezone = z
+  .string()
+  .min(1)
+  .max(64)
+  .refine(isValidTimezone, 'Must be a valid IANA timezone (e.g. Africa/Lagos)');
+
+const carryOverRule = z.nativeEnum(BudgetCarryOverRule).default(BudgetCarryOverRule.NONE);
 
 const amountString = z
   .string()
@@ -12,6 +21,11 @@ export const createBudgetSchema = z
     currency: z.string().min(1).max(12).default('USDC'),
     limitAmount: amountString,
     period: z.nativeEnum(BudgetPeriod).default(BudgetPeriod.MONTHLY),
+    // A budget's window is anchored at creation; the scheduled rollover advances
+    // it from there in the budget's timezone.
+    periodStart: z.coerce.date().optional(),
+    timezone: timezone.default('UTC'),
+    carryOverRule,
     rollover: z.boolean().default(false),
     parentBudgetId: z.string().uuid().optional(),
     agentId: z.string().uuid().optional(),
@@ -25,6 +39,8 @@ export const updateBudgetSchema = z
     name: z.string().min(1).max(120).optional(),
     limitAmount: amountString.optional(),
     period: z.nativeEnum(BudgetPeriod).optional(),
+    timezone: timezone.optional(),
+    carryOverRule: z.nativeEnum(BudgetCarryOverRule).optional(),
     rollover: z.boolean().optional(),
     enabled: z.boolean().optional(),
   })
@@ -53,7 +69,27 @@ export class CreateBudgetDto {
   @ApiPropertyOptional({ enum: BudgetPeriod, description: 'How often the budget resets', example: BudgetPeriod.MONTHLY })
   period?: BudgetPeriod;
 
-  @ApiPropertyOptional({ example: false, description: 'Whether the unused amount rolls into the next period' })
+  @ApiPropertyOptional({
+    enum: BudgetCarryOverRule,
+    default: BudgetCarryOverRule.NONE,
+    description:
+      'Carry-over applied at period close: NONE resets spend, UNUSED carries a positive remainder, OVERSPEND carries a negative balance, NET carries both',
+  })
+  carryOverRule?: BudgetCarryOverRule;
+
+  @ApiPropertyOptional({
+    example: 'UTC',
+    description: 'IANA timezone used to compute period boundaries',
+  })
+  timezone?: string;
+
+  @ApiPropertyOptional({
+    example: '2026-01-01T00:00:00.000Z',
+    description: 'Anchor instant of the first period; defaults to creation time',
+  })
+  periodStart?: string;
+
+  @ApiPropertyOptional({ example: false, description: 'Legacy flag; carryOverRule controls scheduled rollover' })
   rollover?: boolean;
 
   @ApiPropertyOptional({ description: 'Parent budget UUID for hierarchical allocation', format: 'uuid' })
