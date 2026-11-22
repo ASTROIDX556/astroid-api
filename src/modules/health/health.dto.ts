@@ -100,6 +100,13 @@ export class ReadinessServicesDto {
     type: DependencyProbeDto,
   })
   cache!: DependencyProbeDto;
+
+  @ApiProperty({
+    description:
+      'BullMQ, probed with `PING` on the connection of a registered queue (no new connection)',
+    type: DependencyProbeDto,
+  })
+  queue!: DependencyProbeDto;
 }
 
 /** Payload of the readiness probe. */

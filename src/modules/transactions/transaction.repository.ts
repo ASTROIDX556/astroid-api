@@ -3,6 +3,7 @@ import { Prisma, Transaction } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { PrismaPagination } from '../../common/helpers/pagination';
 import { ConflictException } from '../../common/exceptions/domain.exception';
+import { CursorPayload } from '../../common/pagination/cursor-pagination';
 
 /**
  * Client accepted by the guarded status-transition reads/writes. Defaults to
@@ -132,6 +133,11 @@ export class TransactionRepository {
       this.prisma.transaction.count({ where }),
     ]);
     return { items, total };
+  }
+
+  findCursorPage(where: Prisma.TransactionWhereInput, cursor: CursorPayload | undefined, take: number) {
+    const cursorWhere: Prisma.TransactionWhereInput | undefined = cursor ? { OR: [{ createdAt: { lt: cursor.createdAt } }, { createdAt: cursor.createdAt, id: { lt: cursor.id } }] } : undefined;
+    return this.prisma.transaction.findMany({ where: cursorWhere ? { AND: [where, cursorWhere] } : where, take, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }] });
   }
 
   findById(

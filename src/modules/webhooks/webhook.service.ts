@@ -9,6 +9,8 @@ import {
   toPrismaPagination,
 } from '../../common/helpers/pagination';
 import { Paginated } from '../../common/interfaces/api-response.interface';
+import { CursorPaginated } from '../../common/interfaces/api-response.interface';
+import { CursorPaginationQuery, decodeCursor, encodeCursor } from '../../common/pagination/cursor-pagination';
 import { generateToken } from '../../utils/crypto.util';
 import { WebhookDestinationPolicy, WebhookDestinationError } from './webhook-destination.policy';
 
@@ -54,6 +56,14 @@ export class WebhookService {
     const pagination = toPrismaPagination(query, SORTABLE);
     const { items, total } = await this.repository.findManyAndCount(where, pagination);
     return new Paginated(items, buildPaginationMeta(total, query));
+  }
+
+  async listDeliveries(organizationId: string, query: CursorPaginationQuery) {
+    const rows = await this.repository.findDeliveryPage(organizationId, query.cursor ? decodeCursor(query.cursor) : undefined, query.limit + 1);
+    const hasMore = rows.length > query.limit;
+    const items = hasMore ? rows.slice(0, query.limit) : rows;
+    const last = items[items.length - 1];
+    return new CursorPaginated(items, { limit: query.limit, hasMore, nextCursor: hasMore && last ? encodeCursor(last) : null });
   }
 
   async getOrThrow(organizationId: string, id: string) {

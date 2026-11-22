@@ -9,7 +9,7 @@ import {
   ApiResponse,
 } from '@nestjs/swagger';
 import { ApiErrorResponses } from '../../common/decorators/api-error-responses.decorator';
-import { ApiEnvelope } from '../../common/decorators/api-envelope.decorator';
+import { ApiCursorPaginatedEnvelope, ApiEnvelope } from '../../common/decorators/api-envelope.decorator';
 import { UserRole } from '@prisma/client';
 import { Response } from 'express';
 import { AuditService } from './audit.service';
@@ -92,8 +92,7 @@ export class AuditController {
   @ApiQuery({ name: 'resourceId', required: false, type: String, description: 'Filter by affected entity UUID' })
   @ApiQuery({ name: 'from', required: false, type: String, description: 'ISO 8601 start of the date range' })
   @ApiQuery({ name: 'to', required: false, type: String, description: 'ISO 8601 end of the date range' })
-  @ApiEnvelope(AuditLogEntryDto, {
-    isArray: true,
+  @ApiCursorPaginatedEnvelope(AuditLogEntryDto, {
     description: 'Cursor-paginated list of audit log entries',
   })
   @ApiErrorResponses({

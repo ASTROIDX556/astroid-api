@@ -22,6 +22,7 @@ import { TransactionIdempotencyCleanupService } from './transaction-idempotency-
 import { TransactionIdempotencyStore } from './idempotency/transaction-idempotency.store';
 import { IdempotencyInterceptor } from '../../common/interceptors/idempotency.interceptor';
 import { IDEMPOTENCY_STORE } from '../../common/interceptors/idempotency-store';
+import { IdempotencyModule } from '../../common/idempotency/idempotency.module';
 
 /**
  * Transaction pipeline module. Pulls together wallets, agents, policies, risk
@@ -38,6 +39,7 @@ import { IDEMPOTENCY_STORE } from '../../common/interceptors/idempotency-store';
     RiskModule,
     BudgetModule,
     StellarModule,
+    IdempotencyModule,
     BullModule.registerQueue(
       // Transaction execution is retried with exponential backoff and jitter.
       // A job that still fails on its last attempt is dead-lettered by the

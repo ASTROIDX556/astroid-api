@@ -94,6 +94,18 @@ export interface WalletBalanceUpdatedPayload extends Record<string, unknown> {
   balanceCount?: number;
 }
 
+/**
+ * Emitted at most once per wallet per reconciliation run when the freshly
+ * fetched native balance differs from the stored snapshot by more than the
+ * configured drift threshold.
+ */
+export interface WalletBalanceDriftDetectedPayload extends Record<string, unknown> {
+  walletId: string;
+  previousBalance: string;
+  newBalance: string;
+  reconciledAt: string;
+}
+
 export interface AgentRegisteredPayload extends Record<string, unknown> {
   agentId: string;
   name: string;
