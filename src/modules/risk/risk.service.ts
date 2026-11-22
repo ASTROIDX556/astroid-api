@@ -9,6 +9,7 @@ import { DomainEventEnvelope } from '../../events/domain-event.types';
 import { InjectQueue } from '@nestjs/bullmq';
 import type { Queue } from 'bullmq';
 import { Queues } from '../../queues/queues.constants';
+import { withJobMetadata } from '../../queues/job-correlation';
 import { RiskAnalysisJobData } from './risk.types';
 
 /**
@@ -132,11 +133,18 @@ export class RiskService {
       };
 
       if (this.riskQueue) {
-        await this.riskQueue.add(
-          'risk-evaluation',
+        // The event may be handled outside the request that raised it, so what
+        // the envelope carries wins over the ambient request context.
+        const job = withJobMetadata<RiskAnalysisJobData>(
           { organizationId, transactionId, actorId: envelope.actorId, input: riskInput },
-          { jobId: `risk-${transactionId}` },
+          {
+            requestId: envelope.requestId ?? envelope.metadata?.requestId,
+            correlationId: envelope.correlationId ?? envelope.metadata?.correlationId,
+            traceId: envelope.metadata?.traceId,
+            actorId: envelope.actorId,
+          },
         );
+        await this.riskQueue.add('risk-evaluation', job, { jobId: `risk-${transactionId}` });
       } else {
         await this.evaluate(organizationId, riskInput, {
           transactionId,

@@ -134,6 +134,22 @@ export const idempotencyEnvSchema = z.object({
   IDEMPOTENCY_POLL_INTERVAL_MS: z.coerce.number().int().positive().max(5_000).default(100),
 });
 
+export const walletReconciliationEnvSchema = z.object({
+  // Enables the repeatable wallet reconciliation job at boot. The job can
+  // still be triggered on demand when this is false.
+  WALLET_RECONCILIATION_ENABLED: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((value) => value === 'true'),
+  // How often the repeatable reconciliation job runs (minutes).
+  WALLET_RECONCILIATION_INTERVAL_MINUTES: z.coerce.number().int().min(1).max(1_440).default(15),
+  // Wallets reconciled in parallel within a single run.
+  WALLET_RECONCILIATION_CONCURRENCY: z.coerce.number().int().min(1).max(32).default(5),
+  // Native (XLM) balance delta above which a drift event is emitted. The
+  // default (one stroop) reports any real change and ignores rounding noise.
+  WALLET_BALANCE_DRIFT_THRESHOLD: z.coerce.number().nonnegative().max(1_000_000_000).default(0.0000001),
+});
+
 export const queueEnvSchema = z.object({
   QUEUE_PREFIX: z.string().default('astroid'),
   QUEUE_CONCURRENCY: z.coerce.number().int().positive().default(5),
@@ -321,6 +337,7 @@ export const environmentSchema = z
     ...auditEnvSchemaBase.shape,
     ...queueEnvSchema.shape,
     ...idempotencyEnvSchema.shape,
+    ...walletReconciliationEnvSchema.shape,
     ...webhookEnvSchema.shape,
     ...budgetAlertEnvSchema.shape,
     ...throttleEnvSchema.shape,

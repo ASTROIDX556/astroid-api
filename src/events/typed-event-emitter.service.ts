@@ -23,6 +23,7 @@ export interface DomainEventMap {
   'wallet.frozen': PayloadTypes.WalletFrozenPayload;
   'wallet.archived': PayloadTypes.WalletArchivedPayload;
   'wallet.balance_updated': PayloadTypes.WalletBalanceUpdatedPayload;
+  'wallet.balance_drift_detected': PayloadTypes.WalletBalanceDriftDetectedPayload;
 
   // Agent
   'agent.registered': PayloadTypes.AgentRegisteredPayload;

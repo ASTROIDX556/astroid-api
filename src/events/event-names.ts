@@ -17,6 +17,8 @@ export const DomainEventName = {
   WalletFrozen: 'wallet.frozen',
   WalletArchived: 'wallet.archived',
   WalletBalanceUpdated: 'wallet.balance_updated',
+  /** A reconciled balance differs from the stored snapshot beyond the threshold. */
+  WalletBalanceDriftDetected: 'wallet.balance_drift_detected',
 
   // Agent
   AgentRegistered: 'agent.registered',

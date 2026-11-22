@@ -1,14 +1,7 @@
-import { Global, Module } from '@nestjs/common';
+import { Module } from '@nestjs/common';
 import { IdempotencyService } from './idempotency.service';
 
-/**
- * Global idempotency infrastructure.
- *
- * `IdempotencyService` is shared by every module that applies `@Idempotent()`
- * to a mutating route. The Redis client and PrismaService are provided by the
- * global LocksModule and DatabaseModule.
- */
-@Global()
+/** Prisma-backed idempotency support, shared by every execution endpoint. */
 @Module({
   providers: [IdempotencyService],
   exports: [IdempotencyService],

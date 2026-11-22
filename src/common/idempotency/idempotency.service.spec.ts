@@ -1,202 +1,284 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { TransactionIdempotencyRecord } from '@prisma/client';
 import { IdempotencyService } from './idempotency.service';
+import { PrismaService } from '../../database/prisma.service';
+import { RequestContext, RequestContextData } from '../context/request-context';
 import {
-  IdempotencyInFlightError,
-  IdempotencyMismatchError,
-} from './idempotency.types';
-import { stableStringify } from './stable-json.util';
+  IDEMPOTENT_REPLAY_REQUEST_ID,
+  IDEMPOTENT_REPLAY_STATUS,
+} from './idempotency.constants';
+import { computeRequestFingerprint } from './request-fingerprint';
 
-interface Row {
-  id: string;
-  principalId: string;
-  route: string;
-  keyHash: string;
-  requestHash: string;
-  status: 'PROCESSING' | 'COMPLETED';
-  responseStatus: number | null;
-  responseBody: unknown;
-  requestId: string | null;
-  expiresAt: Date;
-}
+const ROUTE = 'POST /transactions';
+const OTHER_ROUTE = 'POST /transactions/execute';
 
+/**
+ * In-memory `transaction_idempotency_records` table. It enforces the same
+ * (principal, route, keyHash) uniqueness as the database constraint.
+ */
 function createPrisma() {
-  const rows: Row[] = [];
-  let id = 0;
-  const identity = (where: { principalId: string; route: string; keyHash: string }) =>
-    `${where.principalId}|${where.route}|${where.keyHash}`;
+  const rows = new Map<string, TransactionIdempotencyRecord>();
+  let sequence = 0;
 
-  const delegate = {
-    deleteMany: vi.fn(async ({ where }: { where: Record<string, unknown> }) => {
-      const before = rows.length;
-      const predicate = (row: Row) =>
-        (!where.principalId || row.principalId === where.principalId) &&
-        (!where.route || row.route === where.route) &&
-        (!where.keyHash || row.keyHash === where.keyHash) &&
-        (!where.id || row.id === where.id) &&
-        (!where.status || row.status === where.status) &&
-        (!where.expiresAt ||
-          row.expiresAt.getTime() <= (where.expiresAt as { lte: Date }).lte.getTime());
-      for (let index = rows.length - 1; index >= 0; index--) {
-        if (predicate(rows[index])) rows.splice(index, 1);
-      }
-      return { count: before - rows.length };
-    }),
-    findUnique: vi.fn(async ({ where }: { where: Record<string, unknown> }) => {
-      const key =
-        'principalId_route_keyHash' in where
-          ? identity(where.principalId_route_keyHash as never)
-          : '';
-      return rows.find((row) => identity(row) === key) ?? null;
-    }),
-    create: vi.fn(async ({ data }: { data: Omit<Row, 'id' | 'responseStatus' | 'responseBody' | 'requestId'> }) => {
-      if (rows.some((row) => identity(row) === identity(data))) {
-        throw Object.assign(new Error('unique'), { code: 'P2002' });
-      }
-      const row: Row = {
-        ...data,
-        id: `rec-${++id}`,
-        responseStatus: null,
-        responseBody: null,
-        requestId: null,
-      };
-      rows.push(row);
-      return row;
-    }),
-    update: vi.fn(async ({ where, data }: { where: { id: string }; data: Partial<Row> }) => {
-      const row = rows.find((candidate) => candidate.id === where.id);
-      if (!row) throw new Error('not found');
-      Object.assign(row, data);
-      return row;
-    }),
-  };
+  const matchesIdentity = (row: TransactionIdempotencyRecord, where: Record<string, unknown>) =>
+    (typeof where.principalId !== 'string' || row.principalId === where.principalId) &&
+    (typeof where.route !== 'string' || row.route === where.route) &&
+    (typeof where.keyHash !== 'string' || row.keyHash === where.keyHash);
 
-  return { rows, prisma: { idempotencyRecord: delegate } };
-}
-
-function createRedis(acquired = true) {
   return {
-    set: vi.fn().mockResolvedValue(acquired ? 'OK' : null),
-    eval: vi.fn().mockResolvedValue(1),
+    rows,
+    prisma: {
+      transactionIdempotencyRecord: {
+        deleteMany: vi.fn(async ({ where }: { where: Record<string, unknown> }) => {
+          let count = 0;
+          for (const [id, row] of rows) {
+            if (typeof where.id === 'string' && where.id !== id) continue;
+            if (!matchesIdentity(row, where)) continue;
+            const expiry = where.expiresAt as { lte?: Date } | undefined;
+            if (expiry?.lte && row.expiresAt.getTime() > expiry.lte.getTime()) continue;
+            if ('transactionId' in where && where.transactionId === null && row.transactionId !== null) {
+              continue;
+            }
+            rows.delete(id);
+            count += 1;
+          }
+          return { count };
+        }),
+        create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
+          const duplicate = [...rows.values()].some(
+            (row) =>
+              row.principalId === data.principalId &&
+              row.route === data.route &&
+              row.keyHash === data.keyHash,
+          );
+          if (duplicate) throw { code: 'P2002' };
+          const row: TransactionIdempotencyRecord = {
+            id: `idem_${(sequence += 1)}`,
+            principalId: data.principalId as string,
+            operation: data.operation as string,
+            route: data.route as string,
+            keyHash: data.keyHash as string,
+            requestHash: data.requestHash as string,
+            status: 'PROCESSING',
+            transactionId: null,
+            response: null,
+            responseStatus: null,
+            requestId: null,
+            createdAt: new Date(),
+            completedAt: null,
+            expiresAt: data.expiresAt as Date,
+          };
+          rows.set(row.id, row);
+          return row;
+        }),
+        findUnique: vi.fn(async ({ where }: { where: Record<string, unknown> }) => {
+          if (typeof where.id === 'string') return rows.get(where.id) ?? null;
+          const identity = where.principalId_route_keyHash as Record<string, unknown>;
+          return (
+            [...rows.values()].find((row) => matchesIdentity(row, identity)) ?? null
+          );
+        }),
+        update: vi.fn(
+          async ({ where, data }: { where: { id: string }; data: Record<string, unknown> }) => {
+            const row = rows.get(where.id);
+            if (!row) throw new Error(`missing record ${where.id}`);
+            const updated = { ...row, ...data } as TransactionIdempotencyRecord;
+            rows.set(row.id, updated);
+            return updated;
+          },
+        ),
+        updateMany: vi.fn(
+          async ({ where, data }: { where: Record<string, unknown>; data: Record<string, unknown> }) => {
+            const matching = [...rows.values()].filter(
+              (row) => row.transactionId === where.transactionId && row.status === where.status,
+            );
+            for (const row of matching) {
+              rows.set(row.id, { ...row, ...data } as TransactionIdempotencyRecord);
+            }
+            return { count: matching.length };
+          },
+        ),
+      },
+    } as unknown as PrismaService,
   };
 }
 
-function settings() {
+function requestContext(requestId: string): RequestContextData {
   return {
-    get: vi.fn().mockReturnValue({
-      keyTtlMs: 24 * 60 * 60 * 1000,
-      waitTimeoutMs: 5_000,
-      pollIntervalMs: 100,
-    }),
+    identity: {
+      requestId,
+      correlationId: requestId,
+      traceId: requestId,
+      method: 'POST',
+      path: '/transactions',
+      url: '/transactions',
+      ip: null,
+      userAgent: null,
+      startedAt: Date.now(),
+    },
+    timings: {},
+    data: {},
   };
 }
-
-const scope = {
-  principalId: 'user-1',
-  route: 'POST /api/v1/transactions',
-  key: 'key-abc',
-  requestBody: { amount: '10', asset: 'USDC' },
-};
 
 describe('IdempotencyService', () => {
-  it('executes the first request and replays the stored response', async () => {
-    const { prisma } = createPrisma();
-    const service = new IdempotencyService(prisma as never, settings() as never, createRedis() as never);
+  let service: IdempotencyService;
+  let store: ReturnType<typeof createPrisma>;
+  const fingerprint = (amount = '50') => computeRequestFingerprint({ body: { amount } });
+  const reserveInput = (overrides: Record<string, unknown> = {}) => ({
+    principalId: 'user_1',
+    route: ROUTE,
+    key: 'key-1',
+    requestFingerprint: fingerprint(),
+    expiresAt: new Date(Date.now() + 60_000),
+    ...overrides,
+  });
 
-    const first = await service.begin(scope);
-    expect(first.replay).toBeUndefined();
-    await first.complete({ statusCode: 201, body: { id: 'tx-1' }, requestId: 'req-original' });
+  beforeEach(() => {
+    store = createPrisma();
+    service = new IdempotencyService(store.prisma);
+  });
 
-    const second = await service.begin(scope);
-    expect(second.replay).toEqual({
+  it('creates a PROCESSING record on the first request', async () => {
+    const result = await service.reserve(reserveInput());
+
+    expect(result.created).toBe(true);
+    expect(result.record.status).toBe('PROCESSING');
+    expect(result.record.route).toBe(ROUTE);
+    expect(store.rows.size).toBe(1);
+  });
+
+  it('replays the cached status, body and request id of a completed record', async () => {
+    const { record } = await service.reserve(reserveInput());
+    await service.complete({
+      recordId: record.id,
       statusCode: 201,
-      body: { id: 'tx-1' },
+      body: { transaction: { id: 'tx_1' } },
+      transactionId: 'tx_1',
+      requestId: 'req-original',
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+
+    const replayed = await service.reserve(reserveInput());
+    expect(replayed.created).toBe(false);
+    expect(service.completedResponse(replayed.record)).toEqual({
+      statusCode: 201,
+      body: { transaction: { id: 'tx_1' } },
       requestId: 'req-original',
     });
   });
 
-  it('scopes keys by principal and route', async () => {
-    const { prisma } = createPrisma();
-    const service = new IdempotencyService(prisma as never, settings() as never, createRedis() as never);
-    const first = await service.begin(scope);
-    await first.complete({ statusCode: 201, body: { id: 'tx-1' } });
+  it('replays the original request id and status through the request context', async () => {
+    const { record } = await service.reserve(reserveInput());
+    await service.complete({
+      recordId: record.id,
+      statusCode: 201,
+      body: { ok: true },
+      requestId: 'req-original',
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+    const replayed = await service.reserve(reserveInput());
 
-    const otherPrincipal = await service.begin({ ...scope, principalId: 'user-2' });
-    const otherRoute = await service.begin({ ...scope, route: 'POST /api/v1/webhooks' });
-
-    expect(otherPrincipal.replay).toBeUndefined();
-    expect(otherRoute.replay).toBeUndefined();
+    await RequestContext.run(requestContext('req-duplicate'), async () => {
+      const body = service.replay<{ ok: boolean }>(service.completedResponse(replayed.record)!);
+      expect(body).toEqual({ ok: true });
+      expect(RequestContext.getData(IDEMPOTENT_REPLAY_REQUEST_ID)).toBe('req-original');
+      expect(RequestContext.getData(IDEMPOTENT_REPLAY_STATUS)).toBe(201);
+    });
   });
 
-  it('hashes request bodies deterministically regardless of key order', () => {
-    expect(stableStringify({ b: 2, a: 1 })).toBe(stableStringify({ a: 1, b: 2 }));
-    expect(stableStringify([1, 2])).not.toBe(stableStringify([2, 1]));
+  it('scopes the same key independently by route', async () => {
+    await service.reserve(reserveInput());
+    const other = await service.reserve(reserveInput({ route: OTHER_ROUTE }));
+
+    expect(other.created).toBe(true);
+    expect(store.rows.size).toBe(2);
   });
 
-  it('rejects the same key with a different body', async () => {
-    const { prisma } = createPrisma();
-    const service = new IdempotencyService(prisma as never, settings() as never, createRedis() as never);
-    const first = await service.begin(scope);
-    await first.complete({ statusCode: 201, body: { id: 'tx-1' } });
+  it('scopes the same key independently by principal', async () => {
+    await service.reserve(reserveInput());
+    const other = await service.reserve(reserveInput({ principalId: 'user_2' }));
+
+    expect(other.created).toBe(true);
+    expect(store.rows.size).toBe(2);
+  });
+
+  it('creates exactly one reservation for concurrent duplicates', async () => {
+    const results = await Promise.all([
+      service.reserve(reserveInput()),
+      service.reserve(reserveInput()),
+      service.reserve(reserveInput()),
+    ]);
+
+    expect(results.filter((result) => result.created)).toHaveLength(1);
+    expect(new Set(results.map((result) => result.record.id)).size).toBe(1);
+    expect(store.rows.size).toBe(1);
+  });
+
+  it('enqueues exactly one job for concurrent duplicates', async () => {
+    const enqueue = vi.fn().mockResolvedValue(undefined);
+
+    const results = await Promise.all([
+      service.enqueueOnce(reserveInput(), enqueue),
+      service.enqueueOnce(reserveInput(), enqueue),
+    ]);
+
+    expect(enqueue).toHaveBeenCalledTimes(1);
+    expect(results.filter((result) => result.enqueued)).toHaveLength(1);
+    expect(results.filter((result) => !result.enqueued)).toHaveLength(1);
+  });
+
+  it('rejects reuse of a key with a different request fingerprint', async () => {
+    await service.enqueueOnce(reserveInput(), vi.fn().mockResolvedValue(undefined));
 
     await expect(
-      service.begin({ ...scope, requestBody: { amount: '11', asset: 'USDC' } }),
-    ).rejects.toBeInstanceOf(IdempotencyMismatchError);
+      service.enqueueOnce(reserveInput({ requestFingerprint: fingerprint('51') }), vi.fn()),
+    ).rejects.toMatchObject({ status: 409 });
   });
 
-  it('rejects a concurrent duplicate while the original is in flight', async () => {
-    const { prisma } = createPrisma();
-    const service = new IdempotencyService(prisma as never, settings() as never, createRedis() as never);
-    await service.begin(scope);
+  it('treats an expired record as reusable', async () => {
+    await service.reserve(reserveInput({ expiresAt: new Date(Date.now() - 1) }));
+    const fresh = await service.reserve(reserveInput());
 
-    await expect(service.begin(scope)).rejects.toBeInstanceOf(IdempotencyInFlightError);
+    expect(fresh.created).toBe(true);
+    expect(store.rows.size).toBe(1);
   });
 
-  it('rejects a duplicate when the Redis lock is already held', async () => {
-    const { prisma } = createPrisma();
-    const service = new IdempotencyService(prisma as never, settings() as never, createRedis(false) as never);
+  it('finalizes the record when asynchronous processing completes', async () => {
+    const { record } = await service.reserve(reserveInput());
+    await service.attachTransaction(record.id, 'tx_1');
 
-    await expect(service.begin(scope)).rejects.toBeInstanceOf(IdempotencyInFlightError);
+    const count = await service.finalizeTransaction('tx_1', {
+      statusCode: 201,
+      body: { transaction: { id: 'tx_1' } },
+      requestId: 'req-original',
+    });
+
+    expect(count).toBe(1);
+    const replayed = await service.reserve(reserveInput());
+    expect(service.completedResponse(replayed.record)).toMatchObject({
+      statusCode: 201,
+      requestId: 'req-original',
+    });
   });
 
-  it('allows a retry after a failed execution', async () => {
-    const { prisma, rows } = createPrisma();
-    const service = new IdempotencyService(prisma as never, settings() as never, createRedis() as never);
-    const first = await service.begin(scope);
-    await first.fail();
-    expect(rows).toHaveLength(0);
+  it('frees the key after an asynchronous terminal failure', async () => {
+    const { record } = await service.reserve(reserveInput());
+    await service.attachTransaction(record.id, 'tx_1');
+    await service.failTransaction('tx_1');
 
-    const retry = await service.begin(scope);
-    expect(retry.replay).toBeUndefined();
-    await retry.complete({ statusCode: 201, body: { id: 'tx-2' } });
+    expect(store.rows.get(record.id)?.status).toBe('FAILED');
+
+    const retry = await service.reserve(reserveInput());
+    expect(retry.created).toBe(true);
   });
 
-  it('ignores and removes an expired record', async () => {
-    const { prisma, rows } = createPrisma();
-    const service = new IdempotencyService(prisma as never, settings() as never, createRedis() as never);
-    const first = await service.begin(scope);
-    await first.complete({ statusCode: 201, body: { id: 'tx-1' } });
-    rows[0].expiresAt = new Date(Date.now() - 1_000);
+  it('deletes expired records', async () => {
+    await service.reserve(reserveInput({ expiresAt: new Date(Date.now() - 1) }));
 
-    const fresh = await service.begin(scope);
-    expect(fresh.replay).toBeUndefined();
-    expect(rows).toHaveLength(1);
-  });
+    const result = await service.deleteExpired();
 
-  it('does not fail the request when the completion write fails', async () => {
-    const { prisma } = createPrisma();
-    prisma.idempotencyRecord.update.mockRejectedValueOnce(new Error('db down'));
-    const service = new IdempotencyService(prisma as never, settings() as never, createRedis() as never);
-
-    const handle = await service.begin(scope);
-    await expect(handle.complete({ statusCode: 201, body: { id: 'tx-1' } })).resolves.toBeUndefined();
-  });
-
-  it('works without Redis, relying on the durable unique record', async () => {
-    const { prisma } = createPrisma();
-    const service = new IdempotencyService(prisma as never, settings() as never);
-    const handle = await service.begin(scope);
-    await handle.complete({ statusCode: 201, body: { id: 'tx-1' } });
-
-    expect((await service.begin(scope)).replay?.body).toEqual({ id: 'tx-1' });
+    expect(result.count).toBe(1);
+    expect(store.rows.size).toBe(0);
   });
 });

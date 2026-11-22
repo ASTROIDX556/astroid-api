@@ -37,193 +37,303 @@ return 0
  *
  * Keys are scoped by authenticated principal and route, never by key alone, so
  * two principals (or two routes) can use the same opaque key independently.
+import { Injectable, Logger } from '@nestjs/common';
+import { Prisma, TransactionIdempotencyRecord } from '@prisma/client';
+import { PrismaService } from '../../database/prisma.service';
+import { ConflictException } from '../exceptions/domain.exception';
+import { RequestContext } from '../context/request-context';
+import {
+  IDEMPOTENT_REPLAY_REQUEST_ID,
+  IDEMPOTENT_REPLAY_STATUS,
+} from './idempotency.constants';
+import { computeRequestFingerprint, hashIdempotencyKey } from './request-fingerprint';
+
+/** Identity of an idempotency record: principal + route + key digest. */
+export interface IdempotencyIdentity {
+  principalId: string;
+  route: string;
+  keyHash: string;
+}
+
+/** The parts of a completed record that are replayed to the client. */
+export interface IdempotentResponse {
+  statusCode: number;
+  body: Prisma.JsonValue;
+  requestId?: string | null;
+}
+
+export interface ReserveIdempotencyInput {
+  principalId: string;
+  route: string;
+  key: string;
+  requestFingerprint: string;
+  expiresAt: Date;
+  /** Injectable clock, for tests. */
+  now?: Date;
+}
+
+export interface CompleteIdempotencyInput {
+  recordId: string;
+  statusCode: number;
+  body: Prisma.InputJsonValue;
+  transactionId?: string;
+  requestId?: string;
+  expiresAt: Date;
+}
+
+export interface FinalizeTransactionInput {
+  statusCode: number;
+  body: Prisma.InputJsonValue;
+  requestId?: string;
+}
+
+export type EnqueueOnceResult =
+  | { enqueued: true; recordId: string }
+  | { enqueued: false; reason: 'replayed'; response: IdempotentResponse }
+  | { enqueued: false; reason: 'processing' };
+
+function isUniqueConstraintError(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    (error as { code?: string }).code === 'P2002'
+  );
+}
+
+/**
+ * Reusable, Prisma-backed `Idempotency-Key` support.
+ *
+ * Callers reserve a key before doing any work. The composite unique constraint
+ * on (principal, route, key digest) arbitrates concurrent requests across every
+ * API replica: exactly one reservation is created, and every duplicate observes
+ * the same record. The raw key is never stored — only its SHA-256 digest.
+ *
+ * Records are scoped by route, so the same key may be used independently on
+ * different endpoints. Completed records replay the original status, body and
+ * request id until they expire; a key reused with a different fingerprint is
+ * rejected with 409. Failed or interrupted processing never blocks the key
+ * forever: `release`/`failTransaction` free it, and expired rows are treated as
+ * absent (and deleted) when the key is next used.
  */
 @Injectable()
 export class IdempotencyService {
   private readonly logger = new Logger(IdempotencyService.name);
 
-  constructor(
-    private readonly prisma: PrismaService,
-    @Optional() private readonly config?: ConfigService,
-    @Optional() @Inject(REDIS_CLIENT) private readonly redis?: Redis,
-  ) {}
+  constructor(private readonly prisma: PrismaService) {}
 
-  /**
-   * Reserves the key. Returns a handle whose `replay` is set when an earlier
-   * completed response must be returned, otherwise the caller executes the
-   * handler and calls `complete`/`fail`.
-   */
-  async begin(scope: IdempotencyScope): Promise<IdempotencyHandle> {
-    const keyHash = sha256(scope.key);
-    const requestHash = sha256(stableStringify(scope.requestBody));
-    const identity = { principalId: scope.principalId, route: scope.route, keyHash };
-    const now = new Date();
-    const expiresAt = new Date(now.getTime() + this.settings.keyTtlMs);
+  /** Deterministic fingerprint of a normalized request body + path params. */
+  fingerprint(body: unknown, params?: Record<string, unknown>): string {
+    return computeRequestFingerprint({ body, params });
+  }
 
-    // Expired records are ignored and removed, so a key becomes reusable after
-    // its retention window without a background job being required.
-    await this.prisma.idempotencyRecord.deleteMany({
-      where: { ...identity, expiresAt: { lte: now } },
-    });
+  /** Reserves a key, or returns the record that already holds it. */
+  async reserve(
+    input: ReserveIdempotencyInput,
+  ): Promise<{ created: boolean; record: TransactionIdempotencyRecord }> {
+    const now = input.now ?? new Date();
+    const identity: IdempotencyIdentity = {
+      principalId: input.principalId,
+      route: input.route,
+      keyHash: hashIdempotencyKey(input.key),
+    };
 
-    const existing = await this.findRecord(identity);
-    if (existing) return this.resolve(existing, requestHash);
-
-    const lockKey = `idempotency:lock:${identity.principalId}:${identity.route}:${keyHash}`;
-    const lockToken = randomUUID();
-    const lockAcquired = await this.acquireLock(lockKey, lockToken);
-    if (!lockAcquired) {
-      const current = await this.findRecord(identity);
-      if (current) return this.resolve(current, requestHash);
-      throw new IdempotencyInFlightError(this.retryAfterSeconds());
-    }
-
-    // Another worker may have completed the request between the first read and
-    // the lock acquisition.
-    const afterLock = await this.findRecord(identity);
-    if (afterLock) {
-      await this.releaseLock(lockKey, lockToken);
-      return this.resolve(afterLock, requestHash);
-    }
-
-    let record: IdempotencyRecord;
-    try {
-      record = await this.prisma.idempotencyRecord.create({
-        data: { ...identity, requestHash, status: 'PROCESSING', expiresAt },
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await this.prisma.transactionIdempotencyRecord.deleteMany({
+        where: { ...identity, expiresAt: { lte: now } },
       });
-    } catch (error) {
-      await this.releaseLock(lockKey, lockToken);
-      if (isUniqueViolation(error)) {
-        const current = await this.findRecord(identity);
-        if (current) return this.resolve(current, requestHash);
+
+      try {
+        const record = await this.prisma.transactionIdempotencyRecord.create({
+          data: {
+            principalId: identity.principalId,
+            // `operation` mirrors `route` so historical readers keep working.
+            operation: identity.route,
+            route: identity.route,
+            keyHash: identity.keyHash,
+            requestHash: input.requestFingerprint,
+            expiresAt: input.expiresAt,
+          },
+        });
+        return { created: true, record };
+      } catch (error) {
+        if (!isUniqueConstraintError(error)) throw error;
+
+        const record = await this.prisma.transactionIdempotencyRecord.findUnique({
+          where: {
+            principalId_route_keyHash: {
+              principalId: identity.principalId,
+              route: identity.route,
+              keyHash: identity.keyHash,
+            },
+          },
+        });
+        if (!record) continue;
+
+        // A record that failed (async terminal failure) or expired is reusable.
+        if (record.status === 'FAILED' || record.expiresAt.getTime() <= now.getTime()) {
+          await this.prisma.transactionIdempotencyRecord.deleteMany({
+            where: { id: record.id },
+          });
+          continue;
+        }
+
+        return { created: false, record };
       }
-      throw error;
     }
 
-    let settled = false;
+    // The row kept reappearing between the delete and the create (an extremely
+    // unlikely delete/recreate race); report the conflict rather than looping.
+    throw new ConflictException(
+      'A concurrent request is using this Idempotency-Key; retry shortly',
+    );
+  }
+
+  /** The cached response of a completed record, if it has one. */
+  completedResponse(record: TransactionIdempotencyRecord): IdempotentResponse | undefined {
+    if (record.status !== 'COMPLETED' || record.response === null) return undefined;
     return {
-      complete: async (response: StoredIdempotentResponse): Promise<void> => {
-        if (settled) return;
-        settled = true;
-        try {
-          await this.prisma.idempotencyRecord.update({
-            where: { id: record.id },
-            data: {
-              status: 'COMPLETED',
-              responseStatus: response.statusCode,
-              responseBody: toJsonValue(response.body),
-              requestId: response.requestId ?? null,
-              expiresAt: new Date(Date.now() + this.settings.keyTtlMs),
-            },
-          });
-        } catch (error) {
-          // The operation already succeeded; never fail the response because
-          // the replay record could not be written.
-          this.logger.warn(
-            `Could not persist idempotency response for ${scope.route}: ${(error as Error).message}`,
-          );
-        } finally {
-          await this.releaseLock(lockKey, lockToken);
-        }
-      },
-      fail: async (): Promise<void> => {
-        if (settled) return;
-        settled = true;
-        try {
-          await this.prisma.idempotencyRecord.deleteMany({
-            where: { id: record.id, status: 'PROCESSING' },
-          });
-        } catch (error) {
-          this.logger.warn(
-            `Could not release idempotency key for ${scope.route}: ${(error as Error).message}`,
-          );
-        } finally {
-          await this.releaseLock(lockKey, lockToken);
-        }
-      },
+      statusCode: record.responseStatus ?? 200,
+      body: record.response,
+      requestId: record.requestId,
     };
   }
 
-  private async resolve(
-    record: IdempotencyRecord,
-    requestHash: string,
-  ): Promise<IdempotencyHandle> {
-    if (record.requestHash !== requestHash) {
-      throw new IdempotencyMismatchError();
+  /** Polls an in-flight record until it completes or the wait window elapses. */
+  async waitForCompletion(
+    recordId: string,
+    waitTimeoutMs: number,
+    pollIntervalMs: number,
+  ): Promise<IdempotentResponse | undefined> {
+    const deadline = Date.now() + waitTimeoutMs;
+    while (Date.now() < deadline) {
+      await new Promise((resolve) =>
+        setTimeout(resolve, Math.min(pollIntervalMs, Math.max(1, deadline - Date.now()))),
+      );
+      const record = await this.prisma.transactionIdempotencyRecord.findUnique({
+        where: { id: recordId },
+      });
+      if (!record) return undefined; // the original released the key
+      const response = this.completedResponse(record);
+      if (response) return response;
     }
-    if (record.status === 'COMPLETED' && record.responseBody !== null) {
-      const replay: StoredIdempotentResponse = {
-        statusCode: record.responseStatus ?? 200,
-        body: record.responseBody,
-        requestId: record.requestId,
-      };
-      return {
-        replay,
-        complete: async () => undefined,
-        fail: async () => undefined,
-      };
-    }
-    throw new IdempotencyInFlightError(this.retryAfterSeconds());
+    return undefined;
   }
 
-  private findRecord(identity: {
-    principalId: string;
-    route: string;
-    keyHash: string;
-  }): Promise<IdempotencyRecord | null> {
-    return this.prisma.idempotencyRecord.findUnique({
-      where: { principalId_route_keyHash: identity },
+  /** Links the record to the transaction it produced. */
+  attachTransaction(recordId: string, transactionId: string): Promise<unknown> {
+    return this.prisma.transactionIdempotencyRecord.update({
+      where: { id: recordId },
+      data: { transactionId },
     });
   }
 
-  private async acquireLock(lockKey: string, token: string): Promise<boolean> {
-    if (!this.redis) return true;
+  /** Finalizes a record with the result the client will receive on replay. */
+  async complete(input: CompleteIdempotencyInput): Promise<void> {
+    await this.prisma.transactionIdempotencyRecord.update({
+      where: { id: input.recordId },
+      data: {
+        status: 'COMPLETED',
+        transactionId: input.transactionId,
+        response: input.body,
+        responseStatus: input.statusCode,
+        requestId: input.requestId,
+        completedAt: new Date(),
+        expiresAt: input.expiresAt,
+      },
+    });
+  }
+
+  /** Releases a reservation that never produced a transaction. */
+  async release(recordId: string): Promise<void> {
+    await this.prisma.transactionIdempotencyRecord.deleteMany({
+      where: { id: recordId, transactionId: null },
+    });
+  }
+
+  /**
+   * Finalizes the record of a transaction whose asynchronous processing reached
+   * a terminal success. A keyless execution has no record, so this is a no-op.
+   */
+  async finalizeTransaction(
+    transactionId: string,
+    input: FinalizeTransactionInput,
+  ): Promise<number> {
+    const result = await this.prisma.transactionIdempotencyRecord.updateMany({
+      where: { transactionId, status: 'PROCESSING' },
+      data: {
+        status: 'COMPLETED',
+        response: input.body,
+        responseStatus: input.statusCode,
+        requestId: input.requestId,
+        completedAt: new Date(),
+      },
+    });
+    return result.count;
+  }
+
+  /**
+   * Marks the record of a transaction that failed terminally. A later retry with
+   * the same key is accepted: `reserve` treats FAILED records as reusable.
+   */
+  async failTransaction(transactionId: string): Promise<number> {
+    const result = await this.prisma.transactionIdempotencyRecord.updateMany({
+      where: { transactionId, status: 'PROCESSING' },
+      data: { status: 'FAILED', completedAt: new Date() },
+    });
+    return result.count;
+  }
+
+  deleteExpired(now = new Date()): Promise<{ count: number }> {
+    return this.prisma.transactionIdempotencyRecord.deleteMany({
+      where: { expiresAt: { lte: now } },
+    });
+  }
+
+  /**
+   * Applies the metadata of a replayed response to the current request, so the
+   * success envelope returns the original status code and request id.
+   */
+  replay<T>(response: IdempotentResponse): T {
+    RequestContext.setData(IDEMPOTENT_REPLAY_STATUS, response.statusCode);
+    if (response.requestId) {
+      RequestContext.setData(IDEMPOTENT_REPLAY_REQUEST_ID, response.requestId);
+    }
+    return response.body as T;
+  }
+
+  /**
+   * Reserves a key and enqueues at most one job for it. Used by endpoints that
+   * hand work to a BullMQ queue instead of executing it inline: the record is
+   * written before `enqueue` runs, and a duplicate — concurrent or later — never
+   * calls `enqueue` again.
+   */
+  async enqueueOnce(
+    input: ReserveIdempotencyInput,
+    enqueue: () => Promise<void>,
+  ): Promise<EnqueueOnceResult> {
+    const reservation = await this.reserve(input);
+    if (!reservation.created) {
+      if (reservation.record.requestHash !== input.requestFingerprint) {
+        throw new ConflictException(
+          'Idempotency-Key was already used with a different request payload',
+        );
+      }
+      const response = this.completedResponse(reservation.record);
+      return response
+        ? { enqueued: false, reason: 'replayed', response }
+        : { enqueued: false, reason: 'processing' };
+    }
+
     try {
-      const result = await this.redis.set(
-        lockKey,
-        token,
-        'PX',
-        Math.max(MIN_LOCK_TTL_MS, this.settings.waitTimeoutMs + 10_000),
-        'NX',
+      await enqueue();
+      return { enqueued: true, recordId: reservation.record.id };
+    } catch (error) {
+      await this.release(reservation.record.id);
+      this.logger.warn(
+        `Releasing idempotency key ${reservation.record.id}: enqueue failed (${(error as Error).message})`,
       );
-      return result === 'OK';
-    } catch (error) {
-      // Redis is a fast-path guard only: if it is unavailable, the durable
-      // unique constraint still prevents two executions.
-      this.logger.warn(`Idempotency lock unavailable: ${(error as Error).message}`);
-      return true;
+      throw error;
     }
   }
-
-  private async releaseLock(lockKey: string, token: string): Promise<void> {
-    if (!this.redis) return;
-    try {
-      await this.redis.eval(RELEASE_LOCK_SCRIPT, 1, lockKey, token);
-    } catch (error) {
-      this.logger.warn(`Could not release idempotency lock: ${(error as Error).message}`);
-    }
-  }
-
-  private retryAfterSeconds(): number {
-    return Math.max(1, Math.ceil(this.settings.pollIntervalMs / 1_000));
-  }
-
-  private get settings(): IdempotencyConfig {
-    return this.config?.get<IdempotencyConfig>('idempotency') ?? idempotencyConfig();
-  }
 }
-
-function sha256(value: string): string {
-  return createHash('sha256').update(value).digest('hex');
-}
-
-/** Normalises any handler return value into a JSON-safe Prisma value. */
-function toJsonValue(value: unknown): Prisma.InputJsonValue {
-  if (value === undefined || value === null) return {};
-  return JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
-}
-
-function isUniqueViolation(error: unknown): boolean {
-  return typeof error === 'object' && error !== null && 'code' in error && error.code === 'P2002';
-}
-

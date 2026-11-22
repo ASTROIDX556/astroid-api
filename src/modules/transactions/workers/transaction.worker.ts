@@ -1,16 +1,26 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Logger, OnModuleDestroy, Optional } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import type { Job } from 'bullmq';
 import { Queues } from '../../../queues/queues.constants';
 import { runWorkerJob, WorkerJobFailure } from '../../../workers/job-worker';
 import { EventBusService } from '../../../events/event-bus.service';
 import { DomainEventName } from '../../../events/event-names';
+import { IdempotencyService } from '../../../common/idempotency/idempotency.service';
+
+/** Result of an asynchronous execution, carried on the job payload. */
+export interface TransactionJobResult {
+  statusCode?: number;
+  body?: unknown;
+  requestId?: string;
+}
 
 /** Correlation identifiers recovered from a transaction job payload. */
 interface TransactionJobContext {
   organizationId?: string;
   agentId?: string;
   transactionId?: string;
+  result?: TransactionJobResult;
 }
 
 /**
@@ -27,7 +37,10 @@ interface TransactionJobContext {
 export class TransactionWorker extends WorkerHost implements OnModuleDestroy {
   private readonly logger = new Logger(TransactionWorker.name);
 
-  constructor(@Optional() private readonly eventBus?: EventBusService) {
+  constructor(
+    @Optional() private readonly eventBus?: EventBusService,
+    @Optional() private readonly idempotency?: IdempotencyService,
+  ) {
     super();
   }
 
@@ -48,6 +61,18 @@ export class TransactionWorker extends WorkerHost implements OnModuleDestroy {
    */
   protected async execute(job: Job): Promise<void> {
     this.logger.debug(`Processing transaction job ${job.id}`);
+
+    // An asynchronous execution carries its terminal result so the idempotency
+    // record reserved by the API can be finalized with the response a replay
+    // must return. Keyless executions simply have no record to update.
+    const context = this.readJobContext(job);
+    if (context.transactionId && context.result) {
+      await this.idempotency?.finalizeTransaction(context.transactionId, {
+        statusCode: context.result.statusCode ?? 200,
+        body: (context.result.body ?? null) as Prisma.InputJsonValue,
+        requestId: context.result.requestId,
+      });
+    }
   }
 
   /**
@@ -69,6 +94,12 @@ export class TransactionWorker extends WorkerHost implements OnModuleDestroy {
     );
 
     const context = this.readJobContext(job);
+
+    // A terminal failure frees the key: the record is marked FAILED, and the
+    // next request that uses the key is processed as a fresh submission.
+    if (context.transactionId) {
+      await this.idempotency?.failTransaction(context.transactionId);
+    }
 
     if (!this.eventBus) {
       return;
@@ -109,10 +140,16 @@ export class TransactionWorker extends WorkerHost implements OnModuleDestroy {
       return typeof value === 'string' ? value : undefined;
     };
 
+    const result =
+      data.result && typeof data.result === 'object'
+        ? (data.result as TransactionJobResult)
+        : undefined;
+
     return {
       organizationId: read('organizationId'),
       agentId: read('agentId'),
       transactionId: read('transactionId'),
+      result,
     };
   }
 

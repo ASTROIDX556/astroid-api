@@ -9,6 +9,8 @@ export interface RequestPrincipal {
   userId?: string;
   organizationId?: string;
   agentId?: string;
+  /** Id (never the secret) of the API key the request authenticated with. */
+  apiKeyId?: string;
   role?: string;
   authMethod?: 'jwt' | 'api-key' | 'webhook' | 'service' | 'public';
 }
@@ -113,6 +115,20 @@ export class RequestContext {
 
   static getAgentId(): string | undefined {
     return this.storage.getStore()?.principal?.agentId;
+  }
+
+  /** Id of the API key the current request authenticated with, when it used one. */
+  static getApiKeyId(): string | undefined {
+    return this.storage.getStore()?.principal?.apiKeyId;
+  }
+
+  /**
+   * The party acting in the current request: the authenticated user, or the
+   * agent for agent-identified traffic that has no user.
+   */
+  static getActorId(): string | undefined {
+    const principal = this.storage.getStore()?.principal;
+    return principal?.userId ?? principal?.agentId;
   }
 
   /**
