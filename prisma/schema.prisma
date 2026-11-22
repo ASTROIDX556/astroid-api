@@ -521,6 +521,7 @@ model Approval {
   @@index([proposalId])
   @@index([userId])
   @@index([createdAt])
+  @@unique([proposalId, userId])
   @@map("approvals")
 }
 
