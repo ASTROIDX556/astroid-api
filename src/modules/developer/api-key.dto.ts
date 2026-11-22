@@ -65,7 +65,7 @@ export class ApiKeyCreatedDto {
     example: ['read'],
     description: 'Permission scopes granted to the key',
   })
-  scopes!: string[];
+  scopes!: ApiKeyScope[];
 
   @ApiProperty({
     description:
@@ -91,7 +91,7 @@ export class ApiKeyResponseDto {
     description: 'Permission scopes granted to the key',
     example: ['read', 'transactions:execute'],
   })
-  scopes!: string[];
+  scopes!: ApiKeyScope[];
 
   @ApiProperty({
     type: [String],

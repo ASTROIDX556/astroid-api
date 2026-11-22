@@ -19,7 +19,7 @@ export interface ArchivableAuditLog {
   device: string | null;
   requestId: string | null;
   sourceEventId: string | null;
-  previousHash: string | null;
+  prevHash: string | null;
   hash: string | null;
   createdAt: Date;
 }

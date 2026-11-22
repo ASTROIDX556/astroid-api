@@ -188,10 +188,11 @@ const LIVENESS_PROBES = ['/health/live', '/api/v1/health/liveness'];
 /** Paths the API serves outside its prefix, as they appear in the document. */
 const UNPREFIXED_PATHS = new Set(GLOBAL_PREFIX_EXCLUDED_ROUTES.map((route) => `/${route.path}`));
 
-/** List endpoints that page with an opaque cursor rather than an offset. */
+/** List endpoints supporting both standard pages and legacy cursors. */
+const PAGE_OR_CURSOR_PAGINATED_ROUTES = ['/api/v1/audit', '/api/v1/transactions'];
+
+/** List endpoints that page only with an opaque cursor. */
 const CURSOR_PAGINATED_ROUTES = [
-  '/api/v1/audit',
-  '/api/v1/transactions',
   '/api/v1/webhooks/deliveries',
 ];
 
@@ -369,6 +370,40 @@ describe('OpenAPI Documentation', () => {
       expect(collectRefs(schema).has('#/components/schemas/CursorPaginationMetaDto'), path).toBe(
         true,
       );
+    }
+  });
+
+  it('documents standard page metadata on page-paginated list endpoints', () => {
+    const metaSchema = document.components?.schemas?.['PaginationMetaDto'] as
+      | { properties?: Record<string, unknown> }
+      | undefined;
+    expect(metaSchema).toBeDefined();
+    expect(Object.keys(metaSchema?.properties ?? {})).toEqual(
+      expect.arrayContaining([
+        'page',
+        'pageSize',
+        'total',
+        'totalPages',
+        'hasNextPage',
+        'hasPreviousPage',
+      ]),
+    );
+
+    for (const path of PAGE_OR_CURSOR_PAGINATED_ROUTES) {
+      const operation = document.paths[path]?.get;
+      expect(operation, path).toBeDefined();
+      const parameters = (operation?.parameters ?? []).map(
+        (parameter) => (parameter as { name?: string }).name,
+      );
+      expect(parameters, path).toEqual(expect.arrayContaining(['page', 'pageSize']));
+
+      const success = Object.entries(operation?.responses ?? {}).find(([status]) =>
+        status.startsWith('2'),
+      );
+      const content = (success?.[1] as { content?: Record<string, { schema?: unknown }> } | undefined)
+        ?.content;
+      const schema = Object.values(content ?? {})[0]?.schema;
+      expect(collectRefs(schema).has('#/components/schemas/PaginationMetaDto'), path).toBe(true);
     }
   });
 

@@ -62,6 +62,7 @@ describe('ApiKeyAuthGuard', () => {
       prefix: 'ak_live_abcdef',
       hashedKey: sha256(validKey),
       permissions: ['transactions:write', 'wallets:read'],
+      scopes: ['transactions:execute'],
       allowedIps: ['10.0.0.1'],
       revokedAt: null,
       expiresAt: new Date(Date.now() + 86_400_000),
@@ -78,7 +79,7 @@ describe('ApiKeyAuthGuard', () => {
       isApiKey: true,
       role: UserRole.DEVELOPER,
       permissions: ['transactions:write', 'wallets:read'],
-      scopes: ['transactions:write', 'wallets:read'],
+      scopes: ['transactions:execute'],
     });
     expect(req.apiKey).toMatchObject({ id: 'key-valid' });
   });

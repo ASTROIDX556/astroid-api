@@ -48,6 +48,25 @@ The weights always sum to 100, so a fully saturated assessment reaches exactly
 All weights and saturation points are overridable per organization or agent
 through `RiskConfig` (`src/modules/risk/risk.types.ts`).
 
+## Explainable factor breakdown
+
+Each entry in `RiskAssessment.factors` contains both the existing `factor`,
+`weight`, `contribution` and `detail` fields and additive explainability fields:
+
+| Field | Meaning |
+| --- | --- |
+| `code` | Stable machine-readable factor code (one of the factor names in the table above). |
+| `description` | Human-readable explanation of the factor result. |
+| `value` | Raw, non-sensitive primitive signal used by the rule (count, amount, age, ratio, boolean, or `null`). |
+| `weight` | Maximum points available to this factor, including any configured override. |
+| `contribution` | Rounded points added by this factor; entries sum to the unchanged rounded assessment `score` (within 0.01). |
+
+Factor entries are always returned in deterministic rule order: amount,
+amount anomaly, unknown recipient, destination reputation, velocity, wallet
+age, policy violations, then suspicious timing. Custom rules are appended in
+deterministic code/name order. Destination and wallet identifiers and other
+sensitive account signals are not exposed in factor entries.
+
 ## Bands and thresholds
 
 | Band | Score | Effect |

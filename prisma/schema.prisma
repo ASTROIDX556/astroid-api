@@ -602,7 +602,7 @@ model AuditLog {
   // metadata, not tamper-evident content.
   requestId      String?
   sourceEventId  String?  @unique
-  previousHash   String?  // SHA-256 hash of the preceding audit log entry
+  prevHash       String?  // Previous organization-scoped audit-chain hash; GENESIS starts a new chain
   hash           String?  // SHA-256 hash of this entry (links to previous)
   createdAt      DateTime @default(now())
 

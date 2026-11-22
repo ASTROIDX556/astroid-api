@@ -209,9 +209,13 @@ export class AuditArchiveService {
       throw new Error(`Audit archive '${batchId}' failed its checksum and cannot be read`);
     }
 
-    const records = JSON.parse(decompressed.toString('utf8')) as ArchivableAuditLog[];
-    return records.map((record) => ({
+    const storedRecords = JSON.parse(decompressed.toString('utf8')) as Array<
+      ArchivableAuditLog & { previousHash?: string | null }
+    >;
+    return storedRecords.map((record) => ({
       ...record,
+      prevHash: record.prevHash ?? record.previousHash ?? null,
+      previousHash: undefined,
       // Dates are serialized as ISO strings; restore them so the callers see
       // the same shape as a live audit row.
       createdAt: new Date(record.createdAt),

@@ -9,6 +9,7 @@ import { BudgetAlertRepository } from './budget-alert.repository';
 import { BudgetAlertService } from './services/budget-alert.service';
 import { BudgetAlertWorker } from './workers/budget-alert.worker';
 import { NotificationModule } from '../notifications/notification.module';
+import { IdempotencyModule } from '../../common/idempotency/idempotency.module';
 
 /**
  * Budget module. Exports the service so the transactions pipeline can enforce
@@ -24,7 +25,7 @@ import { NotificationModule } from '../notifications/notification.module';
  * notifications through the shared NotificationService.
  */
 @Module({
-  imports: [NotificationModule],
+  imports: [NotificationModule, IdempotencyModule],
   controllers: [BudgetController],
   providers: [
     BudgetService,

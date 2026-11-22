@@ -26,13 +26,13 @@ When creating an API key (`POST /developer/api-keys`), client applications can e
 
 - **Default Scope**: If `scopes` is omitted during key creation, it defaults to `["read"]`.
 - **Validation**: Scopes must contain between 1 and 4 valid scope strings matching the defined vocabulary. Unknown scopes are rejected with `400 Bad Request`.
-- **Migration & Backwards Compatibility**: Existing API keys without explicit scopes are migrated to `["read"]` to ensure safe, read-only defaults.
+- **Migration & Backwards Compatibility**: Existing API keys receive the `["read"]` safe default. Valid legacy `permissions` values are copied into `scopes` by migration to preserve their previously granted operations. Arbitrary legacy values are discarded; integrations that need a protected write operation must use a supported scope.
 
 ## Enforcement
 
 Routes requiring authorization are decorated with `@RequiredScopes(...)`. When an API key authenticates:
 1. `ScopesGuard` evaluates the scopes granted to the API key.
-2. If any required scope is missing, the request is denied with `403 Forbidden` and machine-readable `ErrorCode.FORBIDDEN`:
+2. Scope values match exactly; wildcards and arbitrary strings are not accepted as grants. If any required scope is missing, the request is denied with `403 Forbidden` and machine-readable `ErrorCode.FORBIDDEN`:
    ```json
    {
      "type": "urn:astroid:problem:forbidden",
@@ -44,4 +44,15 @@ Routes requiring authorization are decorated with `@RequiredScopes(...)`. When a
      "requestId": "req_018f0a1b-..."
    }
    ```
-3. Full system administrators (users with `OWNER` or `ADMIN` roles authenticated via user JWT) bypass scope restrictions.
+3. The global guard order is authentication, role authorization, then scope authorization. `OWNER` and `ADMIN` users authenticated with JWTs bypass scope checks; other JWT users and all API keys must hold every route-required scope. This exception is limited to routes explicitly decorated with `@RequireScopes(...)`.
+
+## Protected route scope table
+
+| Endpoint | Required scope |
+|---|---|
+| `GET /developer/api-keys` | `read` |
+| `POST /developer/api-keys` | `write` |
+| `DELETE /developer/api-keys/:id` | `write` |
+| `POST /transactions` | `transactions:execute` |
+| `GET /webhooks`, `GET /webhooks/deliveries`, `GET /webhooks/:id` | `read` |
+| `POST /webhooks`, `PATCH /webhooks/:id`, `POST /webhooks/:id/rotate-secret`, `DELETE /webhooks/:id` | `webhooks:manage` |

@@ -13,6 +13,9 @@ export const AmountRule: RiskRule = {
     const ratio = clamp(input.amount / config.amountSaturation, 0, 1);
     const weight = config.weights?.amount ?? AmountRule.defaultWeight;
     return {
+      code: 'amount',
+      description: `Amount ${input.amount}`,
+      value: input.amount,
       factor: 'amount',
       weight,
       contribution: ratio * weight,

@@ -8,11 +8,11 @@ import {
 } from './pagination';
 
 describe('paginationQuerySchema', () => {
-  it('applies offset 0 and limit 50 when no bounds are supplied', () => {
+  it('defaults to the first page with 20 items', () => {
     const query = paginationQuerySchema.parse({});
 
-    expect(query).toMatchObject({ offset: 0, page: 1, limit: DEFAULT_PAGE_LIMIT });
-    expect(DEFAULT_PAGE_LIMIT).toBe(50);
+    expect(query).toMatchObject({ offset: 0, page: 1, pageSize: DEFAULT_PAGE_LIMIT, limit: 20 });
+    expect(DEFAULT_PAGE_LIMIT).toBe(20);
   });
 
   it('coerces string query values into numbers', () => {
@@ -21,19 +21,32 @@ describe('paginationQuerySchema', () => {
     expect(query).toMatchObject({ offset: 100, limit: 25, page: 5 });
   });
 
+  it('accepts pageSize and preserves limit as a legacy alias', () => {
+    expect(paginationQuerySchema.parse({ pageSize: '25' })).toMatchObject({
+      page: 1,
+      offset: 0,
+      pageSize: 25,
+      limit: 25,
+    });
+  });
+
+  it('rejects pageSize and limit together', () => {
+    expect(paginationQuerySchema.safeParse({ pageSize: 25, limit: 25 }).success).toBe(false);
+  });
+
   it('derives the offset from a page number', () => {
     const query = paginationQuerySchema.parse({ page: '3', limit: '20' });
 
     expect(query).toMatchObject({ offset: 40, page: 3, limit: 20 });
   });
 
-  it('accepts a limit equal to the 200 cap', () => {
-    expect(MAX_PAGE_LIMIT).toBe(200);
-    expect(paginationQuerySchema.parse({ limit: '200' }).limit).toBe(200);
+  it('accepts a limit equal to the 100 cap', () => {
+    expect(MAX_PAGE_LIMIT).toBe(100);
+    expect(paginationQuerySchema.parse({ limit: '100' }).limit).toBe(100);
   });
 
   it.each([
-    ['a limit above the cap', { limit: '201' }],
+    ['a limit above the cap', { limit: '101' }],
     ['a zero limit', { limit: '0' }],
     ['a negative limit', { limit: '-5' }],
     ['a negative offset', { offset: '-1' }],
@@ -91,32 +104,31 @@ describe('buildPaginationMeta', () => {
     const meta = buildPaginationMeta(120, paginationQuerySchema.parse({ offset: '50', limit: '50' }));
 
     expect(meta).toEqual({
-      offset: 50,
       page: 2,
-      limit: 50,
+      pageSize: 50,
       total: 120,
       totalPages: 3,
-      hasNext: true,
-      hasPrev: true,
+      hasNextPage: true,
+      hasPreviousPage: true,
     });
   });
 
   it('has no next slice on the last page', () => {
     const meta = buildPaginationMeta(120, paginationQuerySchema.parse({ offset: '100', limit: '50' }));
 
-    expect(meta.hasNext).toBe(false);
-    expect(meta.hasPrev).toBe(true);
+    expect(meta.hasNextPage).toBe(false);
+    expect(meta.hasPreviousPage).toBe(true);
   });
 
   it('computes hasNext/hasPrev from offsets that are not page-aligned', () => {
     const meta = buildPaginationMeta(60, paginationQuerySchema.parse({ offset: '5', limit: '50' }));
 
-    expect(meta).toMatchObject({ offset: 5, page: 1, hasNext: true, hasPrev: true });
+    expect(meta).toMatchObject({ page: 1, pageSize: 50, hasNextPage: true, hasPreviousPage: false });
   });
 
   it('handles an empty result set', () => {
     const meta = buildPaginationMeta(0, paginationQuerySchema.parse({}));
 
-    expect(meta).toMatchObject({ total: 0, totalPages: 0, hasNext: false, hasPrev: false });
+    expect(meta).toMatchObject({ total: 0, totalPages: 0, hasNextPage: false, hasPreviousPage: false });
   });
 });

@@ -40,9 +40,7 @@ import { UseWalletLock } from '../../common/locks/wallet-lock.decorator';
 import { UseTransactionLock } from '../../common/locks/transaction-lock.decorator';
 import { AgentThrottlerGuard } from '../../common/guards/agent-throttler.guard';
 import { AuthenticatedUser } from '../../common/interfaces/authenticated-user.interface';
-import { ApiCursorPaginatedEnvelope, ApiEnvelope } from '../../common/decorators/api-envelope.decorator';
-import { ApiCursorPaginationQuery } from '../../common/decorators/api-cursor-pagination-query.decorator';
-import { cursorPaginationQuerySchema, CursorPaginationQuery } from '../../common/pagination/cursor-pagination';
+import { ApiEnvelope } from '../../common/decorators/api-envelope.decorator';
 import { ApiErrorResponses } from '../../common/decorators/api-error-responses.decorator';
 import { Idempotent } from '../../common/decorators/idempotent.decorator';
 import { IdempotencyInterceptor } from '../../common/interceptors/idempotency.interceptor';
@@ -50,6 +48,9 @@ import {
   SlidingWindowThrottlerGuard,
   SlidingWindowLimit,
 } from '../../common/guards/sliding-window-throttler.guard';
+import { PaginationQuery, paginationQuerySchema } from '../../common/helpers/pagination';
+import { ApiPaginationQuery } from '../../common/decorators/api-pagination-query.decorator';
+import { ApiPageOrCursorPaginatedEnvelope } from '../../common/decorators/api-envelope.decorator';
 
 @ApiTags('transactions')
 @ApiBearerAuth('access-token')
@@ -64,17 +65,18 @@ export class TransactionController {
     description:
       'Returns a paginated list of transactions for the current organization. Supports filtering by status, agent, wallet, and date range.',
   })
-  @ApiCursorPaginationQuery()
+  @ApiPaginationQuery()
+  @ApiQuery({ name: 'cursor', required: false, type: String, description: 'Legacy cursor pagination mode' })
   @ApiQuery({ name: 'status', required: false, enum: ['DRAFT', 'PENDING', 'APPROVED', 'COMPLETED', 'FAILED', 'CANCELLED'], description: 'Filter by transaction status' })
   @ApiQuery({ name: 'agentId', required: false, type: String, description: 'Filter by agent UUID' })
   @ApiQuery({ name: 'walletId', required: false, type: String, description: 'Filter by wallet UUID' })
-  @ApiCursorPaginatedEnvelope(TransactionResponseDto, {
+  @ApiPageOrCursorPaginatedEnvelope(TransactionResponseDto, {
     description: 'Paginated list of transactions',
   })
   @ApiErrorResponses({ unauthorized: true, serverError: true })
   list(
     @CurrentUser('organizationId') organizationId: string,
-    @Query(new ZodValidationPipe(cursorPaginationQuerySchema.passthrough())) query: CursorPaginationQuery & { search?: string; filter?: string },
+    @Query(new ZodValidationPipe(paginationQuerySchema)) query: PaginationQuery & { cursor?: string; status?: string; search?: string; filter?: string },
   ) {
     return this.transactionService.list(organizationId, query);
   }
@@ -168,6 +170,8 @@ export class TransactionController {
 
   @Post(':id/cancel')
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.FINANCE)
+  @UseInterceptors(IdempotencyInterceptor)
+  @Idempotent()
   @AuditAction('TRANSFER_CANCELLED')
   @ApiOperation({
     summary: 'Cancel a draft or pending transaction',
@@ -176,12 +180,17 @@ export class TransactionController {
       'Completed or already cancelled transactions cannot be cancelled.',
   })
   @ApiParam({ name: 'id', description: 'Transaction UUID', example: '018f0a1b-...' })
+  @ApiHeader({
+    name: 'Idempotency-Key',
+    required: false,
+    description: 'Optional key for replay-safe transaction cancellation (1-128 allowed ASCII characters).',
+  })
   @ApiEnvelope(TransactionResponseDto, { description: 'Transaction cancelled successfully' })
   @ApiErrorResponses({
     unauthorized: true,
     forbidden: true,
     notFound: true,
-    conflict: 'Transaction cannot be cancelled (wrong status)',
+    conflict: 'Transaction cannot be cancelled (wrong status) or the idempotency key is in use',
     serverError: true,
   })
   cancel(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {

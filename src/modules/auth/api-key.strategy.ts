@@ -7,6 +7,7 @@ import { extractApiKeyFromRequest } from '../../common/helpers/extract-api-key';
 import { ErrorCode } from '../../common/constants/error-codes';
 import { UnauthorizedException } from '../../common/exceptions/domain.exception';
 import { AuthenticatedApiKey } from '../../common/interfaces/authenticated-user.interface';
+import { DEFAULT_API_KEY_SCOPES } from '../../common/constants/scopes';
 import { ApiKeyService } from '../developer/api-key.service';
 
 /**
@@ -79,7 +80,7 @@ export class ApiKeyStrategy extends PassportStrategy(HeaderApiKeyPassportStrateg
       scopes:
         apiKey.scopes && apiKey.scopes.length > 0
           ? apiKey.scopes
-          : (apiKey.permissions ?? []),
+          : [...DEFAULT_API_KEY_SCOPES],
       allowedIps: apiKey.allowedIps ?? [],
       isApiKey: true,
       role: UserRole.DEVELOPER,
