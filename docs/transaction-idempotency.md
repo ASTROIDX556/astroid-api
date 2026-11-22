@@ -50,3 +50,52 @@ Expired records are removed when a key is reused and by a repeatable BullMQ job
 | `IDEMPOTENCY_KEY_TTL_HOURS` | `24` | How long a completed record stays replayable. |
 | `IDEMPOTENCY_WAIT_TIMEOUT_MS` | `5000` | Bounds the in-progress lock and retry hint. |
 | `IDEMPOTENCY_POLL_INTERVAL_MS` | `100` | Base for the `Retry-After` hint. |
+
+See [`docs/configuration.md`](./configuration.md#transaction-idempotency) for the full environment reference.
+
+## Verifying with curl
+
+Send the same key twice and confirm that only one job is enqueued:
+
+```bash
+KEY="$(uuidgen)"
+PAYLOAD='{"walletId":"<wallet-id>","recipientAddress":"G...","asset":"XLM","amount":"10"}'
+
+# First call — executes the full governance pipeline.
+curl -s -i -X POST http://localhost:3000/api/v1/transactions \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: $KEY" \
+  -d "$PAYLOAD"
+# → HTTP 201, no Idempotent-Replay header.
+
+# Second call — returns the cached response without re-executing.
+curl -s -i -X POST http://localhost:3000/api/v1/transactions \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: $KEY" \
+  -d "$PAYLOAD"
+# → HTTP 201, Idempotent-Replay: true, same body and x-request-id as the first.
+```
+
+Confirm worker logs show exactly one enqueued job for both calls. Sending a
+different payload with the same key returns `409 IDEMPOTENCY_KEY_MISMATCH`.
+
+## Opting other routes in
+
+The interceptor is applied per-route, not globally, so it cannot accidentally
+affect existing endpoints. To add idempotency to another write route:
+
+```typescript
+import { UseInterceptors } from '@nestjs/common';
+import { Idempotent } from '../../common/decorators/idempotent.decorator';
+import { IdempotencyInterceptor } from '../../common/interceptors/idempotency.interceptor';
+
+@Post()
+@UseInterceptors(IdempotencyInterceptor)
+@Idempotent({ bodySchema: myZodSchema })
+async create(@Body() body: MyDto) { … }
+```
+
+The route's module must import `IdempotencyModule` from
+`src/common/idempotency/idempotency.module`.
