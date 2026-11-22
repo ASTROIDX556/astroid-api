@@ -14,6 +14,7 @@ import {
   findDuplicateRoutes,
   findOperationsMissingSecurity,
   findOperationsWithoutSuccessSchema,
+  findOperationsWithUntypedRequestBody,
   findStaleAllowlistEntries,
   findUndocumentedRoutes,
   findUnservedOperations,
@@ -222,6 +223,10 @@ describe('OpenAPI Documentation', () => {
 
   it('documents a 2xx response with a schema for every operation', () => {
     expect(findOperationsWithoutSuccessSchema(document)).toEqual([]);
+  });
+
+  it('documents a named or typed request body for every operation that accepts one', () => {
+    expect(findOperationsWithUntypedRequestBody(document)).toEqual([]);
   });
 
   it('declares a defined security scheme on every authenticated operation', () => {

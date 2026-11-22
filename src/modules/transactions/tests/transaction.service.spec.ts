@@ -468,7 +468,7 @@ describe('TransactionService - create', () => {
         principalId: 'principal_1',
         key: 'transaction-key-2',
       }),
-    ).rejects.toMatchObject({ status: 409 });
+    ).rejects.toMatchObject({ status: 422 });
     expect(transactionRepository.create).toHaveBeenCalledTimes(1);
     expect(stellarService.submitPayment).toHaveBeenCalledTimes(1);
   });

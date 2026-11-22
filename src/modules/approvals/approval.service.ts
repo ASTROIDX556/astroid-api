@@ -1,4 +1,6 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { createHash } from 'node:crypto';
 import { ApprovalDecision, Prisma, ProposalStatus } from '@prisma/client';
 import { ApprovalRepository } from './approval.repository';
 import { DecideProposalInput } from './approval.dto';
@@ -17,8 +19,21 @@ import {
 import { Paginated } from '../../common/interfaces/api-response.interface';
 import { EventBusService } from '../../events/event-bus.service';
 import { DomainEventName } from '../../events/event-names';
+import { idempotencyConfig, IdempotencyConfig } from '../../config/idempotency.config';
+import { ApprovalIdempotencyRepository } from './approval-idempotency.repository';
 
 const SORTABLE = ['createdAt', 'status', 'approvalType'];
+const DECISION_OPERATION = 'approvals.decide';
+
+type ProposalDetail = NonNullable<Awaited<ReturnType<ApprovalRepository['findById']>>>;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function sha256(value: string): string {
+  return createHash('sha256').update(value).digest('hex');
+}
 
 /**
  * Human-in-the-loop approval workflow for transactions that the pipeline flagged
@@ -32,6 +47,8 @@ export class ApprovalService {
     private readonly repository: ApprovalRepository,
     private readonly transactions: TransactionService,
     private readonly eventBus: EventBusService,
+    private readonly idempotency: ApprovalIdempotencyRepository,
+    @Optional() private readonly config?: ConfigService,
   ) {}
 
   async list(organizationId: string, query: PaginationQuery) {
@@ -52,13 +69,86 @@ export class ApprovalService {
     return proposal;
   }
 
-  /** Records a reviewer's decision and advances the proposal state machine. */
+  /**
+   * Records a reviewer's decision and advances the proposal state machine.
+   *
+   * Callers may pass an `Idempotency-Key`: the first request for a key reserves
+   * a record, and repeats with the same key/payload either replay the stored
+   * result or wait for the in-flight original. Reusing a key for different
+   * payload (including a different proposal) is rejected with 422; records
+   * expire after the configured retention window and are then treated as new.
+   */
   async decide(
     organizationId: string,
     actorId: string,
     proposalId: string,
     input: DecideProposalInput,
-  ) {
+    idempotency?: { principalId: string; key: string },
+  ): Promise<ProposalDetail> {
+    if (!idempotency) {
+      return this.applyDecision(organizationId, actorId, proposalId, input);
+    }
+
+    const { keyTtlMs, waitTimeoutMs, pollIntervalMs } = this.idempotencySettings();
+    const reservationInput = {
+      principalId: idempotency.principalId,
+      operation: DECISION_OPERATION,
+      keyHash: sha256(idempotency.key),
+      requestHash: sha256(
+        JSON.stringify({
+          proposalId,
+          decision: input.decision,
+          comment: input.comment ?? null,
+        }),
+      ),
+      expiresAt: new Date(Date.now() + keyTtlMs),
+    };
+    const reservation = await this.idempotency.reserve(reservationInput);
+
+    if (!reservation.created) {
+      if (reservation.record.requestHash !== reservationInput.requestHash) {
+        throw new DomainException(
+          ErrorCode.VALIDATION_ERROR,
+          'Idempotency-Key was already used with a different approval decision payload',
+        );
+      }
+      if (reservation.record.status === 'COMPLETED' && reservation.record.response !== null) {
+        return this.replayStoredResponse(reservation.record.response);
+      }
+
+      const replayed = await this.waitForDecisionResult(
+        reservationInput,
+        waitTimeoutMs,
+        pollIntervalMs,
+      );
+      if (replayed !== undefined) return this.replayStoredResponse(replayed);
+      throw new ConflictException(
+        'An approval decision with this Idempotency-Key is currently being processed; retry shortly',
+      );
+    }
+
+    try {
+      const result = await this.applyDecision(organizationId, actorId, proposalId, input);
+      const response = JSON.parse(JSON.stringify(result)) as Prisma.InputJsonValue;
+      await this.idempotency.complete(
+        reservation.record.id,
+        response,
+        new Date(Date.now() + keyTtlMs),
+      );
+      return result;
+    } catch (error) {
+      await this.idempotency.release(reservation.record.id);
+      throw error;
+    }
+  }
+
+  /** Applies the decision exactly once; callers handle idempotency around it. */
+  private async applyDecision(
+    organizationId: string,
+    actorId: string,
+    proposalId: string,
+    input: DecideProposalInput,
+  ): Promise<ProposalDetail> {
     const proposal = await this.getOrThrow(organizationId, proposalId);
 
     if (proposal.status !== ProposalStatus.PENDING) {
@@ -124,5 +214,41 @@ export class ApprovalService {
     );
 
     return this.getOrThrow(organizationId, proposalId);
+  }
+
+  /** Idempotency retention/wait settings, falling back to their env defaults. */
+  private idempotencySettings(): IdempotencyConfig {
+    return this.config?.get<IdempotencyConfig>('idempotency') ?? idempotencyConfig();
+  }
+
+  /** Rehydrates the response persisted on a completed idempotency record. */
+  private replayStoredResponse(response: Prisma.JsonValue): ProposalDetail {
+    return response as unknown as ProposalDetail;
+  }
+
+  /**
+   * Polls an in-flight idempotency record until it completes, the wait window
+   * elapses, or the reservation disappears (the original failed and released
+   * it). A record that expired mid-wait is re-reserved and reported as
+   * `created`; that abandoned reservation is released for the caller to retry.
+   */
+  private async waitForDecisionResult(
+    reservationInput: Parameters<ApprovalIdempotencyRepository['reserve']>[0],
+    waitTimeoutMs: number,
+    pollIntervalMs: number,
+  ): Promise<Prisma.JsonValue | undefined> {
+    const deadline = Date.now() + waitTimeoutMs;
+    while (Date.now() < deadline) {
+      await sleep(Math.min(pollIntervalMs, Math.max(1, deadline - Date.now())));
+      const current = await this.idempotency.reserve(reservationInput);
+      if (current.created) {
+        await this.idempotency.release(current.record.id);
+        return undefined;
+      }
+      if (current.record.status === 'COMPLETED' && current.record.response !== null) {
+        return current.record.response;
+      }
+    }
+    return undefined;
   }
 }

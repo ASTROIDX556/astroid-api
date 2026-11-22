@@ -8,7 +8,14 @@ export const auditListQuerySchema = z
     limit: z.coerce.number().int().min(1).max(100).default(20),
     actorId: z.string().min(1).max(128).optional(),
     action: z.string().min(1).max(120).optional(),
+    resourceType: z.string().min(1).max(120).optional(),
     resourceId: z.string().min(1).max(128).optional(),
+    outcome: z.enum(['SUCCESS', 'FAILURE']).optional(),
+    /**
+     * Free-text search over `action`, `entity`, `entityId` and `requestId`
+     * (case-insensitive substring match). Metadata payloads are not searched.
+     */
+    search: z.string().trim().min(1).max(200).optional(),
     from: z.string().datetime({ offset: true }).optional(),
     to: z.string().datetime({ offset: true }).optional(),
   })
@@ -55,6 +62,12 @@ export class AuditLogEntryDto {
 
   @ApiPropertyOptional({ type: Object, description: 'State after the action' })
   newValue?: Record<string, unknown>;
+
+  @ApiPropertyOptional({
+    description: 'Derived result of the audited operation',
+    enum: ['SUCCESS', 'FAILURE'],
+  })
+  outcome?: string;
 
   @ApiProperty({ description: 'Creation timestamp', example: '2026-01-15T10:30:00.000Z' })
   createdAt!: string;

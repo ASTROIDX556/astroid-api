@@ -15,8 +15,8 @@ describe('formatZodError', () => {
 
     const details = formatZodError(result.error);
     expect(details).toEqual([
-      { path: 'email', message: 'Invalid email' },
-      { path: 'age', message: 'Number must be greater than or equal to 18' },
+      { path: 'email', code: 'invalid_string', message: 'Invalid email' },
+      { path: 'age', code: 'too_small', message: 'Number must be greater than or equal to 18' },
     ]);
   });
 
@@ -36,11 +36,12 @@ describe('formatZodError', () => {
     const details = formatZodError(result.error);
     expect(details[0]).toEqual({
       path: 'profile.address.city',
+      code: 'too_small',
       message: 'String must contain at least 1 character(s)',
     });
   });
 
-  it('formats numeric array indices in paths', () => {
+  it('formats numeric array indices as brackets in paths', () => {
     const schema = z.object({
       tags: z.array(z.string().min(3)),
     });
@@ -51,8 +52,37 @@ describe('formatZodError', () => {
 
     const details = formatZodError(result.error);
     expect(details).toContainEqual({
-      path: 'tags.1',
+      path: 'tags[1]',
+      code: 'too_small',
       message: 'String must contain at least 3 character(s)',
+    });
+  });
+
+  it('formats nested arrays and objects without throwing on unions or refinements', () => {
+    const schema = z.object({
+      budget: z.object({
+        limits: z.array(z.object({ amount: z.number().positive() })),
+      }),
+      mode: z.union([z.literal('fast'), z.literal('safe')]),
+    });
+    const result = schema.safeParse({
+      budget: { limits: [{ amount: 1 }, { amount: -2 }] },
+      mode: 'other',
+    });
+
+    expect(result.success).toBe(false);
+    if (result.success) return;
+
+    const details = formatZodError(result.error);
+    expect(details).toContainEqual({
+      path: 'budget.limits[1].amount',
+      code: 'too_small',
+      message: 'Number must be greater than 0',
+    });
+    expect(details).toContainEqual({
+      path: 'mode',
+      code: 'invalid_union',
+      message: 'Invalid input',
     });
   });
 
@@ -70,6 +100,7 @@ describe('formatZodError', () => {
 
     const details: ValidationErrorDetail[] = formatZodError(result.error);
     expect(details[0].path).toBe('name');
+    expect(typeof details[0].code).toBe('string');
     expect(typeof details[0].message).toBe('string');
   });
 });

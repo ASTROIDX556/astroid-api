@@ -229,6 +229,69 @@ export function findOperationsWithoutSuccessSchema(document: OpenAPIObject): str
 }
 
 /**
+ * Operations that document a request body without a usable schema: no content,
+ * no schema for a media type, or a schema that is neither a `$ref` to a named
+ * component nor a self-describing type. This catches `@ApiBody({})`-style
+ * annotations that make an endpoint look documented while telling integrators
+ * nothing about the payload.
+ */
+export function findOperationsWithUntypedRequestBody(document: OpenAPIObject): string[] {
+  const findings: string[] = [];
+
+  for (const { method, path, operation } of listDocumentedOperations(document)) {
+    if (!operation.requestBody) continue;
+
+    const requestBody = resolveRequestBody(document, operation.requestBody);
+    if (!requestBody) {
+      findings.push(`${method} ${path} references an unresolved request body`);
+      continue;
+    }
+
+    const content = requestBody.content;
+    if (!content || Object.keys(content).length === 0) {
+      findings.push(`${method} ${path} documents a request body without content`);
+      continue;
+    }
+
+    for (const [mediaType, media] of Object.entries(content)) {
+      if (!media?.schema) {
+        findings.push(
+          `${method} ${path} (${mediaType}) documents a request body without a schema`,
+        );
+      } else if (!isNamedOrTypedSchema(document, media.schema)) {
+        findings.push(
+          `${method} ${path} (${mediaType}) documents an untyped request body schema`,
+        );
+      }
+    }
+  }
+
+  return sorted(findings);
+}
+
+function resolveRequestBody(document: OpenAPIObject, body: unknown): { content?: Record<string, { schema?: unknown }> } | undefined {
+  if (!body || typeof body !== 'object') return undefined;
+  const ref = (body as { $ref?: unknown }).$ref;
+  if (typeof ref === 'string') {
+    return resolvePointer(document, ref) as { content?: Record<string, { schema?: unknown }> } | undefined;
+  }
+  return body as { content?: Record<string, { schema?: unknown }> };
+}
+
+function isNamedOrTypedSchema(document: OpenAPIObject, schema: unknown): boolean {
+  if (!schema || typeof schema !== 'object') return false;
+  const candidate = schema as Record<string, unknown>;
+  const ref = candidate.$ref;
+  if (typeof ref === 'string') {
+    if (ref.startsWith('#/components/schemas/')) return true;
+    return resolvePointer(document, ref) !== undefined;
+  }
+  return ['type', 'properties', 'additionalProperties', 'items', 'oneOf', 'anyOf', 'allOf', 'enum', 'const'].some(
+    (key) => candidate[key] !== undefined,
+  );
+}
+
+/**
  * Documented operations of authenticated routes that declare no security
  * requirement, or one naming a scheme the document does not define.
  */

@@ -33,10 +33,18 @@ describe('audit cursor', () => {
       auditListQuerySchema.safeParse({
         actorId: 'user-1',
         action: 'TRANSFER',
+        resourceType: 'transaction',
         resourceId: 'tx-1',
+        outcome: 'FAILURE',
+        search: 'transfer',
         from: '2026-09-29T12:00:00.000Z',
         to: '2026-09-29T12:00:00.000Z',
       }).success,
     ).toBe(true);
+  });
+
+  it('rejects unknown query parameters and unsupported outcome values', () => {
+    expect(auditListQuerySchema.safeParse({ unknown: 'value' }).success).toBe(false);
+    expect(auditListQuerySchema.safeParse({ outcome: 'MAYBE' }).success).toBe(false);
   });
 });

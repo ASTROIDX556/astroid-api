@@ -15,6 +15,7 @@ export interface CreateAuditLogData {
   ipAddress?: string | null;
   device?: string | null;
   requestId?: string | null;
+  outcome?: string | null;
   sourceEventId?: string | null;
   createdAt?: Date;
   previousHash?: string | null;
@@ -38,6 +39,7 @@ export class AuditRepository {
       ipAddress: data.ipAddress ?? null,
       device: data.device ?? null,
       requestId: data.requestId ?? null,
+      outcome: data.outcome ?? null,
       sourceEventId: data.sourceEventId ?? null,
       previousHash: data.previousHash ?? null,
       hash: data.hash ?? null,

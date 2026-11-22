@@ -13,6 +13,34 @@ type ExportedAuditLog = Prisma.AuditLogGetPayload<{
   include: { user: { select: { id: true; email: true; name: true } } };
 }>;
 
+export type AuditOutcome = 'SUCCESS' | 'FAILURE';
+
+/**
+ * Derives the outcome stored on an audit row from its payload or action name.
+ * Records written by the structured audit interceptor carry `success`; domain
+ * events that end in `.failed` (or the `policy.violated` event) are failures.
+ * Anything else has no definitive outcome and stays null.
+ */
+export function deriveAuditOutcome(input: {
+  action: string;
+  newValue?: Prisma.InputJsonValue;
+}): AuditOutcome | null {
+  if (input.newValue && typeof input.newValue === 'object' && !Array.isArray(input.newValue)) {
+    const payload = input.newValue as Record<string, unknown>;
+    if (typeof payload.success === 'boolean') {
+      return payload.success ? 'SUCCESS' : 'FAILURE';
+    }
+    if (payload.outcome === 'SUCCESS' || payload.outcome === 'FAILURE') {
+      return payload.outcome;
+    }
+  }
+
+  if (input.action.endsWith('.failed') || input.action === 'policy.violated') {
+    return 'FAILURE';
+  }
+  return null;
+}
+
 /**
  * Writes and queries the immutable audit trail. Records Who / When / Where /
  * Why / Old / New for every important action. Never updates or deletes.
@@ -53,6 +81,7 @@ export class AuditService {
     return this.repository.create({
       ...safeData,
       requestId: data.requestId ?? null,
+      outcome: deriveAuditOutcome(safeData),
       previousHash: hashResult.previousHash,
       hash: hashResult.hash,
     });
@@ -70,7 +99,12 @@ export class AuditService {
     const last = items[items.length - 1];
     const nextCursor = hasNext && last ? encodeAuditCursor({ createdAt: last.createdAt, id: last.id }) : null;
 
-    return new CursorPaginated(items, { limit: query.limit, hasNext, nextCursor });
+    return new CursorPaginated(items, {
+      limit: query.limit,
+      hasNext,
+      hasMore: hasNext,
+      nextCursor,
+    });
   }
 
   async export(organizationId: string, query: ExportAuditLogsQuery) {
@@ -153,7 +187,10 @@ export class AuditService {
       endDate?: string;
       actorId?: string;
       action?: string;
+      resourceType?: string;
       resourceId?: string;
+      outcome?: string;
+      search?: string;
       from?: string;
       to?: string;
     },
@@ -165,7 +202,22 @@ export class AuditService {
     if (query.actorId) where.userId = query.actorId;
     if (query.actionType) where.action = query.actionType;
     if (query.action) where.action = query.action;
+    if (query.resourceType) where.entity = query.resourceType;
     if (query.resourceId) where.entityId = query.resourceId;
+    if (query.outcome) where.outcome = query.outcome;
+
+    // Free-text search is limited to the first-class, human-readable columns
+    // documented on the query DTO; JSON payloads are deliberately not scanned.
+    if (query.search) {
+      andConditions.push({
+        OR: [
+          { action: { contains: query.search, mode: 'insensitive' } },
+          { entity: { contains: query.search, mode: 'insensitive' } },
+          { entityId: { contains: query.search, mode: 'insensitive' } },
+          { requestId: { contains: query.search, mode: 'insensitive' } },
+        ],
+      });
+    }
 
     if (query.agentId) {
       andConditions.push({

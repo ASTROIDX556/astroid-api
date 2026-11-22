@@ -147,7 +147,8 @@ export class TransactionService {
 
     if (!reservation.created) {
       if (reservation.record.requestHash !== requestHash) {
-        throw new ConflictException(
+        throw new DomainException(
+          ErrorCode.VALIDATION_ERROR,
           'Idempotency-Key was already used with a different transaction payload',
         );
       }
