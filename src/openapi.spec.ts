@@ -1,25 +1,56 @@
+import { readdirSync } from 'node:fs';
+import { join, relative, sep } from 'node:path';
 import { describe, expect, it, beforeAll, afterAll, vi } from 'vitest';
 import { Test, TestingModule } from '@nestjs/testing';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { PrismaService } from './database/prisma.service';
 import { AppModule } from './app.module';
-import { INestApplication } from '@nestjs/common';
+import { INestApplication, Type } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { OpenAPIObject } from '@nestjs/swagger/dist/interfaces/open-api-spec.interface';
 import { GLOBAL_PREFIX_EXCLUDED_ROUTES } from './common/constants/global-prefix';
+import { AiController } from './modules/ai/ai.controller';
+import { AgentController } from './modules/agents/agent.controller';
+import { AnalyticsController } from './modules/analytics/analytics.controller';
+import { ApprovalController } from './modules/approvals/approval.controller';
+import { AuditController } from './modules/audit/audit.controller';
+import { AuthController } from './modules/auth/auth.controller';
+import { PasskeyController } from './modules/auth/controllers/passkey.controller';
+import { BudgetController } from './modules/budgets/budget.controller';
+import { DlqController } from './modules/admin/dlq.controller';
+import { QueueManagementController } from './modules/admin/queue-management.controller';
+import { DeadLetterController } from './modules/dead-letter/dead-letter.controller';
+import { ApiKeyController } from './modules/developer/api-key.controller';
+import { HealthController } from './modules/health/health.controller';
+import { MemoryController } from './modules/memory/memory.controller';
+import { MetricsController } from './modules/metrics/metrics.controller';
+import { NotificationController } from './modules/notifications/notification.controller';
+import { OrganizationController } from './modules/organizations/organization.controller';
+import { PolicyController } from './modules/policies/policy.controller';
+import { RiskController } from './modules/risk/risk.controller';
+import { StellarController } from './modules/stellar/stellar.controller';
+import { TransactionController } from './modules/transactions/transaction.controller';
+import { WalletController } from './modules/wallets/wallet.controller';
+import { WebhookController } from './modules/webhooks/webhook.controller';
+import { WebhookIngressController } from './modules/webhooks/webhook-ingress.controller';
 import {
   AllowlistedRoute,
   RegisteredRoute,
   collectRefs,
   findDanglingRefs,
   findDuplicateRoutes,
+  findMissingDeclaredSchemas,
+  findMissingRequestSchemas,
   findOperationsMissingSecurity,
+  findOperationsWithoutResponses,
   findOperationsWithoutSuccessSchema,
+  findOperationsWithoutSummary,
   findStaleAllowlistEntries,
   findUndocumentedRoutes,
   findUnservedOperations,
   listDocumentedOperations,
   listRegisteredRoutes,
+  routeHandlers,
   routeKey,
 } from './common/openapi/openapi-coverage';
 
@@ -76,10 +107,58 @@ process.env.AI_PROVIDER_KEY = 'test-key';
 process.env.AI_BASE_URL = 'https://integrate.api.nvidia.com/v1';
 process.env.AI_MODEL = 'meta/llama-3.1-70b-instruct';
 
+const MODULES_DIR = join(process.cwd(), 'src', 'modules');
+
+const MODULE_CONTROLLERS: ReadonlyArray<{ file: string; controller: Type<unknown> }> = [
+  { file: 'admin/dlq.controller.ts', controller: DlqController },
+  { file: 'admin/queue-management.controller.ts', controller: QueueManagementController },
+  { file: 'ai/ai.controller.ts', controller: AiController },
+  { file: 'agents/agent.controller.ts', controller: AgentController },
+  { file: 'analytics/analytics.controller.ts', controller: AnalyticsController },
+  { file: 'approvals/approval.controller.ts', controller: ApprovalController },
+  { file: 'audit/audit.controller.ts', controller: AuditController },
+  { file: 'auth/auth.controller.ts', controller: AuthController },
+  { file: 'auth/controllers/passkey.controller.ts', controller: PasskeyController },
+  { file: 'budgets/budget.controller.ts', controller: BudgetController },
+  { file: 'dead-letter/dead-letter.controller.ts', controller: DeadLetterController },
+  { file: 'developer/api-key.controller.ts', controller: ApiKeyController },
+  { file: 'health/health.controller.ts', controller: HealthController },
+  { file: 'memory/memory.controller.ts', controller: MemoryController },
+  { file: 'metrics/metrics.controller.ts', controller: MetricsController },
+  { file: 'notifications/notification.controller.ts', controller: NotificationController },
+  { file: 'organizations/organization.controller.ts', controller: OrganizationController },
+  { file: 'policies/policy.controller.ts', controller: PolicyController },
+  { file: 'risk/risk.controller.ts', controller: RiskController },
+  { file: 'stellar/stellar.controller.ts', controller: StellarController },
+  { file: 'transactions/transaction.controller.ts', controller: TransactionController },
+  { file: 'wallets/wallet.controller.ts', controller: WalletController },
+  { file: 'webhooks/webhook-ingress.controller.ts', controller: WebhookIngressController },
+  { file: 'webhooks/webhook.controller.ts', controller: WebhookController },
+];
+
+function controllerFiles(directory: string = MODULES_DIR): string[] {
+  return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) return controllerFiles(path);
+    if (!entry.name.endsWith('.controller.ts')) return [];
+    return [relative(MODULES_DIR, path).split(sep).join('/')];
+  });
+}
+
+function operationLabel(
+  operation: { method: string; path: string },
+  handlers: ReadonlyMap<string, string>,
+): string {
+  const key = routeKey(operation);
+  const handler = handlers.get(key);
+  return handler ? `${key} (${handler})` : key;
+}
+
 /**
  * Routes deliberately left out of the OpenAPI document. Every entry must still
  * be served and still be undocumented, or the allowlist check fails, so an entry
- * cannot outlive its reason.
+ * cannot outlive its reason. Health probes are intentionally documented because
+ * orchestrators consume their contract, so they are not allowlisted here.
  */
 const INTERNAL_ROUTES: AllowlistedRoute[] = [
   {
@@ -122,6 +201,7 @@ describe('OpenAPI Documentation', () => {
   let moduleFixture: TestingModule;
   let document: OpenAPIObject;
   let routes: RegisteredRoute[];
+  let handlers: Map<string, string>;
 
   beforeAll(async () => {
     moduleFixture = await Test.createTestingModule({
@@ -163,6 +243,7 @@ describe('OpenAPI Documentation', () => {
 
     document = SwaggerModule.createDocument(app, swaggerConfig);
     routes = listRegisteredRoutes(app);
+    handlers = routeHandlers(routes);
   }, 60_000);
 
   afterAll(async () => {
@@ -194,6 +275,13 @@ describe('OpenAPI Documentation', () => {
     expect(routes.length).toBeGreaterThan(100);
     expect(routes.map(routeKey)).toEqual(
       expect.arrayContaining(['GET /health/live', 'GET /api/v1/agents/{id}']),
+    );
+  });
+
+  it('enumerates every controller in src/modules', () => {
+    expect(controllerFiles().sort()).toEqual(MODULE_CONTROLLERS.map(({ file }) => file).sort());
+    expect([...new Set(routes.map((route) => route.handler.split('.')[0]))].sort()).toEqual(
+      MODULE_CONTROLLERS.map(({ controller }) => controller.name).sort(),
     );
   });
 
@@ -235,15 +323,24 @@ describe('OpenAPI Documentation', () => {
     ).toMatchObject({ required: false });
   });
 
-  it('gives every operation a summary or description', () => {
-    const offenders = listDocumentedOperations(document)
-      .filter(({ operation }) => !(operation.summary || operation.description))
-      .map(routeKey);
-    expect(offenders).toEqual([]);
+  it('gives every documented operation a non-empty summary', () => {
+    expect(findOperationsWithoutSummary(document, handlers)).toEqual([]);
+  });
+
+  it('documents at least one response for every operation', () => {
+    expect(findOperationsWithoutResponses(document, handlers)).toEqual([]);
   });
 
   it('documents a 2xx response with a schema for every operation', () => {
-    expect(findOperationsWithoutSuccessSchema(document)).toEqual([]);
+    expect(findOperationsWithoutSuccessSchema(document, handlers)).toEqual([]);
+  });
+
+  it('documents a named request DTO schema for every route with a request body', () => {
+    expect(findMissingRequestSchemas(routes, document, INTERNAL_ROUTES, handlers)).toEqual([]);
+  });
+
+  it('resolves every response and request DTO schema declared by a handler', () => {
+    expect(findMissingDeclaredSchemas(routes, document, handlers)).toEqual([]);
   });
 
   it('documents cursor pagination inputs and meta on the paginated list endpoints', () => {
@@ -311,7 +408,7 @@ describe('OpenAPI Documentation', () => {
   });
 
   it('declares a defined security scheme on every authenticated operation', () => {
-    expect(findOperationsMissingSecurity(routes, document)).toEqual([]);
+    expect(findOperationsMissingSecurity(routes, document, handlers)).toEqual([]);
   });
 
   it('should have security schemes defined', () => {
@@ -323,14 +420,14 @@ describe('OpenAPI Documentation', () => {
   it('should have tags for all endpoints', () => {
     const offenders = listDocumentedOperations(document)
       .filter(({ operation }) => !Array.isArray(operation.tags) || operation.tags.length === 0)
-      .map(routeKey);
+      .map((operation) => operationLabel(operation, handlers));
     expect(offenders).toEqual([]);
   });
 
   // ── Documentation validity ───────────────────────────────────────────────
 
   it('resolves every schema reference (no missing type definitions)', () => {
-    expect(findDanglingRefs(document)).toEqual([]);
+    expect(findDanglingRefs(document, handlers)).toEqual([]);
   });
 
   it('documents every property of every schema', () => {
@@ -358,15 +455,16 @@ describe('OpenAPI Documentation', () => {
       const errorResponses = Object.entries(operation.responses).filter(([status]) =>
         status.startsWith('4') || status.startsWith('5'),
       );
+      const label = operationLabel({ method, path }, handlers);
       if (LIVENESS_PROBES.includes(path)) {
-        expect(errorResponses.length, `${method} ${path}`).toBe(0);
+        expect(errorResponses.length, label).toBe(0);
         continue;
       }
-      expect(errorResponses.length, `${method} ${path}`).toBeGreaterThan(0);
+      expect(errorResponses.length, label).toBeGreaterThan(0);
 
       for (const [status, response] of errorResponses) {
         const content = (response as { content?: Record<string, unknown> }).content;
-        expect(content, `${method} ${path} (${status})`).toBeDefined();
+        expect(content, `${label} (${status})`).toBeDefined();
       }
     }
   });
