@@ -172,6 +172,8 @@ export class TransactionController {
 
   @Post(':id/cancel')
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.FINANCE)
+  @UseInterceptors(IdempotencyInterceptor)
+  @Idempotent()
   @AuditAction('TRANSFER_CANCELLED')
   @ApiOperation({
     summary: 'Cancel a draft or pending transaction',
@@ -180,12 +182,17 @@ export class TransactionController {
       'Completed or already cancelled transactions cannot be cancelled.',
   })
   @ApiParam({ name: 'id', description: 'Transaction UUID', example: '018f0a1b-...' })
+  @ApiHeader({
+    name: 'Idempotency-Key',
+    required: false,
+    description: 'Optional key for replay-safe transaction cancellation (1-128 allowed ASCII characters).',
+  })
   @ApiEnvelope(TransactionResponseDto, { description: 'Transaction cancelled successfully' })
   @ApiErrorResponses({
     unauthorized: true,
     forbidden: true,
     notFound: true,
-    conflict: 'Transaction cannot be cancelled (wrong status)',
+    conflict: 'Transaction cannot be cancelled (wrong status) or the idempotency key is in use',
     serverError: true,
   })
   cancel(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {

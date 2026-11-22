@@ -28,7 +28,7 @@ export interface IdempotencyHandle {
   fail(): Promise<void>;
 }
 
-/** The same key was reused with a different request body (HTTP 422). */
+/** The same key was reused with a different request body (HTTP 409). */
 export class IdempotencyMismatchError extends Error {
   constructor() {
     super('Idempotency-Key was already used with a different request body');
