@@ -35,9 +35,10 @@ end
 return 0
 `;
 
-/** Identity of an idempotency record: principal + route + key digest. */
+/** Identity of an idempotency record: credential scope + route + key digest. */
 export interface IdempotencyIdentity {
   principalId: string;
+  scope: string;
   route: string;
   keyHash: string;
 }
@@ -51,6 +52,7 @@ export interface IdempotentResponse {
 
 export interface ReserveIdempotencyInput {
   principalId: string;
+  scope?: string;
   route: string;
   key: string;
   requestFingerprint: string;
@@ -97,10 +99,10 @@ function isUniqueConstraintError(error: unknown): boolean {
  * - **Prisma** holds the durable `idempotency_records` row: the request hash,
  *   the completed response and the original request id, replayable for the
  *   configured TTL. The composite unique constraint on
- *   `(principalId, route, keyHash)` arbitrates the winner across every replica.
+ *   `(scope, route, keyHash)` arbitrates the winner across every replica.
  *
- * Keys are scoped by authenticated principal and route, never by key alone, so
- * two principals (or two routes) can use the same opaque key independently.
+ * Keys are scoped by credential, principal and route, never by key alone, so
+ * two credentials (or two routes) can use the same opaque key independently.
  * The raw key is never stored — only its SHA-256 digest.
  */
 @Injectable()
@@ -129,6 +131,7 @@ export class IdempotencyService {
     const requestHash = computeRequestFingerprint({ body: scope.requestBody });
     const identity: IdempotencyIdentity = {
       principalId: scope.principalId,
+      scope: scope.scope ?? scope.principalId,
       route: scope.route,
       keyHash,
     };
@@ -153,6 +156,7 @@ export class IdempotencyService {
 
     const reservation = await this.reserve({
       principalId: identity.principalId,
+      scope: identity.scope,
       route: identity.route,
       key: scope.key,
       requestFingerprint: requestHash,
@@ -195,6 +199,7 @@ export class IdempotencyService {
     const now = input.now ?? new Date();
     const identity: IdempotencyIdentity = {
       principalId: input.principalId,
+      scope: input.scope ?? input.principalId,
       route: input.route,
       keyHash: hashIdempotencyKey(input.key),
     };
@@ -206,6 +211,7 @@ export class IdempotencyService {
         const record = await this.prisma.idempotencyRecord.create({
           data: {
             principalId: identity.principalId,
+            scope: identity.scope,
             route: identity.route,
             keyHash: identity.keyHash,
             requestHash: input.requestFingerprint,
@@ -341,7 +347,7 @@ export class IdempotencyService {
    * Applies the metadata of a replayed response to the current request, so the
    * success envelope returns the original status code and request id.
    */
-  replay<T>(response: IdempotentResponse): T {
+  replay<T>(response: StoredIdempotentResponse): T {
     RequestContext.setData(IDEMPOTENT_REPLAY_STATUS, response.statusCode);
     if (response.requestId) {
       RequestContext.setData(IDEMPOTENT_REPLAY_REQUEST_ID, response.requestId);
@@ -393,8 +399,8 @@ export class IdempotencyService {
   private findRecord(identity: IdempotencyIdentity): Promise<IdempotencyRecord | null> {
     return this.prisma.idempotencyRecord.findUnique({
       where: {
-        principalId_route_keyHash: {
-          principalId: identity.principalId,
+        scope_route_keyHash: {
+          scope: identity.scope,
           route: identity.route,
           keyHash: identity.keyHash,
         },
@@ -430,7 +436,7 @@ export class IdempotencyService {
   }
 
   private lockKey(identity: IdempotencyIdentity): string {
-    return `idempotency:lock:${identity.principalId}:${identity.route}:${identity.keyHash}`;
+    return `idempotency:lock:${identity.scope}:${identity.route}:${identity.keyHash}`;
   }
 
   private async acquireLock(
