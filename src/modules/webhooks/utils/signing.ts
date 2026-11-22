@@ -41,33 +41,29 @@ export function formatWebhookSignatureHeader(timestamp: string, v1Digest: string
   return `t=${timestamp},v1=${hex}`;
 }
 
-export function buildWebhookSignatureInput(
-  timestamp: string,
-  eventId: string,
-  payload: Buffer,
-): Buffer {
-  return Buffer.concat([
-    Buffer.from(`${WEBHOOK_SIGNATURE_VERSION}.${timestamp}.${eventId}.`, 'utf8'),
-    payload,
-  ]);
+/**
+ * Builds the canonical signed message: `${timestamp}.${rawBody}` — the
+ * Stripe-style scheme the documented header `X-Astroid-Signature:
+ * t=<unix-seconds>,v1=<hex-hmac>` is defined over.
+ */
+export function buildWebhookSignatureInput(timestamp: string, payload: Buffer): Buffer {
+  return Buffer.concat([Buffer.from(`${timestamp}.`, 'utf8'), payload]);
 }
 
-export function signWebhookPayload(
-  secret: string,
-  timestamp: string,
-  eventId: string,
-  payload: Buffer,
-): string {
+/**
+ * Signs the raw delivery bytes with the endpoint secret:
+ * returns `t=<unix-seconds>,v1=<hex-hmac>`.
+ */
+export function signWebhookPayload(secret: string, timestamp: string, payload: Buffer): string {
   const digest = createHmac('sha256', secret)
-    .update(buildWebhookSignatureInput(timestamp, eventId, payload))
+    .update(buildWebhookSignatureInput(timestamp, payload))
     .digest('hex');
-  return `${WEBHOOK_SIGNATURE_VERSION}=${digest}`;
+  return formatWebhookSignatureHeader(timestamp, digest);
 }
 
 export function verifyWebhookSignature(
   secret: string,
   timestamp: string,
-  eventId: string,
   payload: Buffer,
   signature: string,
 ): boolean {
@@ -76,10 +72,13 @@ export function verifyWebhookSignature(
   const v1 = parsed.v1;
   const effectiveTimestamp = parsed.timestamp ?? timestamp;
 
-  if (!/^\d{1,12}$/.test(effectiveTimestamp) || !eventId || eventId.length > 256) return false;
+  if (!/^\d{1,12}$/.test(effectiveTimestamp)) return false;
   if (!v1 || !/^[0-9a-fA-F]{64}$/.test(v1)) return false;
 
-  const expected = Buffer.from(signWebhookPayload(secret, effectiveTimestamp, eventId, payload).slice(3), 'hex');
+  const expected = Buffer.from(
+    createHmac('sha256', secret).update(buildWebhookSignatureInput(effectiveTimestamp, payload)).digest('hex'),
+    'hex',
+  );
   const received = Buffer.from(v1, 'hex');
   return expected.length === received.length && timingSafeEqual(expected, received);
 }
@@ -89,7 +88,6 @@ export interface WebhookVerificationResult {
   reason?:
     | 'MISSING_SECRET'
     | 'MISSING_SIGNATURE'
-    | 'MISSING_EVENT_ID'
     | 'MISSING_PAYLOAD'
     | 'MALFORMED_TIMESTAMP'
     | 'MALFORMED_SIGNATURE'
@@ -101,17 +99,15 @@ export interface WebhookVerificationResult {
  * Verifies an incoming webhook delivery with replay attack protection using a configurable tolerance window.
  *
  * @param secret The endpoint signing secret
- * @param timestamp The Unix timestamp in seconds (from header or signature)
- * @param eventId The event identifier
+ * @param timestamp The Unix timestamp in seconds (from the `t` field of the signature header)
  * @param payload The raw request body Buffer (unmodified, non-re-serialized)
- * @param signature The signature header (supports `v1=<hex>` or `t=<timestamp>,v1=<hex>`)
+ * @param signature The signature header (`t=<unix-seconds>,v1=<hex-hmac>`)
  * @param toleranceSeconds Replay attack window in seconds (default: 300 / 5 minutes)
  * @param nowSeconds Current Unix epoch in seconds (optional, for testing)
  */
 export function verifyWebhookWithTolerance(
   secret: string,
   timestamp: string | undefined,
-  eventId: string | undefined,
   payload: Buffer | undefined,
   signature: string | undefined,
   toleranceSeconds: number = DEFAULT_WEBHOOK_TOLERANCE_SECONDS,
@@ -119,7 +115,6 @@ export function verifyWebhookWithTolerance(
 ): WebhookVerificationResult {
   if (!secret) return { valid: false, reason: 'MISSING_SECRET' };
   if (!signature) return { valid: false, reason: 'MISSING_SIGNATURE' };
-  if (!eventId) return { valid: false, reason: 'MISSING_EVENT_ID' };
   if (!payload || !Buffer.isBuffer(payload)) return { valid: false, reason: 'MISSING_PAYLOAD' };
 
   const parsed = parseWebhookSignatureHeader(signature);
@@ -139,7 +134,7 @@ export function verifyWebhookWithTolerance(
     return { valid: false, reason: 'TIMESTAMP_EXPIRED' };
   }
 
-  const isValid = verifyWebhookSignature(secret, effectiveTimestamp, eventId, payload, signature);
+  const isValid = verifyWebhookSignature(secret, effectiveTimestamp, payload, signature);
   if (!isValid) {
     return { valid: false, reason: 'SIGNATURE_MISMATCH' };
   }

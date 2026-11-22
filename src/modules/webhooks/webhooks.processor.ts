@@ -298,7 +298,7 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
         const timestamp = Math.floor(Date.now() / 1000).toString();
         const subscription = await this.resolveSubscription(webhookId, organizationId);
         endpoint = subscription.url;
-        const signature = signWebhookPayload(subscription.secret, timestamp, eventId, body);
+        const signature = signWebhookPayload(subscription.secret, timestamp, body);
 
         const response = await this.destinationPolicy.post(endpoint, {
           headers: {

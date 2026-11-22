@@ -32,10 +32,15 @@ export interface SplitWebhookDeliveryResult {
 
 @Injectable()
 export class SplitWebhookDispatcherService {
+  /**
+   * Signs the raw delivery bytes: `t=<unix-seconds>,v1=<hex-hmac>` where the
+   * HMAC-SHA256 is computed over `${timestamp}.${rawBody}` — the documented
+   * Stripe-style scheme shared by every Astroid webhook delivery.
+   */
   signPayload(rawBody: string, secret: string, timestamp: string): string {
     const hmac = createHmac('sha256', secret);
     hmac.update(`${timestamp}.${rawBody}`);
-    return `sha256=${hmac.digest('hex')}`;
+    return `t=${timestamp},v1=${hmac.digest('hex')}`;
   }
 
   async dispatchSplitEvent(
@@ -51,10 +56,12 @@ export class SplitWebhookDispatcherService {
       (sub) => sub.active && sub.events.includes(event.eventType),
     );
     const body = JSON.stringify(event);
+    // The canonical signature header carries the signing time as Unix seconds.
+    const timestamp = String(Math.floor(new Date(event.occurredAt).getTime() / 1000));
 
     const results = await Promise.all(
       eligible.map(async (sub): Promise<SplitWebhookDeliveryResult> => {
-        const signature = this.signPayload(body, sub.secret, event.occurredAt);
+        const signature = this.signPayload(body, sub.secret, timestamp);
         try {
           const response = await transport(
             sub.url,

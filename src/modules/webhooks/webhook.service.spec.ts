@@ -107,7 +107,7 @@ describe('Webhook signing & delivery', () => {
       await processor.process(job);
       const [, opts] = fetchSpy.mock.calls[0];
       expect(opts.headers['x-astroid-signature']).toBeDefined();
-      expect(opts.headers['x-astroid-signature']).toMatch(/^v1=[0-9a-f]{64}$/);
+      expect(opts.headers['x-astroid-signature']).toMatch(/^t=\d+,v1=[0-9a-f]{64}$/);
       expect(opts.headers['x-astroid-signature-version']).toBe('v1');
       expect(opts.headers['x-astroid-delivery']).toBe(EVENT_ID);
       expect(opts.headers['x-astroid-event']).toBe('budget.exceeded');
@@ -133,7 +133,7 @@ describe('Webhook signing & delivery', () => {
       await processor.process(job);
       const [, opts] = fetchSpy.mock.calls[0];
       const body: Buffer = Buffer.from(opts.body);
-      expect(opts.headers['x-astroid-signature']).toMatch(/^v1=[0-9a-f]{64}$/);
+      expect(opts.headers['x-astroid-signature']).toMatch(/^t=\d+,v1=[0-9a-f]{64}$/);
       expect(opts.headers['x-astroid-signature-version']).toBe('v1');
       expect(body.toString('utf8')).toBe(JSON.stringify(payload));
     });
@@ -188,7 +188,7 @@ describe('Webhook signing & delivery', () => {
         select: { secret: true, url: true, enabled: true },
       });
       expect(job.data).not.toHaveProperty('secret');
-      expect(opts.headers['x-astroid-signature']).toMatch(/^v1=[0-9a-f]{64}$/);
+      expect(opts.headers['x-astroid-signature']).toMatch(/^t=\d+,v1=[0-9a-f]{64}$/);
     });
 
     it('throws UnrecoverableError for non-transient 4xx and does not retry', async () => {
@@ -399,7 +399,6 @@ describe('Webhook signing & delivery', () => {
         verifyWebhookSignature(
           plainSecret,
           callOpts.headers['x-astroid-timestamp'],
-          'evt-enc',
           Buffer.from(callOpts.body),
           callOpts.headers['x-astroid-signature'],
         ),

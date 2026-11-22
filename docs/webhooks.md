@@ -1,14 +1,14 @@
 # Webhook Signatures & Security Guide
 
-Astroid signs all outgoing webhook events with an HMAC-SHA256 signature to guarantee payload authenticity, integrity, and replay attack protection. Integrators hosting webhook endpoints can cryptographically verify that every incoming HTTP request originated from Astroid and has not been altered or delayed in transit.
+Astroid signs every outgoing webhook event with an HMAC-SHA256 signature to guarantee payload authenticity, integrity, and replay attack protection. Integrators hosting webhook endpoints can cryptographically verify that every incoming HTTP request originated from Astroid and has not been altered or delayed in transit.
 
 ---
 
 ## 1. Security Architecture & Key Principles
 
-1. **HMAC-SHA256 Signing**: Every delivery is signed using an endpoint-specific signing secret.
-2. **Encrypted at Rest**: Webhook signing secrets are encrypted with AES-256-GCM in Astroid's database. Plaintext secrets are revealed **only once** upon creation or rotation (`whsec_...`) and can never be re-read.
-3. **Replay Protection**: Deliveries carry a Unix timestamp (`X-Astroid-Timestamp` or `t=<timestamp>`). Consumers are expected to enforce a **5-minute (300 seconds)** tolerance window to prevent replay of intercepted payloads.
+1. **HMAC-SHA256 Signing**: Every delivery is signed using an endpoint-specific signing secret (`whsec_...`).
+2. **Encrypted at Rest**: Webhook signing secrets are encrypted with AES-256-GCM in Astroid's database. Plaintext secrets are revealed **only once** upon creation or rotation and can never be re-read.
+3. **Replay Protection**: Deliveries carry a Unix timestamp (`t=<unix-seconds>` inside the `X-Astroid-Signature` header). Consumers are expected to enforce a **5-minute (300 seconds)** tolerance window to prevent replay of intercepted payloads.
 4. **Fresh Timestamps on Retries**: Signing occurs in the delivery execution path. Each retry computes a fresh timestamp and a corresponding valid signature.
 5. **Exact Raw Bytes**: The signature is computed directly over the raw, unparsed request body bytes (`Buffer`), guaranteeing byte-for-byte fidelity without formatting or JSON serialization differences.
 
@@ -20,7 +20,7 @@ Every outgoing webhook POST request includes the following standard headers:
 
 | Header Name | Example | Description |
 |---|---|---|
-| `X-Astroid-Signature` | `v1=7f83b1657ff1fc53b92dc18148a1d65dfc2d4b1fa3d677284addd200126d9069` | HMAC-SHA256 hex digest prefixed by the signature scheme version. Supports versioned formats including `t=<unix-seconds>,v1=<hex>`. |
+| `X-Astroid-Signature` | `t=1700000000,v1=7f83b1657ff1fc53b92dc18148a1d65dfc2d4b1fa3d677284addd200126d9069` | The signature: `t=<unix-seconds>` is the signing timestamp and `v1=<hex-hmac>` is the HMAC-SHA256 hex digest. Matches the widely used Stripe-style scheme. |
 | `X-Astroid-Timestamp` | `1700000000` | Unix epoch time in seconds when the request was signed. |
 | `X-Astroid-Signature-Version` | `v1` | Signature scheme version (currently `v1`). |
 | `X-Astroid-Event` | `transaction.completed` | Name of the domain event being delivered. |
@@ -33,17 +33,19 @@ Every outgoing webhook POST request includes the following standard headers:
 
 ## 3. Signature Algorithm
 
-The signature is computed over a concatenated byte buffer composed of the signature scheme version, the timestamp, the event ID, and the exact raw request body bytes:
+The signature is computed over the canonical signed message:
 
 ```
-v1.<timestamp>.<eventId>.<raw_body_bytes>
+${t}.${raw_body_bytes}
 ```
+
+That is, the decimal Unix timestamp string `t` (the same value as in the header), followed by a literal `.`, followed by the exact raw request body bytes.
 
 ### Steps to Compute:
-1. Format prefix: `v1.${timestamp}.${eventId}.` encoded as UTF-8 bytes.
-2. Concatenate the prefix bytes with the exact raw body bytes.
+1. Format the prefix: the ASCII bytes of `${t}.` (e.g., `1700000000.`).
+2. Concatenate those prefix bytes with the exact raw body bytes (no reformatting, no JSON serialization).
 3. Compute `HMAC-SHA256` using the endpoint's signing secret (`whsec_...`).
-4. Hex-encode the resulting digest: `v1=<hex_digest>`.
+4. Hex-encode the resulting digest and format the header as `t=${t},v1=${hex}`.
 
 ---
 
@@ -52,17 +54,16 @@ v1.<timestamp>.<eventId>.<raw_body_bytes>
 To securely verify an incoming delivery:
 
 1. **Extract Headers**:
-   - Extract `X-Astroid-Signature` (or the versioned `v1` hash and timestamp).
-   - Extract `X-Astroid-Timestamp` and `X-Astroid-Event-Id`.
+   - Extract `X-Astroid-Signature` → parse it into `t` (the Unix timestamp) and `v1` (the hex digest).
+   - Extract the raw request body bytes before any JSON parsing.
 2. **Validate Timestamp (Replay Defense)**:
-   - Check that the timestamp is a valid integer.
-   - Calculate `Math.abs(currentTime - timestamp)`. If the absolute difference exceeds **300 seconds (5 minutes)**, reject the request (HTTP 401 or 400).
-3. **Verify Raw Body**:
-   - Do NOT parse JSON before verifying the signature. Formatting differences (whitespace, key ordering, float serialization) will cause signature mismatches.
-4. **Compute Expected HMAC**:
-   - Compute `HMAC-SHA256(secret, Buffer.concat([Buffer.from("v1." + timestamp + "." + eventId + "."), rawBody]))`.
-5. **Constant-Time Comparison**:
-   - Compare the expected digest with the received digest using a timing-safe equality function (e.g., `crypto.timingSafeEqual`) to mitigate timing attacks.
+   - Check that `t` is a valid integer (digits only).
+   - Compute `Math.abs(currentTime - t)`. If the absolute difference exceeds **300 seconds (5 minutes)**, reject the request (HTTP 401 or 400).
+3. **Verify the Signature**:
+   - Compute the expected digest: `HMAC-SHA256(secret, Buffer.concat([Buffer.from(`${t}.`), rawBody]))` and hex-encode it.
+   - Do NOT parse the JSON payload before verifying — formatting differences (whitespace, key ordering, float serialization) will cause signature mismatches.
+4. **Constant-Time Comparison**:
+   - Compare the expected digest with the received `v1` digest using a timing-safe equality function (e.g., `crypto.timingSafeEqual`), after checking that both are 64-character lowercase hex strings of equal length, to mitigate timing attacks.
 
 ---
 
@@ -76,7 +77,7 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 
 const app = express();
 const WEBHOOK_SECRET = process.env.ASTROID_WEBHOOK_SECRET || 'whsec_...';
-const TOLERANCE_SECONDS = 300; // 5 minutes
+const TOLERANCE_SECONDS = 300; // 5 minutes, the recommended replay window
 
 // IMPORTANT: Capture the raw body Buffer before JSON parsing!
 app.use(express.json({
@@ -85,15 +86,12 @@ app.use(express.json({
   },
 }));
 
-function parseSignatureHeader(header: string): { timestamp?: string; v1?: string } {
-  if (header.startsWith('v1=') && !header.includes(',')) {
-    return { v1: header.slice(3) };
-  }
-  const result: { timestamp?: string; v1?: string } = {};
+function parseSignatureHeader(header: string): { t?: string; v1?: string } {
+  const result: { t?: string; v1?: string } = {};
   for (const part of header.split(',')) {
     const [key, ...rest] = part.trim().split('=');
     const val = rest.join('=');
-    if (key === 't') result.timestamp = val;
+    if (key === 't') result.t = val;
     if (key === 'v1') result.v1 = val;
   }
   return result;
@@ -110,27 +108,27 @@ function verifyAstroidWebhook(
   }
 
   const parsed = parseSignatureHeader(rawSignature);
-  const timestamp = (headers['x-astroid-timestamp'] as string) || parsed.timestamp;
-  const eventId = (headers['x-astroid-event-id'] as string) || (headers['x-astroid-delivery'] as string);
+  const t = parsed.t;
   const v1Signature = parsed.v1;
 
-  if (!timestamp || !eventId || !v1Signature) {
+  if (!t || !v1Signature) {
     return { valid: false, reason: 'Missing signature components' };
   }
 
   // 1. Replay attack check (5-minute tolerance)
-  const now = Math.floor(Date.now() / 1000);
-  const timestampSeconds = parseInt(timestamp, 10);
-  if (isNaN(timestampSeconds) || Math.abs(now - timestampSeconds) > TOLERANCE_SECONDS) {
+  if (!/^\d{1,12}$/.test(t)) {
+    return { valid: false, reason: 'Malformed timestamp' };
+  }
+  const timestampSeconds = Number(t);
+  if (Math.abs(Math.floor(Date.now() / 1000) - timestampSeconds) > TOLERANCE_SECONDS) {
     return { valid: false, reason: 'Timestamp outside 5-minute tolerance window' };
   }
 
-  // 2. Compute expected HMAC
-  const input = Buffer.concat([
-    Buffer.from(`v1.${timestamp}.${eventId}.`, 'utf8'),
-    rawBody,
-  ]);
-  const expectedDigest = createHmac('sha256', secret).update(input).digest();
+  // 2. Compute expected HMAC over `${t}.${rawBody}`
+  if (!/^[0-9a-f]{64}$/.test(v1Signature)) {
+    return { valid: false, reason: 'Malformed signature digest' };
+  }
+  const expectedDigest = createHmac('sha256', secret).update(Buffer.concat([Buffer.from(`${t}.`), rawBody])).digest();
   const receivedDigest = Buffer.from(v1Signature, 'hex');
 
   // 3. Constant-time comparison
@@ -154,8 +152,6 @@ app.post('/api/webhooks/astroid', (req: Request & { rawBody?: Buffer }, res: Res
 
   const event = req.body;
   console.log(`Received verified event: ${event.event} (${req.headers['x-astroid-event-id']})`);
-
-  // Process event asynchronously or return 200 immediately
   return res.status(200).json({ received: true });
 });
 ```
@@ -172,42 +168,40 @@ from fastapi import FastAPI, Request, HTTPException, Header
 
 app = FastAPI()
 WEBHOOK_SECRET = "whsec_..."
-TOLERANCE_SECONDS = 300
+TOLERANCE_SECONDS = 300  # 5 minutes
 
 @app.post("/api/webhooks/astroid")
 async def handle_astroid_webhook(
     request: Request,
     x_astroid_signature: str = Header(...),
-    x_astroid_timestamp: str = Header(...),
-    x_astroid_event_id: str = Header(...),
 ):
     # 1. Capture raw request body bytes
     body_bytes = await request.body()
 
-    # 2. Replay attack protection
-    try:
-        ts = int(x_astroid_timestamp)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid timestamp format")
-
-    now = int(time.time())
-    if abs(now - ts) > TOLERANCE_SECONDS:
-        raise HTTPException(status_code=401, detail="Timestamp out of tolerance window")
-
-    # 3. Parse signature (handles v1=<hex> or t=...,v1=<hex>)
+    # 2. Parse the signature header into `t` and `v1`
+    t = None
     v1_sig = None
     for part in x_astroid_signature.split(","):
         k, _, v = part.strip().partition("=")
-        if k == "v1":
+        if k == "t":
+            t = v
+        elif k == "v1":
             v1_sig = v
-    if not v1_sig:
-        raise HTTPException(status_code=400, detail="Missing v1 signature")
+    if not t or not v1_sig:
+        raise HTTPException(status_code=400, detail="Missing signature components")
 
-    # 4. Compute expected HMAC
-    prefix = f"v1.{x_astroid_timestamp}.{x_astroid_event_id}.".encode("utf-8")
+    # 3. Replay attack protection (5-minute tolerance)
+    try:
+        ts = int(t)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid timestamp format")
+    if abs(int(time.time()) - ts) > TOLERANCE_SECONDS:
+        raise HTTPException(status_code=401, detail="Timestamp out of tolerance window")
+
+    # 4. Compute expected HMAC over `${t}.${rawBody}`
     expected_hmac = hmac.new(
         WEBHOOK_SECRET.encode("utf-8"),
-        prefix + body_bytes,
+        f"{t}.".encode("utf-8") + body_bytes,
         hashlib.sha256,
     ).hexdigest()
 
@@ -228,5 +222,7 @@ async def handle_astroid_webhook(
 |---|---|---|
 | `Signature mismatch` | JSON middleware modified formatting or whitespaces before signature calculation. | Ensure verification runs against the **raw body bytes buffer** before any JSON parsing. |
 | `Timestamp outside tolerance window` | Server clock is out of sync or event was delayed. | Ensure the server's NTP clock is synchronized. For delayed delivery investigations, inspect retry attempts in Astroid. |
+| `Malformed signature digest` | The `v1` value is not a 64-character lowercase hex string (e.g., non-hex characters, uppercase, or truncated). | Reject the request; only accept the documented `v1=<hex>` format. |
 | `Missing signature components` | Proxies or load balancers stripped custom headers (`X-Astroid-*`). | Configure reverse proxy / ingress controllers to allow custom headers through. |
 | `Failure to sign (Missing secret)` | The subscriber record in Astroid is missing its secret or it could not be decrypted. | Astroid marks the delivery failed with an explicit audit log reason rather than sending an unsigned payload. |
+| `Signature verification fails for fresh deliveries` | You are verifying over the JSON-parsed body rather than the exact bytes received. | Re-serializing the body can produce a different byte string than what was sent (key order, whitespace). Capture the raw body before parsing. |
