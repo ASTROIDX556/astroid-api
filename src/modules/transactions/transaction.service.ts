@@ -1,6 +1,5 @@
 import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { createHash } from 'node:crypto';
 import {
   Agent,
   AgentStatus,
@@ -39,6 +38,12 @@ import { DomainEventName } from '../../events/event-names';
 import { PrismaService } from '../../database/prisma.service';
 import { PrismaTransactionService } from '../../database/prisma-transaction.service';
 import { idempotencyConfig, IdempotencyConfig } from '../../config/idempotency.config';
+import { IdempotencyService } from '../../common/idempotency/idempotency.service';
+import {
+  IDEMPOTENT_DEFAULT_STATUS,
+  TRANSACTION_CREATE_ROUTE,
+} from '../../common/idempotency/idempotency.constants';
+import { RequestContext } from '../../common/context/request-context';
 
 const SORTABLE = ['createdAt', 'amount', 'status', 'riskScore'];
 
@@ -55,33 +60,12 @@ const CANCELLABLE_STATUSES: readonly TransactionStatus[] = [
   TransactionStatus.PENDING,
 ];
 const Decimal = Prisma.Decimal;
-const IDEMPOTENCY_OPERATION = 'transactions.create';
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 function normalizeAmount(amount: string): string {
   const [whole, fraction = ''] = amount.split('.');
   const normalizedWhole = whole.replace(/^0+(?=\d)/, '');
   const normalizedFraction = fraction.replace(/0+$/, '');
   return normalizedFraction ? `${normalizedWhole}.${normalizedFraction}` : normalizedWhole;
-}
-
-function canonicalJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
-  if (value !== null && typeof value === 'object') {
-    const entries = Object.entries(value as Record<string, unknown>)
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([key, nested]) => `${JSON.stringify(key)}:${canonicalJson(nested)}`);
-    return `{${entries.join(',')}}`;
-  }
-  return JSON.stringify(value) ?? 'null';
-}
-
-function transactionRequestHash(input: CreateTransactionInput): string {
-  const normalized = { ...input, amount: normalizeAmount(input.amount) };
-  return createHash('sha256').update(canonicalJson(normalized)).digest('hex');
 }
 
 /**
@@ -123,48 +107,58 @@ export class TransactionService {
     private readonly spendingLimits: SpendingLimitService,
     @Optional() private readonly transactions?: PrismaTransactionService,
     @Optional() private readonly config?: ConfigService,
+    @Optional() private readonly idempotency?: IdempotencyService,
   ) {}
 
   async create(
     organizationId: string,
     actorId: string,
     input: CreateTransactionInput,
-    idempotency?: { principalId: string; key: string },
+    idempotency?: { principalId: string; key: string; route?: string },
   ) {
     if (!idempotency) return this.createTransaction(organizationId, actorId, input);
-
+    if (!this.idempotency) {
+      throw new Error('IdempotencyService is not available in this application context');
+    }
+    const store = this.idempotency;
+    const route = idempotency.route ?? TRANSACTION_CREATE_ROUTE;
     const { keyTtlMs, waitTimeoutMs, pollIntervalMs } = this.idempotencySettings();
-    const keyHash = createHash('sha256').update(idempotency.key).digest('hex');
-    const requestHash = transactionRequestHash(input);
-    const reservationInput = {
+    // Numeric amounts are normalized first so "50.0" and "50.0000000" are the
+    // same fingerprint.
+    const requestFingerprint = store.fingerprint({
+      ...input,
+      amount: normalizeAmount(input.amount),
+    });
+    const reservation = await store.reserve({
       principalId: idempotency.principalId,
-      operation: IDEMPOTENCY_OPERATION,
-      keyHash,
-      requestHash,
+      route,
+      key: idempotency.key,
+      requestFingerprint,
       expiresAt: new Date(Date.now() + keyTtlMs),
-    };
-    const reservation = await this.repository.reserveIdempotencyKey(reservationInput);
+    });
 
     if (!reservation.created) {
-      if (reservation.record.requestHash !== requestHash) {
+      if (reservation.record.requestHash !== requestFingerprint) {
         throw new ConflictException(
           'Idempotency-Key was already used with a different transaction payload',
         );
       }
-      if (reservation.record.status === 'COMPLETED' && reservation.record.response !== null) {
-        return this.replayStoredResponse(reservation.record.response);
-      }
+
+      // A completed record replays the original status, body and request id.
+      const stored = store.completedResponse(reservation.record);
+      if (stored) return store.replay<Awaited<ReturnType<TransactionService['createTransaction']>>>(stored);
 
       // The original submission is still in flight. Rather than failing the
       // retrying client outright, wait for it to finish and replay its result;
       // only one request is ever allowed to execute, so the database write and
       // the on-chain submission still happen exactly once.
-      const replayed = await this.waitForIdempotencyResult(
-        reservationInput,
+      const replayed = await store.waitForCompletion(
+        reservation.record.id,
         waitTimeoutMs,
         pollIntervalMs,
       );
-      if (replayed !== undefined) return this.replayStoredResponse(replayed);
+      if (replayed)
+        return store.replay<Awaited<ReturnType<TransactionService['createTransaction']>>>(replayed);
       throw new ConflictException(
         'A transaction submission with this Idempotency-Key is currently being processed; retry shortly',
       );
@@ -174,18 +168,19 @@ export class TransactionService {
     try {
       const result = await this.createTransaction(organizationId, actorId, input, async (transaction) => {
         transactionId = transaction.id;
-        await this.repository.attachIdempotencyTransaction(reservation.record.id, transaction.id);
+        await store.attachTransaction(reservation.record.id, transaction.id);
       });
-      const response = JSON.parse(JSON.stringify(result)) as Prisma.InputJsonValue;
-      await this.repository.completeIdempotencyKey(
-        reservation.record.id,
-        transactionId!,
-        response,
-        new Date(Date.now() + keyTtlMs),
-      );
+      await store.complete({
+        recordId: reservation.record.id,
+        statusCode: IDEMPOTENT_DEFAULT_STATUS,
+        body: JSON.parse(JSON.stringify(result)) as Prisma.InputJsonValue,
+        transactionId,
+        requestId: RequestContext.getRequestId(),
+        expiresAt: new Date(Date.now() + keyTtlMs),
+      });
       return result;
     } catch (error) {
-      if (!transactionId) await this.repository.releaseIdempotencyKey(reservation.record.id);
+      if (!transactionId) await store.release(reservation.record.id);
       throw error;
     }
   }
@@ -193,40 +188,6 @@ export class TransactionService {
   /** Idempotency retention/wait settings, falling back to their env defaults. */
   private idempotencySettings(): IdempotencyConfig {
     return this.config?.get<IdempotencyConfig>('idempotency') ?? idempotencyConfig();
-  }
-
-  /** Rehydrates the response persisted on a completed idempotency record. */
-  private replayStoredResponse(
-    response: Prisma.JsonValue,
-  ): Awaited<ReturnType<TransactionService['createTransaction']>> {
-    return response as unknown as Awaited<ReturnType<TransactionService['createTransaction']>>;
-  }
-
-  /**
-   * Polls an in-flight idempotency record until it completes, the wait window
-   * elapses, or the reservation disappears (the original failed and released
-   * it). Uses the same atomic reserve-or-read primitive as the initial lookup,
-   * so a record that expired mid-wait is re-reserved and reported as `created`
-   * — in that case the abandoned reservation is released and the caller retries.
-   */
-  private async waitForIdempotencyResult(
-    reservationInput: Parameters<TransactionRepository['reserveIdempotencyKey']>[0],
-    waitTimeoutMs: number,
-    pollIntervalMs: number,
-  ): Promise<Prisma.JsonValue | undefined> {
-    const deadline = Date.now() + waitTimeoutMs;
-    while (Date.now() < deadline) {
-      await sleep(Math.min(pollIntervalMs, Math.max(1, deadline - Date.now())));
-      const current = await this.repository.reserveIdempotencyKey(reservationInput);
-      if (current.created) {
-        await this.repository.releaseIdempotencyKey(current.record.id);
-        return undefined;
-      }
-      if (current.record.status === 'COMPLETED' && current.record.response !== null) {
-        return current.record.response;
-      }
-    }
-    return undefined;
   }
 
   private async createTransaction(
