@@ -8,7 +8,6 @@ import {
 } from '@nestjs/common';
 import { HTTP_CODE_METADATA } from '@nestjs/common/constants';
 import { Reflector } from '@nestjs/core';
-import { createHash } from 'node:crypto';
 import { Request, Response } from 'express';
 import { Observable, from, of } from 'rxjs';
 import { lastValueFrom } from 'rxjs';
@@ -175,36 +174,4 @@ function toHttpException(error: unknown): Error {
  * two keys belonging to the same user do not share replay records; JWT
  * requests are scoped by the authenticated user.
  */
-function resolvePrincipal(user: AuthenticatedUser | undefined): string {
-  const organizationId = user?.organizationId ?? 'anonymous';
-  const actorId = user?.isApiKey
-    ? user.apiKeyId ?? user.id
-    : user?.id ?? user?.sub ?? 'anonymous';
-  return `${organizationId}:${actorId}`;
-}
-
-/** Round-trips through JSON so Prisma can persist dates/decimals safely. */
-function serialisable(value: unknown): unknown {
-  if (value === undefined) return null;
-  try {
-    return JSON.parse(JSON.stringify(value)) as unknown;
-  } catch {
-    return null;
-  }
-}
-
-function fromPromise<T>(promise: Promise<T>): Observable<T> {
-  return new Observable<T>((subscriber) => {
-    promise.then(
-      (value) => {
-        subscriber.next(value);
-        subscriber.complete();
-      },
-      (error: unknown) => subscriber.error(error),
-    );
-  });
-}
-
-function waitForNextPoll(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
