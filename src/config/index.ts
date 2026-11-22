@@ -30,6 +30,7 @@ export * from './rate-limit.config';
 export * from './throttler.config';
 export * from './shutdown.config';
 export * from './webhook.config';
+export * from './health.config';
 
 /**
  * Global configuration module. Every slice is registered via `registerAs` and

@@ -250,6 +250,13 @@ deliveries of a failing endpoint instead of hammering it.
 | `RATE_LIMIT_WEBHOOK_ROTATE_MAX` | `10` | `POST /webhooks/:id/rotate-secret` requests per API key or user per window. |
 | `RATE_LIMIT_WEBHOOK_ROTATE_WINDOW_SECONDS` | `3600` | Window of the webhook secret rotation limit. |
 
+### Health probes
+
+| Variable | Default | Description |
+| -------- | ------- | ----------- |
+| `HEALTH_CHECK_TIMEOUT_MS` | `1000` | Per-dependency timeout of `GET /health/ready` (`50`-`10000`). See [health-probes.md](health-probes.md). |
+| `HEALTH_READINESS_CACHE_TTL_MS` | `0` | Reuse a readiness result for this many ms (`0`-`10000`); `0` disables caching. |
+
 ### Metrics
 
 | Variable              | Default                      | Description                                                   |
