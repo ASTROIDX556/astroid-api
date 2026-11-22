@@ -1,7 +1,5 @@
-import { Injectable, Optional } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import { createHash } from 'node:crypto';
-import { ApprovalDecision, Prisma, ProposalStatus } from '@prisma/client';
+import { Injectable } from '@nestjs/common';
+import { ApprovalDecision, Prisma, Proposal, ProposalStatus } from '@prisma/client';
 import { ApprovalRepository } from './approval.repository';
 import { DecideProposalInput } from './approval.dto';
 import { TransactionService } from '../transactions/transaction.service';
@@ -19,8 +17,10 @@ import {
 import { Paginated } from '../../common/interfaces/api-response.interface';
 import { EventBusService } from '../../events/event-bus.service';
 import { DomainEventName } from '../../events/event-names';
-import { idempotencyConfig, IdempotencyConfig } from '../../config/idempotency.config';
-import { ApprovalIdempotencyRepository } from './approval-idempotency.repository';
+import {
+  assertTransition,
+  InvalidProposalTransitionException,
+} from './approval-state-machine';
 
 const SORTABLE = ['createdAt', 'status', 'approvalType'];
 const DECISION_OPERATION = 'approvals.decide';
@@ -58,6 +58,7 @@ export class ApprovalService {
     }
     const pagination = toPrismaPagination(query, SORTABLE);
     const { items, total } = await this.repository.findManyAndCount(where, pagination);
+    await Promise.all(items.map((proposal) => this.expireIfNeeded(proposal, organizationId)));
     return new Paginated(items, buildPaginationMeta(total, query));
   }
 
@@ -66,6 +67,7 @@ export class ApprovalService {
     if (!proposal) {
       throw new NotFoundException('Proposal', id);
     }
+    await this.expireIfNeeded(proposal, organizationId);
     return proposal;
   }
 
@@ -83,88 +85,18 @@ export class ApprovalService {
     actorId: string,
     proposalId: string,
     input: DecideProposalInput,
-    idempotency?: { principalId: string; key: string },
-  ): Promise<ProposalDetail> {
-    if (!idempotency) {
-      return this.applyDecision(organizationId, actorId, proposalId, input);
-    }
+  ) {
+    // Do not use getOrThrow here: action-time expiry must itself own the
+    // PENDING -> EXPIRED compare-and-set transition.
+    const proposal = await this.repository.findById(organizationId, proposalId);
+    if (!proposal) throw new NotFoundException('Proposal', proposalId);
 
-    const { keyTtlMs, waitTimeoutMs, pollIntervalMs } = this.idempotencySettings();
-    const reservationInput = {
-      principalId: idempotency.principalId,
-      operation: DECISION_OPERATION,
-      keyHash: sha256(idempotency.key),
-      requestHash: sha256(
-        JSON.stringify({
-          proposalId,
-          decision: input.decision,
-          comment: input.comment ?? null,
-        }),
-      ),
-      expiresAt: new Date(Date.now() + keyTtlMs),
-    };
-    const reservation = await this.idempotency.reserve(reservationInput);
-
-    if (!reservation.created) {
-      if (reservation.record.requestHash !== reservationInput.requestHash) {
-        throw new DomainException(
-          ErrorCode.VALIDATION_ERROR,
-          'Idempotency-Key was already used with a different approval decision payload',
-        );
-      }
-      if (reservation.record.status === 'COMPLETED' && reservation.record.response !== null) {
-        return this.replayStoredResponse(reservation.record.response);
-      }
-
-      const replayed = await this.waitForDecisionResult(
-        reservationInput,
-        waitTimeoutMs,
-        pollIntervalMs,
-      );
-      if (replayed !== undefined) return this.replayStoredResponse(replayed);
-      throw new ConflictException(
-        'An approval decision with this Idempotency-Key is currently being processed; retry shortly',
-      );
-    }
-
-    try {
-      const result = await this.applyDecision(organizationId, actorId, proposalId, input);
-      const response = JSON.parse(JSON.stringify(result)) as Prisma.InputJsonValue;
-      await this.idempotency.complete(
-        reservation.record.id,
-        response,
-        new Date(Date.now() + keyTtlMs),
-      );
-      return result;
-    } catch (error) {
-      await this.idempotency.release(reservation.record.id);
-      throw error;
-    }
-  }
-
-  /** Applies the decision exactly once; callers handle idempotency around it. */
-  private async applyDecision(
-    organizationId: string,
-    actorId: string,
-    proposalId: string,
-    input: DecideProposalInput,
-  ): Promise<ProposalDetail> {
-    const proposal = await this.getOrThrow(organizationId, proposalId);
-
-    if (proposal.status !== ProposalStatus.PENDING) {
-      throw new DomainException(
-        ErrorCode.PROPOSAL_NOT_PENDING,
-        `Proposal is '${proposal.status}' and can no longer be decided`,
-      );
-    }
     if (proposal.expiresAt && proposal.expiresAt.getTime() < Date.now()) {
-      await this.repository.updateProposalStatus(proposalId, { status: ProposalStatus.EXPIRED });
-      await this.eventBus.emit(
-        DomainEventName.ProposalExpired,
-        { proposalId },
-        { organizationId, actorId, aggregateType: 'proposal', aggregateId: proposalId },
-      );
+      await this.transition(proposal, ProposalStatus.EXPIRED, organizationId, actorId);
       throw new DomainException(ErrorCode.PROPOSAL_EXPIRED, 'Proposal has expired');
+    }
+    if (proposal.status !== ProposalStatus.PENDING) {
+      throw new InvalidProposalTransitionException(proposal.status, ProposalStatus.APPROVED);
     }
 
     const already = await this.repository.findApprovalByUser(proposalId, actorId);
@@ -181,13 +113,8 @@ export class ApprovalService {
 
     // A single rejection rejects the whole proposal.
     if (input.decision === ApprovalDecision.REJECTED) {
-      await this.repository.updateProposalStatus(proposalId, { status: ProposalStatus.REJECTED });
+      await this.transition(proposal, ProposalStatus.REJECTED, organizationId, actorId);
       await this.transactions.cancel(organizationId, actorId, proposal.transactionId);
-      await this.eventBus.emit(
-        DomainEventName.ProposalRejected,
-        { proposalId, transactionId: proposal.transactionId },
-        { organizationId, actorId, aggregateType: 'proposal', aggregateId: proposalId },
-      );
       return this.getOrThrow(organizationId, proposalId);
     }
 
@@ -198,57 +125,80 @@ export class ApprovalService {
     }
 
     // Threshold reached: approve, execute the transaction, then mark executed.
-    await this.repository.updateProposalStatus(proposalId, { status: ProposalStatus.APPROVED });
-    await this.eventBus.emit(
-      DomainEventName.ProposalApproved,
-      { proposalId, transactionId: proposal.transactionId, approvals },
-      { organizationId, actorId, aggregateType: 'proposal', aggregateId: proposalId },
-    );
+    await this.transition(proposal, ProposalStatus.APPROVED, organizationId, actorId, { approvals });
 
     await this.transactions.execute(organizationId, proposal.transactionId, actorId);
-    await this.repository.updateProposalStatus(proposalId, { status: ProposalStatus.EXECUTED });
-    await this.eventBus.emit(
-      DomainEventName.ProposalExecuted,
-      { proposalId, transactionId: proposal.transactionId },
-      { organizationId, actorId, aggregateType: 'proposal', aggregateId: proposalId },
+    await this.transition(
+      { ...proposal, status: ProposalStatus.APPROVED },
+      ProposalStatus.EXECUTED,
+      organizationId,
+      actorId,
     );
 
     return this.getOrThrow(organizationId, proposalId);
   }
 
-  /** Idempotency retention/wait settings, falling back to their env defaults. */
-  private idempotencySettings(): IdempotencyConfig {
-    return this.config?.get<IdempotencyConfig>('idempotency') ?? idempotencyConfig();
-  }
-
-  /** Rehydrates the response persisted on a completed idempotency record. */
-  private replayStoredResponse(response: Prisma.JsonValue): ProposalDetail {
-    return response as unknown as ProposalDetail;
-  }
-
-  /**
-   * Polls an in-flight idempotency record until it completes, the wait window
-   * elapses, or the reservation disappears (the original failed and released
-   * it). A record that expired mid-wait is re-reserved and reported as
-   * `created`; that abandoned reservation is released for the caller to retry.
-   */
-  private async waitForDecisionResult(
-    reservationInput: Parameters<ApprovalIdempotencyRepository['reserve']>[0],
-    waitTimeoutMs: number,
-    pollIntervalMs: number,
-  ): Promise<Prisma.JsonValue | undefined> {
-    const deadline = Date.now() + waitTimeoutMs;
-    while (Date.now() < deadline) {
-      await sleep(Math.min(pollIntervalMs, Math.max(1, deadline - Date.now())));
-      const current = await this.idempotency.reserve(reservationInput);
-      if (current.created) {
-        await this.idempotency.release(current.record.id);
-        return undefined;
-      }
-      if (current.record.status === 'COMPLETED' && current.record.response !== null) {
-        return current.record.response;
-      }
+  /** Expires stale proposals during reads as well as state-changing actions. */
+  private async expireIfNeeded(
+    proposal: Proposal,
+    organizationId: string,
+  ): Promise<void> {
+    if (proposal.status !== ProposalStatus.PENDING || !proposal.expiresAt || proposal.expiresAt >= new Date()) {
+      return;
     }
-    return undefined;
+    try {
+      await this.transition(proposal, ProposalStatus.EXPIRED, organizationId);
+      proposal.status = ProposalStatus.EXPIRED;
+    } catch (error) {
+      // Another concurrent reader/action already expired it; its event is authoritative.
+      if (!(error instanceof InvalidProposalTransitionException)) throw error;
+    }
+  }
+
+  /** The single service path for every Proposal status mutation and its event. */
+  private async transition(
+    proposal: Proposal,
+    to: ProposalStatus,
+    organizationId: string,
+    actorId?: string,
+    extra: { approvals?: number } = {},
+  ): Promise<void> {
+    assertTransition(proposal.status, to);
+    const changed = await this.repository.transitionStatus(proposal.id, proposal.status, to);
+    if (!changed) throw new InvalidProposalTransitionException(proposal.status, to);
+
+    const options = { organizationId, actorId, aggregateType: 'proposal', aggregateId: proposal.id };
+    switch (to) {
+      case ProposalStatus.APPROVED:
+        await this.eventBus.emit(
+          DomainEventName.ProposalApproved,
+          { proposalId: proposal.id, transactionId: proposal.transactionId, ...extra },
+          options,
+        );
+        return;
+      case ProposalStatus.REJECTED:
+        await this.eventBus.emit(
+          DomainEventName.ProposalRejected,
+          { proposalId: proposal.id, transactionId: proposal.transactionId },
+          options,
+        );
+        return;
+      case ProposalStatus.EXPIRED:
+        await this.eventBus.emit(
+          DomainEventName.ProposalExpired,
+          { proposalId: proposal.id, transactionId: proposal.transactionId },
+          options,
+        );
+        return;
+      case ProposalStatus.EXECUTED:
+        await this.eventBus.emit(
+          DomainEventName.ProposalExecuted,
+          { proposalId: proposal.id, transactionId: proposal.transactionId },
+          options,
+        );
+        return;
+      default:
+        return;
+    }
   }
 }

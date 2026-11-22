@@ -22,9 +22,6 @@ export interface PaginationMeta extends ApiMeta {
 
 export interface CursorPaginationMeta extends ApiMeta {
   limit: number;
-  /** Alias of `hasMore`, kept for clients that already read it. */
-  hasNext: boolean;
-  /** Whether another page is available. */
   hasMore: boolean;
   nextCursor: string | null;
 }

@@ -13,6 +13,7 @@ import { PrismaHealthIndicator } from './indicators/prisma.health';
 import { RedisHealthIndicator } from './indicators/redis.health';
 import { StellarHealthIndicator } from './indicators/stellar.health';
 import { DatabaseMigrationHealthIndicator } from './indicators/database-migration.health';
+import { QueueHealthIndicator } from './indicators/queue.health';
 import {
   DependencyProbeDto,
   HealthStatusDto,
@@ -65,6 +66,7 @@ export class HealthController {
     private readonly redisIndicator: RedisHealthIndicator,
     private readonly stellarIndicator: StellarHealthIndicator,
     private readonly migrationIndicator: DatabaseMigrationHealthIndicator,
+    private readonly queueIndicator: QueueHealthIndicator,
   ) {}
 
   @Get('live')
@@ -89,8 +91,8 @@ export class HealthController {
   @ApiOperation({
     summary: 'Readiness probe',
     description:
-      'Probes the critical dependencies (database and cache) in parallel, each bounded by a ' +
-      'timeout. Returns 200 when every dependency is up and 503 when any is down, with ' +
+      'Probes the critical dependencies (database, cache and the BullMQ queue connection) in ' +
+      'parallel, each bounded by a timeout. Returns 200 when every dependency is up and 503 when any is down, with ' +
       'per-dependency status and latency under `data.services`. A failure is reported as ' +
       '`timeout` or `unavailable` only; driver messages stay in the server log.',
   })
@@ -111,14 +113,16 @@ export class HealthController {
     },
   })
   async ready(@Req() req: Request, @Res() res: Response) {
-    const [database, cache] = await Promise.all([
+    const [database, cache, queue] = await Promise.all([
       this.dbIndicator.check('database'),
       this.redisIndicator.checkHealth(),
+      this.queueIndicator.checkHealth(),
     ]);
 
     const services = {
       database: toProbe(unwrap(database, 'database')),
       cache: toProbe(cache),
+      queue: toProbe(queue),
     };
 
     const isReady = Object.values(services).every((s) => s.status === 'up');

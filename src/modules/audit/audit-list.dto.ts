@@ -1,10 +1,10 @@
 import { z } from 'zod';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { isValidAuditCursor } from './audit-cursor';
+import { isValidCursor } from '../../common/pagination/cursor-pagination';
 
 export const auditListQuerySchema = z
   .object({
-    cursor: z.string().max(256).refine(isValidAuditCursor, 'Invalid cursor').optional(),
+    cursor: z.string().max(256).refine(isValidCursor, 'Invalid cursor').optional(),
     limit: z.coerce.number().int().min(1).max(100).default(20),
     actorId: z.string().min(1).max(128).optional(),
     action: z.string().min(1).max(120).optional(),

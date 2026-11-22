@@ -31,11 +31,12 @@ import { UseWalletLock } from '../../common/locks/wallet-lock.decorator';
 import { UseTransactionLock } from '../../common/locks/transaction-lock.decorator';
 import { AgentThrottlerGuard } from '../../common/guards/agent-throttler.guard';
 import { AuthenticatedUser } from '../../common/interfaces/authenticated-user.interface';
-import { PaginationQuery, paginationQuerySchema } from '../../common/helpers/pagination';
-import { ApiPaginationQuery } from '../../common/decorators/api-pagination-query.decorator';
-import { ApiEnvelope, ApiPaginatedEnvelope } from '../../common/decorators/api-envelope.decorator';
+import { ApiCursorPaginatedEnvelope, ApiEnvelope } from '../../common/decorators/api-envelope.decorator';
+import { ApiCursorPaginationQuery } from '../../common/decorators/api-cursor-pagination-query.decorator';
+import { cursorPaginationQuerySchema, CursorPaginationQuery } from '../../common/pagination/cursor-pagination';
 import { ApiErrorResponses } from '../../common/decorators/api-error-responses.decorator';
 import { IDEMPOTENCY_KEY_HEADER } from '../../common/constants/headers';
+import { TRANSACTION_CREATE_ROUTE } from '../../common/idempotency/idempotency.constants';
 import {
   SlidingWindowThrottlerGuard,
   SlidingWindowLimit,
@@ -54,17 +55,17 @@ export class TransactionController {
     description:
       'Returns a paginated list of transactions for the current organization. Supports filtering by status, agent, wallet, and date range.',
   })
-  @ApiPaginationQuery()
+  @ApiCursorPaginationQuery()
   @ApiQuery({ name: 'status', required: false, enum: ['DRAFT', 'PENDING', 'APPROVED', 'COMPLETED', 'FAILED', 'CANCELLED'], description: 'Filter by transaction status' })
   @ApiQuery({ name: 'agentId', required: false, type: String, description: 'Filter by agent UUID' })
   @ApiQuery({ name: 'walletId', required: false, type: String, description: 'Filter by wallet UUID' })
-  @ApiPaginatedEnvelope(TransactionResponseDto, {
+  @ApiCursorPaginatedEnvelope(TransactionResponseDto, {
     description: 'Paginated list of transactions',
   })
   @ApiErrorResponses({ unauthorized: true, serverError: true })
   list(
     @CurrentUser('organizationId') organizationId: string,
-    @Query(new ZodValidationPipe(paginationQuerySchema)) query: PaginationQuery,
+    @Query(new ZodValidationPipe(cursorPaginationQuerySchema.passthrough())) query: CursorPaginationQuery & { search?: string; filter?: string },
   ) {
     return this.transactionService.list(organizationId, query);
   }
@@ -115,7 +116,7 @@ export class TransactionController {
       user.organizationId,
       actorId,
       body,
-      key ? { principalId: user.id, key } : undefined,
+      key ? { principalId: user.id, key, route: TRANSACTION_CREATE_ROUTE } : undefined,
     );
   }
 

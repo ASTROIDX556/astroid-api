@@ -12,6 +12,6 @@ import { BalanceCacheService } from './services/balance-cache.service';
 @Module({
   controllers: [WalletController],
   providers: [WalletService, WalletRepository, BalanceCacheService],
-  exports: [WalletService, BalanceCacheService],
+  exports: [WalletService, WalletRepository, BalanceCacheService],
 })
 export class WalletModule {}

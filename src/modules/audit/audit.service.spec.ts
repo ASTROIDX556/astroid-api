@@ -106,12 +106,7 @@ describe('AuditService', () => {
       const result = await service.list('org-1', baseQuery);
 
       expect(result.items).toHaveLength(20);
-      expect(result.meta).toEqual({
-        limit: 20,
-        hasNext: true,
-        hasMore: true,
-        nextCursor: expect.any(String),
-      });
+      expect(result.meta).toEqual({ limit: 20, hasMore: true, nextCursor: expect.any(String) });
       expect(decodeAuditCursor(result.meta.nextCursor!).id).toBe('audit-19');
       expect(repository.findPage).toHaveBeenCalledWith({ organizationId: 'org-1' }, undefined, 21);
     });
@@ -144,18 +139,12 @@ describe('AuditService', () => {
       });
       expect(decodedCursor).toEqual({ createdAt, id: 'audit-20' });
       expect(take).toBe(11);
-      expect(result.meta).toEqual({
-        limit: 10,
-        hasNext: false,
-        hasMore: false,
-        nextCursor: null,
-      });
+      expect(result.meta).toEqual({ limit: 10, hasMore: false, nextCursor: null });
     });
 
     it('returns no next cursor on an empty final page', async () => {
       const result = await service.list('org-1', baseQuery);
       expect(result.items).toEqual([]);
-      expect(result.meta.hasNext).toBe(false);
       expect(result.meta.hasMore).toBe(false);
       expect(result.meta.nextCursor).toBeNull();
     });
