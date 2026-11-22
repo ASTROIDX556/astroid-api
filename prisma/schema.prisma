@@ -656,6 +656,8 @@ model ApiKey {
   createdById    String?
   name           String
   prefix         String
+  lastFour       String?
+  status         String    @default("active")
   hashedKey      String    @unique
   permissions    String[]  @default([])
   scopes         String[]  @default(["read"])
@@ -663,6 +665,8 @@ model ApiKey {
   lastUsedAt     DateTime?
   expiresAt      DateTime?
   revokedAt      DateTime?
+  rotatedAt      DateTime?
+  replacementId  String?
   createdAt      DateTime  @default(now())
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)

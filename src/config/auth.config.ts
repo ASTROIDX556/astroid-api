@@ -6,6 +6,7 @@ export type AuthConfig = {
   refreshSecret: string;
   accessTtl: number;
   refreshTtl: number;
+  apiKeyRotationGracePeriodSeconds?: number;
   passkey: {
     rpId: string;
     rpName: string;
@@ -20,6 +21,7 @@ export const authConfig = registerAs('auth', (): AuthConfig => {
     refreshSecret: env.JWT_REFRESH_SECRET,
     accessTtl: env.JWT_ACCESS_TTL,
     refreshTtl: env.JWT_REFRESH_TTL,
+    apiKeyRotationGracePeriodSeconds: env.API_KEY_ROTATION_GRACE_PERIOD_SECONDS,
     passkey: {
       rpId: env.PASSKEY_RP_ID,
       rpName: env.PASSKEY_RP_NAME,

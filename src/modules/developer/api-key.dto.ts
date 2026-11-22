@@ -21,6 +21,14 @@ export const createApiKeySchema = z
   .strict();
 export type CreateApiKeyInput = z.input<typeof createApiKeySchema>;
 
+export const rotateApiKeySchema = z
+  .object({
+    gracePeriodSeconds: z.number().int().positive().max(2592000).optional(),
+    expiresInDays: z.number().int().positive().max(365).optional(),
+  })
+  .strict();
+export type RotateApiKeyInput = z.input<typeof rotateApiKeySchema>;
+
 // ── Swagger DTOs ──
 
 export class CreateApiKeyDto {
@@ -53,12 +61,29 @@ export class CreateApiKeyDto {
   expiresInDays?: number;
 }
 
+export class RotateApiKeyDto {
+  @ApiPropertyOptional({
+    description: 'Grace period in seconds for the existing key to remain valid (default: 86400 = 24h)',
+    example: 86400,
+  })
+  gracePeriodSeconds?: number;
+
+  @ApiPropertyOptional({
+    description: 'Optional expiry in days for the newly issued key (max 365)',
+    example: 90,
+  })
+  expiresInDays?: number;
+}
+
 export class ApiKeyCreatedDto {
   @ApiProperty({ description: 'API key id', example: '018f0a1b-4444-4000-8000-000000000000' })
   id!: string;
 
   @ApiProperty({ description: 'Short identifying prefix, safe to display' })
   prefix!: string;
+
+  @ApiPropertyOptional({ description: 'Last four characters of the key, safe to display', example: '1a2b' })
+  lastFour?: string;
 
   @ApiProperty({
     type: [String],
@@ -74,6 +99,36 @@ export class ApiKeyCreatedDto {
   key!: string;
 }
 
+export class ApiKeyRotatedDto {
+  @ApiProperty({ description: 'API key id of the newly issued key', example: '018f0a1b-4444-4000-8000-000000000000' })
+  id!: string;
+
+  @ApiProperty({ description: 'Short identifying prefix of the new key', example: 'ak_live_ab12' })
+  prefix!: string;
+
+  @ApiPropertyOptional({ description: 'Last four characters of the new key', example: '1a2b' })
+  lastFour?: string;
+
+  @ApiProperty({
+    type: [String],
+    example: ['read'],
+    description: 'Permission scopes granted to the key',
+  })
+  scopes!: string[];
+
+  @ApiProperty({
+    description:
+      'The full new API key. Returned exactly once — it is hashed before storage and can never be retrieved again.',
+  })
+  key!: string;
+
+  @ApiProperty({ description: 'ID of the rotating previous key', example: '018f0a1b-3333-4000-8000-000000000000' })
+  previousKeyId!: string;
+
+  @ApiProperty({ description: 'Moment the previous key expires', example: '2026-04-15T10:30:00.000Z' })
+  previousKeyExpiresAt!: Date;
+}
+
 
 /** An API key as returned by the API — the secret itself is never returned. */
 export class ApiKeyResponseDto {
@@ -85,6 +140,12 @@ export class ApiKeyResponseDto {
 
   @ApiProperty({ description: 'Public prefix of the key, used to identify it in logs', example: 'ast_live_ab12' })
   prefix!: string;
+
+  @ApiPropertyOptional({ description: 'Last four characters of the key', example: '1a2b' })
+  lastFour?: string;
+
+  @ApiPropertyOptional({ description: 'Lifecycle status of the key', example: 'active' })
+  status?: string;
 
   @ApiProperty({
     type: [String],
