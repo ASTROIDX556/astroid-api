@@ -3,7 +3,6 @@ import {
   BadRequestException,
   ConflictException,
   ExecutionContext,
-  UnprocessableEntityException,
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { of, lastValueFrom } from 'rxjs';
@@ -181,7 +180,7 @@ describe('IdempotencyInterceptor', () => {
     expect(response.setHeader).toHaveBeenCalledWith('Retry-After', '2');
   });
 
-  it('returns 422 when the key is reused with a different body', async () => {
+  it('returns 409 when the key is reused with a different body', async () => {
     vi.spyOn(reflector, 'getAllAndOverride').mockImplementation((key) =>
       key === 'idempotent_request' ? {} : undefined,
     );
@@ -189,7 +188,7 @@ describe('IdempotencyInterceptor', () => {
     const { context } = contextFor();
 
     await expect(interceptor().intercept(context, { handle: vi.fn() })).rejects.toBeInstanceOf(
-      UnprocessableEntityException,
+      ConflictException,
     );
   });
 });

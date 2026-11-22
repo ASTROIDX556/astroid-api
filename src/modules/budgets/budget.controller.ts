@@ -7,6 +7,7 @@ import {
   Patch,
   Post,
   Query,
+  UseInterceptors,
 } from '@nestjs/common';
 import {
   ApiOperation,
@@ -15,10 +16,13 @@ import {
   ApiParam,
   ApiBody,
   ApiQuery,
+  ApiHeader,
 } from '@nestjs/swagger';
 import { UserRole } from '@prisma/client';
 import { BudgetService } from './budget.service';
 import { UseBudgetLock } from '../../common/locks/budget-lock.decorator';
+import { Idempotent } from '../../common/decorators/idempotent.decorator';
+import { IdempotencyInterceptor } from '../../common/interceptors/idempotency.interceptor';
 import {
   allocateBudgetSchema,
   AllocateBudgetInput,
@@ -131,6 +135,8 @@ export class BudgetController {
 
   @Post(':id/allocate')
   @UseBudgetLock()
+  @UseInterceptors(IdempotencyInterceptor)
+  @Idempotent()
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.FINANCE)
   @AuditAction('BUDGET_ALLOCATED')
   @AuditLog({ action: 'BUDGET_ADJUSTED', entity: 'Budget' })
@@ -140,6 +146,11 @@ export class BudgetController {
       'Transfers funds from a parent budget to a child budget. The parent must have sufficient remaining balance.',
   })
   @ApiParam({ name: 'id', description: 'Child budget UUID', example: '018f0a1b-...' })
+  @ApiHeader({
+    name: 'Idempotency-Key',
+    required: false,
+    description: 'Optional key for replay-safe budget allocation (1-128 allowed ASCII characters).',
+  })
   @ApiBody({ type: AllocateBudgetDto })
   @ApiEnvelope(CreateBudgetDto, { description: 'Funds allocated successfully' })
   @ApiErrorResponses({
@@ -147,7 +158,7 @@ export class BudgetController {
     unauthorized: true,
     forbidden: true,
     notFound: true,
-    conflict: 'Parent budget has insufficient balance',
+    conflict: 'Parent budget has insufficient balance or the idempotency key is in use',
     serverError: true,
   })
   allocate(

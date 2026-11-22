@@ -5,7 +5,6 @@ import {
   ExecutionContext,
   Injectable,
   NestInterceptor,
-  UnprocessableEntityException,
 } from '@nestjs/common';
 import { HTTP_CODE_METADATA } from '@nestjs/common/constants';
 import { Reflector } from '@nestjs/core';
@@ -32,7 +31,7 @@ const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9._~-]{1,128}$/;
  *
  * Responses:
  * - **409 + Retry-After** when a duplicate arrives while the original runs.
- * - **422** when the key was already used with a different request body.
+ * - **409** when the key was already used with a different request body.
  * - The original status, body and request id on replay.
  *
  * Streaming and multipart/file-upload requests are deliberately excluded:
@@ -156,12 +155,13 @@ export class IdempotencyInterceptor implements NestInterceptor {
 function isReplayableJsonRequest(request: Request): boolean {
   if (request.is?.('multipart/form-data')) return false;
   const body: unknown = request.body;
-  return typeof body === 'object' && body !== null && !Array.isArray(body) && !Buffer.isBuffer(body);
+  if (body === undefined || body === null) return true;
+  return typeof body === 'object' && !Array.isArray(body) && !Buffer.isBuffer(body);
 }
 
 function toHttpException(error: unknown): Error {
   if (error instanceof IdempotencyMismatchError) {
-    return new UnprocessableEntityException(error.message);
+    return new ConflictException(error.message);
   }
   if (error instanceof IdempotencyInFlightError) {
     return new ConflictException(error.message);

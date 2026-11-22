@@ -6,6 +6,8 @@ the `@Idempotent()` decorator plus `@UseInterceptors(IdempotencyInterceptor)`.
 It is currently applied to:
 
 - `POST /transactions` (transaction creation)
+- `POST /transactions/:id/cancel` (transaction cancellation)
+- `POST /budgets/:id/allocate` (budget fund allocation)
 - `POST /webhooks` (webhook subscription creation)
 
 A request without the header behaves exactly as before.
@@ -17,7 +19,7 @@ A request without the header behaves exactly as before.
 | No `Idempotency-Key` | Normal execution. |
 | First request for a key | Executes normally; status, body and request id are stored. |
 | Repeat with the same body after completion | Replays the original status, body and `X-Request-ID`. |
-| Repeat with a different body | `422 Unprocessable Entity`. |
+| Repeat with a different body | `409 Conflict`. |
 | Duplicate while the original is still running | `409 Conflict` with `Retry-After`. |
 | Original failed (including a 5xx) | The reservation is released, so the client may retry. |
 | Record older than the TTL | Treated as expired: removed and processed fresh. |
@@ -64,8 +66,4 @@ apply `@Idempotent()` to such routes.
 
 ## Backward compatibility
 
-The header was already optional on `POST /transactions`; its documented
-behaviour is unchanged, but a body mismatch now returns `422` instead of the
-previous `409`, matching this contract. `POST /webhooks` gains the same optional
-behaviour without changing its response shape (the signing secret returned once
-is part of the replayed response).
+The header is optional on all covered mutating endpoints (`POST /transactions`, `POST /transactions/:id/cancel`, `POST /budgets/:id/allocate`, and `POST /webhooks`); a request without the header executes normally without idempotency tracking. When an `Idempotency-Key` is provided, repeats with a mismatched body or concurrent duplicate submissions return `409 Conflict`.
