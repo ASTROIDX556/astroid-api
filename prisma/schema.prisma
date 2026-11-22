@@ -537,6 +537,9 @@ model TransactionIdempotencyRecord {
 model IdempotencyRecord {
   id             String            @id @default(uuid(7))
   principalId    String
+  // Credential namespace the key belongs to, e.g. "user:<id>" or "apikey:<id>".
+  // Included in the unique constraint so different credentials may reuse a key.
+  scope          String            @default("")
   // Normalised route identity, e.g. "POST /api/v1/transactions".
   route          String
   keyHash        String
@@ -553,7 +556,7 @@ model IdempotencyRecord {
   updatedAt      DateTime          @updatedAt
   expiresAt      DateTime
 
-  @@unique([principalId, route, keyHash])
+  @@unique([scope, route, keyHash])
   @@index([expiresAt])
   @@index([transactionId])
   @@map("idempotency_records")

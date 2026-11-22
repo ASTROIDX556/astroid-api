@@ -90,7 +90,7 @@ export class TransactionController {
   @UseWalletLock()
   @UseTransactionLock({ attempts: 3, retryDelayMs: 50 })
   @UseInterceptors(IdempotencyInterceptor)
-  @Idempotent()
+  @Idempotent({ bodySchema: createTransactionSchema })
   @AuditAction('TRANSFER_FUNDS')
   @ApiOperation({
     summary: 'Create a transaction (runs the full governance pipeline)',
@@ -104,7 +104,7 @@ export class TransactionController {
   @ApiHeader({
     name: 'Idempotency-Key',
     required: false,
-    description: 'Optional key for replay-safe transaction submission (1-128 allowed ASCII characters).',
+    description: 'Optional key for replay-safe transaction submission (8-255 characters after trimming).',
   })
   @ApiEnvelope(TransactionSubmissionDto, {
     status: 201,
@@ -170,8 +170,6 @@ export class TransactionController {
 
   @Post(':id/cancel')
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.FINANCE)
-  @UseInterceptors(IdempotencyInterceptor)
-  @Idempotent()
   @AuditAction('TRANSFER_CANCELLED')
   @ApiOperation({
     summary: 'Cancel a draft or pending transaction',
@@ -180,11 +178,6 @@ export class TransactionController {
       'Completed or already cancelled transactions cannot be cancelled.',
   })
   @ApiParam({ name: 'id', description: 'Transaction UUID', example: '018f0a1b-...' })
-  @ApiHeader({
-    name: 'Idempotency-Key',
-    required: false,
-    description: 'Optional key for replay-safe transaction cancellation (1-128 allowed ASCII characters).',
-  })
   @ApiEnvelope(TransactionResponseDto, { description: 'Transaction cancelled successfully' })
   @ApiErrorResponses({
     unauthorized: true,

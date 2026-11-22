@@ -149,6 +149,13 @@ export const storageEnvSchema = z.object({
 });
 
 export const idempotencyEnvSchema = z.object({
+  // Name of the HTTP header carrying the idempotency key. Some proxies reserve
+  // the default name, so deployments may override it without code changes.
+  IDEMPOTENCY_HEADER_NAME: z
+    .string()
+    .trim()
+    .regex(/^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/)
+    .default('Idempotency-Key'),
   // How long a completed idempotency record stays replayable. After this window
   // the key is ignored and a fresh request is processed and stored.
   IDEMPOTENCY_KEY_TTL_HOURS: z.coerce.number().int().positive().max(720).default(24),

@@ -31,6 +31,8 @@ export const Queues = {
   AuditArchive: 'audit-archive',
   /** Periodic close/reopen of elapsed budget periods. */
   BudgetRollover: 'budget-rollover',
+  /** Periodic removal of expired Idempotency-Key records. */
+  IdempotencyCleanup: 'idempotency-cleanup',
 } as const;
 
 export type QueueName = (typeof Queues)[keyof typeof Queues];
@@ -73,4 +75,3 @@ export interface DlqJobData {
   /** Additional metadata (organizationId, transactionId, etc.). */
   metadata?: Record<string, unknown>;
 }
-

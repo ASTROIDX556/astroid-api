@@ -2,6 +2,11 @@
 export interface IdempotencyScope {
   /** Authenticated principal (user or API-key owner) the key belongs to. */
   principalId: string;
+  /**
+   * Credential namespace, e.g. `user:<id>` or `apikey:<id>`. Defaults to
+   * `principalId` for callers that have no credential type to distinguish.
+   */
+  scope?: string;
   /** Normalised route identity, e.g. `POST /api/v1/transactions`. */
   route: string;
   /** Raw `Idempotency-Key` header value. */

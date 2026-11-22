@@ -42,7 +42,7 @@ function createIdempotencyPrisma(): PrismaService {
   const findByIdentity = (where: Record<string, unknown>) =>
     [...rows.values()].find(
       (row) =>
-        row.principalId === where.principalId &&
+        row.scope === (where.scope ?? where.principalId) &&
         row.route === where.route &&
         row.keyHash === where.keyHash,
     );
@@ -54,6 +54,7 @@ function createIdempotencyPrisma(): PrismaService {
         for (const [id, row] of rows) {
           if (typeof where.id === 'string' && where.id !== id) continue;
           if (typeof where.principalId === 'string' && where.principalId !== row.principalId) continue;
+          if (typeof where.scope === 'string' && where.scope !== row.scope) continue;
           if (typeof where.route === 'string' && where.route !== row.route) continue;
           if (typeof where.keyHash === 'string' && where.keyHash !== row.keyHash) continue;
           const expiry = where.expiresAt as { lte?: Date } | undefined;
@@ -71,7 +72,7 @@ function createIdempotencyPrisma(): PrismaService {
         const row: IdempotencyRecord = {
           id: `idempotency_${(sequence += 1)}`,
           principalId: data.principalId as string,
-
+          scope: (data.scope as string | undefined) ?? (data.principalId as string),
           route: data.route as string,
           keyHash: data.keyHash as string,
           requestHash: data.requestHash as string,
@@ -89,7 +90,7 @@ function createIdempotencyPrisma(): PrismaService {
       }),
       findUnique: vi.fn(async ({ where }: { where: Record<string, unknown> }) => {
         if (typeof where.id === 'string') return rows.get(where.id) ?? null;
-        const identity = where.principalId_route_keyHash as Record<string, unknown>;
+        const identity = where.scope_route_keyHash as Record<string, unknown>;
         return findByIdentity(identity) ?? null;
       }),
       update: vi.fn(async ({ where, data }: { where: { id: string }; data: Record<string, unknown> }) => {
@@ -186,6 +187,7 @@ describe('TransactionService', () => {
             spentThisMonth: 0,
           }),
           evaluateSpendingLimits: vi.fn().mockResolvedValue(undefined),
+          withSpendEnforcementLock: vi.fn(async (_agentId: string, fn: () => Promise<unknown>) => fn()),
         } as unknown as SpendingLimitService,
         passthroughTxService,
       );
@@ -357,6 +359,7 @@ describe('TransactionService - create', () => {
           useValue: {
             aggregateSpend: vi.fn().mockResolvedValue({ spentToday: 0, spentThisWeek: 0, spentThisMonth: 0 }),
             evaluateSpendingLimits: vi.fn().mockResolvedValue(undefined),
+            withSpendEnforcementLock: vi.fn(async (_agentId: string, fn: () => Promise<unknown>) => fn()),
           },
         },
       ],
@@ -461,6 +464,7 @@ describe('TransactionService - create', () => {
           useValue: {
             aggregateSpend: vi.fn().mockResolvedValue({ spentToday: 0, spentThisWeek: 0, spentThisMonth: 0 }),
             evaluateSpendingLimits: vi.fn().mockResolvedValue(undefined),
+            withSpendEnforcementLock: vi.fn(async (_agentId: string, fn: () => Promise<unknown>) => fn()),
           },
         },
       ],
@@ -632,6 +636,7 @@ describe('TransactionService - create', () => {
           useValue: {
             aggregateSpend: vi.fn().mockResolvedValue({ spentToday: 0, spentThisWeek: 0, spentThisMonth: 0 }),
             evaluateSpendingLimits: vi.fn().mockResolvedValue(undefined),
+            withSpendEnforcementLock: vi.fn(async (_agentId: string, fn: () => Promise<unknown>) => fn()),
           },
         },
       ],

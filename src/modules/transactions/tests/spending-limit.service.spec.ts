@@ -1,11 +1,14 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { Test, TestingModule } from '@nestjs/testing';
+import { TransactionStatus } from '@prisma/client';
 import { SpendingLimitService } from '../spending-limit.service';
 import { PolicyService } from '../../policies/policy.service';
 import { AuditService } from '../../audit/audit.service';
 import { PrismaService } from '../../../database/prisma.service';
+import { RedisLock } from '../../../common/locks/redis-lock.util';
 import { PolicyViolationException } from '../../../common/exceptions/domain.exception';
 import { TransactionIntent } from '../../policies/policy.types';
+import { EXCLUDED_SPEND_STATUSES } from '../../policies/spending-window.util';
 import { Decimal } from '@prisma/client/runtime/library';
 
 // ---------------------------------------------------------------------------
@@ -52,6 +55,16 @@ const mockPrismaService = {
   },
 };
 
+/**
+ * RedisLock mock. By default it runs the callback straight through (no
+ * serialisation) so individual tests stay simple; the concurrency test overrides
+ * it with a real serialising implementation to prove the lock actually orders
+ * concurrent checks.
+ */
+const mockRedisLock = {
+  withLock: vi.fn((_key: string, fn: () => Promise<unknown>) => fn()),
+};
+
 // ---------------------------------------------------------------------------
 // Suite
 // ---------------------------------------------------------------------------
@@ -68,6 +81,7 @@ describe('SpendingLimitService', () => {
         { provide: PolicyService, useValue: mockPolicyService },
         { provide: AuditService, useValue: mockAuditService },
         { provide: PrismaService, useValue: mockPrismaService },
+        { provide: RedisLock, useValue: mockRedisLock },
       ],
     }).compile();
 
@@ -114,6 +128,58 @@ describe('SpendingLimitService', () => {
       // The array passed to $transaction should contain 3 query promises
       const queryArray = mockPrismaService.$transaction.mock.calls[0][0] as unknown[];
       expect(queryArray).toHaveLength(3);
+    });
+
+    it('counts pending and in-flight spend (excludes only terminal-failed)', async () => {
+      mockPrismaService.$transaction.mockResolvedValue([
+        { _sum: { amount: null } },
+        { _sum: { amount: null } },
+        { _sum: { amount: null } },
+      ]);
+
+      await service.aggregateSpend('agent-1', 'USDC');
+
+      const dayWhere = mockPrismaService.transaction.aggregate.mock.calls[0][0].where;
+      // The window excludes only terminal-failed states...
+      expect(dayWhere.status).toEqual({ notIn: [...EXCLUDED_SPEND_STATUSES] });
+      // ...so PENDING (must count, per the issue) and DRAFT are NOT excluded...
+      expect(dayWhere.status.notIn).not.toContain(TransactionStatus.PENDING);
+      expect(dayWhere.status.notIn).not.toContain(TransactionStatus.DRAFT);
+      // ...and FAILED/REJECTED/CANCELLED/EXPIRED ARE excluded.
+      expect(dayWhere.status.notIn).toEqual(
+        expect.arrayContaining([
+          TransactionStatus.FAILED,
+          TransactionStatus.REJECTED,
+          TransactionStatus.CANCELLED,
+          TransactionStatus.EXPIRED,
+        ]),
+      );
+    });
+
+    it('scopes the aggregate by organization when one is supplied', async () => {
+      mockPrismaService.$transaction.mockResolvedValue([
+        { _sum: { amount: null } },
+        { _sum: { amount: null } },
+        { _sum: { amount: null } },
+      ]);
+
+      await service.aggregateSpend('agent-1', 'USDC', 'org-1');
+
+      const dayWhere = mockPrismaService.transaction.aggregate.mock.calls[0][0].where;
+      expect(dayWhere.organizationId).toBe('org-1');
+    });
+
+    it('omits the organization filter when no organization is supplied', async () => {
+      mockPrismaService.$transaction.mockResolvedValue([
+        { _sum: { amount: null } },
+        { _sum: { amount: null } },
+        { _sum: { amount: null } },
+      ]);
+
+      await service.aggregateSpend('agent-1', 'USDC');
+
+      const dayWhere = mockPrismaService.transaction.aggregate.mock.calls[0][0].where;
+      expect(dayWhere).not.toHaveProperty('organizationId');
     });
   });
 
@@ -651,6 +717,133 @@ describe('SpendingLimitService', () => {
           { asset: 'USDC', amount: 100 },
         ]);
       });
+    });
+  });
+
+  // ── withSpendEnforcementLock ─────────────────────────────────────────────
+
+  describe('withSpendEnforcementLock', () => {
+    it('acquires an agent-scoped lock and runs the operation inside it', async () => {
+      const result = await service.withSpendEnforcementLock('agent-1', async () => 'done');
+
+      expect(mockRedisLock.withLock).toHaveBeenCalledWith(
+        'agent-spending:agent-1',
+        expect.any(Function),
+      );
+      expect(result).toBe('done');
+    });
+
+    it('propagates the operation result through the lock', async () => {
+      const value = { ok: true };
+      const result = await service.withSpendEnforcementLock('agent-1', async () => value);
+      expect(result).toBe(value);
+    });
+  });
+
+  // ── concurrency ──────────────────────────────────────────────────────────
+
+  describe('concurrency — rolling-window budget', () => {
+    /**
+     * Two concurrent agent transactions, each under the per-transaction cap but
+     * together over the daily limit, must not both succeed. The lock serialises
+     * the check-then-reserve critical section; because the just-created spend row
+     * is counted by the aggregate, the second serialised check sees it and is
+     * denied.
+     *
+     * The in-memory `committed` counter stands in for the transaction row the
+     * caller creates inside the locked operation (the real row is counted by the
+     * aggregate because DRAFT is no longer excluded). The aggregate mock reads
+     * the counter; `evaluateSpendingLimits` enforces the limit against it; the
+     * operation "reserves" by incrementing it.
+     */
+    it('lets only one of two parallel over-limit transactions succeed', async () => {
+      const limit = 100;
+      const perRequest = 60; // each alone < limit, but 60 + 60 = 120 > 100
+
+      // Shared committed-spend counter, simulating the transaction ledger.
+      let committed = 0;
+
+      // Serialising lock: run one operation fully before the next.
+      let chain: Promise<unknown> = Promise.resolve();
+      mockRedisLock.withLock.mockImplementation((_key: string, fn: () => Promise<unknown>) => {
+        const run = chain.then(() => fn());
+        chain = run.then(
+          () => undefined,
+          () => undefined,
+        );
+        return run;
+      });
+
+      // The aggregate returns the in-window committed spend.
+      mockPrismaService.$transaction.mockImplementation(async (queries: unknown[]) => {
+        // Resolve the aggregate promises so their side-effects (recording the
+        // mocked committed spend) run, then return the three-window result.
+        await Promise.all(queries as Array<Promise<unknown>>);
+        return [
+          { _sum: { amount: makeDecimal(committed) } },
+          { _sum: { amount: makeDecimal(committed) } },
+          { _sum: { amount: makeDecimal(committed) } },
+        ];
+      });
+      // aggregate() calls resolve synchronously; make the per-query aggregate
+      // return a resolved promise so `$transaction`'s Promise.all resolves.
+      mockPrismaService.transaction.aggregate.mockImplementation(() =>
+        Promise.resolve({ _sum: { amount: makeDecimal(committed) } }),
+      );
+
+      // The engine's periodic check, faithfully: deny when committed + amount > limit.
+      mockPolicyService.evaluateIntent.mockImplementation((intent: TransactionIntent) => {
+        const projected = (intent.spentToday ?? 0) + intent.amount;
+        const passed = projected <= limit;
+        return Promise.resolve({
+          passed,
+          requiresApproval: false,
+          violations: passed
+            ? []
+            : [
+                {
+                  policyId: 'p1',
+                  policyName: 'Daily Cap',
+                  code: 'DAILY_LIMIT_EXCEEDED',
+                  message: `Projected daily spend ${projected} exceeds the daily limit ${limit}; remaining daily allowance ${Math.max(0, limit - (intent.spentToday ?? 0))}`,
+                },
+              ],
+          evaluatedPolicyIds: ['p1'],
+          matchedPolicyId: 'p1',
+        });
+      });
+      // A periodic limit policy is configured, so the aggregate path runs.
+      mockPrismaService.policy.findMany.mockResolvedValue([{ configuration: { dailyLimit: limit } }]);
+
+      // The locked critical section: check, then reserve (create the row).
+      const attempt = async (): Promise<'allowed' | 'blocked'> => {
+        try {
+          await service.withSpendEnforcementLock('agent-1', async () => {
+            const intent = makeIntent({ amount: perRequest });
+            const aggregates = await service.aggregateSpend('agent-1', 'USDC');
+            const enriched = {
+              ...intent,
+              spentToday: aggregates.spentToday,
+              spentThisWeek: aggregates.spentThisWeek,
+              spentThisMonth: aggregates.spentThisMonth,
+            };
+            await service.evaluateSpendingLimits(enriched, 'user-1');
+            // Reserve: create the spend row (simulated by incrementing committed).
+            committed += perRequest;
+          });
+          return 'allowed';
+        } catch {
+          return 'blocked';
+        }
+      };
+
+      // Fire two truly-parallel attempts.
+      const [first, second] = await Promise.all([attempt(), attempt()]);
+
+      const allowed = [first, second].filter((r) => r === 'allowed').length;
+      expect(allowed).toBe(1);
+      // The first reserves 60; the second sees 60 committed, projects 120 > 100.
+      expect(committed).toBe(60);
     });
   });
 });
