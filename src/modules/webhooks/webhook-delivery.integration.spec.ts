@@ -9,6 +9,8 @@ import { WEBHOOK_JOB_NAME, webhookJobOptions } from '../../queues/webhook.queue'
 import { verifyWebhookSignature } from './utils/signing';
 import { WebhookSignatureGuard } from '../../common/guards/webhook-signature.guard';
 import { WebhookIngressController } from './webhook-ingress.controller';
+import { RequestContext } from '../../common/context/request-context';
+import { RequestIdentity } from '../../common/context/request-context';
 
 const createDestinationPolicy = () => ({
   post: async (
@@ -55,16 +57,34 @@ describe('webhook delivery integration', () => {
     const fetch = vi.fn().mockResolvedValue(response);
     vi.stubGlobal('fetch', fetch);
 
-    await dispatcher.dispatch({
-      eventId: 'evt-stable-1',
-      name: 'transaction.completed',
-      organizationId: 'org-1',
-      aggregateType: 'Transaction',
-      aggregateId: 'txn-1',
-      requestId: 'req-1',
-      correlationId: 'corr-1',
-      payload: { transactionId: 'txn-1', amount: '25' },
-      occurredAt: new Date('2026-10-19T20:00:00.000Z'),
+    const contextData = {
+      identity: {
+        requestId: 'req-1',
+        correlationId: 'corr-1',
+        traceId: 'trace-1',
+        method: 'POST',
+        path: '/webhooks',
+        url: 'http://localhost/webhooks',
+        ip: '127.0.0.1',
+        userAgent: 'test',
+        startedAt: Date.now(),
+      },
+      timings: {},
+      data: {},
+    };
+
+    await RequestContext.run(contextData, async () => {
+      await dispatcher.dispatch({
+        eventId: 'evt-stable-1',
+        name: 'transaction.completed',
+        organizationId: 'org-1',
+        aggregateType: 'Transaction',
+        aggregateId: 'txn-1',
+        requestId: 'req-1',
+        correlationId: 'corr-1',
+        payload: { transactionId: 'txn-1', amount: '25' },
+        occurredAt: new Date('2026-10-19T20:00:00.000Z'),
+      });
     });
 
     const [name, data, options] = queueAdd.mock.calls[0] as [
@@ -73,10 +93,19 @@ describe('webhook delivery integration', () => {
       typeof webhookJobOptions,
     ];
     expect(name).toBe(WEBHOOK_JOB_NAME);
-    expect(options).toEqual(webhookJobOptions);
+    // The options include a group property for BullMQ job grouping
+    expect(options).toEqual(expect.objectContaining({
+      ...webhookJobOptions,
+      group: 'webhook-endpoint:wh-1',
+    }));
     expect(options.attempts).toBeGreaterThan(1);
     expect(options.backoff).toEqual(expect.objectContaining({ type: 'exponential' }));
     expect(data).not.toHaveProperty('secret');
+    expect(data.metadata).toEqual({
+      requestId: 'req-1',
+      correlationId: 'corr-1',
+      traceId: 'trace-1',
+    });
 
     await processor.process({
       id: 'job-1',
@@ -130,20 +159,43 @@ describe('webhook delivery integration', () => {
       .mockResolvedValueOnce({ ok: true, status: 200 });
     vi.stubGlobal('fetch', fetch);
 
-    await dispatcher.dispatch({
-      eventId: 'evt-retry-stable',
-      name: 'transaction.completed',
-      organizationId: 'org-1',
-      aggregateType: 'Transaction',
-      aggregateId: 'txn-2',
-      payload: { transactionId: 'txn-2' },
-      occurredAt: new Date('2026-10-19T20:00:00.000Z'),
+    const contextData2 = {
+      identity: {
+        requestId: 'req-retry',
+        correlationId: 'corr-retry',
+        traceId: 'trace-retry',
+        method: 'POST',
+        path: '/webhooks',
+        url: 'http://localhost/webhooks',
+        ip: '127.0.0.1',
+        userAgent: 'test',
+        startedAt: Date.now(),
+      },
+      timings: {},
+      data: {},
+    };
+
+    await RequestContext.run(contextData2, async () => {
+      await dispatcher.dispatch({
+        eventId: 'evt-retry-stable',
+        name: 'transaction.completed',
+        organizationId: 'org-1',
+        aggregateType: 'Transaction',
+        aggregateId: 'txn-2',
+        payload: { transactionId: 'txn-2' },
+        occurredAt: new Date('2026-10-19T20:00:00.000Z'),
+      });
     });
     const [name, data, options] = queueAdd.mock.calls[0] as [
       string,
       WebhookJobData,
       typeof webhookJobOptions,
     ];
+    // Options include group property for BullMQ job grouping
+    expect(options).toEqual(expect.objectContaining({
+      ...webhookJobOptions,
+      group: 'webhook-endpoint:wh-2',
+    }));
     const job = (attemptsMade: number) =>
       ({ id: 'job-retry', name, data, attemptsMade, opts: options }) as Job<WebhookJobData>;
 

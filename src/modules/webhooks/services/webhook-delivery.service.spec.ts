@@ -4,10 +4,28 @@ import { WebhookDeliveryService } from './webhook-delivery.service';
 import { Queue } from 'bullmq';
 import { WebhookJobData } from '../types/webhook-job.types';
 import { DEFAULT_WEBHOOK_CONFIG } from '../../../config/webhook.config';
+import { RequestContext } from '../../../common/context/request-context';
+import { RequestIdentity } from '../../../common/context/request-context';
 
 describe('WebhookDeliveryService', () => {
   let service: WebhookDeliveryService;
   let mockQueue: Queue<WebhookJobData>;
+
+  const contextData = {
+    identity: {
+      requestId: '01557f94-416d-4ff3-9772-50b444cefdcf',
+      correlationId: '01557f94-416d-4ff3-9772-50b444cefdcf',
+      traceId: '01557f94-416d-4ff3-9772-50b444cefdcf',
+      method: 'POST',
+      path: '/webhooks',
+      url: 'http://localhost/webhooks',
+      ip: '127.0.0.1',
+      userAgent: 'test',
+      startedAt: Date.now(),
+    },
+    timings: {},
+    data: {},
+  };
 
   beforeEach(() => {
     mockQueue = {
@@ -31,19 +49,21 @@ describe('WebhookDeliveryService', () => {
 
   it('queues a webhook delivery job with correct configuration', async () => {
     const jobData = createJobData();
-    await service.queueDelivery(jobData);
+    await RequestContext.run(contextData, async () => {
+      await service.queueDelivery(jobData);
+    });
 
     expect(mockQueue.add).toHaveBeenCalledWith(
       'webhook-delivery',
       expect.objectContaining({
         ...jobData,
         metadata: {
-          requestId: expect.any(String),
-          correlationId: expect.any(String),
-          traceId: expect.any(String),
+          requestId: '01557f94-416d-4ff3-9772-50b444cefdcf',
+          correlationId: '01557f94-416d-4ff3-9772-50b444cefdcf',
+          traceId: '01557f94-416d-4ff3-9772-50b444cefdcf',
         },
       }),
-      {
+      expect.objectContaining({
         attempts: 5,
         backoff: {
           type: 'custom',
@@ -51,7 +71,8 @@ describe('WebhookDeliveryService', () => {
         },
         removeOnComplete: { count: 1000 },
         removeOnFail: { age: 24 * 3600, count: 5_000 },
-      },
+        group: 'webhook-endpoint:webhook-1',
+      }),
     );
   });
 

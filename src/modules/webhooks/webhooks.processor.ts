@@ -345,6 +345,47 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
         this.logger.debug(`Webhook ${webhookId} delivered successfully${requestTrace}`);
         await this.circuit?.recordSuccess(webhookId, organizationId, endpoint);
       } catch (error) {
+        // Handle PermanentJobError (non-transient 4xx, redirects, config errors) immediately
+        if (error instanceof PermanentJobError) {
+          if (!attemptRecorded) {
+            attemptRecorded = true;
+            const attemptClassification = classifyWebhookFailure(error, responseStatus);
+            await this.recordAttempt({
+              webhookId,
+              organizationId,
+              eventId,
+              attemptNumber: job.attemptsMade + 1,
+              status: 'FAILED',
+              responseStatus,
+              durationMs: Date.now() - attemptStartedAt,
+              errorCode: attemptClassification.code,
+              errorMessage: error.message,
+            });
+          }
+          const failedReason = error.message;
+          const classification = classifyWebhookFailure(error, responseStatus);
+          await this.persistState({
+            webhookId,
+            organizationId,
+            eventName,
+            eventId,
+            payload,
+            status: 'FAILED',
+            attempts: job.attemptsMade + 1,
+            lastError: failedReason,
+            responseStatus,
+            failureCategory: responseStatus === undefined ? WebhookFailureCategory.Permanent : classification.category,
+            failureCode: responseStatus === undefined ? 'WEBHOOK_CONFIGURATION' : classification.code,
+            lastAttemptAt: new Date(),
+          });
+          await this.auditTerminalFailure(job, failedReason, responseStatus, endpoint, {
+            category: responseStatus === undefined ? WebhookFailureCategory.Permanent : classification.category,
+            code: responseStatus === undefined ? 'WEBHOOK_CONFIGURATION' : classification.code,
+            circuitStatus: 'CLOSED',
+          });
+          throw error;
+        }
+
         if (!attemptRecorded) {
           attemptRecorded = true;
           const attemptClassification = classifyWebhookFailure(error, responseStatus);
@@ -360,32 +401,7 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
             errorMessage: error instanceof Error ? error.message : 'Webhook delivery failed',
           });
         }
-        if (error instanceof UnrecoverableError) {
-          if (error instanceof PermanentJobError) {
-            const failedReason = error.message;
-            const classification = classifyWebhookFailure(error, responseStatus);
-            await this.persistState({
-              webhookId,
-              organizationId,
-              eventName,
-              eventId,
-              payload,
-              status: 'FAILED',
-              attempts: job.attemptsMade + 1,
-              lastError: failedReason,
-              responseStatus,
-              failureCategory: responseStatus === undefined ? WebhookFailureCategory.Permanent : classification.category,
-              failureCode: responseStatus === undefined ? 'WEBHOOK_CONFIGURATION' : classification.code,
-              lastAttemptAt: new Date(),
-            });
-            await this.auditTerminalFailure(job, failedReason, responseStatus, endpoint, {
-              category: responseStatus === undefined ? WebhookFailureCategory.Permanent : classification.category,
-              code: responseStatus === undefined ? 'WEBHOOK_CONFIGURATION' : classification.code,
-              circuitStatus: 'CLOSED',
-            });
-          }
-          throw error;
-        }
+
         if (error instanceof WebhookDestinationError) {
           errorMessage = error.message;
           await this.persistState({
@@ -400,6 +416,8 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
           await this.auditTerminalFailure(job, errorMessage);
           throw new PermanentJobError(errorMessage);
         }
+
+        // Preserve HTTP status error messages (e.g., "HTTP 503", "HTTP 500")
         errorMessage = error instanceof WebhookDestinationResolutionError
           ? error.message
           : error instanceof Error && /^HTTP \d{3}$/.test(error.message)
@@ -446,6 +464,7 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
             circuitStatus: 'CLOSED',
           });
         }
+        // Re-throw preserving the original error message for HTTP statuses
         throw new Error(errorMessage);
       }
 
