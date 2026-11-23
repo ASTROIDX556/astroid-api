@@ -117,7 +117,7 @@ describe('ApprovalService idempotency', () => {
     expect(transactions.execute).toHaveBeenCalledTimes(1);
   });
 
-  it('rejects reuse of a key with a different payload as a 409 mismatch', async () => {
+  it('rejects reuse of a key with a different payload as a 422 mismatch', async () => {
     await decide('decision-key-3');
 
     const error = await decide('decision-key-3', 'user-1', ApprovalDecision.REJECTED).catch(
@@ -125,7 +125,7 @@ describe('ApprovalService idempotency', () => {
     );
 
     expect(error).toBeInstanceOf(DomainException);
-    expect((error as DomainException).getStatus()).toBe(409);
+    expect((error as DomainException).getStatus()).toBe(422);
     expect(error).toMatchObject({ code: ErrorCode.IDEMPOTENCY_KEY_MISMATCH });
     expect(repository.createApproval).toHaveBeenCalledTimes(1);
   });
