@@ -49,15 +49,30 @@ describe('WebhooksProcessor', () => {
           method: 'POST',
           headers: options.headers,
           body: options.body.toString('utf8'),
-          signal: AbortSignal.timeout(options.timeoutMs),
+          // Don't use AbortSignal.timeout in tests to avoid flakiness
+          signal: options.signal,
         });
-        const headers: Record<string, string | string[] | undefined> = {};
-        // Handle case where response.headers might not be iterable (e.g., in test mocks)
-        if (response.headers && typeof response.headers.entries === 'function') {
-          for (const [key, value] of response.headers.entries()) {
-            headers[key.toLowerCase()] = value;
+        // Create a proper Headers-like object with entries() method
+        const headersObj: Record<string, string> = {};
+        if (response.headers) {
+          for (const [key, value] of Object.entries(response.headers)) {
+            headersObj[key.toLowerCase()] = value;
           }
         }
+        const headers = {
+          entries: () => Object.entries(headersObj),
+          get: (name: string) => headersObj[name.toLowerCase()],
+          has: (name: string) => name.toLowerCase() in headersObj,
+          set: (name: string, value: string) => { headersObj[name.toLowerCase()] = value; },
+          append: (name: string, value: string) => { headersObj[name.toLowerCase()] = value; },
+          delete: (name: string) => { delete headersObj[name.toLowerCase()]; },
+          forEach: (callback: (value: string, name: string) => void) => {
+            Object.entries(headersObj).forEach(([k, v]) => callback(v, k));
+          },
+          keys: () => Object.keys(headersObj).values(),
+          values: () => Object.values(headersObj).values(),
+          [Symbol.iterator]: () => Object.entries(headersObj).values(),
+        };
         return { status: response.status, headers };
       },
     };
