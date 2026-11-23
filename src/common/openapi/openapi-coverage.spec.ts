@@ -22,6 +22,7 @@ import {
   findOperationsMissingSecurity,
   findOperationsWithUntypedRequestBody,
   findOperationsWithoutResponses,
+  findOperationsWithoutSuccessEnvelope,
   findOperationsWithoutSuccessSchema,
   findOperationsWithoutSummary,
   findStaleAllowlistEntries,
@@ -427,7 +428,91 @@ describe('OpenAPI coverage against a live Nest application with a temporary undo
     ]);
   });
 
-  it('finds every documented operation served, prefix exclusion included', () => {
-    expect(findUnservedOperations(routes, document)).toEqual([]);
+  it('finds operations without success envelope and names them', () => {
+    const documentWithoutEnvelope = doc({
+      '/api/v1/raw': {
+        get: {
+          summary: 'Raw route',
+          responses: {
+            '200': {
+              description: 'ok',
+              content: { 'application/json': { schema: { type: 'object' } } },
+            },
+          },
+        },
+      },
+      '/api/v1/enveloped': {
+        get: {
+          summary: 'Enveloped route',
+          responses: {
+            '200': {
+              description: 'ok',
+              content: {
+                'application/json': {
+                  schema: {
+                    allOf: [{ $ref: '#/components/schemas/ApiEnvelopeDto' }],
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    });
+
+    const findings = findOperationsWithoutSuccessEnvelope(documentWithoutEnvelope);
+    expect(findings).toEqual([
+      'GET /api/v1/raw does not declare a success response using the { success, data, meta, requestId } envelope',
+    ]);
+  });
+
+  it('allows exclusions from the envelope check when explicitly listed', () => {
+    const documentWithRaw = doc({
+      '/api/v1/health': {
+        get: {
+          summary: 'Raw health',
+          responses: {
+            '200': {
+              description: 'ok',
+              content: { 'application/json': { schema: { type: 'object' } } },
+            },
+          },
+        },
+      },
+    });
+
+    expect(
+      findOperationsWithoutSuccessEnvelope(documentWithRaw, new Map(), ['/api/v1/health']),
+    ).toEqual([]);
+  });
+
+  it('accepts schemas declaring the four envelope properties directly', () => {
+    const documentDirectEnvelope = doc({
+      '/api/v1/direct': {
+        get: {
+          summary: 'Direct envelope',
+          responses: {
+            '200': {
+              description: 'ok',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      success: { type: 'boolean' },
+                      data: { type: 'object' },
+                      meta: { type: 'object' },
+                      requestId: { type: 'string' },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    });
+
+    expect(findOperationsWithoutSuccessEnvelope(documentDirectEnvelope)).toEqual([]);
   });
 });

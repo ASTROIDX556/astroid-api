@@ -404,6 +404,105 @@ export function findOperationsWithoutSuccessSchema(
 }
 
 /**
+ * Operations that do not document a success response using the standard
+ * `{ success, data, meta, requestId }` envelope (referencing `ApiEnvelopeDto` or
+ * declaring the four envelope fields).
+ */
+export function findOperationsWithoutSuccessEnvelope(
+  document: OpenAPIObject,
+  handlers: ReadonlyMap<string, string> = new Map(),
+  exclusions: ReadonlyArray<string> = [],
+): string[] {
+  const excludedSet = new Set(exclusions);
+  const findings: string[] = [];
+
+  for (const { method, path, operation } of listDocumentedOperations(document)) {
+    if (excludedSet.has(path) || excludedSet.has(`${method} ${path}`)) {
+      continue;
+    }
+
+    const successResponses = Object.entries(operation.responses ?? {}).filter(([status]) =>
+      status.startsWith('2'),
+    );
+
+    if (successResponses.length === 0) {
+      findings.push(
+        describeFinding({ method, path }, handlers, 'documents no 2xx success response'),
+      );
+      continue;
+    }
+
+    const hasEnvelope = successResponses.some(([, response]) => {
+      const content = (response as { content?: Record<string, { schema?: unknown }> })?.content;
+      if (!content) return false;
+
+      return Object.values(content).some((media) => {
+        const schema = media?.schema;
+        if (!schema) return false;
+
+        const refs = collectRefs(schema);
+        if (refs.has('#/components/schemas/ApiEnvelopeDto')) {
+          return true;
+        }
+
+        const candidate = schema as {
+          properties?: Record<string, unknown>;
+          allOf?: Array<{ $ref?: string; properties?: Record<string, unknown> }>;
+        };
+
+        if (
+          candidate.properties &&
+          'success' in candidate.properties &&
+          'data' in candidate.properties &&
+          'meta' in candidate.properties &&
+          'requestId' in candidate.properties
+        ) {
+          return true;
+        }
+
+        if (Array.isArray(candidate.allOf)) {
+          const allProps = candidate.allOf.reduce<Record<string, unknown>>((acc, part) => {
+            if (part.$ref?.endsWith('/ApiEnvelopeDto')) {
+              acc['success'] = true;
+              acc['data'] = true;
+              acc['meta'] = true;
+              acc['requestId'] = true;
+            }
+            if (part.properties) {
+              Object.assign(acc, part.properties);
+            }
+            return acc;
+          }, {});
+
+          if (
+            'success' in allProps &&
+            'data' in allProps &&
+            'meta' in allProps &&
+            'requestId' in allProps
+          ) {
+            return true;
+          }
+        }
+
+        return false;
+      });
+    });
+
+    if (!hasEnvelope) {
+      findings.push(
+        describeFinding(
+          { method, path },
+          handlers,
+          'does not declare a success response using the { success, data, meta, requestId } envelope',
+        ),
+      );
+    }
+  }
+
+  return sorted(findings);
+}
+
+/**
  * Operations that document a request body without a usable schema: no content,
  * no schema for a media type, or a schema that is neither a `$ref` to a named
  * component nor a self-describing type. This catches `@ApiBody({})`-style

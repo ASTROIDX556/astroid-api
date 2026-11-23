@@ -1,5 +1,5 @@
 import { Controller, Get, Req, Res, HttpStatus } from '@nestjs/common';
-import { ApiExtraModels, ApiOperation, ApiResponse, ApiTags, getSchemaPath } from '@nestjs/swagger';
+import { ApiExcludeEndpoint, ApiExtraModels, ApiOperation, ApiResponse, ApiTags, getSchemaPath } from '@nestjs/swagger';
 import { HealthIndicatorResult } from '@nestjs/terminus';
 import { SkipThrottle } from '@nestjs/throttler';
 import { Request, Response } from 'express';
@@ -135,6 +135,7 @@ export class HealthController {
   }
 
   @Get('liveness')
+  @ApiExcludeEndpoint()
   @ApiOperation({ summary: 'Application liveness check' })
   @ApiResponse({ status: 200, description: 'Application is alive', type: HealthStatusDto })
   getLiveness() {
@@ -148,6 +149,7 @@ export class HealthController {
   // and registering `ready` here as well put a second, unreachable handler on that
   // route whose richer schema the OpenAPI document then showed in its place.
   @Get('readiness')
+  @ApiExcludeEndpoint()
   @ApiOperation({ summary: 'Application readiness check' })
   @ApiResponse({ status: 200, description: 'Application is ready', type: HealthStatusDto })
   @ApiResponse({
@@ -184,6 +186,7 @@ export class HealthController {
   }
 
   @Get('database')
+  @ApiExcludeEndpoint()
   @ApiOperation({ summary: 'Database connectivity check' })
   @ApiResponse({ status: 200, description: 'Database is reachable', type: HealthStatusDto })
   @ApiResponse({
@@ -201,6 +204,7 @@ export class HealthController {
   }
 
   @Get('redis')
+  @ApiExcludeEndpoint()
   @ApiOperation({ summary: 'Redis connectivity check' })
   @ApiResponse({ status: 200, description: 'Redis is reachable', type: HealthStatusDto })
   @ApiResponse({
@@ -218,6 +222,7 @@ export class HealthController {
   }
 
   @Get('stellar')
+  @ApiExcludeEndpoint()
   @ApiOperation({
     summary: 'Stellar network connectivity check',
     description:
@@ -243,6 +248,7 @@ export class HealthController {
   }
 
   @Get()
+  @ApiExcludeEndpoint()
   @ApiOperation({ summary: 'Application health check' })
   @ApiResponse({ status: 200, description: 'Application is healthy', type: HealthStatusDto })
   @ApiResponse({

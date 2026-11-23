@@ -6,7 +6,6 @@ import {
   ApiParam,
   ApiQuery,
   ApiProduces,
-  ApiResponse,
 } from '@nestjs/swagger';
 import { ApiErrorResponses } from '../../common/decorators/api-error-responses.decorator';
 import {
@@ -22,6 +21,10 @@ import { AuditArchiveService } from './audit-archive.service';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
+import {
+  AuditArchiveBatchListDto,
+  AuditArchiveRecordListDto,
+} from './audit-archive.dto';
 import {
   ExportAuditLogsQuery,
   exportAuditLogsQuerySchema,
@@ -232,18 +235,7 @@ export class AuditController {
       'Only the batch metadata is returned; use `GET /audit/archives/{batchId}` to read the records of a batch.',
   })
   @ApiQuery({ name: 'limit', required: false, type: Number, description: 'Max batches to return (default 50, max 100)' })
-  @ApiResponse({
-    status: 200,
-    description: 'Archive batches, newest first',
-    schema: {
-      type: 'object',
-      required: ['batches', 'count'],
-      properties: {
-        batches: { type: 'array', items: { type: 'object', additionalProperties: true } },
-        count: { type: 'integer' },
-      },
-    },
-  })
+  @ApiEnvelope(AuditArchiveBatchListDto, { description: 'Archive batches, newest first' })
   @ApiErrorResponses({ unauthorized: true, forbidden: true, serverError: true })
   async listArchives(
     @CurrentUser('organizationId') organizationId: string,
@@ -264,18 +256,7 @@ export class AuditController {
       'Returns the audit records of one archived batch. The compressed payload is decompressed and its checksum verified before it is returned.',
   })
   @ApiParam({ name: 'batchId', description: 'Archive batch id', example: '8f1c…' })
-  @ApiResponse({
-    status: 200,
-    description: 'The archived audit records',
-    schema: {
-      type: 'object',
-      required: ['records', 'count'],
-      properties: {
-        records: { type: 'array', items: { type: 'object', additionalProperties: true } },
-        count: { type: 'integer' },
-      },
-    },
-  })
+  @ApiEnvelope(AuditArchiveRecordListDto, { description: 'The archived audit records' })
   @ApiErrorResponses({ unauthorized: true, forbidden: true, notFound: true, serverError: true })
   async readArchive(
     @CurrentUser('organizationId') organizationId: string,
