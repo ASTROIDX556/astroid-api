@@ -29,6 +29,7 @@ import { ResponseInterceptor } from './common/interceptors/response.interceptor'
 import { AuditInterceptor } from './common/interceptors/audit.interceptor';
 import { GlobalExceptionFilter } from './common/filters/global-exception.filter';
 import { PrismaExceptionFilter } from './common/filters/prisma-exception.filter';
+import { ZodValidationExceptionFilter } from './common/filters/zod-validation-exception.filter';
 import { AgentPolicyGuard } from './modules/policies/guards/agent-policy.guard';
 
 import { AuthModule } from './modules/auth/auth.module';
@@ -153,6 +154,7 @@ import { RequestIdInterceptor } from './common/interceptors/request-id.intercept
     { provide: APP_INTERCEPTOR, useClass: StructuredAuditInterceptor },
     { provide: APP_INTERCEPTOR, useClass: MetricsInterceptor },
     { provide: APP_FILTER, useClass: GlobalExceptionFilter },
+    { provide: APP_FILTER, useClass: ZodValidationExceptionFilter },
     { provide: APP_FILTER, useClass: PrismaExceptionFilter },
   ],
 })
