@@ -262,7 +262,7 @@ deliveries of a failing endpoint instead of hammering it.
 | `PUBLIC_RATE_LIMIT_MAX_REQUESTS` | `60` | Requests allowed per client IP per sliding window on public routes. |
 | `PUBLIC_RATE_LIMIT_WINDOW_SECONDS` | `60` | Sliding-window size for the public-route rate limiter. |
 | `PUBLIC_RATE_LIMIT_TRUST_PROXY` | `false` | Reads client IP from `X-Forwarded-For`. Only enable behind a trusted reverse proxy. |
-| `PUBLIC_RATE_LIMIT_CLIENT_IDENTIFIERS` | _(empty)_ | Comma-separated client identifiers to add to the IP bucket, currently `apiKey`. |
+| `PUBLIC_RATE_LIMIT_CLIENT_IDENTIFIERS` | _(empty)_ | Comma-separated client identifiers to add to the IP bucket (`ip`, `apiKey`). Unknown entries are ignored. |
 | `RATE_LIMIT_LOGIN_MAX` | `5` | `POST /auth/login` requests per client IP per window. |
 | `RATE_LIMIT_LOGIN_WINDOW_SECONDS` | `60` | Window of the login limit. |
 | `RATE_LIMIT_REFRESH_MAX` | `30` | `POST /auth/refresh` requests per client IP per window. |
@@ -289,6 +289,18 @@ deliveries of a failing endpoint instead of hammering it.
 | Variable              | Default                      | Description                                                   |
 | --------------------- | ---------------------------- | ------------------------------------------------------------- |
 | `METRICS_ALLOWED_IPS` | loopback and RFC 1918 ranges | Comma-separated CIDR ranges allowed to scrape `GET /metrics`. |
+
+### Graceful shutdown
+
+| Variable                   | Default | Description                                                                                                                                    |
+| -------------------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SHUTDOWN_GRACE_PERIOD_MS` | `20000` | How long in-flight HTTP requests and BullMQ jobs may run after SIGTERM/SIGINT before they are terminated. Positive integer in milliseconds. |
+
+### Health checks
+
+| Variable                          | Default | Description                                                                                       |
+| --------------------------------- | ------- | ------------------------------------------------------------------------------------------------- |
+| `HEALTH_CHECK_MIGRATIONS_ENABLED` | `true`  | `true` or `false`. Reports pending Prisma migrations in the diagnostic readiness check (`GET /api/v1/health/readiness`). Set to `false` to skip it, e.g. against a scratch database. |
 
 ### AI provider
 
