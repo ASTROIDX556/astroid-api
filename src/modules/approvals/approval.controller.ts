@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
+import { Body, Controller, Get, Headers, Param, Post, Query } from '@nestjs/common';
 import {
   ApiOperation,
   ApiTags,
@@ -6,6 +6,7 @@ import {
   ApiParam,
   ApiBody,
   ApiQuery,
+  ApiHeader,
 } from '@nestjs/swagger';
 import { ApprovalDecision, UserRole } from '@prisma/client';
 import { ApprovalService } from './approval.service';
@@ -27,6 +28,8 @@ import { PaginationQuery, paginationQuerySchema } from '../../common/helpers/pag
 import { ApiPaginationQuery } from '../../common/decorators/api-pagination-query.decorator';
 import { ApiEnvelope, ApiPaginatedEnvelope } from '../../common/decorators/api-envelope.decorator';
 import { ApiErrorResponses } from '../../common/decorators/api-error-responses.decorator';
+import { IDEMPOTENCY_KEY_HEADER } from '../../common/constants/headers';
+import { parseIdempotencyKey } from '../transactions/transaction.dto';
 
 @ApiTags('approvals')
 @ApiBearerAuth('access-token')
@@ -76,6 +79,11 @@ export class ApprovalController {
   })
   @ApiParam({ name: 'id', description: 'Proposal UUID', example: '018f0a1b-...' })
   @ApiBody({ type: DecideProposalDto })
+  @ApiHeader({
+    name: 'Idempotency-Key',
+    required: false,
+    description: 'Optional key for replay-safe approval decisions (1-128 allowed ASCII characters).',
+  })
   @ApiEnvelope(ProposalResponseDto, {
     description: 'Decision recorded (transaction may execute automatically)',
   })
@@ -91,8 +99,16 @@ export class ApprovalController {
     @CurrentUser() user: AuthenticatedUser,
     @Param('id') id: string,
     @Body(new ZodValidationPipe(decideProposalSchema)) body: DecideProposalInput,
+    @Headers(IDEMPOTENCY_KEY_HEADER) rawIdempotencyKey?: string,
   ) {
-    return this.approvalService.decide(user.organizationId, user.id, id, body);
+    const key = parseIdempotencyKey(rawIdempotencyKey);
+    return this.approvalService.decide(
+      user.organizationId,
+      user.id,
+      id,
+      body,
+      key ? { principalId: user.id, key } : undefined,
+    );
   }
 
   @Post(':id/approve')
@@ -106,6 +122,11 @@ export class ApprovalController {
   })
   @ApiParam({ name: 'id', description: 'Proposal UUID', example: '018f0a1b-...' })
   @ApiBody({ type: DecisionCommentDto })
+  @ApiHeader({
+    name: 'Idempotency-Key',
+    required: false,
+    description: 'Optional key for replay-safe approval decisions (1-128 allowed ASCII characters).',
+  })
   @ApiEnvelope(ProposalResponseDto, {
     description: 'Approval recorded (transaction may execute automatically)',
   })
@@ -120,11 +141,19 @@ export class ApprovalController {
     @CurrentUser() user: AuthenticatedUser,
     @Param('id') id: string,
     @Body(new ZodValidationPipe(decisionCommentSchema)) body: DecisionCommentInput,
+    @Headers(IDEMPOTENCY_KEY_HEADER) rawIdempotencyKey?: string,
   ) {
-    return this.approvalService.decide(user.organizationId, user.id, id, {
-      decision: ApprovalDecision.APPROVED,
-      comment: body.comment,
-    });
+    const key = parseIdempotencyKey(rawIdempotencyKey);
+    return this.approvalService.decide(
+      user.organizationId,
+      user.id,
+      id,
+      {
+        decision: ApprovalDecision.APPROVED,
+        comment: body.comment,
+      },
+      key ? { principalId: user.id, key } : undefined,
+    );
   }
 
   @Post(':id/reject')
@@ -137,6 +166,11 @@ export class ApprovalController {
   })
   @ApiParam({ name: 'id', description: 'Proposal UUID', example: '018f0a1b-...' })
   @ApiBody({ type: DecisionCommentDto })
+  @ApiHeader({
+    name: 'Idempotency-Key',
+    required: false,
+    description: 'Optional key for replay-safe approval decisions (1-128 allowed ASCII characters).',
+  })
   @ApiEnvelope(ProposalResponseDto, { description: 'Rejection recorded (transaction cancelled)' })
   @ApiErrorResponses({
     unauthorized: true,
@@ -149,10 +183,18 @@ export class ApprovalController {
     @CurrentUser() user: AuthenticatedUser,
     @Param('id') id: string,
     @Body(new ZodValidationPipe(decisionCommentSchema)) body: DecisionCommentInput,
+    @Headers(IDEMPOTENCY_KEY_HEADER) rawIdempotencyKey?: string,
   ) {
-    return this.approvalService.decide(user.organizationId, user.id, id, {
-      decision: ApprovalDecision.REJECTED,
-      comment: body.comment,
-    });
+    const key = parseIdempotencyKey(rawIdempotencyKey);
+    return this.approvalService.decide(
+      user.organizationId,
+      user.id,
+      id,
+      {
+        decision: ApprovalDecision.REJECTED,
+        comment: body.comment,
+      },
+      key ? { principalId: user.id, key } : undefined,
+    );
   }
 }

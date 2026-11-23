@@ -20,6 +20,7 @@ import {
   findMissingDeclaredSchemas,
   findMissingRequestSchemas,
   findOperationsMissingSecurity,
+  findOperationsWithUntypedRequestBody,
   findOperationsWithoutResponses,
   findOperationsWithoutSuccessSchema,
   findOperationsWithoutSummary,
@@ -147,6 +148,42 @@ describe('OpenAPI coverage checks on deliberately broken fixtures', () => {
     ]);
   });
 
+  it('names a request body without content, without a schema, or with an untyped schema', () => {
+    const findings = findOperationsWithUntypedRequestBody(
+      doc(
+        {
+          '/api/v1/a': {
+            post: {
+              requestBody: {
+                content: { 'application/json': { schema: { $ref: '#/components/schemas/CreateA' } } },
+              },
+              responses: ok(),
+            },
+          },
+          '/api/v1/b': {
+            post: {
+              requestBody: { content: { 'application/json': { schema: {} } } },
+              responses: ok(),
+            },
+          },
+          '/api/v1/c': {
+            post: { requestBody: { content: {} }, responses: ok() },
+          },
+          '/api/v1/d': {
+            get: { responses: ok() },
+          },
+        },
+        { CreateA: { type: 'object' } },
+      ),
+    );
+
+    expect(findings).toEqual([
+      'POST /api/v1/b (application/json) documents an untyped request body schema',
+      'POST /api/v1/c documents a request body without content',
+    ]);
+  });
+
+
   it('names the handler whose operation has no summary or no response', () => {
     const document = doc({
       '/api/v1/a': { get: { summary: 'Has a summary', responses: ok() } },
@@ -271,6 +308,7 @@ describe('OpenAPI coverage checks on deliberately broken fixtures', () => {
     expect(findUndocumentedRoutes(routes, document)).toEqual([]);
     expect(findUnservedOperations(routes, document)).toEqual([]);
     expect(findOperationsWithoutSuccessSchema(document)).toEqual([]);
+    expect(findOperationsWithUntypedRequestBody(document)).toEqual([]);
     expect(findOperationsMissingSecurity(routes, document)).toEqual([]);
     expect(findDanglingRefs(document)).toEqual([]);
   });

@@ -101,6 +101,8 @@ export class AuditController {
   @ApiQuery({ name: 'action', required: false, type: String, description: 'Filter by audit action type' })
   @ApiQuery({ name: 'resourceType', required: false, type: String, description: 'Filter by affected entity type (resource type)' })
   @ApiQuery({ name: 'resourceId', required: false, type: String, description: 'Filter by affected entity UUID' })
+  @ApiQuery({ name: 'outcome', required: false, enum: ['SUCCESS', 'FAILURE'], description: 'Filter by the derived result of the audited operation' })
+  @ApiQuery({ name: 'search', required: false, type: String, description: 'Case-insensitive search over action, entity, entityId and requestId' })
   @ApiQuery({ name: 'from', required: false, type: String, description: 'ISO 8601 start of the date range' })
   @ApiQuery({ name: 'to', required: false, type: String, description: 'ISO 8601 end of the date range' })
   @ApiPageOrCursorPaginatedEnvelope(AuditLogEntryDto, {
