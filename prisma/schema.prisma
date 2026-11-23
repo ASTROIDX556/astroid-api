@@ -215,6 +215,7 @@ model Organization {
   policies             Policy[]
   budgets              Budget[]
   budgetPeriodRecords  BudgetPeriodRecord[]
+  budgetReservations   BudgetReservation[]
   transactions         Transaction[]
   auditLogs            AuditLog[]
   apiKeys              ApiKey[]
@@ -415,6 +416,7 @@ model Budget {
   transactions Transaction[]
   budgetAlerts BudgetAlert[]
   periodRecords BudgetPeriodRecord[]
+  reservations BudgetReservation[]
 
   @@index([organizationId])
   @@index([parentBudgetId])
@@ -455,6 +457,44 @@ model BudgetPeriodRecord {
 // 7. Transaction
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// 6b. Budget reservation
+// ---------------------------------------------------------------------------
+
+// Lifecycle of an atomic budget reservation.
+enum ReservationStatus {
+  PENDING   // Amount is held; transaction not yet settled.
+  SETTLED   // Transaction completed; spent adjusted to actual amount.
+  RELEASED  // Transaction failed or cancelled; held amount returned.
+}
+
+// An atomic hold on a portion of a budget's remaining balance. The reservation
+// is created before the transaction executes, so concurrent requests cannot
+// both observe the same remaining headroom. Settlement adjusts the held amount
+// to the actual amount; release returns it in full.
+model BudgetReservation {
+  id             String            @id @default(uuid(7))
+  budgetId       String
+  organizationId String
+  amount         Decimal           @db.Decimal(30, 7)
+  settledAmount  Decimal?          @db.Decimal(30, 7)
+  status         ReservationStatus @default(PENDING)
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  budget       Budget        @relation(fields: [budgetId], references: [id], onDelete: Cascade)
+  organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  transactions Transaction[]
+
+  @@index([budgetId, status])
+  @@index([organizationId, createdAt])
+  @@map("budget_reservations")
+}
+
+// ---------------------------------------------------------------------------
+// 7. Transaction
+// ---------------------------------------------------------------------------
+
 model Transaction {
   id                String            @id @default(uuid(7))
   organizationId    String
@@ -462,6 +502,8 @@ model Transaction {
   agentId           String?
   policyId          String?
   budgetId          String?
+  // Tracks the atomic budget reservation that guarded this transaction.
+  budgetReservationId String?
   asset             String            @default("XLM")
   amount            Decimal           @db.Decimal(30, 7)
   senderAddress     String?
@@ -485,6 +527,7 @@ model Transaction {
   agent         Agent?         @relation(fields: [agentId], references: [id])
   policy        Policy?        @relation(fields: [policyId], references: [id])
   budget        Budget?        @relation(fields: [budgetId], references: [id])
+  budgetReservation BudgetReservation? @relation(fields: [budgetReservationId], references: [id])
   proposal      Proposal?
   memoryRecords MemoryRecord[]
 
@@ -502,6 +545,7 @@ model Transaction {
   @@index([agentId, createdAt])
   @@index([organizationId, status, createdAt])
   @@index([agentId, status, createdAt])
+  @@index([budgetReservationId])
   @@map("transactions")
 }
 

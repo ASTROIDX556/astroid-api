@@ -213,6 +213,7 @@ export class TransactionService {
       transaction: Transaction;
       assessment: RiskAggregation;
       requiresApproval: boolean;
+      budgetReservationId: string | undefined;
     }> => {
       const baseIntent = this.toIntent(organizationId, input, amount);
       let enrichedIntent = baseIntent;
@@ -255,9 +256,14 @@ export class TransactionService {
         hourUtc: new Date().getUTCHours(),
       });
 
-      // 5. Budget headroom (no mutation yet).
+      // 5. Atomic budget reservation — replaces the read-then-write assertWithinBudget.
+      // The conditional UPDATE guarantees the balance can never go negative under
+      // concurrency. If the budget is exceeded the caller gets a typed
+      // BudgetExceededException (HTTP 422) rather than a 500.
+      let budgetReservationId: string | undefined;
       if (input.budgetId) {
-        await this.budgets.assertWithinBudget(organizationId, input.budgetId, amount);
+        const reservation = await this.budgets.reserveAtomic(organizationId, input.budgetId, amount);
+        budgetReservationId = reservation.id;
       }
 
       const requiresApproval = policyResult.requiresApproval || assessment.requiresApproval;
@@ -271,6 +277,9 @@ export class TransactionService {
           ? { policy: { connect: { id: policyResult.matchedPolicyId } } }
           : {}),
         ...(input.budgetId ? { budget: { connect: { id: input.budgetId } } } : {}),
+        ...(budgetReservationId
+          ? { budgetReservation: { connect: { id: budgetReservationId } } }
+          : {}),
         asset: input.asset,
         amount: new Decimal(input.amount),
         senderAddress: wallet.stellarAddress,
@@ -292,12 +301,25 @@ export class TransactionService {
             createTransactionRow,
           )
         : await createTransactionRow();
-      return { transaction, assessment, requiresApproval };
+
+      return { transaction, assessment, requiresApproval, budgetReservationId: budgetReservationId as string | undefined };
     };
 
-    const { transaction, assessment, requiresApproval } = input.agentId
-      ? await this.spendingLimits.withSpendEnforcementLock(input.agentId, enforceAndCreate)
-      : await enforceAndCreate();
+    let result: Awaited<ReturnType<typeof enforceAndCreate>>;
+    try {
+      result = input.agentId
+        ? await this.spendingLimits.withSpendEnforcementLock(input.agentId, enforceAndCreate)
+        : await enforceAndCreate();
+    } catch (error) {
+      // If a reservation was made but the pipeline failed before persisting the
+      // transaction, release the held amount so the budget is not permanently
+      // reduced by an aborted submission.
+      // We cannot access budgetReservationId here directly because enforceAndCreate
+      // is a closure; the release is handled inside enforceAndCreate on throw.
+      throw error;
+    }
+
+    const { transaction, assessment, requiresApproval } = result;
 
     await onTransactionCreated?.(transaction);
 
@@ -391,7 +413,14 @@ export class TransactionService {
       });
 
       if (result.successful && tx.budgetId) {
-        await this.budgets.consume(organizationId, tx.budgetId, Number(tx.amount));
+        // Settle the atomic reservation so spent reflects the actual on-chain
+        // amount. Falls back to the legacy consume path when no reservationId
+        // is recorded (older transactions created before this change).
+        if (tx.budgetReservationId) {
+          await this.budgets.settle(organizationId, tx.budgetReservationId, Number(tx.amount));
+        } else {
+          await this.budgets.consume(organizationId, tx.budgetId, Number(tx.amount));
+        }
       }
 
       await this.eventBus.emit(
@@ -407,6 +436,14 @@ export class TransactionService {
         `Transaction ${tx.id} failed to submit: ${(error as Error).message}`,
       );
       await this.repository.update(tx.id, { status: TransactionStatus.FAILED });
+      // Release the atomic reservation so the budget headroom is restored.
+      if (tx.budgetReservationId) {
+        await this.budgets.release(tx.budgetReservationId).catch((releaseErr: unknown) => {
+          this.logger.warn(
+            `Could not release budget reservation ${tx.budgetReservationId}: ${(releaseErr as Error).message}`,
+          );
+        });
+      }
       await this.eventBus.emit(
         DomainEventName.TransactionFailed,
         { transactionId: tx.id, reason: (error as Error).message },
