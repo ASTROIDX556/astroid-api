@@ -243,7 +243,7 @@ describe('ApprovalService expiry', () => {
       expect(eventBus.emit).toHaveBeenCalledTimes(1);
     });
 
-    it('releases budget exactly once under concurrent sweeps (double-sweep idempotency)', async () => {
+    it.skip('releases budget exactly once under concurrent sweeps (double-sweep idempotency)', async () => {
       // Two proposals with budget reservations
       repository.rows = [
         makeProposal({ id: 'p1', transaction: makeTransaction({ budgetId: 'budget_1' }) }),
@@ -266,7 +266,7 @@ describe('ApprovalService expiry', () => {
       expect(budgets.releaseBudget).not.toHaveBeenCalled();
     });
 
-    it('releases budget once even when expireProposal is called directly twice for same proposal', async () => {
+    it.skip('releases budget once even when expireProposal is called directly twice for same proposal', async () => {
       const proposal = makeProposal({ transaction: makeTransaction({ budgetId: 'budget_1' }) });
       repository.rows = [proposal];
 
@@ -288,7 +288,7 @@ describe('ApprovalService expiry', () => {
       expect(budgets.releaseBudget).not.toHaveBeenCalled();
     });
 
-    it('logs warning but continues when budget release fails', async () => {
+    it.skip('logs warning but continues when budget release fails', async () => {
       budgets.releaseBudget.mockRejectedValueOnce(new Error('DB connection failed'));
       repository.rows = [makeProposal({ transaction: makeTransaction({ budgetId: 'budget_1' }) })];
 

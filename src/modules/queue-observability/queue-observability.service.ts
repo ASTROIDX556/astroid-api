@@ -1,5 +1,6 @@
 import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { Queue } from 'bullmq';
 import { Queues, QueueName } from '../../queues/queues.constants';
 import { QueueObservabilityConfig } from '../../config/queue-observability.config';
 import { redisConfig } from '../../config/redis.config';
@@ -32,8 +33,8 @@ export interface QueueObservabilityResponse {
 
 /** Minimal queue interface for observability - avoids BullMQ Queue circular deps. */
 interface QueueHandle {
-  getJobCounts(...types: string[]): Promise<Record<string, number>>;
-  getJobs(types: string[], start: number, end: number, asc: boolean): Promise<Array<{ timestamp?: number }>>;
+  getJobCounts(...types: Array<'waiting' | 'active' | 'delayed' | 'completed' | 'failed'>): Promise<Record<string, number>>;
+  getJobs(types?: 'waiting' | 'active' | 'delayed' | 'completed' | 'failed' | Array<'waiting' | 'active' | 'delayed' | 'completed' | 'failed'>, start?: number, end?: number, asc?: boolean): Promise<Array<{ timestamp?: number }>>;
   getFailed(start: number, end: number): Promise<Array<{ id: string | number; name: string; failedReason?: string; attemptsMade?: number; processedOn?: number }>>;
   close(): Promise<void>;
 }
@@ -54,7 +55,6 @@ export class QueueObservabilityService implements OnModuleDestroy {
     if (existing) {
       return existing;
     }
-    const { Queue } = require('bullmq');
     const { host, port, password, db } = redisConfig();
     const queue = new Queue(queueName, {
       connection: { host, port, password: password || undefined, db },
