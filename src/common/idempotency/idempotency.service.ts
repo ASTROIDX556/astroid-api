@@ -19,6 +19,7 @@ import {
   hashIdempotencyKey,
 } from './request-fingerprint';
 import {
+  IDEMPOTENT_REPLAY,
   IDEMPOTENT_REPLAY_REQUEST_ID,
   IDEMPOTENT_REPLAY_STATUS,
 } from './idempotency.constants';
@@ -352,6 +353,7 @@ export class IdempotencyService {
     if (response.requestId) {
       RequestContext.setData(IDEMPOTENT_REPLAY_REQUEST_ID, response.requestId);
     }
+    RequestContext.setData(IDEMPOTENT_REPLAY, true);
     return response.body as T;
   }
 

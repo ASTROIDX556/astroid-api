@@ -4,6 +4,8 @@ import { ExecutionContext, CallHandler } from '@nestjs/common';
 import { of } from 'rxjs';
 import { REQUEST_ID_HEADER } from '../constants/headers';
 import { Paginated } from '../interfaces/api-response.interface';
+import { RequestContext } from '../context/request-context';
+import { IDEMPOTENT_REPLAY, IDEMPOTENT_REPLAY_STATUS } from '../idempotency/idempotency.constants';
 
 describe('ResponseInterceptor', () => {
   let interceptor: ResponseInterceptor<unknown>;
@@ -20,6 +22,7 @@ describe('ResponseInterceptor', () => {
         }),
         getResponse: () => ({
           setHeader: () => undefined,
+          status: () => undefined,
         }),
       }),
     } as unknown as ExecutionContext;
@@ -87,6 +90,38 @@ describe('ResponseInterceptor', () => {
       const result = await interceptor.intercept(context, handler).toPromise();
       if (!result) throw new Error('Result should be defined');
       expect(result.requestId).toBe('unknown');
+    });
+
+    it('marks replayed responses with meta.idempotentReplay: true', async () => {
+      await RequestContext.run(
+        {
+          identity: {
+            requestId: 'req-duplicate',
+            correlationId: 'corr-1',
+            traceId: 'trace-1',
+            method: 'POST',
+            path: '/transactions',
+            url: 'http://localhost/transactions',
+            ip: null,
+            userAgent: null,
+            startedAt: Date.now(),
+          },
+          data: {
+            [IDEMPOTENT_REPLAY]: true,
+            [IDEMPOTENT_REPLAY_STATUS]: 201,
+          },
+          timings: {},
+        } as Parameters<typeof RequestContext.run>[0],
+        async () => {
+          const context = createMockContext('req-duplicate');
+          const handler = createMockHandler({ id: 'tx-1' });
+
+          const result = await interceptor.intercept(context, handler).toPromise();
+          if (!result) throw new Error('Result should be defined');
+          expect(result.meta).toEqual({ idempotentReplay: true });
+          expect(result.requestId).toBe('req-duplicate');
+        },
+      );
     });
   });
 });
