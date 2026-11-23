@@ -318,6 +318,8 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
           timeoutMs: this.config.webhookHttpTimeoutMs,
         });
 
+        // Capture responseStatus IMMEDIATELY after the response is received
+        // This must be before any throw so it's available in catch block
         responseStatus = response.status;
         const succeeded = response.status >= 200 && response.status < 300;
         await this.recordAttempt({
