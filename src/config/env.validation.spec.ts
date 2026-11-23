@@ -1,6 +1,8 @@
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
 import { describe, expect, it } from 'vitest';
+import { z } from 'zod';
+import * as envValidation from './env.validation';
 import {
   assertValidEnvironment,
   environmentSchema,
@@ -68,6 +70,36 @@ describe('assertValidEnvironment', () => {
     expect(assertValidEnvironment({ ...REQUIRED_ENV, WEBHOOK_MAX_ATTEMPTS: '3' }).WEBHOOK_MAX_ATTEMPTS).toBe(3);
     const error = validationError({ ...REQUIRED_ENV, WEBHOOK_MAX_ATTEMPTS: '0' });
     expect(error.issues.map((issue) => issue.key)).toContain('WEBHOOK_MAX_ATTEMPTS');
+  });
+
+  it('validates the shutdown grace period at startup, together with the other problems', () => {
+    const error = validationError({
+      ...REQUIRED_ENV,
+      SHUTDOWN_GRACE_PERIOD_MS: 'soon',
+      PORT: 'not-a-port',
+    });
+
+    expect(error.issues.map((issue) => issue.key).sort()).toEqual(['PORT', 'SHUTDOWN_GRACE_PERIOD_MS']);
+    expect(assertValidEnvironment({ ...REQUIRED_ENV }).SHUTDOWN_GRACE_PERIOD_MS).toBe(20_000);
+  });
+
+  it('validates the health migration toggle and the public rate-limit identifiers', () => {
+    const defaults = assertValidEnvironment({ ...REQUIRED_ENV });
+    expect(defaults.HEALTH_CHECK_MIGRATIONS_ENABLED).toBe(true);
+    expect(defaults.PUBLIC_RATE_LIMIT_CLIENT_IDENTIFIERS).toBe('');
+
+    const configured = assertValidEnvironment({
+      ...REQUIRED_ENV,
+      HEALTH_CHECK_MIGRATIONS_ENABLED: 'false',
+      PUBLIC_RATE_LIMIT_CLIENT_IDENTIFIERS: 'ip,apiKey',
+    });
+    expect(configured.HEALTH_CHECK_MIGRATIONS_ENABLED).toBe(false);
+    expect(configured.PUBLIC_RATE_LIMIT_CLIENT_IDENTIFIERS).toBe('ip,apiKey');
+
+    const error = validationError({ ...REQUIRED_ENV, HEALTH_CHECK_MIGRATIONS_ENABLED: 'maybe' });
+    expect(error.issues).toEqual([
+      { key: 'HEALTH_CHECK_MIGRATIONS_ENABLED', message: 'must be one of: true, false' },
+    ]);
   });
 
   it('accepts the documented .env.example as-is', () => {
@@ -182,6 +214,25 @@ describe('assertValidEnvironment', () => {
 
 describe('configuration documentation', () => {
   const schemaKeys = Object.keys(environmentSchema.innerType().shape);
+
+  it('validates at startup every variable of every configuration slice schema', () => {
+    const startupKeys = new Set(schemaKeys);
+    const missing: string[] = [];
+    let sliceCount = 0;
+
+    // A slice schema missing from `environmentSchema` is only validated later,
+    // from inside Nest's module initialisation, and not reported with the rest.
+    for (const [name, exported] of Object.entries(envValidation)) {
+      if (!(exported instanceof z.ZodObject)) continue;
+      sliceCount += 1;
+      for (const key of Object.keys(exported.shape as Record<string, unknown>)) {
+        if (!startupKeys.has(key)) missing.push(`${name}.${key}`);
+      }
+    }
+
+    expect(sliceCount).toBeGreaterThan(10);
+    expect(missing).toEqual([]);
+  });
 
   it('documents every validated variable in docs/configuration.md', () => {
     const doc = readFileSync(resolve(ROOT, 'docs', 'configuration.md'), 'utf8');
