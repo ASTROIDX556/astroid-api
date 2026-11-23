@@ -209,8 +209,9 @@ letters, digits, dots, underscores, tildes or hyphens) to make submission
 replay-safe. A repeat request with the same key and payload returns the original
 result without persisting or submitting a second transaction; a repeat that
 arrives while the first is still processing waits up to
-`IDEMPOTENCY_WAIT_TIMEOUT_MS` for that result. Reusing a key with a different
-payload returns HTTP `409` (`CONFLICT`). Keys are scoped to the authenticated
+`IDEMPOTENCY_WAIT_TIMEOUT_MS` for that result. Replaying a completed request
+carries `Idempotency-Replayed: true`. Reusing a key with a different payload
+returns HTTP `422` (`UNPROCESSABLE_ENTITY`). Keys are scoped to the authenticated
 principal and expire after `IDEMPOTENCY_KEY_TTL_HOURS`. See
 `docs/transaction-idempotency.md`.
 

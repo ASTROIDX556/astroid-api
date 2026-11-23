@@ -61,6 +61,7 @@ async function prepare(
     increment?: ReturnType<typeof vi.fn>;
     apiKeyScopes?: string[];
     isApiKey?: boolean;
+    rateLimitPerMinute?: number | null;
   } = {},
 ) {
   const increment = opts.increment ?? vi.fn().mockResolvedValue(UNBLOCKED);
@@ -83,6 +84,9 @@ async function prepare(
       isApiKey: opts.isApiKey ?? true,
       scopes: opts.apiKeyScopes,
     };
+  }
+  if (opts.rateLimitPerMinute !== undefined) {
+    request.apiKey = { id: 'key-1', rateLimitPerMinute: opts.rateLimitPerMinute };
   }
   const context = buildContext(request, response);
   const { getTracker, generateKey } = (
@@ -350,6 +354,33 @@ describe('AstroidThrottlerGuard', () => {
       expect(response.header).toHaveBeenCalledWith('X-RateLimit-Limit-api', 10);
       expect(response.header).toHaveBeenCalledWith('X-RateLimit-Remaining-api', 9);
       expect(response.header).toHaveBeenCalledWith('X-RateLimit-Reset-api', 60);
+    });
+  });
+
+  describe('per-key overrides', () => {
+    it('replaces the tier budget with the API key override', async () => {
+      const { increment, call } = await prepare({ rateLimitPerMinute: 600 });
+
+      await expect(call(throttlerNamed('api'))).resolves.toBe(true);
+
+      expect(increment).toHaveBeenCalledWith(expect.any(String), 60_000, 600, 60_000, 'api');
+    });
+
+    it('keeps the tier budget when the key has no override', async () => {
+      const { increment, call } = await prepare({ rateLimitPerMinute: null });
+
+      await expect(call(throttlerNamed('api'))).resolves.toBe(true);
+
+      expect(increment).toHaveBeenCalledWith(expect.any(String), 60_000, 10, 60_000, 'api');
+    });
+
+    it('does not apply the per-window override to a burst window', async () => {
+      const { increment, call } = await prepare({ rateLimitPerMinute: 600 });
+      const burst = throttlerNamed('api-burst');
+
+      await expect(call(burst)).resolves.toBe(true);
+
+      expect(increment).toHaveBeenCalledWith(expect.any(String), 60_000, 10, 60_000, 'api-burst');
     });
   });
 

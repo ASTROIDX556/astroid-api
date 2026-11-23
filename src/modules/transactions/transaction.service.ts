@@ -136,7 +136,8 @@ export class TransactionService {
 
     if (!reservation.created) {
       if (reservation.record.requestHash !== requestFingerprint) {
-        throw new ConflictException(
+        throw new DomainException(
+          ErrorCode.IDEMPOTENCY_KEY_MISMATCH,
           'Idempotency-Key was already used with a different transaction payload',
         );
       }

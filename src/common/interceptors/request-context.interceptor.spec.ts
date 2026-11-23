@@ -204,6 +204,51 @@ describe('RequestContextInterceptor', () => {
     expect(capturedCorrelation).toBe(capturedRequestId);
   });
 
+  it('replaces a malformed correlation id instead of propagating it', async () => {
+    let capturedCorrelation: string | undefined;
+    let capturedTrace: string | undefined;
+
+    const mockExecutionContext = {
+      switchToHttp: () => ({
+        getRequest: () => ({
+          headers: {
+            'x-request-id': 'req-valid',
+            // Control characters would allow log injection.
+            'x-correlation-id': 'bad\nvalue',
+          },
+          params: {},
+          body: {},
+          query: {},
+          method: 'GET',
+          path: '/api/v1/status',
+          originalUrl: '/api/v1/status',
+          url: '/api/v1/status',
+          socket: {},
+        }),
+      }),
+    } as unknown as ExecutionContext;
+
+    const mockCallHandler: CallHandler = {
+      handle: () => {
+        capturedCorrelation = RequestContext.getCorrelationId();
+        capturedTrace = RequestContext.getTraceId();
+        return of({ ok: true });
+      },
+    };
+
+    await new Promise<void>((resolve, reject) => {
+      interceptor.intercept(mockExecutionContext, mockCallHandler).subscribe({
+        next: () => resolve(),
+        error: (err) => reject(err),
+      });
+    });
+
+    expect(capturedCorrelation).toBeDefined();
+    expect(capturedCorrelation).not.toContain('\n');
+    expect(capturedCorrelation).not.toBe('bad\nvalue');
+    expect(capturedTrace).toBe(capturedCorrelation);
+  });
+
   it('should resolve an implicit organization/agent principal for service traffic', async () => {
     let capturedOrg: string | undefined;
     let capturedAgent: string | undefined;

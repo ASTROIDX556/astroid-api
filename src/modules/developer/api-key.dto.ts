@@ -17,6 +17,8 @@ export const createApiKeySchema = z
     permissions: z.array(z.string().max(60)).max(50).default([]),
     allowedIps: z.array(z.string().max(45)).max(50).default([]),
     expiresInDays: z.number().int().positive().max(365).optional(),
+    // Optional per-key request budget (requests per rate-limit window).
+    rateLimitPerMinute: z.number().int().min(1).max(60_000).optional(),
   })
   .strict();
 export type CreateApiKeyInput = z.input<typeof createApiKeySchema>;
@@ -59,6 +61,14 @@ export class CreateApiKeyDto {
 
   @ApiPropertyOptional({ description: 'Optional expiry in days (max 365)' })
   expiresInDays?: number;
+
+  @ApiPropertyOptional({
+    description:
+      'Optional per-key request budget (requests per rate-limit window). Omit to be governed by the key scope tier and the global default.',
+    example: 600,
+    minimum: 1,
+  })
+  rateLimitPerMinute?: number;
 }
 
 export class RotateApiKeyDto {
@@ -167,6 +177,13 @@ export class ApiKeyResponseDto {
     example: ['203.0.113.7'],
   })
   allowedIps?: string[];
+
+  @ApiPropertyOptional({
+    description:
+      'Per-key request budget (requests per rate-limit window). Null when the key uses the scope-tier default.',
+    example: 600,
+  })
+  rateLimitPerMinute?: number | null;
 
   @ApiPropertyOptional({ description: 'Moment the key was last used', example: '2026-01-15T10:30:00.000Z' })
   lastUsedAt?: string;

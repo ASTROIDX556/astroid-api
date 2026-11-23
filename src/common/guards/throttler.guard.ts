@@ -53,7 +53,36 @@ export class AstroidThrottlerGuard extends ThrottlerGuard {
       return true;
     }
 
-    return super.handleRequest(requestProps);
+    // A per-key budget replaces the tier budget for that key only. Burst
+    // throttlers keep their short window, so the steady-state value is not
+    // meaningful there and is left untouched.
+    const override = throttler.name?.endsWith('-burst')
+      ? undefined
+      : this.apiKeyRateLimitOverride(context);
+    if (override === undefined) {
+      return super.handleRequest(requestProps);
+    }
+
+    return super.handleRequest({
+      ...requestProps,
+      limit: override,
+      throttler: { ...throttler, limit: override },
+    });
+  }
+
+  /**
+   * Request budget stored on the authenticated API key record, if any. Only
+   * API-key principals carry one; a JWT caller keeps the tier budget. Invalid
+   * stored values are ignored rather than enforced as a zero budget.
+   */
+  private apiKeyRateLimitOverride(context: ExecutionContext): number | undefined {
+    const request = context.switchToHttp().getRequest<{
+      apiKey?: { rateLimitPerMinute?: number | null };
+    }>();
+    const override = request.apiKey?.rateLimitPerMinute;
+    return typeof override === 'number' && Number.isInteger(override) && override > 0
+      ? override
+      : undefined;
   }
 
   /**

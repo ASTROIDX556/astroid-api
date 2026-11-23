@@ -23,7 +23,8 @@ import {
   IDEMPOTENT_REPLAY_REQUEST_ID,
   IDEMPOTENT_REPLAY_STATUS,
 } from './idempotency.constants';
-import { ConflictException } from '../exceptions/domain.exception';
+import { ConflictException, DomainException } from '../exceptions/domain.exception';
+import { ErrorCode } from '../constants/error-codes';
 import { RequestContext } from '../context/request-context';
 
 const MIN_LOCK_TTL_MS = 30_000;
@@ -370,7 +371,8 @@ export class IdempotencyService {
     const reservation = await this.reserve(input);
     if (!reservation.created) {
       if (reservation.record.requestHash !== input.requestFingerprint) {
-        throw new ConflictException(
+        throw new DomainException(
+          ErrorCode.IDEMPOTENCY_KEY_MISMATCH,
           'Idempotency-Key was already used with a different request payload',
         );
       }

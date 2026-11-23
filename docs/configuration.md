@@ -112,6 +112,7 @@ invalidation rules.
 | ------------------- | ------------- | ----------- |
 | `BALANCE_CACHE_TTL` | `30`          | Staleness window in seconds (1–3600) for a cached wallet balance. A terminal transaction event deletes the entry immediately, so this only bounds the staleness after an external balance change. |
 | `BALANCE_CACHE_ENV` | `NODE_ENV`    | Namespace folded into every balance cache key, so deployments sharing a Redis instance never read each other's entries. |
+| `LOW_XLM_THRESHOLD` | `10`          | Native (XLM) balance below which a wallet is reported as low. Positive number; validated at boot. |
 
 ### Authentication
 
@@ -325,4 +326,5 @@ deliveries of a failing endpoint instead of hammering it.
 | Variable               | Default              | Description                                                                                  |
 | ---------------------- | -------------------- | -------------------------------------------------------------------------------------------- |
 | `ENCRYPTION_KEY`       | development-only key | 32-byte key: 64 hex characters, 32 raw bytes, or base64 of 32 bytes. Required in production. |
+| `ENCRYPTION_MASTER_KEY` | _(unset)_           | Legacy alias used only when `ENCRYPTION_KEY` is absent. |
 | `ENCRYPTION_ALGORITHM` | `aes-256-gcm`        | Cipher algorithm.                                                                            |

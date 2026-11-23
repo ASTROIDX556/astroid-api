@@ -53,13 +53,17 @@ export class RequestContextInterceptor implements NestInterceptor {
       RequestContext.getRequestId() ?? req.headers[REQUEST_ID_HEADER],
     );
 
-    const traceId =
-      (req.headers[CORRELATION_ID_HEADER] as string | undefined) ??
-      requestId;
-
+    // An inbound correlation id is accepted only when it is well-formed:
+    // anything else (control characters, overlong values, non-strings) is
+    // replaced by a freshly generated id so it can never pollute logs.
+    const inboundCorrelation = req.headers[CORRELATION_ID_HEADER];
     const correlationId =
-      (req.headers[CORRELATION_ID_HEADER] as string | undefined) ??
-      requestId;
+      inboundCorrelation === undefined
+        ? requestId
+        : resolveRequestId(
+            Array.isArray(inboundCorrelation) ? inboundCorrelation[0] : inboundCorrelation,
+          );
+    const traceId = correlationId;
 
     const user = req.user;
 

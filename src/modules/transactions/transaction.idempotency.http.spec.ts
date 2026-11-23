@@ -224,7 +224,7 @@ describe('transaction creation idempotency over HTTP', () => {
     expect(created).toBe(1);
   });
 
-  it('returns 409 with a stable error code for a divergent payload', async () => {
+  it('returns 422 with a stable error code for a divergent payload', async () => {
     created = 0;
     const key = 'integration-divergent-1';
     await post(key, basePayload);
@@ -232,8 +232,8 @@ describe('transaction creation idempotency over HTTP', () => {
     const response = await post(key, { ...basePayload, amount: '51' });
     const body = (await response.json()) as { status: number; code: string };
 
-    expect(response.status).toBe(409);
-    expect(body).toMatchObject({ status: 409, code: ErrorCode.IDEMPOTENCY_KEY_MISMATCH });
+    expect(response.status).toBe(422);
+    expect(body).toMatchObject({ status: 422, code: ErrorCode.IDEMPOTENCY_KEY_MISMATCH });
     expect(created).toBe(1);
   });
 
@@ -242,7 +242,11 @@ describe('transaction creation idempotency over HTTP', () => {
     const key = 'integration-concurrent-1';
     const responses = await Promise.all([post(key), post(key), post(key)]);
 
-    expect(responses.map((response) => response.status).every((status) => status === 201 || status === 409)).toBe(true);
+    expect(
+      responses
+        .map((response) => response.status)
+        .every((status) => status === 201 || status === 409 || status === 422),
+    ).toBe(true);
     expect(created).toBe(1);
     expect(store.rows.size).toBe(1);
   });

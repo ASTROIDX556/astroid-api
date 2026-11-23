@@ -57,6 +57,9 @@ export const redisEnvSchema = z.object({
 });
 
 export const balanceCacheEnvSchema = z.object({
+  // Native (XLM) balance below which a wallet is flagged as low in balance
+  // reporting. Validated here so a malformed value fails at boot.
+  LOW_XLM_THRESHOLD: z.coerce.number().positive().default(10),
   // Seconds a cached Stellar balance may be served before it is re-read from
   // the RPC. Keep it short: a confirmed transaction deletes the key, so the TTL
   // only bounds the staleness window when an invalidation is missed.
@@ -371,6 +374,9 @@ export const INSECURE_DEFAULT_ENCRYPTION_KEY =
   '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 
 export const encryptionEnvSchema = z.object({
+  // Legacy alias still honoured by `EncryptionService` when `ENCRYPTION_KEY`
+  // is absent. Validated in the same slice so a malformed value fails at boot.
+  ENCRYPTION_MASTER_KEY: z.string().optional(),
   ENCRYPTION_KEY: z
     .string()
     .default(INSECURE_DEFAULT_ENCRYPTION_KEY)

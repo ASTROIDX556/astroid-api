@@ -262,7 +262,7 @@ describe('IdempotencyService', () => {
 
     await expect(
       service.enqueueOnce(reserveInput({ requestFingerprint: fingerprint('51') }), vi.fn()),
-    ).rejects.toMatchObject({ status: 409 });
+    ).rejects.toMatchObject({ status: 422 });
   });
 
   it('treats an expired record as reusable', async () => {
