@@ -14,30 +14,14 @@ const createDestinationPolicy = () => ({
       method: 'POST',
       headers: options.headers,
       body: options.body,
-      // Don't use AbortSignal.timeout in tests to avoid flakiness
-      signal: options.signal,
     });
-    // Create a proper Headers-like object with entries() method
-    const headersObj: Record<string, string> = {};
+    // Return headers as a plain Record to match WebhookResponse type
+    const headers: Record<string, string | string[] | undefined> = {};
     if (response.headers) {
       for (const [key, value] of Object.entries(response.headers)) {
-        headersObj[key.toLowerCase()] = value;
+        headers[key.toLowerCase()] = value;
       }
     }
-    const headers = {
-      entries: () => Object.entries(headersObj),
-      get: (name: string) => headersObj[name.toLowerCase()],
-      has: (name: string) => name.toLowerCase() in headersObj,
-      set: (name: string, value: string) => { headersObj[name.toLowerCase()] = value; },
-      append: (name: string, value: string) => { headersObj[name.toLowerCase()] = value; },
-      delete: (name: string) => { delete headersObj[name.toLowerCase()]; },
-      forEach: (callback: (value: string, name: string) => void) => {
-        Object.entries(headersObj).forEach(([k, v]) => callback(v, k));
-      },
-      keys: () => Object.keys(headersObj).values(),
-      values: () => Object.values(headersObj).values(),
-      [Symbol.iterator]: () => Object.entries(headersObj).values(),
-    };
     return { status: response.status, headers };
   },
 });
