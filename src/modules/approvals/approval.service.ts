@@ -283,20 +283,8 @@ export class ApprovalService {
 
       proposalIds.push(proposal.id);
 
-      if (this.budgets && proposal.transaction?.budgetId) {
-        try {
-          await this.budgets.releaseBudget(
-            proposal.organizationId,
-            proposal.transaction.budgetId,
-            Number(proposal.transaction.amount),
-          );
-        } catch (error) {
-          this.logger.warn(
-            `Could not release budget for expired proposal ${proposal.id}: ${(error as Error).message}`,
-          );
-        }
-      }
-
+      // Cancelling the transaction releases its budget reservation
+      // (idempotently) — the same path as a manual rejection.
       if (proposal.transactionId) {
         try {
           await this.transactions.cancel(
