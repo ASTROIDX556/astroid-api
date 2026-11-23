@@ -6,7 +6,11 @@ import {
 } from '@nestjs/common';
 import { ZodType, ZodError } from 'zod';
 import { ErrorCode } from '../constants/error-codes';
-import { formatZodError, ValidationErrorDetail } from '../validators/zod-error';
+import {
+  formatZodError,
+  formatZodPath,
+  ValidationErrorDetail,
+} from '../validators/zod-error';
 
 export interface ZodValidationPipeOptions {
   errorMap?: (error: ZodError) => ValidationErrorDetail[];
@@ -71,7 +75,7 @@ export class ZodValidationPipe<T> implements PipeTransform<unknown, T> {
     }
 
     const issues = error.issues.map((issue) => {
-      const path = issue.path.join('.');
+      const path = formatZodPath(issue.path);
       const code = issue.code;
       let message = issue.message;
       if (this.options?.customMessages) {
@@ -83,7 +87,7 @@ export class ZodValidationPipe<T> implements PipeTransform<unknown, T> {
           message = this.options.customMessages[code];
         }
       }
-      return { path, message };
+      return { path, code, message };
     });
 
     if (issues.length > 0) {

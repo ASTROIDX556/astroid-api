@@ -177,7 +177,7 @@ describe('validateSplitConfiguration', () => {
 
     const details = exception.details as Array<{ path: string; message: string }>;
     expect(details.length).toBeGreaterThanOrEqual(3);
-    expect(details.map((detail) => detail.path)).toContain('1.weight');
+    expect(details.map((detail) => detail.path)).toContain('[1].weight');
   });
 
   it('throws for an empty split', () => {

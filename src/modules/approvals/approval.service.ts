@@ -1,5 +1,6 @@
 import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
-import { ConfigType } from '@nestjs/config';
+import { ConfigService, ConfigType } from '@nestjs/config';
+import { createHash } from 'node:crypto';
 import { ApprovalDecision, Prisma, Proposal, ProposalStatus, Transaction } from '@prisma/client';
 import { ApprovalRepository } from './approval.repository';
 import { DecideProposalInput } from './approval.dto';
@@ -24,8 +25,21 @@ import {
   InvalidProposalTransitionException,
 } from './approval-state-machine';
 import { approvalConfig } from '../../config/approval.config';
+import { idempotencyConfig, IdempotencyConfig } from '../../config/idempotency.config';
+import { ApprovalIdempotencyRepository } from './approval-idempotency.repository';
 
 const SORTABLE = ['createdAt', 'status', 'approvalType'];
+const DECISION_OPERATION = 'approvals.decide';
+
+type ProposalDetail = NonNullable<Awaited<ReturnType<ApprovalRepository['findById']>>>;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function sha256(value: string): string {
+  return createHash('sha256').update(value).digest('hex');
+}
 
 /**
  * Maximum number of proposals a single sweep transitions. A bounded batch
@@ -73,6 +87,10 @@ export class ApprovalService {
     @Optional()
     @Inject(approvalConfig.KEY)
     private readonly approvalConfiguration?: ConfigType<typeof approvalConfig>,
+    // Always provided by ApprovalModule (no @Optional, so DI fails loudly if it
+    // is missing); typed optional only because it follows optional parameters.
+    private readonly idempotency?: ApprovalIdempotencyRepository,
+    @Optional() private readonly config?: ConfigService,
   ) {}
 
   async list(organizationId: string, query: PaginationQuery) {
@@ -96,55 +114,89 @@ export class ApprovalService {
   }
 
   /**
-   * Moves every pending proposal whose `expiresAt` is at or before `now` to
-   * `EXPIRED`, emitting `proposal.expired` once per transition.
+   * Records a reviewer's decision and advances the proposal state machine.
    *
-   * The candidate read is only a hint: each write is a conditional
-   * `updateMany(status = 'PENDING')`, so a proposal decided concurrently is
-   * skipped (and emits nothing) instead of being overwritten. The returned
-   * count is the number of rows this sweep actually changed.
-   *
-   * Called by the repeatable approval-expiry worker; also safe to invoke
-   * directly (e.g. from a test or an admin command).
+   * Callers may pass an `Idempotency-Key`: the first request for a key reserves
+   * a record, and repeats with the same key/payload either replay the stored
+   * result or wait for the in-flight original. Reusing a key for different
+   * payload (including a different proposal) is rejected with 409
+   * `IDEMPOTENCY_KEY_MISMATCH`, matching docs/idempotency.md; records
+   * expire after the configured retention window and are then treated as new.
    */
-  async expireStale(now: Date = new Date()): Promise<ApprovalExpiryResult> {
-    const candidates = await this.repository.findExpiring(now, APPROVAL_EXPIRY_BATCH_SIZE);
-    const proposalIds: string[] = [];
-
-    for (const proposal of candidates) {
-      const changed = await this.repository.expireIfPending(proposal.id);
-      if (changed === 0) {
-        // A reviewer decided (or a previous sweep expired) it in the meantime.
-        continue;
-      }
-      proposalIds.push(proposal.id);
-      await this.eventBus.emit(
-        DomainEventName.ProposalExpired,
-        { proposalId: proposal.id, transactionId: proposal.transactionId },
-        {
-          organizationId: proposal.organizationId,
-          aggregateType: 'proposal',
-          aggregateId: proposal.id,
-        },
-      );
-    }
-
-    if (proposalIds.length > 0) {
-      this.logger.log(
-        `Expired ${proposalIds.length} pending approval proposal(s) past their expiresAt`,
-      );
-    }
-
-    return { expired: proposalIds.length, proposalIds };
-  }
-
-  /** Records a reviewer's decision and advances the proposal state machine. */
   async decide(
     organizationId: string,
     actorId: string,
     proposalId: string,
     input: DecideProposalInput,
-  ) {
+    idempotency?: { principalId: string; key: string },
+  ): Promise<ProposalDetail> {
+    if (!idempotency) {
+      return this.applyDecision(organizationId, actorId, proposalId, input);
+    }
+    if (!this.idempotency) {
+      throw new Error('ApprovalIdempotencyRepository is not configured');
+    }
+
+    const { keyTtlMs, waitTimeoutMs, pollIntervalMs } = this.idempotencySettings();
+    const reservationInput = {
+      principalId: idempotency.principalId,
+      operation: DECISION_OPERATION,
+      keyHash: sha256(idempotency.key),
+      requestHash: sha256(
+        JSON.stringify({
+          proposalId,
+          decision: input.decision,
+          comment: input.comment ?? null,
+        }),
+      ),
+      expiresAt: new Date(Date.now() + keyTtlMs),
+    };
+    const reservation = await this.idempotency.reserve(reservationInput);
+
+    if (!reservation.created) {
+      if (reservation.record.requestHash !== reservationInput.requestHash) {
+        throw new DomainException(
+          ErrorCode.IDEMPOTENCY_KEY_MISMATCH,
+          'Idempotency-Key was already used with a different approval decision payload',
+        );
+      }
+      if (reservation.record.status === 'COMPLETED' && reservation.record.response !== null) {
+        return this.replayStoredResponse(reservation.record.response);
+      }
+
+      const replayed = await this.waitForDecisionResult(
+        reservationInput,
+        waitTimeoutMs,
+        pollIntervalMs,
+      );
+      if (replayed !== undefined) return this.replayStoredResponse(replayed);
+      throw new ConflictException(
+        'An approval decision with this Idempotency-Key is currently being processed; retry shortly',
+      );
+    }
+
+    try {
+      const result = await this.applyDecision(organizationId, actorId, proposalId, input);
+      const response = JSON.parse(JSON.stringify(result)) as Prisma.InputJsonValue;
+      await this.idempotency.complete(
+        reservation.record.id,
+        response,
+        new Date(Date.now() + keyTtlMs),
+      );
+      return result;
+    } catch (error) {
+      await this.idempotency.release(reservation.record.id);
+      throw error;
+    }
+  }
+
+  /** Applies the decision exactly once; callers handle idempotency around it. */
+  private async applyDecision(
+    organizationId: string,
+    actorId: string,
+    proposalId: string,
+    input: DecideProposalInput,
+  ): Promise<ProposalDetail> {
     // Do not use getOrThrow here: action-time expiry must itself own the
     // PENDING -> EXPIRED compare-and-set transition.
     const proposal = await this.repository.findById(organizationId, proposalId);
@@ -283,6 +335,43 @@ export class ApprovalService {
     );
 
     return true;
+  }
+
+  /** Idempotency retention/wait settings, falling back to their env defaults. */
+  private idempotencySettings(): IdempotencyConfig {
+    return this.config?.get<IdempotencyConfig>('idempotency') ?? idempotencyConfig();
+  }
+
+  /** Rehydrates the response persisted on a completed idempotency record. */
+  private replayStoredResponse(response: Prisma.JsonValue): ProposalDetail {
+    return response as unknown as ProposalDetail;
+  }
+
+  /**
+   * Polls an in-flight idempotency record until it completes, the wait window
+   * elapses, or the reservation disappears (the original failed and released
+   * it). A record that expired mid-wait is re-reserved and reported as
+   * `created`; that abandoned reservation is released for the caller to retry.
+   */
+  private async waitForDecisionResult(
+    reservationInput: Parameters<ApprovalIdempotencyRepository['reserve']>[0],
+    waitTimeoutMs: number,
+    pollIntervalMs: number,
+  ): Promise<Prisma.JsonValue | undefined> {
+    const idempotency = this.idempotency!;
+    const deadline = Date.now() + waitTimeoutMs;
+    while (Date.now() < deadline) {
+      await sleep(Math.min(pollIntervalMs, Math.max(1, deadline - Date.now())));
+      const current = await idempotency.reserve(reservationInput);
+      if (current.created) {
+        await idempotency.release(current.record.id);
+        return undefined;
+      }
+      if (current.record.status === 'COMPLETED' && current.record.response !== null) {
+        return current.record.response;
+      }
+    }
+    return undefined;
   }
 
   /** Expires stale proposals during reads as well as state-changing actions. */

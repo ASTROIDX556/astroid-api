@@ -50,8 +50,12 @@ describe('ZodValidationPipe', () => {
         expect(exception.getStatus()).toBe(400);
         expect(exception.code).toBe(ErrorCode.VALIDATION_ERROR);
         expect(exception.details).toEqual([
-          { path: 'email', message: 'Invalid email' },
-          { path: 'age', message: 'Number must be greater than or equal to 18' },
+          { path: 'email', code: 'invalid_string', message: 'Invalid email' },
+          {
+            path: 'age',
+            code: 'too_small',
+            message: 'Number must be greater than or equal to 18',
+          },
         ]);
       }
     });
@@ -68,11 +72,13 @@ describe('ZodValidationPipe', () => {
         const response = (error as ZodValidationException).getResponse() as {
           code: string;
           message: string;
-          details: Array<{ path: string; message: string }>;
+          details: Array<{ path: string; code: string; message: string }>;
         };
         expect(response.code).toBe(ErrorCode.VALIDATION_ERROR);
         expect(response.message).toBe('Request validation failed');
-        expect(response.details).toEqual([{ path: 'email', message: 'Invalid email' }]);
+        expect(response.details).toEqual([
+          { path: 'email', code: 'invalid_string', message: 'Invalid email' },
+        ]);
       }
     });
 
@@ -90,8 +96,8 @@ describe('ZodValidationPipe', () => {
           message: string;
         }>;
         expect(details).toEqual([
-          { path: 'name', message: 'Required' },
-          { path: 'email', message: 'Required' },
+          { path: 'name', code: 'invalid_type', message: 'Required' },
+          { path: 'email', code: 'invalid_type', message: 'Required' },
         ]);
       }
     });
@@ -107,7 +113,9 @@ describe('ZodValidationPipe', () => {
           path: string;
           message: string;
         }>;
-        expect(details).toEqual([{ path: '', message: 'Expected object, received string' }]);
+        expect(details).toEqual([
+          { path: '', code: 'invalid_type', message: 'Expected object, received string' },
+        ]);
       }
     });
   });
@@ -147,7 +155,11 @@ describe('ZodValidationPipe', () => {
           message: string;
         }>;
         expect(details).toEqual([
-          { path: 'recipients.1', message: 'String must contain at least 1 character(s)' },
+          {
+            path: 'recipients[1]',
+            code: 'too_small',
+            message: 'String must contain at least 1 character(s)',
+          },
         ]);
       }
     });
@@ -173,7 +185,7 @@ describe('ZodValidationPipe', () => {
           message: string;
         }>;
         expect(details).toEqual([
-          { path: 'email', message: 'Correo electrónico inválido' },
+          { path: 'email', code: 'invalid_string', message: 'Correo electrónico inválido' },
         ]);
       }
     });
@@ -185,6 +197,7 @@ describe('ZodValidationPipe', () => {
           errorMap: (err) =>
             err.issues.map((i) => ({
               path: i.path.join('.'),
+              code: i.code,
               message: `Localized: ${i.message}`,
             })),
         },

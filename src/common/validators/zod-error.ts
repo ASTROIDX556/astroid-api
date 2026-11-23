@@ -6,10 +6,31 @@ import { ZodError } from 'zod';
  * can rely on a single format regardless of which endpoint rejected the input.
  */
 export interface ValidationErrorDetail {
-  /** Dot-joined property path, e.g. `recipientAddress` or `configuration.threshold`. */
+  /**
+   * Property path, e.g. `recipientAddress`, `configuration.threshold` or
+   * `budget.limits[0].amount`. Array indices use brackets so client form
+   * libraries can map a detail back onto the exact field.
+   */
   path: string;
+  /** Stable machine-readable Zod issue code, e.g. `invalid_type`, `too_small`. */
+  code: string;
   /** Human-readable description of the failed rule. */
   message: string;
+}
+
+/**
+ * Flattens a Zod issue path into the client-facing format: object keys are
+ * dot-separated and array indices are bracketed. Zod itself represents an
+ * array element as `['budget', 'limits', 0, 'amount']`; joining with dots would
+ * produce `budget.limits.0.amount`, which does not identify a real JSON path.
+ */
+export function formatZodPath(path: ReadonlyArray<string | number>): string {
+  return path.reduce<string>((flattened, segment) => {
+    if (typeof segment === 'number') {
+      return `${flattened}[${segment}]`;
+    }
+    return flattened.length === 0 ? segment : `${flattened}.${segment}`;
+  }, '');
 }
 
 /**
@@ -22,7 +43,8 @@ export interface ValidationErrorDetail {
  */
 export function formatZodError(error: ZodError): ValidationErrorDetail[] {
   return error.issues.map((issue) => ({
-    path: issue.path.join('.'),
+    path: formatZodPath(issue.path),
+    code: issue.code,
     message: issue.message,
   }));
 }

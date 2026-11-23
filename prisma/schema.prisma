@@ -705,6 +705,9 @@ model AuditLog {
   // `x-correlation-id`). Not part of the hash chain — it's correlation
   // metadata, not tamper-evident content.
   requestId      String?
+  // Derived result of the audited operation (SUCCESS / FAILURE), stored as a
+  // first-class column so clients can filter on it without scanning JSON.
+  outcome        String?
   sourceEventId  String?  @unique
   prevHash       String?  // Previous organization-scoped audit-chain hash; GENESIS starts a new chain
   hash           String?  // SHA-256 hash of this entry (links to previous)
@@ -723,6 +726,7 @@ model AuditLog {
   @@index([organizationId, userId, createdAt, id])
   @@index([organizationId, action, createdAt, id])
   @@index([organizationId, entity, createdAt, id])
+  @@index([organizationId, outcome, createdAt])
   @@index([requestId])
   @@map("audit_logs")
 }
