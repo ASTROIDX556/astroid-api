@@ -60,21 +60,25 @@ describe('Webhook signing & delivery', () => {
     const URL = 'https://example.com/webhook';
     const EVENT_ID = 'evt-123';
     let destinationPolicy: {
-      post: (url: string, options: { headers: Record<string, string>; body: Buffer; timeoutMs: number }) => Promise<{ status: number }>;
+      post: (url: string, options: { headers: Record<string, string>; body: Buffer; timeoutMs: number }) => Promise<{ status: number; headers: Record<string, string | string[] | undefined> }>;
     };
 
     beforeEach(() => {
       fetchSpy = vi.fn();
       vi.stubGlobal('fetch', fetchSpy);
       destinationPolicy = {
-        post: async (url, options) => {
+        post: async (url: string, options: { headers: Record<string, string>; body: Buffer; timeoutMs: number }) => {
           const response = await fetch(url, {
             method: 'POST',
             headers: options.headers,
             body: options.body.toString('utf8'),
             signal: AbortSignal.timeout(options.timeoutMs),
           });
-          return { status: response.status };
+          const headers: Record<string, string | string[] | undefined> = {};
+          for (const [key, value] of response.headers.entries()) {
+            headers[key.toLowerCase()] = value;
+          }
+          return { status: response.status, headers };
         },
       };
       processor = new WebhooksProcessor(

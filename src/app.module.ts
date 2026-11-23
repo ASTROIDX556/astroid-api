@@ -55,6 +55,7 @@ import { HealthModule } from './modules/health/health.module';
 import { MetricsModule } from './modules/metrics/metrics.module';
 import { AdminModule } from './modules/admin/admin.module';
 import { DeadLetterModule } from './modules/dead-letter/dead-letter.module';
+import { QueueObservabilityModule } from './modules/queue-observability/queue-observability.module';
 import { AgentTraceInterceptor } from './common/interceptors/agent-trace.interceptor';
 import { RequestContextInterceptor } from './common/interceptors/request-context.interceptor';
 import { AuditLogInterceptor } from './common/interceptors/audit-log.interceptor';
@@ -137,6 +138,7 @@ import { RequestIdInterceptor } from './common/interceptors/request-id.intercept
     MetricsModule,
     DeadLetterModule,
     AdminModule,
+    QueueObservabilityModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: PublicRateLimitGuard },

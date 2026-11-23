@@ -24,6 +24,7 @@ import {
   WebhookDestinationError,
   WebhookDestinationPolicy,
   WebhookDestinationResolutionError,
+  WebhookResponse,
 } from './webhook-destination.policy';
 import { WebhookCircuitService } from './services/webhook-circuit.service';
 import { EventBusService } from '../../events/event-bus.service';
@@ -35,6 +36,7 @@ import {
 } from './utils/failure-classification';
 import { WebhookAttemptService } from './services/webhook-attempt.service';
 import { EncryptionService } from '../../common/encryption/encryption.service';
+import { parseRetryAfter } from '../../utils/retry-after.util';
 
 /**
  * BullMQ job processor for webhook event delivery with exponential backoff + jitter.
@@ -291,6 +293,7 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
       let responseStatus: number | undefined;
       let errorMessage: string | undefined;
       let endpoint = job.data.url;
+      let response: WebhookResponse | undefined;
       const attemptStartedAt = Date.now();
       let attemptRecorded = false;
       try {
@@ -300,7 +303,7 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
         endpoint = subscription.url;
         const signature = signWebhookPayload(subscription.secret, timestamp, body);
 
-        const response = await this.destinationPolicy.post(endpoint, {
+        response = await this.destinationPolicy.post(endpoint, {
           headers: {
             'content-type': 'application/json',
             [WEBHOOK_SIGNATURE_HEADER]: signature,
@@ -418,6 +421,20 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
         this.logger.error(
           `Webhook ${webhookId} failed attempt ${job.attemptsMade + 1}/${maxAttempts}${requestTrace}`,
         );
+
+        // Calculate next retry delay using Retry-After header if available
+        let nextRetryDelayMs = this.config.webhookRetryDelayMs;
+        if (!isLastAttempt && responseStatus === 429 && response?.headers) {
+          const retryAfterValue = response.headers['retry-after'];
+          if (retryAfterValue) {
+            const parsedDelay = parseRetryAfter(retryAfterValue, this.config.webhookRetryDelayMs * 10);
+            if (parsedDelay !== null) {
+              nextRetryDelayMs = parsedDelay;
+              this.logger.log(`Webhook ${webhookId} using Retry-After header: ${nextRetryDelayMs}ms`);
+            }
+          }
+        }
+
         await this.persistState({
           webhookId,
           organizationId,
@@ -433,7 +450,7 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
           lastAttemptAt: new Date(),
           ...(isLastAttempt
             ? {}
-            : { nextRetryAt: new Date(Date.now() + this.config.webhookRetryDelayMs) }),
+            : { nextRetryAt: new Date(Date.now() + nextRetryDelayMs) }),
         });
         if (isLastAttempt) {
           this.logger.error(`Webhook ${webhookId} exhausted all retry attempts${requestTrace}`);

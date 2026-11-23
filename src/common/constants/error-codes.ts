@@ -15,6 +15,7 @@ export enum ErrorCode {
    * refuses the request rather than run without one.
    */
   RATE_LIMIT_UNAVAILABLE = 'RATE_LIMIT_UNAVAILABLE',
+  SERVICE_UNAVAILABLE = 'SERVICE_UNAVAILABLE',
   NOT_IMPLEMENTED = 'NOT_IMPLEMENTED',
 
   // Auth / authz
@@ -68,6 +69,7 @@ export const ERROR_STATUS: Record<ErrorCode, number> = {
   [ErrorCode.BAD_REQUEST]: 400,
   [ErrorCode.RATE_LIMITED]: 429,
   [ErrorCode.RATE_LIMIT_UNAVAILABLE]: 503,
+  [ErrorCode.SERVICE_UNAVAILABLE]: 503,
   [ErrorCode.NOT_IMPLEMENTED]: 501,
   [ErrorCode.UNAUTHORIZED]: 401,
   [ErrorCode.FORBIDDEN]: 403,
@@ -142,6 +144,7 @@ export const ERROR_TITLE: Record<ErrorCode, string> = {
   [ErrorCode.LOCK_ACQUISITION_FAILED]: 'Resource Locked',
   [ErrorCode.IDEMPOTENCY_KEY_MISMATCH]: 'Idempotency Key Payload Mismatch',
   [ErrorCode.IDEMPOTENCY_KEY_IN_FLIGHT]: 'Idempotency Key In Use',
+  [ErrorCode.SERVICE_UNAVAILABLE]: 'Service Unavailable',
 };
 
 /** Namespace for the problem type URIs derived from {@link ErrorCode}s. */
