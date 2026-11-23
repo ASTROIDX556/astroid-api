@@ -1,7 +1,7 @@
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
+import { SwaggerModule } from '@nestjs/swagger';
 import { Logger as PinoLogger } from 'nestjs-pino';
 import helmet from 'helmet';
 import { Request, Response, NextFunction } from 'express';
@@ -10,6 +10,7 @@ import { ShutdownCoordinator } from './common/shutdown/shutdown-coordinator.serv
 import { AppConfig } from './config/app.config';
 import { TOTAL_COUNT_HEADER } from './common/constants/headers';
 import { GLOBAL_PREFIX_EXCLUDED_ROUTES } from './common/constants/global-prefix';
+import { buildSwaggerConfig } from './common/openapi/swagger-config';
 import { assertValidEnvironment, EnvironmentValidationError } from './config/env.validation';
 import { PrismaService } from './database/prisma.service';
 
@@ -96,16 +97,7 @@ async function bootstrap() {
 
   // OpenAPI / Swagger documentation
   if (appConfig.nodeEnv !== 'production') {
-    const swaggerConfig = new DocumentBuilder()
-      .setTitle('Astroid API')
-      .setDescription(
-        'The intelligence layer for the Financial Operating System for autonomous AI agents on Stellar.',
-      )
-      .setVersion('1.0')
-      .addBearerAuth({ type: 'http', scheme: 'bearer', bearerFormat: 'JWT' }, 'access-token')
-      .addApiKey({ type: 'apiKey', in: 'header', name: 'x-api-key' }, 'api-key')
-      .build();
-    const document = SwaggerModule.createDocument(app, swaggerConfig);
+    const document = SwaggerModule.createDocument(app, buildSwaggerConfig());
     SwaggerModule.setup('docs', app, document);
   }
 

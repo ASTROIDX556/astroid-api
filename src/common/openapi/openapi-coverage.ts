@@ -152,21 +152,6 @@ export function listDocumentedOperations(document: OpenAPIObject): DocumentedOpe
   return operations;
 }
 
-/** Registered routes with no operation in the document and no allowlist entry. */
-export function findUndocumentedRoutes(
-  routes: RegisteredRoute[],
-  document: OpenAPIObject,
-  allowlist: AllowlistedRoute[] = [],
-): string[] {
-  const documented = new Set(listDocumentedOperations(document).map(routeKey));
-  const allowed = new Set(allowlist.map(routeKey));
-  return sorted(
-    routes
-      .filter((route) => !documented.has(routeKey(route)) && !allowed.has(routeKey(route)))
-      .map((route) => `${routeKey(route)} (${route.handler}) is not in the OpenAPI document`),
-  );
-}
-
 /** Maps `METHOD /path` to the controller handler that serves it. */
 export function routeHandlers(routes: RegisteredRoute[]): Map<string, string> {
   return new Map(routes.map((route) => [routeKey(route), route.handler]));
@@ -180,20 +165,6 @@ function describeFinding(
   const handler = handlers.get(routeKey(route));
   const location = `${routeKey(route)}${handler ? ` (${handler})` : ''}`;
   return message ? `${location} ${message}` : location;
-}
-
-/** Documented operations with no non-empty `@ApiOperation()` summary. */
-export function findOperationsWithoutSummary(
-  document: OpenAPIObject,
-  handlers: ReadonlyMap<string, string> = new Map(),
-): string[] {
-  return sorted(
-    listDocumentedOperations(document)
-      .filter(({ operation }) => typeof operation.summary !== 'string' || !operation.summary.trim())
-      .map((operation) =>
-        describeFinding(operation, handlers, 'has no OpenAPI operation summary'),
-      ),
-  );
 }
 
 /** Documented operations with no response of any status. */
@@ -371,6 +342,162 @@ export function findStaleAllowlistEntries(
       findings.push(`${routeKey(entry)} is allowlisted but no route serves it`);
     } else if (documented.has(routeKey(entry))) {
       findings.push(`${routeKey(entry)} is allowlisted but is documented; remove the entry`);
+    }
+  }
+  return sorted(findings);
+}
+
+/**
+ * The per-route documentation checks of {@link findRouteDocumentationGaps}.
+ * Each kind is asserted by its own test in `src/openapi.spec.ts`, so each kind
+ * of gap fails distinctly.
+ */
+export type RouteCheck =
+  | 'path'
+  | 'method'
+  | 'summary'
+  | 'tags'
+  | 'requestBody'
+  | 'clientError'
+  | 'security'
+  | 'publicSecurity';
+
+/** One missing piece of documentation for one registered route. */
+export interface RouteDocumentationGap {
+  check: RouteCheck;
+  route: RegisteredRoute;
+  /** `Controller.handler (METHOD /path): what is missing`. */
+  message: string;
+}
+
+export interface RouteDocumentationOptions {
+  /** Routes deliberately left out of the document; no check applies to them. */
+  allowlist?: AllowlistedRoute[];
+  /** Documented routes that cannot answer with any 4xx; only the 4xx check skips them. */
+  noClientErrorRoutes?: AllowlistedRoute[];
+}
+
+/** `AgentController.findOne (GET /api/v1/agents/{id})`: how a gap names its route. */
+export function describeRoute(route: RegisteredRoute): string {
+  return `${route.handler} (${routeKey(route)})`;
+}
+
+/** `400`-`499` or the OpenAPI `4XX` range. */
+function isClientErrorStatus(status: string): boolean {
+  return /^4(\d\d|XX)$/i.test(status);
+}
+
+/**
+ * Checks every registered route against the document, route by route:
+ *
+ * - `path`: the path exists in the document,
+ * - `method`: the path documents the route's HTTP method,
+ * - `summary`: the operation has a non-empty summary,
+ * - `tags`: the operation has at least one tag,
+ * - `requestBody`: a handler that takes a `@Body()` documents a request body
+ *   whose content has a schema (whatever the method; routes without `@Body()`,
+ *   such as `POST /agents/{id}/pause`, need no body),
+ * - `clientError`: at least one `4xx` response is documented,
+ * - `security`: a guarded route (not `@Public()`) declares a security
+ *   requirement, operation-level or inherited from the document, naming only
+ *   schemes the document defines,
+ * - `publicSecurity`: a `@Public()` route declares no security requirement.
+ *
+ * A route missing its path or method gets only that gap: there is no operation
+ * to check further. Allowlisted routes are skipped entirely.
+ */
+export function findRouteDocumentationGaps(
+  routes: RegisteredRoute[],
+  document: OpenAPIObject,
+  options: RouteDocumentationOptions = {},
+): RouteDocumentationGap[] {
+  const allowed = new Set((options.allowlist ?? []).map(routeKey));
+  const noClientError = new Set((options.noClientErrorRoutes ?? []).map(routeKey));
+  const schemes = new Set(Object.keys(document.components?.securitySchemes ?? {}));
+  const gaps: RouteDocumentationGap[] = [];
+
+  for (const route of routes) {
+    if (allowed.has(routeKey(route))) continue;
+    const gap = (check: RouteCheck, missing: string) =>
+      gaps.push({ check, route, message: `${describeRoute(route)}: ${missing}` });
+
+    const item = document.paths?.[route.path] as PathItemObject | undefined;
+    if (!item) {
+      gap('path', `path ${route.path} is missing from the OpenAPI document`);
+      continue;
+    }
+    const operation = item[route.method.toLowerCase() as (typeof OPERATION_METHODS)[number]] as
+      | OperationObject
+      | undefined;
+    if (!operation) {
+      gap('method', `method ${route.method} is not documented on ${route.path}`);
+      continue;
+    }
+
+    if (typeof operation.summary !== 'string' || !operation.summary.trim()) {
+      gap('summary', 'missing operation summary (@ApiOperation({ summary }))');
+    }
+    if (!Array.isArray(operation.tags) || operation.tags.length === 0) {
+      gap('tags', 'missing tag (@ApiTags)');
+    }
+    if (route.acceptsBody) {
+      const content = requestBodyOf(operation, document)?.content ?? {};
+      const typed = Object.values(content).some(
+        (media) => media.schema !== undefined && isNamedOrTypedSchema(document, media.schema),
+      );
+      if (!typed) gap('requestBody', 'takes a @Body() but documents no request body schema');
+    }
+    if (
+      !noClientError.has(routeKey(route)) &&
+      !Object.keys(operation.responses ?? {}).some(isClientErrorStatus)
+    ) {
+      gap('clientError', 'missing 4xx error response');
+    }
+
+    const named = (operation.security ?? document.security ?? []).flatMap((requirement) =>
+      Object.keys(requirement),
+    );
+    if (route.isPublic) {
+      if (named.length > 0) {
+        gap('publicSecurity', `is @Public() but declares the security requirement '${named.join("', '")}'`);
+      }
+    } else if (named.length === 0) {
+      gap('security', 'is guarded but declares no security requirement (@ApiBearerAuth / @ApiSecurity)');
+    } else {
+      for (const scheme of named.filter((name) => !schemes.has(name))) {
+        gap('security', `declares the undefined security scheme '${scheme}'`);
+      }
+    }
+  }
+
+  return gaps.sort((left, right) => left.message.localeCompare(right.message));
+}
+
+/**
+ * Entries of the 4xx exemption list that no longer earn their place: no reason,
+ * no route, an undocumented route, or a route that now documents a 4xx.
+ */
+export function findStaleClientErrorExemptions(
+  routes: RegisteredRoute[],
+  document: OpenAPIObject,
+  exemptions: AllowlistedRoute[],
+): string[] {
+  const served = new Set(routes.map(routeKey));
+  const documented = new Map(
+    listDocumentedOperations(document).map((entry) => [routeKey(entry), entry.operation]),
+  );
+  const findings: string[] = [];
+  for (const entry of exemptions) {
+    if (!entry.reason.trim()) {
+      findings.push(`${routeKey(entry)} is exempt from the 4xx check without a reason`);
+    }
+    const operation = documented.get(routeKey(entry));
+    if (!served.has(routeKey(entry))) {
+      findings.push(`${routeKey(entry)} is exempt from the 4xx check but no route serves it`);
+    } else if (!operation) {
+      findings.push(`${routeKey(entry)} is exempt from the 4xx check but is not documented`);
+    } else if (Object.keys(operation.responses ?? {}).some(isClientErrorStatus)) {
+      findings.push(`${routeKey(entry)} is exempt from the 4xx check but documents a 4xx; remove the entry`);
     }
   }
   return sorted(findings);
@@ -563,38 +690,6 @@ function isNamedOrTypedSchema(document: OpenAPIObject, schema: unknown): boolean
   return ['type', 'properties', 'additionalProperties', 'items', 'oneOf', 'anyOf', 'allOf', 'enum', 'const'].some(
     (key) => candidate[key] !== undefined,
   );
-}
-
-/**
- * Documented operations of authenticated routes that declare no security
- * requirement, or one naming a scheme the document does not define.
- */
-export function findOperationsMissingSecurity(
-  routes: RegisteredRoute[],
-  document: OpenAPIObject,
-  handlers: ReadonlyMap<string, string> = new Map(),
-): string[] {
-  const authenticated = new Set(routes.filter((route) => !route.isPublic).map(routeKey));
-  const schemes = new Set(Object.keys(document.components?.securitySchemes ?? {}));
-  const findings: string[] = [];
-
-  for (const { method, path, operation } of listDocumentedOperations(document)) {
-    if (!authenticated.has(`${method} ${path}`)) continue;
-    const requirements = operation.security ?? document.security ?? [];
-    const named = requirements.flatMap((requirement) => Object.keys(requirement));
-    if (named.length === 0) {
-      findings.push(
-        describeFinding({ method, path }, handlers, 'requires authentication but declares no security scheme'),
-      );
-      continue;
-    }
-    for (const scheme of named.filter((name) => !schemes.has(name))) {
-      findings.push(
-        describeFinding({ method, path }, handlers, `declares the undefined security scheme '${scheme}'`),
-      );
-    }
-  }
-  return sorted(findings);
 }
 
 /**

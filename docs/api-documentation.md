@@ -8,32 +8,53 @@ it is validated in CI.
 npm run docs:check   # generates the document and asserts that it is complete
 ```
 
-The check builds the real `AppModule`, applies the global prefix with the same
-exclusions as `main.ts` (`src/common/constants/global-prefix.ts`), generates the
-document and compares it with the routes the application registers. Those routes
-come from Nest's router metadata, not from Swagger, so a route hidden with
-`@ApiExcludeEndpoint()` or `@ApiExcludeController()` is still counted. It asserts
-that:
+The check builds the real `AppModule` (Prisma mocked, no database, Redis or
+network needed), applies the global prefix with the same exclusions as `main.ts`
+(`src/common/constants/global-prefix.ts`), generates the document with the same
+configuration `main.ts` serves (`buildSwaggerConfig()` in
+`src/common/openapi/swagger-config.ts`) and compares it with the routes the
+application registers. Those routes come from Nest's router metadata
+(`DiscoveryService`, `MetadataScanner` and Nest's own `RoutePathFactory`), not
+from Swagger or a hand-written list, so a new controller is covered as soon as it
+is registered, and a route hidden with `@ApiExcludeEndpoint()` or
+`@ApiExcludeController()` is still counted. Nest's `:param` placeholders become
+OpenAPI `{param}` and trailing slashes are dropped before matching.
 
-- every registered route appears in the document with the same method and path
-  (path parameters included), unless it is on the internal-route allowlist,
+Every registered route that is not on the internal-route allowlist is checked on
+its own, and each kind of gap is a separate test:
+
+| Check | Fails when |
+|---|---|
+| `path` | the route's path is missing from the document |
+| `method` | the path is documented but not for the route's HTTP method |
+| `summary` | the operation has no non-empty `@ApiOperation({ summary })` |
+| `tags` | the operation has no tag (`@ApiTags`) |
+| `requestBody` | the handler takes a `@Body()` but the operation documents no request body schema (any method; routes without `@Body()`, such as `POST /agents/{id}/pause`, need no body) |
+| `clientError` | no `4xx` response is documented (a `5xx` alone does not count) |
+| `security` | a guarded route (not `@Public()`) declares no security requirement, operation-level or inherited, or names a scheme the document does not define (`access-token`, `api-key`) |
+| `publicSecurity` | a `@Public()` route declares a security requirement |
+
+It also asserts that:
+
+- every `@Controller()` class under `src/modules` is registered in a module, so
+  none of its routes escape the checks,
 - every documented operation is served by a route, so a wrong prefix or a stale
   path cannot hide,
 - no method and path is registered by two handlers (Express serves the first,
   while the document may describe the other),
-- every operation has a tag, a summary and a 2xx response with a **schema**,
-- every operation of an authenticated (not `@Public()`) route declares a security
-  scheme that the document defines (`access-token` or `api-key`),
+- every operation has a 2xx response with a **schema** in the standard envelope,
+- every body-accepting route references a named request DTO schema,
 - every error response documents a body,
 - every `$ref` of the document resolves — there are no missing type definitions,
 - every property of every schema is documented (directly or through the schema
   it references).
 
-A failure names the offending endpoint as `METHOD /path`, together with the
-handler for routes missing from the document, for example:
+A per-route failure names the controller, the handler, the method and the path,
+then what is missing, for example:
 
 ```
-+   "DELETE /api/v1/developer/api-keys/{id} (ApiKeyController.revoke) is not in the OpenAPI document",
+AssertionError: 1 route(s) fail the 'clientError' check: expected [ Array(1) ] to deeply equal []
++   "AuditController.findOne (GET /api/v1/audit/{id}): missing 4xx error response",
 ```
 
 The helpers live in `src/common/openapi/openapi-coverage.ts`; their own tests
@@ -44,11 +65,22 @@ small application with an undocumented route.
 
 A route that must stay out of the published document goes on the
 `INTERNAL_ROUTES` allowlist in `src/openapi.spec.ts`, with a comment and a
-`reason`. Today that is `GET /metrics` (the Prometheus scrape endpoint) and
+`reason`. Today that is `GET /metrics` (the Prometheus scrape endpoint),
 `POST /api/v1/webhooks/receive` (partner webhook ingress authenticated by HMAC
-signature). The check fails when an entry has no reason, no longer matches a
-route, or matches a route that is now documented, so the list cannot go stale.
-Everything else is documented; do not add an entry to make the check pass.
+signature) and the internal diagnostic health routes under `/api/v1/health`. The
+check fails when an entry has no reason, no longer matches a route, or matches a
+route that is now documented, so the list cannot go stale. Everything else is
+documented; do not add an entry to make the check pass.
+
+### Routes without a client error
+
+A documented route that cannot answer with any `4xx` goes on
+`NO_CLIENT_ERROR_ROUTES` in `src/openapi.spec.ts`, with a comment and a
+`reason`; it skips only the `clientError` check. Today that is the orchestrator
+probes `GET /health/live` and `GET /health/ready`, which are public, take no
+input and skip every rate limiter. An entry fails the check when it has no
+reason, no route, no documented operation, or when the route now documents a
+`4xx`.
 
 ## Conventions
 
