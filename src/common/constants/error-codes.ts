@@ -95,7 +95,7 @@ export const ERROR_STATUS: Record<ErrorCode, number> = {
   [ErrorCode.CONTRACT_PANIC]: 422,
   [ErrorCode.CIRCUIT_OPEN]: 503,
   [ErrorCode.LOCK_ACQUISITION_FAILED]: 409,
-  [ErrorCode.IDEMPOTENCY_KEY_MISMATCH]: 409,
+  [ErrorCode.IDEMPOTENCY_KEY_MISMATCH]: 422,
   [ErrorCode.IDEMPOTENCY_KEY_IN_FLIGHT]: 409,
 };
 

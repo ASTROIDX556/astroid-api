@@ -61,6 +61,7 @@ async function prepare(
     increment?: ReturnType<typeof vi.fn>;
     apiKeyScopes?: string[];
     isApiKey?: boolean;
+    rateLimitPerMinute?: number;
   } = {},
 ) {
   const increment = opts.increment ?? vi.fn().mockResolvedValue(UNBLOCKED);
@@ -83,6 +84,9 @@ async function prepare(
       isApiKey: opts.isApiKey ?? true,
       scopes: opts.apiKeyScopes,
     };
+  }
+  if (opts.rateLimitPerMinute !== undefined) {
+    request.apiKey = { id: 'key-1', rateLimitPerMinute: opts.rateLimitPerMinute };
   }
   const context = buildContext(request, response);
   const { getTracker, generateKey } = (
@@ -306,6 +310,38 @@ describe('AstroidThrottlerGuard', () => {
       await expect(call(throttlerNamed('api'))).resolves.toBe(true);
 
       expect(increment).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('per-key limit override', () => {
+    it('replaces the steady-state limit with the API key override', async () => {
+      const { increment, call } = await prepare({ rateLimitPerMinute: 5 });
+
+      await expect(call(throttlerNamed('api'))).resolves.toBe(true);
+
+      expect(increment).toHaveBeenCalledWith(
+        expect.any(String),
+        60_000,
+        5,
+        60_000,
+        'api',
+      );
+    });
+
+    it('does not raise the burst allowance with the override', async () => {
+      const { increment, call } = await prepare({ rateLimitPerMinute: 500 });
+
+      await call(throttlerNamed('api-burst'));
+
+      expect(increment.mock.calls[0][2]).toBe(10);
+    });
+
+    it('keeps the tier limit when the key has no override', async () => {
+      const { increment, call } = await prepare();
+
+      await call(throttlerNamed('api'));
+
+      expect(increment.mock.calls[0][2]).toBe(10);
     });
   });
 
