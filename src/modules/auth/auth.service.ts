@@ -273,6 +273,16 @@ export class AuthService {
    * Redis so in-flight JWTs are rejected before they naturally expire.
    */
   async logout(sessionId: string): Promise<{ success: true }> {
+    // Revoke the whole refresh-token family, not just the presented session:
+    // a family is one login chain, so logging out ends every token minted by
+    // rotating it. The lookup is best-effort — an unknown or already-purged
+    // session still gets the blacklist treatment below.
+    const session = await this.prisma.session
+      .findUnique({ where: { id: sessionId }, select: { familyId: true } })
+      .catch(() => null);
+    if (session?.familyId) {
+      await this.sessionRepository.revokeFamily(session.familyId);
+    }
     await this.prisma.session
       .update({ where: { id: sessionId }, data: { revokedAt: new Date() } })
       .catch(() => undefined);

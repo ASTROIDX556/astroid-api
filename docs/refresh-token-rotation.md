@@ -28,6 +28,14 @@ Every `Session` row belongs to a **token family**:
 Other logins of the same user are separate families and are not affected when
 one family is revoked.
 
+## Logout
+
+`POST /auth/logout` revokes the **whole family** of the presented session: the
+session is marked revoked and every other unrevoked session sharing its
+`familyId` is revoked in the same operation. The presented session is also
+blacklisted immediately, so its access token stops working before it expires.
+Logging out an already-purged session is still a success.
+
 ## Event payload
 
 `session.family_revoked` carries only `familyId`, `sessionId` and `userId`.

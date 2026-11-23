@@ -144,6 +144,28 @@ describe('WebhooksProcessor', () => {
       });
     }
 
+    it('moves a permanent 4xx straight to DEAD_LETTER without retrying', async () => {
+      const upsert = vi.fn().mockResolvedValue({});
+      mockPrisma.webhookDelivery = { upsert };
+      fetchSpy.mockResolvedValue({
+        ok: false,
+        status: 422,
+        text: () => Promise.resolve('Unprocessable Entity'),
+      });
+
+      await expect(processor.process(createMockJob())).rejects.toThrow(UnrecoverableError);
+
+      expect(upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          create: expect.objectContaining({
+            status: 'DEAD_LETTER',
+            responseStatus: 422,
+            failureCode: 'HTTP_422',
+          }),
+        }),
+      );
+    });
+
     it('does not throw UnrecoverableError for 500 (transient)', async () => {
       fetchSpy.mockResolvedValue({
         ok: false,
@@ -312,7 +334,7 @@ describe('WebhooksProcessor', () => {
       );
 
       expect(upsert).toHaveBeenCalledWith(
-        expect.objectContaining({ create: expect.objectContaining({ status: 'FAILED' }) }),
+        expect.objectContaining({ create: expect.objectContaining({ status: 'DEAD_LETTER' }) }),
       );
       expect(emit).toHaveBeenCalledWith(
         DomainEventName.WebhookPermanentlyFailed,
@@ -381,7 +403,7 @@ describe('WebhooksProcessor', () => {
   });
 
   describe('retry lifecycle', () => {
-    it('marks the delivery RETRYING while attempts remain and FAILED on the last attempt', async () => {
+    it('marks the delivery RETRYING while attempts remain and DEAD_LETTER on the last attempt', async () => {
       const upsert = vi.fn().mockResolvedValue({});
       mockPrisma.webhookDelivery = { upsert };
       fetchSpy.mockResolvedValue({ ok: false, status: 503, text: () => Promise.resolve('nope') });
@@ -401,7 +423,7 @@ describe('WebhooksProcessor', () => {
         'RETRYING',
         'RETRYING',
         'RETRYING',
-        'FAILED',
+        'DEAD_LETTER',
       ]);
       expect(writes.map((write) => write.update.attempts)).toEqual([1, 2, 3, 4, 5]);
     });

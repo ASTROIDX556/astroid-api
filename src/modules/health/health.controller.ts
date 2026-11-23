@@ -91,10 +91,11 @@ export class HealthController {
   @ApiOperation({
     summary: 'Readiness probe',
     description:
-      'Probes the critical dependencies (database, cache and the BullMQ queue connection) in ' +
-      'parallel, each bounded by a timeout. Returns 200 when every dependency is up and 503 when any is down, with ' +
-      'per-dependency status and latency under `data.services`. A failure is reported as ' +
-      '`timeout` or `unavailable` only; driver messages stay in the server log.',
+      'Probes the critical dependencies (database, cache, the BullMQ queue connection and the ' +
+      'Soroban RPC endpoint) in parallel, each bounded by a timeout. Returns 200 when every ' +
+      'dependency is up and 503 when any is down, with per-dependency status and latency under ' +
+      '`data.services`. A failure is reported as `timeout` or `unavailable` only; driver ' +
+      'messages and endpoint URLs stay in the server log.'
   })
   @ApiEnvelope(ReadinessDto, { description: 'All critical dependencies are reachable' })
   @ApiResponse({
@@ -113,16 +114,18 @@ export class HealthController {
     },
   })
   async ready(@Req() req: Request, @Res() res: Response) {
-    const [database, cache, queue] = await Promise.all([
+    const [database, cache, queue, sorobanRpc] = await Promise.all([
       this.dbIndicator.check('database'),
       this.redisIndicator.checkHealth(),
       this.queueIndicator.checkHealth(),
+      this.stellarIndicator.checkSorobanRpcReadiness(),
     ]);
 
     const services = {
       database: toProbe(unwrap(database, 'database')),
       cache: toProbe(cache),
       queue: toProbe(queue),
+      sorobanRpc: toProbe(sorobanRpc),
     };
 
     const isReady = Object.values(services).every((s) => s.status === 'up');

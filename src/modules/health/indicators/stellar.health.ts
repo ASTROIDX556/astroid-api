@@ -19,6 +19,19 @@ export interface StellarHealthReport {
   sorobanRpc: EndpointHealthStatus;
 }
 
+/**
+ * Result of the Soroban RPC probe used by the public readiness endpoint. It
+ * deliberately carries no endpoint URL: readiness is unauthenticated, so a
+ * report must never name a host (the diagnostic `/health/stellar` route keeps
+ * the full endpoint detail).
+ */
+export interface SorobanRpcReadinessReport {
+  status: 'up' | 'down';
+  latencyMs: number;
+  timestamp: string;
+  error?: string;
+}
+
 /** The subset of Horizon's root document this indicator reads. */
 interface HorizonRoot {
   history_latest_ledger?: number;
@@ -75,6 +88,43 @@ export class StellarHealthIndicator {
       network: stellar.network,
       horizon: horizonHealth,
       sorobanRpc: sorobanHealth,
+    };
+  }
+
+  /**
+   * Probes only the Soroban RPC dependency for the readiness contract.
+   *
+   * It reuses the same cheap `getHealth` call as {@link checkHealth}, honours the
+   * configured `STELLAR_SOROBAN_RPC_TIMEOUT_MS` (unless an explicit budget is
+   * passed) and returns a flat report without the endpoint URL. A node that
+   * answers but reports degraded health, or needs more than half of the budget,
+   * is `down` for readiness: an orchestrator must not route traffic to an
+   * instance that cannot use its RPC node.
+   */
+  async checkSorobanRpcReadiness(
+    timeoutMs?: number,
+  ): Promise<SorobanRpcReadinessReport> {
+    const stellar = this.configService.getOrThrow<StellarConfig>('stellar');
+    const configured = stellar.sorobanRpc?.timeoutMs;
+    const budget = this.resolveTimeout(
+      timeoutMs ?? (typeof configured === 'number' ? configured : StellarHealthIndicator.DEFAULT_TIMEOUT_MS),
+    );
+    const endpoint = await this.checkSorobanRpcEndpoint(stellar.sorobanRpcUrl, budget);
+    const up = endpoint.status === 'up';
+
+    return {
+      status: up ? 'up' : 'down',
+      latencyMs: endpoint.latencyMs,
+      timestamp: new Date().toISOString(),
+      ...(up
+        ? {}
+        : {
+            error:
+              endpoint.error ??
+              (endpoint.status === 'degraded'
+                ? 'Soroban RPC reported degraded health'
+                : 'Soroban RPC is unavailable'),
+          }),
     };
   }
 
