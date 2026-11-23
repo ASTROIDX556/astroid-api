@@ -18,6 +18,7 @@ import { Queues } from '../../queues/queues.constants';
 import { createQueueRegistrationOptions } from '../../queues/queue-policy';
 import { TransactionWorker } from './workers/transaction.worker';
 import { IdempotencyModule } from '../../common/idempotency/idempotency.module';
+import { ApprovalExpiryQueue } from '../../queues/approval-expiry.queue';
 
 /**
  * Transaction pipeline module. Pulls together wallets, agents, policies, risk
@@ -43,6 +44,9 @@ import { IdempotencyModule } from '../../common/idempotency/idempotency.module';
         backoff: { type: 'exponential', delay: 2_000 },
       }),
     ),
+    // Approval proposals are created here, so the delayed expiry job is
+    // scheduled from this module (ApprovalModule imports it for cancellation).
+    BullModule.registerQueue({ name: Queues.ApprovalSweep }),
   ],
   controllers: [TransactionController],
   providers: [
@@ -54,7 +58,8 @@ import { IdempotencyModule } from '../../common/idempotency/idempotency.module';
     SpendingLimitService,
     SpendingLimitGuard,
     TransactionWorker,
+    ApprovalExpiryQueue,
   ],
-  exports: [TransactionService, SorobanSimulationService, StellarSimulationService, GasEstimationService, SpendingLimitService],
+  exports: [TransactionService, ApprovalExpiryQueue, SorobanSimulationService, StellarSimulationService, GasEstimationService, SpendingLimitService],
 })
 export class TransactionModule {}

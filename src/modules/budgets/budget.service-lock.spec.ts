@@ -60,6 +60,7 @@ describe('BudgetService — distributed locking', () => {
       create: vi.fn(),
       findManyAndCount: vi.fn(),
       findChildren: vi.fn(),
+      sumPendingReservations: vi.fn().mockResolvedValue(new Map()),
       softDelete: vi.fn(),
       findEnabledByAgentId: vi.fn(),
       sumUnaccountedSpendByAgent: vi.fn().mockResolvedValue(new Decimal(0)),
@@ -76,6 +77,32 @@ describe('BudgetService — distributed locking', () => {
     } as unknown as EventBusService;
 
     service = new BudgetService(repository, eventBus, redisLock, {} as never);
+  });
+
+  describe('getDetail', () => {
+    it('reports available, reserved and spent for the budget and its children', async () => {
+      const parent = mockBudget({ id: 'b-1', parentBudgetId: null, limitAmount: 1000, spent: 600 });
+      const child = mockBudget({ id: 'b-2', parentBudgetId: 'b-1', limitAmount: 200, spent: 250 });
+      vi.mocked(repository.findById).mockResolvedValue(parent);
+      vi.mocked(repository.findChildren).mockResolvedValue([child]);
+      vi.mocked(repository.sumPendingReservations).mockResolvedValue(new Map([['b-1', new Decimal(150)]]));
+
+      const detail = await service.getDetail('org-1', 'b-1');
+
+      expect(repository.sumPendingReservations).toHaveBeenCalledWith(['b-1', 'b-2']);
+      expect(detail).toMatchObject({
+        remaining: '400.0000000',
+        available: '400.0000000',
+        reserved: '150.0000000',
+      });
+      expect(detail.spent.toString()).toBe('600');
+      expect(detail.children[0]).toMatchObject({
+        id: 'b-2',
+        remaining: '0.0000000',
+        available: '0.0000000',
+        reserved: '0.0000000',
+      });
+    });
   });
 
   // ── allocate ──
