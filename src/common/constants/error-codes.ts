@@ -80,7 +80,7 @@ export const ERROR_STATUS: Record<ErrorCode, number> = {
   [ErrorCode.INSUFFICIENT_FUNDS]: 422,
   [ErrorCode.RISK_TOO_HIGH]: 422,
   [ErrorCode.APPROVAL_REQUIRED]: 202,
-  [ErrorCode.PROPOSAL_EXPIRED]: 410,
+  [ErrorCode.PROPOSAL_EXPIRED]: 409,
   [ErrorCode.PROPOSAL_NOT_PENDING]: 409,
   [ErrorCode.INVALID_PROPOSAL_TRANSITION]: 409,
   [ErrorCode.WALLET_FROZEN]: 423,

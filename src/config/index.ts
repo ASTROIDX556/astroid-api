@@ -8,6 +8,7 @@ import { storageConfig } from './storage.config';
 import { queueConfig } from './queue.config';
 import { idempotencyConfig } from './idempotency.config';
 import { walletReconciliationConfig } from './wallet-reconciliation.config';
+import { balanceCacheConfig } from './balance-cache.config';
 import { aiConfig } from './ai.config';
 import { metricsConfig } from './metrics.config';
 import { encryptionConfig } from './encryption.config';
@@ -29,6 +30,7 @@ export * from './storage.config';
 export * from './queue.config';
 export * from './idempotency.config';
 export * from './wallet-reconciliation.config';
+export * from './balance-cache.config';
 export * from './ai.config';
 export * from './metrics.config';
 export * from './encryption.config';
@@ -59,6 +61,7 @@ export const AppConfigModule = ConfigModule.forRoot({
     queueConfig,
     idempotencyConfig,
     walletReconciliationConfig,
+    balanceCacheConfig,
     aiConfig,
     metricsConfig,
     encryptionConfig,

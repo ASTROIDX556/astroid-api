@@ -103,6 +103,16 @@ are rejected:
 | `REDIS_PASSWORD` | _(empty)_   | Redis password.               |
 | `REDIS_DB`       | `0`         | Redis database index.         |
 
+### Wallet balance cache
+
+See [`docs/balance-cache.md`](balance-cache.md) for the key layout and the
+invalidation rules.
+
+| Variable            | Default       | Description |
+| ------------------- | ------------- | ----------- |
+| `BALANCE_CACHE_TTL` | `30`          | Staleness window in seconds (1–3600) for a cached wallet balance. A terminal transaction event deletes the entry immediately, so this only bounds the staleness after an external balance change. |
+| `BALANCE_CACHE_ENV` | `NODE_ENV`    | Namespace folded into every balance cache key, so deployments sharing a Redis instance never read each other's entries. |
+
 ### Authentication
 
 | Variable          | Default                 | Description                          |

@@ -130,6 +130,10 @@ against its disposable PostgreSQL service.
   validation, per-asset limits and base-currency conversion.
 - [`docs/audit-archival.md`](docs/audit-archival.md) — the scheduled archival of
   expired audit records into the compressed archive.
+- [`docs/approval-expiry.md`](docs/approval-expiry.md) — the `EXPIRED` proposal
+  state, the repeatable expiry sweep and the 409 guard on decisions.
+- [`docs/balance-cache.md`](docs/balance-cache.md) — the Redis cache-aside for
+  wallet balance reads, its TTL and its invalidation.
 
 ## Environment Variables
 
