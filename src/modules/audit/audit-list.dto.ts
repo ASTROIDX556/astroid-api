@@ -65,6 +65,8 @@ export type AuditListQuery = {
   action?: string;
   resourceType?: string;
   resourceId?: string;
+  outcome?: 'SUCCESS' | 'FAILURE';
+  search?: string;
   from?: string;
   to?: string;
 };

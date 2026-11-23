@@ -21,9 +21,11 @@ export class ApprovalIdempotencyRepository {
   constructor(private readonly prisma: PrismaService) {}
 
   async reserve(input: ReserveApprovalIdempotencyInput) {
+    // Records are unique on (principalId, route, keyHash); `route` mirrors the
+    // operation name, which keeps approval keys apart from transaction keys.
     const identity = {
       principalId: input.principalId,
-      operation: input.operation,
+      route: input.operation,
       keyHash: input.keyHash,
     };
 
@@ -35,7 +37,7 @@ export class ApprovalIdempotencyRepository {
 
     try {
       const record = await this.prisma.transactionIdempotencyRecord.create({
-        data: { ...input },
+        data: { ...input, route: input.operation },
       });
       return { record, created: true };
     } catch (error) {
@@ -49,7 +51,7 @@ export class ApprovalIdempotencyRepository {
       }
 
       const record = await this.prisma.transactionIdempotencyRecord.findUnique({
-        where: { principalId_operation_keyHash: identity },
+        where: { principalId_route_keyHash: identity },
       });
       if (!record) throw error;
       return { record, created: false };

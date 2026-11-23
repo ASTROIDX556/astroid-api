@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { ApprovalDecision, ProposalStatus } from '@prisma/client';
+import { ApprovalDecision, Proposal, ProposalStatus } from '@prisma/client';
 import { DecideProposalInput } from './approval.dto';
 import { ConfigService } from '@nestjs/config';
 import { ApprovalService } from './approval.service';
@@ -8,6 +8,7 @@ import { ApprovalIdempotencyRepository } from './approval-idempotency.repository
 import { TransactionService } from '../transactions/transaction.service';
 import { EventBusService } from '../../events/event-bus.service';
 import { DomainException } from '../../common/exceptions/domain.exception';
+import { ErrorCode } from '../../common/constants/error-codes';
 
 describe('ApprovalService idempotency', () => {
   let service: ApprovalService;
@@ -33,7 +34,7 @@ describe('ApprovalService idempotency', () => {
       findApprovalByUser: vi.fn().mockResolvedValue(null),
       createApproval: vi.fn().mockResolvedValue({ id: 'approval-1' }),
       countApprovals: vi.fn().mockResolvedValue(1),
-      updateProposalStatus: vi.fn().mockResolvedValue(proposal),
+      transitionStatus: vi.fn().mockResolvedValue(true),
     };
     transactions = {
       execute: vi.fn().mockResolvedValue(undefined),
@@ -78,6 +79,8 @@ describe('ApprovalService idempotency', () => {
       repository as unknown as ApprovalRepository,
       transactions as unknown as TransactionService,
       { emit: vi.fn().mockResolvedValue(undefined) } as unknown as EventBusService,
+      undefined,
+      undefined,
       idempotency as unknown as ApprovalIdempotencyRepository,
       { get: vi.fn(() => settings) } as unknown as ConfigService,
     );
@@ -114,7 +117,7 @@ describe('ApprovalService idempotency', () => {
     expect(transactions.execute).toHaveBeenCalledTimes(1);
   });
 
-  it('rejects reuse of a key with a different payload as a 422', async () => {
+  it('rejects reuse of a key with a different payload as a 409 mismatch', async () => {
     await decide('decision-key-3');
 
     const error = await decide('decision-key-3', 'user-1', ApprovalDecision.REJECTED).catch(
@@ -122,7 +125,8 @@ describe('ApprovalService idempotency', () => {
     );
 
     expect(error).toBeInstanceOf(DomainException);
-    expect((error as DomainException).getStatus()).toBe(422);
+    expect((error as DomainException).getStatus()).toBe(409);
+    expect(error).toMatchObject({ code: ErrorCode.IDEMPOTENCY_KEY_MISMATCH });
     expect(repository.createApproval).toHaveBeenCalledTimes(1);
   });
 
@@ -149,10 +153,8 @@ describe('ApprovalService idempotency', () => {
 
     expect(repository.createApproval).toHaveBeenCalledTimes(2);
     expect(transactions.execute).toHaveBeenCalledTimes(2);
-import { describe, expect, it, vi } from 'vitest';
-import { ApprovalDecision, Proposal, ProposalStatus } from '@prisma/client';
-import { ApprovalService } from './approval.service';
-import { ErrorCode } from '../../common/constants/error-codes';
+  });
+});
 
 function proposal(overrides: Partial<Proposal> = {}): Proposal {
   return {

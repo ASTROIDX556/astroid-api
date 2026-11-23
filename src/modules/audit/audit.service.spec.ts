@@ -373,7 +373,9 @@ describe('AuditService', () => {
       hasNextPage: false,
       hasPreviousPage: false,
     });
+  });
 
+  describe('list filters', () => {
     it('combines actor, resource, action, outcome and search filters under one tenant', async () => {
       await service.list('org-1', {
         limit: 20,
@@ -385,7 +387,7 @@ describe('AuditService', () => {
         search: 'transfer',
       });
 
-      const [where] = repository.findPage.mock.calls[0];
+      const [where] = repository.findManyAndCount.mock.calls[0];
       expect(where).toMatchObject({
         organizationId: 'org-1',
         userId: 'user-1',
@@ -419,7 +421,7 @@ describe('AuditService', () => {
         to: '2026-09-30T00:00:00.000Z',
       });
 
-      const [where] = repository.findPage.mock.calls[0];
+      const [where] = repository.findManyAndCount.mock.calls[0];
       expect(where.organizationId).toBe('org-2');
     });
   });

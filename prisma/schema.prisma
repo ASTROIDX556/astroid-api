@@ -726,6 +726,7 @@ model AuditLog {
   @@index([organizationId, userId, createdAt, id])
   @@index([organizationId, action, createdAt, id])
   @@index([organizationId, entity, createdAt, id])
+  @@index([organizationId, outcome, createdAt])
   @@index([requestId])
   @@map("audit_logs")
 }

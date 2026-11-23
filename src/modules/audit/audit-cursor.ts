@@ -23,7 +23,7 @@ export function decodeAuditCursor(value: string): AuditCursor {
     return decodeCursor(value);
   } catch {
     throw new ZodValidationException('Invalid audit cursor', [
-      { path: 'cursor', message: 'Invalid cursor' },
+      { path: 'cursor', code: 'custom', message: 'Invalid cursor' },
     ]);
   }
 }

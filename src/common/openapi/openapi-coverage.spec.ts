@@ -20,6 +20,7 @@ import {
   findMissingDeclaredSchemas,
   findMissingRequestSchemas,
   findOperationsMissingSecurity,
+  findOperationsWithUntypedRequestBody,
   findOperationsWithoutResponses,
   findOperationsWithoutSuccessSchema,
   findOperationsWithoutSummary,
@@ -146,6 +147,42 @@ describe('OpenAPI coverage checks on deliberately broken fixtures', () => {
       'POST /api/v1/b (201) documents no response schema',
     ]);
   });
+
+  it('names a request body without content, without a schema, or with an untyped schema', () => {
+    const findings = findOperationsWithUntypedRequestBody(
+      doc(
+        {
+          '/api/v1/a': {
+            post: {
+              requestBody: {
+                content: { 'application/json': { schema: { $ref: '#/components/schemas/CreateA' } } },
+              },
+              responses: ok(),
+            },
+          },
+          '/api/v1/b': {
+            post: {
+              requestBody: { content: { 'application/json': { schema: {} } } },
+              responses: ok(),
+            },
+          },
+          '/api/v1/c': {
+            post: { requestBody: { content: {} }, responses: ok() },
+          },
+          '/api/v1/d': {
+            get: { responses: ok() },
+          },
+        },
+        { CreateA: { type: 'object' } },
+      ),
+    );
+
+    expect(findings).toEqual([
+      'POST /api/v1/b (application/json) documents an untyped request body schema',
+      'POST /api/v1/c documents a request body without content',
+    ]);
+  });
+
 
   it('names the handler whose operation has no summary or no response', () => {
     const document = doc({
