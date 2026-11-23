@@ -5,10 +5,16 @@ import { Queues } from '../queues/queues.constants';
 import { runWorkerJob } from './job-worker';
 import { WorkerMetricsService } from '../modules/metrics/worker-metrics.service';
 import { ApprovalService } from '../modules/approvals/approval.service';
+import { APPROVAL_EXPIRY_JOB_NAME, ApprovalExpiryJobData } from '../queues/approval-expiry.queue';
 
 /**
- * Processor for the approval sweep queue.
- * Keeps business logic entirely inside ApprovalService.sweepExpired().
+ * Processor for the approval sweep queue. Handles two job kinds:
+ *
+ * - `approval-expire` – the delayed job scheduled when a proposal is created;
+ *   expires that one proposal via ApprovalService.expireById().
+ * - `approval-sweep`  – the periodic backstop sweep via sweepExpired().
+ *
+ * Business logic stays inside ApprovalService.
  */
 @Processor(Queues.ApprovalSweep)
 export class ApprovalSweepWorker extends WorkerHost implements OnModuleDestroy {
@@ -29,8 +35,12 @@ export class ApprovalSweepWorker extends WorkerHost implements OnModuleDestroy {
       metrics: this.workerMetrics,
       defaultJobName: 'approval-sweep',
       handler: async () => {
-        const result = await this.approvalService.sweepExpired();
-        return result;
+        if (job.name === APPROVAL_EXPIRY_JOB_NAME) {
+          const { organizationId, proposalId } = job.data as ApprovalExpiryJobData;
+          const expired = await this.approvalService.expireById(organizationId, proposalId);
+          return { proposalId, expired };
+        }
+        return this.approvalService.sweepExpired();
       },
     });
   }

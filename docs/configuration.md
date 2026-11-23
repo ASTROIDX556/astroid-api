@@ -139,6 +139,12 @@ invalidation rules.
 | `STELLAR_FALLBACK_GAS_LIMIT` | `1000000` | Static gas limit used when simulation fails or omits a gas estimate. |
 | `STELLAR_FALLBACK_FEE_STROOPS` | `100000` | Static fee limit in stroops paired with the fallback gas limit. |
 | `STELLAR_ANCHOR_ASSETS` | _(empty)_ | Comma-separated `CODE=ISSUER` mappings for anchored Stellar assets. |
+| `STELLAR_SOROBAN_RPC_TIMEOUT_MS` | `5000` | Per-attempt timeout for an outbound Soroban RPC call (max `60000`). |
+| `STELLAR_SOROBAN_RPC_MAX_ATTEMPTS` | `3` | Total attempts per Soroban RPC call including the first (`1`–`3`). Only timeouts, connection errors, 5xx and 429 are retried. |
+| `STELLAR_SOROBAN_RPC_RETRY_BASE_DELAY_MS` | `250` | Base delay of the jittered exponential backoff between Soroban RPC attempts. |
+| `STELLAR_SOROBAN_RPC_RETRY_MAX_DELAY_MS` | `2000` | Upper bound for a single Soroban RPC backoff delay. |
+| `STELLAR_SOROBAN_RPC_CIRCUIT_FAILURE_THRESHOLD` | `5` | Consecutive failed attempts that open the Soroban RPC circuit breaker. Calls then fail fast with `503 SOROBAN_UNAVAILABLE`. |
+| `STELLAR_SOROBAN_RPC_CIRCUIT_COOLDOWN_MS` | `30000` | How long the Soroban RPC circuit stays open before a single half-open probe. |
 
 ### Price oracle
 

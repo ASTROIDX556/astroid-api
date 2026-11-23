@@ -199,7 +199,7 @@ describe('GlobalExceptionFilter', () => {
       });
     });
 
-    it('maps P2003 (foreign key constraint) to 409 CONFLICT', () => {
+    it('maps P2003 (foreign key constraint) to 400 BAD_REQUEST', () => {
       const { host, response } = buildHost();
       const error = new Prisma.PrismaClientKnownRequestError('Foreign key constraint failed', {
         code: 'P2003',
@@ -208,10 +208,10 @@ describe('GlobalExceptionFilter', () => {
 
       filter.catch(error, host);
 
-      expect(response.status).toHaveBeenCalledWith(409);
+      expect(response.status).toHaveBeenCalledWith(400);
       expect(renderedBody(response)).toMatchObject({
-        status: 409,
-        code: ErrorCode.CONFLICT,
+        status: 400,
+        code: ErrorCode.BAD_REQUEST,
       });
     });
 

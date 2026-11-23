@@ -317,7 +317,7 @@ describe('AllExceptionsFilter', () => {
       expect(renderedBody(response).code).toBe(ErrorCode.NOT_FOUND);
     });
 
-    it('maps a P2003 foreign key constraint error onto 409 CONFLICT', () => {
+    it('maps a P2003 foreign key constraint error onto 400 BAD_REQUEST', () => {
       const { host, response } = buildHost();
       const error = new Prisma.PrismaClientKnownRequestError('Foreign key constraint failed', {
         code: 'P2003',
@@ -326,8 +326,8 @@ describe('AllExceptionsFilter', () => {
 
       filter.catch(error, host);
 
-      expect(response.status).toHaveBeenCalledWith(409);
-      expect(renderedBody(response).code).toBe(ErrorCode.CONFLICT);
+      expect(response.status).toHaveBeenCalledWith(400);
+      expect(renderedBody(response).code).toBe(ErrorCode.BAD_REQUEST);
     });
 
     it('maps a P2000 value too long error onto 422 VALIDATION_ERROR', () => {

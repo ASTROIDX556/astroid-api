@@ -12,6 +12,7 @@ import { ApprovalConfig } from '../config/approval.config';
 describe('ApprovalSweepWorker & Scheduler', () => {
   let approvalService: {
     sweepExpired: ReturnType<typeof vi.fn>;
+    expireById: ReturnType<typeof vi.fn>;
   };
   let queue: {
     upsertJobScheduler: ReturnType<typeof vi.fn>;
@@ -30,6 +31,7 @@ describe('ApprovalSweepWorker & Scheduler', () => {
   beforeEach(() => {
     approvalService = {
       sweepExpired: vi.fn().mockResolvedValue({ scanned: 5, expired: 2 }),
+      expireById: vi.fn().mockResolvedValue(true),
     };
     queue = {
       upsertJobScheduler: vi.fn().mockResolvedValue({}),
@@ -54,6 +56,18 @@ describe('ApprovalSweepWorker & Scheduler', () => {
       await worker.process(job);
 
       expect(approvalService.sweepExpired).toHaveBeenCalledTimes(1);
+    });
+
+    it('processes a delayed approval-expire job by expiring that one proposal', async () => {
+      const worker = new ApprovalSweepWorker(approvalService as unknown as ApprovalService);
+
+      await worker.process({
+        name: 'approval-expire',
+        data: { proposalId: 'p-1', organizationId: 'org-1', expiresAt: '2026-11-23T10:00:00.000Z' },
+      } as Job);
+
+      expect(approvalService.expireById).toHaveBeenCalledWith('org-1', 'p-1');
+      expect(approvalService.sweepExpired).not.toHaveBeenCalled();
     });
   });
 

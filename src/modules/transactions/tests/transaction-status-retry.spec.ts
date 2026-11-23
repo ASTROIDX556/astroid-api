@@ -99,7 +99,7 @@ describe('TransactionService status transitions under write conflicts', () => {
   };
   let stellar: { submitPayment: ReturnType<typeof vi.fn> };
   let eventBus: { emit: ReturnType<typeof vi.fn> };
-  let budgets: { consume: ReturnType<typeof vi.fn> };
+  let budgets: { consume: ReturnType<typeof vi.fn>; release: ReturnType<typeof vi.fn> };
 
   /**
    * Builds a TransactionService around a real retrying transaction manager
@@ -151,10 +151,43 @@ describe('TransactionService status transitions under write conflicts', () => {
       }),
     };
     eventBus = { emit: vi.fn().mockResolvedValue(undefined) };
-    budgets = { consume: vi.fn().mockResolvedValue(undefined) };
+    budgets = { consume: vi.fn().mockResolvedValue(undefined), release: vi.fn().mockResolvedValue(undefined) };
   });
 
   describe('cancel()', () => {
+    it('releases the budget reservation of a cancelled transaction', async () => {
+      const { service } = buildService(0);
+      const row = { ...makeRow(TransactionStatus.PENDING), budgetReservationId: 'res_1' };
+      repository.findById.mockResolvedValue(row);
+      repository.update.mockResolvedValue({ ...row, status: TransactionStatus.CANCELLED });
+
+      await service.cancel('org_1', 'user_1', 'tx_1');
+
+      expect(budgets.release).toHaveBeenCalledWith('res_1');
+    });
+
+    it('does not fail the cancel when releasing the reservation fails', async () => {
+      const { service } = buildService(0);
+      const row = { ...makeRow(TransactionStatus.PENDING), budgetReservationId: 'res_1' };
+      repository.findById.mockResolvedValue(row);
+      repository.update.mockResolvedValue({ ...row, status: TransactionStatus.CANCELLED });
+      budgets.release.mockRejectedValue(new Error('db down'));
+
+      await expect(service.cancel('org_1', 'user_1', 'tx_1')).resolves.toMatchObject({
+        status: TransactionStatus.CANCELLED,
+      });
+      expect(eventBus.emit).toHaveBeenCalledTimes(1);
+    });
+
+    it('skips the release for a transaction without a reservation', async () => {
+      const { service } = buildService(0);
+      repository.findById.mockResolvedValue(makeRow(TransactionStatus.DRAFT));
+
+      await service.cancel('org_1', 'user_1', 'tx_1');
+
+      expect(budgets.release).not.toHaveBeenCalled();
+    });
+
     it('replays a serialization conflict and cancels on the retry', async () => {
       const { service, $transaction } = buildService(1);
       repository.findById.mockResolvedValue(makeRow(TransactionStatus.DRAFT));
