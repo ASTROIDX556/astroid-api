@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Policy, Prisma } from '@prisma/client';
 
+import { fromStroops, toStroops } from '../../utils/decimal.util';
 import {
   NotFoundException,
   ValidationException,
@@ -166,7 +167,11 @@ export class SpendingPolicyService {
       since: new Date(Date.now() - VELOCITY_WINDOW_MS),
     });
 
-    if (spentInWindow + amount > dailyLimit) {
+    const spentStroops = toStroops(spentInWindow);
+    const amountStroops = toStroops(amount);
+    const limitStroops = toStroops(dailyLimit);
+
+    if (spentStroops + amountStroops > limitStroops) {
       throw new VelocityLimitExceededException(
         `Daily velocity limit exceeded. Spent: ${spentInWindow}, Pending: ${amount}, Limit: ${dailyLimit}`,
         { spentInWindow, pendingAmount: amount, limit: dailyLimit, assetCode },
@@ -317,6 +322,14 @@ function allowanceFor(limit: number | null, used: number): SpendingWindowAllowan
   return {
     used,
     limit,
-    remaining: limit === null ? null : Math.max(0, limit - used),
+    remaining:
+      limit === null
+        ? null
+        : Math.max(
+            0,
+            fromStroops(
+              toStroops(limit) > toStroops(used) ? toStroops(limit) - toStroops(used) : 0n,
+            ),
+          ),
   };
 }
