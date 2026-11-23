@@ -295,32 +295,32 @@ export class TransactionService {
         requiresApproval,
         metadata: input.metadata as Prisma.InputJsonValue,
       });
-      const transaction = input.agentId && typeof this.budgets.withAgentBudgetLimit === 'function'
-        ? await this.budgets.withAgentBudgetLimit(
-            organizationId,
-            input.agentId,
-            input.asset,
-            amount,
-            createTransactionRow,
-          )
-        : await createTransactionRow();
+      let transaction: Transaction;
+      try {
+        transaction = input.agentId && typeof this.budgets.withAgentBudgetLimit === 'function'
+          ? await this.budgets.withAgentBudgetLimit(
+              organizationId,
+              input.agentId,
+              input.asset,
+              amount,
+              createTransactionRow,
+            )
+          : await createTransactionRow();
+      } catch (error) {
+        // The reservation is already taken, but the submission was rejected
+        // (e.g. the agent budget check) or the row could not be persisted.
+        // Nothing will ever settle or release it through the transaction, so
+        // return the held amount now (idempotent, best effort).
+        await this.releaseReservation(budgetReservationId);
+        throw error;
+      }
 
       return { transaction, assessment, requiresApproval, budgetReservationId: budgetReservationId as string | undefined };
     };
 
-    let result: Awaited<ReturnType<typeof enforceAndCreate>>;
-    try {
-      result = input.agentId
-        ? await this.spendingLimits.withSpendEnforcementLock(input.agentId, enforceAndCreate)
-        : await enforceAndCreate();
-    } catch (error) {
-      // If a reservation was made but the pipeline failed before persisting the
-      // transaction, release the held amount so the budget is not permanently
-      // reduced by an aborted submission.
-      // We cannot access budgetReservationId here directly because enforceAndCreate
-      // is a closure; the release is handled inside enforceAndCreate on throw.
-      throw error;
-    }
+    const result = input.agentId
+      ? await this.spendingLimits.withSpendEnforcementLock(input.agentId, enforceAndCreate)
+      : await enforceAndCreate();
 
     const { transaction, assessment, requiresApproval } = result;
 
@@ -444,6 +444,11 @@ export class TransactionService {
         } else {
           await this.budgets.consume(organizationId, tx.budgetId, Number(tx.amount));
         }
+      }
+      if (!result.successful) {
+        // The network rejected the payment without throwing: no money moved,
+        // so the hold is returned exactly as on a thrown submission failure.
+        await this.releaseReservation(tx.budgetReservationId);
       }
 
       await this.eventBus.emit(
