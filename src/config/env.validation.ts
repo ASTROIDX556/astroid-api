@@ -182,6 +182,12 @@ export const walletReconciliationEnvSchema = z.object({
   WALLET_BALANCE_DRIFT_THRESHOLD: z.coerce.number().nonnegative().max(1_000_000_000).default(0.0000001),
 });
 
+export const approvalEnvSchema = z.object({
+  APPROVAL_TTL_HOURS: z.coerce.number().int().positive().default(72),
+  APPROVAL_SWEEP_INTERVAL_MS: z.coerce.number().int().positive().default(60000),
+  APPROVAL_SWEEP_BATCH_SIZE: z.coerce.number().int().positive().default(100),
+});
+
 export const queueEnvSchema = z.object({
   QUEUE_PREFIX: z.string().default('astroid'),
   QUEUE_CONCURRENCY: z.coerce.number().int().positive().default(5),
@@ -386,6 +392,7 @@ export const environmentSchema = z
     ...queueEnvSchema.shape,
     ...idempotencyEnvSchema.shape,
     ...walletReconciliationEnvSchema.shape,
+    ...approvalEnvSchema.shape,
     ...webhookEnvSchema.shape,
     ...budgetAlertEnvSchema.shape,
     ...budgetRolloverEnvSchema.shape,

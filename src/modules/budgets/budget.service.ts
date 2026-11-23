@@ -304,6 +304,26 @@ export class BudgetService {
     }
   }
 
+  /**
+   * Releases a previously reserved budget amount, decrementing spent.
+   * Runs under an atomic row-level lock.
+   */
+  async releaseBudget(organizationId: string, budgetId: string, amount: number) {
+    try {
+      const budget = await this.transactions.run(
+        (tx) => this.repository.releaseBudget(organizationId, budgetId, new Decimal(amount), tx),
+        { name: 'budget.release' },
+      );
+      return budget;
+    } catch (error: unknown) {
+      const err = error as Error;
+      if (err.message && err.message.includes('NotFoundException')) {
+        throw new NotFoundException('Budget', budgetId);
+      }
+      throw error;
+    }
+  }
+
   async consume(organizationId: string, budgetId: string, amount: number) {
     // Serialize spend increments on the same budget to prevent concurrent
     // agents from overshooting the limit together.

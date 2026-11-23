@@ -173,6 +173,14 @@ are rejected:
 See [`docs/wallet-reconciliation.md`](wallet-reconciliation.md) for the worker,
 queue and event behaviour.
 
+### Approval Expiry & Sweep
+
+| Variable | Default | Description |
+| -------- | ------- | ----------- |
+| `APPROVAL_TTL_HOURS` | `72` | Default lifetime in hours for approval requests before automatic expiration. |
+| `APPROVAL_SWEEP_INTERVAL_MS` | `60000` | Fixed interval in milliseconds between background sweep jobs (default: 1 minute). |
+| `APPROVAL_SWEEP_BATCH_SIZE` | `100` | Maximum number of expired pending proposals processed per batch during a sweep. |
+
 ### Storage (S3-compatible)
 
 | Variable             | Default                 | Description              |

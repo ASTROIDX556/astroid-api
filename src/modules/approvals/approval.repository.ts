@@ -41,6 +41,22 @@ export class ApprovalRepository {
   }
 
   /**
+   * Finds pending proposals whose expiresAt timestamp is in the past,
+   * bounded by the batch limit for safe streaming sweep execution.
+   */
+  findExpiredPending(now: Date, limit: number) {
+    return this.prisma.proposal.findMany({
+      where: {
+        status: ProposalStatus.PENDING,
+        expiresAt: { lte: now },
+      },
+      take: limit,
+      include: { transaction: true, approvals: true },
+      orderBy: { expiresAt: 'asc' },
+    });
+  }
+
+  /**
    * Compare-and-set status transition. The database is the concurrency arbiter:
    * at most one caller observing `from` can win this mutation.
    */

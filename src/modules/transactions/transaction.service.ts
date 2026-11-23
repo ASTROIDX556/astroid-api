@@ -313,7 +313,12 @@ export class TransactionService {
 
     // 7. Branch: approval proposal, or immediate execution.
     if (requiresApproval) {
-      const proposal = await this.createProposal(organizationId, transaction, assessment.band);
+      const proposal = await this.createProposal(
+        organizationId,
+        transaction,
+        assessment.band,
+        input.approvalExpiresInHours,
+      );
       await this.repository.update(transaction.id, { status: TransactionStatus.PENDING });
       return {
         transaction: { ...transaction, status: TransactionStatus.PENDING },
@@ -571,8 +576,16 @@ export class TransactionService {
   }
 
   /** Creates the approval Proposal row directly (avoids a circular module dep). */
-  private async createProposal(organizationId: string, tx: Transaction, band: RiskBand) {
+  private async createProposal(
+    organizationId: string,
+    tx: Transaction,
+    band: RiskBand,
+    approvalExpiresInHours?: number,
+  ) {
     const dualApproval = band === RiskBand.HIGH || band === RiskBand.CRITICAL;
+    const configuredTtl = this.config?.get<number>('approval.ttlHours') ?? 72;
+    const ttlHours = approvalExpiresInHours ?? configuredTtl;
+    const expiresAt = new Date(Date.now() + ttlHours * 3_600_000);
     const proposal = await this.prisma.proposal.create({
       data: {
         organizationId,
@@ -582,7 +595,7 @@ export class TransactionService {
         approvalType: dualApproval ? 'DUAL' : 'SINGLE',
         requiredApprovals: dualApproval ? 2 : 1,
         status: 'PENDING',
-        expiresAt: new Date(Date.now() + 72 * 3_600_000),
+        expiresAt,
       },
     });
     await this.eventBus.emit(

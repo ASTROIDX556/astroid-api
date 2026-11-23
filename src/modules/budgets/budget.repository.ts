@@ -89,6 +89,30 @@ export class BudgetRepository {
     });
   }
 
+  /**
+   * Releases a held budget reservation by decrementing spent atomically.
+   */
+  async releaseBudget(
+    organizationId: string,
+    id: string,
+    amount: Prisma.Decimal,
+    client: BudgetWriteClient = this.prisma,
+  ): Promise<Budget> {
+    const rows = await client.$queryRaw<Budget[]>`SELECT * FROM "budgets" WHERE id = ${id} AND "organizationId" = ${organizationId} FOR UPDATE`;
+    if (!rows || rows.length === 0) {
+      throw new Error('NotFoundException');
+    }
+
+    const budget = rows[0];
+    const diff = new Prisma.Decimal(budget.spent).minus(amount);
+    const spentAfter = diff.isNegative() ? new Prisma.Decimal(0) : diff;
+
+    return client.budget.update({
+      where: { id },
+      data: { spent: spentAfter },
+    });
+  }
+
   softDelete(id: string): Promise<Budget> {
     return this.prisma.budget.update({
       where: { id },

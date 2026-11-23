@@ -33,6 +33,8 @@ export const Queues = {
   BudgetRollover: 'budget-rollover',
   /** Periodic removal of expired Idempotency-Key records. */
   IdempotencyCleanup: 'idempotency-cleanup',
+  /** Scheduled sweep of expired approval requests to release reserved budget. */
+  ApprovalSweep: 'approval-sweep',
 } as const;
 
 export type QueueName = (typeof Queues)[keyof typeof Queues];

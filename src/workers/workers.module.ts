@@ -2,8 +2,11 @@ import { Module } from '@nestjs/common';
 import { BalanceWorker } from './balance.worker';
 import { AnalyticsAggregationWorker } from './analytics-aggregation.worker';
 import { NotificationDeliveryWorker } from './notification-delivery.worker';
+import { ApprovalSweepWorker } from './approval-sweep.worker';
+import { ApprovalSweepScheduler } from './approval-sweep.scheduler';
 import { WalletModule } from '../modules/wallets/wallet.module';
 import { MetricsModule } from '../modules/metrics/metrics.module';
+import { ApprovalModule } from '../modules/approvals/approval.module';
 
 /**
  * Background job processors.
@@ -19,16 +22,20 @@ import { MetricsModule } from '../modules/metrics/metrics.module';
  * `worker_job_duration_seconds` or `worker_jobs_total` metrics.
  */
 @Module({
-  imports: [WalletModule, MetricsModule],
+  imports: [WalletModule, MetricsModule, ApprovalModule],
   providers: [
     NotificationDeliveryWorker,
     BalanceWorker,
     AnalyticsAggregationWorker,
+    ApprovalSweepWorker,
+    ApprovalSweepScheduler,
   ],
   exports: [
     NotificationDeliveryWorker,
     BalanceWorker,
     AnalyticsAggregationWorker,
+    ApprovalSweepWorker,
+    ApprovalSweepScheduler,
   ],
 })
 export class WorkersModule {}

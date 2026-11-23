@@ -18,6 +18,7 @@ import { webhookConfig } from './webhook.config';
 import { budgetAlertConfig } from './budget-alert.config';
 import { budgetRolloverConfig } from './budget-rollover.config';
 import { auditConfig } from './audit.config';
+import { approvalConfig } from './approval.config';
 
 export * from './app.config';
 export * from './database.config';
@@ -38,6 +39,7 @@ export * from './webhook.config';
 export * from './budget-alert.config';
 export * from './budget-rollover.config';
 export * from './audit.config';
+export * from './approval.config';
 
 /**
  * Global configuration module. Every slice is registered via `registerAs` and
@@ -67,5 +69,6 @@ export const AppConfigModule = ConfigModule.forRoot({
     budgetAlertConfig,
     budgetRolloverConfig,
     auditConfig,
+    approvalConfig,
   ],
 });

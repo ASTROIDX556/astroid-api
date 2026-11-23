@@ -613,6 +613,7 @@ model Proposal {
   @@index([createdAt])
   @@index([organizationId, createdAt])
   @@index([organizationId, status, createdAt])
+  @@index([status, expiresAt])
   @@map("proposals")
 }
 
@@ -626,6 +627,7 @@ model Approval {
   userId     String
   decision   ApprovalDecision
   comment    String?
+  expiresAt  DateTime?
   createdAt  DateTime         @default(now())
 
   proposal Proposal @relation(fields: [proposalId], references: [id], onDelete: Cascade)
@@ -634,6 +636,7 @@ model Approval {
   @@index([proposalId])
   @@index([userId])
   @@index([createdAt])
+  @@index([expiresAt])
   @@unique([proposalId, userId])
   @@map("approvals")
 }
