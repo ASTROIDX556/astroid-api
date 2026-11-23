@@ -5,3 +5,5 @@ export * from './horizon-circuit-breaker.service';
 export * from './soroban.interface';
 export * from './mock-soroban.client';
 export * from './contract-event.parser';
+export * from './soroban.client';
+export * from './http-soroban.client';
