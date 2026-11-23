@@ -50,15 +50,16 @@ export class QueueObservabilityService implements OnModuleDestroy {
   }
 
   private getQueueHandle(queueName: QueueName): QueueHandle {
-    let queue = this.queueHandles.get(queueName);
-    if (!queue) {
-      const { Queue } = require('bullmq');
-      const { host, port, password, db } = redisConfig();
-      queue = new Queue(queueName, {
-        connection: { host, port, password: password || undefined, db },
-      });
-      this.queueHandles.set(queueName, queue);
+    const existing = this.queueHandles.get(queueName);
+    if (existing) {
+      return existing;
     }
+    const { Queue } = require('bullmq');
+    const { host, port, password, db } = redisConfig();
+    const queue = new Queue(queueName, {
+      connection: { host, port, password: password || undefined, db },
+    });
+    this.queueHandles.set(queueName, queue);
     return queue;
   }
 

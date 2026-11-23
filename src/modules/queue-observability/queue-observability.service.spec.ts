@@ -74,7 +74,7 @@ describe('QueueObservabilityService', () => {
         ),
       );
 
-      (service as { getQueueHandle: (name: string) => Partial<Queue> }).getQueueHandle = (name: string) =>
+      (service as unknown as { getQueueHandle: (name: string) => Partial<Queue> }).getQueueHandle = (name: string) =>
         mockQueues.find((q) => q.name === name) || mockQueue();
 
       const result = await service.getObservability();
@@ -82,7 +82,7 @@ describe('QueueObservabilityService', () => {
       expect(result.queues).toHaveLength(queueNames.length);
       expect(result.timestamp).toBeDefined();
       expect(result.queues[0]).toMatchObject({
-        queue: expect.any(String),
+        queueName: expect.any(String),
         counts: {
           waiting: expect.any(Number),
           active: expect.any(Number),
@@ -108,12 +108,12 @@ describe('QueueObservabilityService', () => {
       const mockQ = mockQueue([failedJob], { waiting: 0, active: 0, delayed: 0, completed: 0, failed: 1 });
 
       vi
-        .spyOn(service as { getQueueHandle: (name: string) => Partial<Queue> }, 'getQueueHandle')
+        .spyOn(service as unknown as { getQueueHandle: (name: string) => Partial<Queue> }, 'getQueueHandle')
         .mockReturnValue(mockQ);
 
       const result = await service.getObservability();
 
-      const webhookQueue = result.queues.find((q) => q.queue === 'webhooks');
+      const webhookQueue = result.queues.find((q) => q.queueName === 'webhooks');
       expect(webhookQueue).toBeDefined();
       if (webhookQueue) {
         expect(webhookQueue.failedJobs[0]).toMatchObject({
@@ -136,12 +136,12 @@ describe('QueueObservabilityService', () => {
       const mockQ = mockQueue(manyFailedJobs, { waiting: 0, active: 0, delayed: 0, completed: 0, failed: 25 });
 
       vi
-        .spyOn(service as { getQueueHandle: (name: string) => Partial<Queue> }, 'getQueueHandle')
+        .spyOn(service as unknown as { getQueueHandle: (name: string) => Partial<Queue> }, 'getQueueHandle')
         .mockReturnValue(mockQ);
 
       const result = await service.getObservability();
 
-      const webhookQueue = result.queues.find((q) => q.queue === 'webhooks');
+      const webhookQueue = result.queues.find((q) => q.queueName === 'webhooks');
       expect(webhookQueue).toBeDefined();
       if (webhookQueue) {
         expect(webhookQueue.failedJobs.length).toBeLessThanOrEqual(20);
@@ -163,12 +163,12 @@ describe('QueueObservabilityService', () => {
       (mockQ.getJobs as ReturnType<typeof vi.fn>).mockResolvedValue([waitingJob]);
 
       vi
-        .spyOn(service as { getQueueHandle: (name: string) => Partial<Queue> }, 'getQueueHandle')
+        .spyOn(service as unknown as { getQueueHandle: (name: string) => Partial<Queue> }, 'getQueueHandle')
         .mockReturnValue(mockQ);
 
       const result = await service.getObservability();
 
-      const webhookQueue = result.queues.find((q) => q.queue === 'webhooks');
+      const webhookQueue = result.queues.find((q) => q.queueName === 'webhooks');
       expect(webhookQueue).toBeDefined();
       if (webhookQueue) {
         expect(webhookQueue.oldestWaitingJobAgeMs).toBeGreaterThanOrEqual(4500);
@@ -181,12 +181,12 @@ describe('QueueObservabilityService', () => {
       (mockQ.getJobs as ReturnType<typeof vi.fn>).mockResolvedValue([]);
 
       vi
-        .spyOn(service as { getQueueHandle: (name: string) => Partial<Queue> }, 'getQueueHandle')
+        .spyOn(service as unknown as { getQueueHandle: (name: string) => Partial<Queue> }, 'getQueueHandle')
         .mockReturnValue(mockQ);
 
       const result = await service.getObservability();
 
-      const webhookQueue = result.queues.find((q) => q.queue === 'webhooks');
+      const webhookQueue = result.queues.find((q) => q.queueName === 'webhooks');
       expect(webhookQueue).toBeDefined();
       if (webhookQueue) {
         expect(webhookQueue.oldestWaitingJobAgeMs).toBeNull();
@@ -198,7 +198,7 @@ describe('QueueObservabilityService', () => {
       (mockQ.getJobCounts as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('Redis connection failed'));
 
       vi
-        .spyOn(service as { getQueueHandle: (name: string) => Partial<Queue> }, 'getQueueHandle')
+        .spyOn(service as unknown as { getQueueHandle: (name: string) => Partial<Queue> }, 'getQueueHandle')
         .mockReturnValue(mockQ);
 
       await expect(service.getObservability()).rejects.toThrow('Redis connection failed');
@@ -208,12 +208,12 @@ describe('QueueObservabilityService', () => {
       const mockQ = mockQueue([], { waiting: 0, active: 0, delayed: 0, completed: 10, failed: 0 });
 
       vi
-        .spyOn(service as { getQueueHandle: (name: string) => Partial<Queue> }, 'getQueueHandle')
+        .spyOn(service as unknown as { getQueueHandle: (name: string) => Partial<Queue> }, 'getQueueHandle')
         .mockReturnValue(mockQ);
 
       const result = await service.getObservability();
 
-      const webhookQueue = result.queues.find((q) => q.queue === 'webhooks');
+      const webhookQueue = result.queues.find((q) => q.queueName === 'webhooks');
       expect(webhookQueue).toBeDefined();
       if (webhookQueue) {
         expect(webhookQueue.failedJobs).toEqual([]);
@@ -225,8 +225,8 @@ describe('QueueObservabilityService', () => {
     it('should close all queue handles', async () => {
       const mockQ1 = mockQueue();
       const mockQ2 = mockQueue();
-      (service as { queueHandles: Map<string, Queue> }).queueHandles.set('queue1', mockQ1 as Queue);
-      (service as { queueHandles: Map<string, Queue> }).queueHandles.set('queue2', mockQ2 as Queue);
+      (service as unknown as { queueHandles: Map<string, Queue> }).queueHandles.set('queue1', mockQ1 as Queue);
+      (service as unknown as { queueHandles: Map<string, Queue> }).queueHandles.set('queue2', mockQ2 as Queue);
 
       await service.onModuleDestroy();
 

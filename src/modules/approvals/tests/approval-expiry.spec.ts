@@ -3,7 +3,6 @@ import { ApprovalDecision, ApprovalType, Proposal, ProposalStatus, Transaction }
 import { ApprovalService, APPROVAL_EXPIRY_BATCH_SIZE } from '../approval.service';
 import { ApprovalRepository } from '../approval.repository';
 import { TransactionService } from '../../transactions/transaction.service';
-import { BudgetService } from '../../budgets/budget.service';
 import { EventBusService } from '../../../events/event-bus.service';
 import { DomainEventName } from '../../../events/event-names';
 import { DomainException } from '../../../common/exceptions/domain.exception';
@@ -155,11 +154,15 @@ describe('ApprovalService expiry', () => {
       releaseBudget: vi.fn().mockResolvedValue({}),
     };
     eventBus = { emit: vi.fn().mockResolvedValue(undefined) };
+    // ApprovalService constructor: (repository, transactions, eventBus, approvalConfiguration?, idempotency?, config?, expiryQueue?)
     service = new ApprovalService(
       repository as unknown as ApprovalRepository,
       transactions as unknown as TransactionService,
       eventBus as unknown as EventBusService,
-      budgets as unknown as BudgetService,
+      undefined, // approvalConfiguration (optional)
+      undefined, // idempotency (optional)
+      undefined, // config (optional)
+      undefined, // expiryQueue (optional)
     );
   });
 
