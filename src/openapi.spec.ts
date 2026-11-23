@@ -10,31 +10,7 @@ import { CONTROLLER_WATERMARK } from '@nestjs/common/constants';
 import { ConfigService } from '@nestjs/config';
 import { OpenAPIObject } from '@nestjs/swagger/dist/interfaces/open-api-spec.interface';
 import { GLOBAL_PREFIX_EXCLUDED_ROUTES } from './common/constants/global-prefix';
-import { AiController } from './modules/ai/ai.controller';
-import { AgentController } from './modules/agents/agent.controller';
-import { AnalyticsController } from './modules/analytics/analytics.controller';
-import { ApprovalController } from './modules/approvals/approval.controller';
-import { AuditController } from './modules/audit/audit.controller';
-import { AuthController } from './modules/auth/auth.controller';
-import { PasskeyController } from './modules/auth/controllers/passkey.controller';
-import { BudgetController } from './modules/budgets/budget.controller';
-import { DlqController } from './modules/admin/dlq.controller';
-import { QueueManagementController } from './modules/admin/queue-management.controller';
-import { DeadLetterController } from './modules/dead-letter/dead-letter.controller';
-import { ApiKeyController } from './modules/developer/api-key.controller';
-import { HealthController } from './modules/health/health.controller';
-import { MemoryController } from './modules/memory/memory.controller';
-import { MetricsController } from './modules/metrics/metrics.controller';
-import { NotificationController } from './modules/notifications/notification.controller';
-import { OrganizationController } from './modules/organizations/organization.controller';
-import { PolicyController } from './modules/policies/policy.controller';
-import { RiskController } from './modules/risk/risk.controller';
-import { StellarController } from './modules/stellar/stellar.controller';
-import { TransactionController } from './modules/transactions/transaction.controller';
-import { WalletController } from './modules/wallets/wallet.controller';
-import { QueueObservabilityController } from './modules/queue-observability/queue-observability.controller';
-import { WebhookController } from './modules/webhooks/webhook.controller';
-import { WebhookIngressController } from './modules/webhooks/webhook-ingress.controller';
+import { buildSwaggerConfig } from './common/openapi/swagger-config';
 import {
   AllowlistedRoute,
   RegisteredRoute,
@@ -112,34 +88,6 @@ process.env.AI_BASE_URL = 'https://integrate.api.nvidia.com/v1';
 process.env.AI_MODEL = 'meta/llama-3.1-70b-instruct';
 
 const MODULES_DIR = join(process.cwd(), 'src', 'modules');
-
-const MODULE_CONTROLLERS: ReadonlyArray<{ file: string; controller: Type<unknown> }> = [
-  { file: 'admin/dlq.controller.ts', controller: DlqController },
-  { file: 'admin/queue-management.controller.ts', controller: QueueManagementController },
-  { file: 'ai/ai.controller.ts', controller: AiController },
-  { file: 'agents/agent.controller.ts', controller: AgentController },
-  { file: 'analytics/analytics.controller.ts', controller: AnalyticsController },
-  { file: 'approvals/approval.controller.ts', controller: ApprovalController },
-  { file: 'audit/audit.controller.ts', controller: AuditController },
-  { file: 'auth/auth.controller.ts', controller: AuthController },
-  { file: 'auth/controllers/passkey.controller.ts', controller: PasskeyController },
-  { file: 'budgets/budget.controller.ts', controller: BudgetController },
-  { file: 'dead-letter/dead-letter.controller.ts', controller: DeadLetterController },
-  { file: 'developer/api-key.controller.ts', controller: ApiKeyController },
-  { file: 'health/health.controller.ts', controller: HealthController },
-  { file: 'memory/memory.controller.ts', controller: MemoryController },
-  { file: 'metrics/metrics.controller.ts', controller: MetricsController },
-  { file: 'notifications/notification.controller.ts', controller: NotificationController },
-  { file: 'organizations/organization.controller.ts', controller: OrganizationController },
-  { file: 'policies/policy.controller.ts', controller: PolicyController },
-  { file: 'queue-observability/queue-observability.controller.ts', controller: QueueObservabilityController },
-  { file: 'risk/risk.controller.ts', controller: RiskController },
-  { file: 'stellar/stellar.controller.ts', controller: StellarController },
-  { file: 'transactions/transaction.controller.ts', controller: TransactionController },
-  { file: 'wallets/wallet.controller.ts', controller: WalletController },
-  { file: 'webhooks/webhook-ingress.controller.ts', controller: WebhookIngressController },
-  { file: 'webhooks/webhook.controller.ts', controller: WebhookController },
-];
 
 function controllerFiles(directory: string = MODULES_DIR): string[] {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
