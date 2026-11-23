@@ -24,6 +24,101 @@ export interface CreateAuditLogData {
   hash?: string | null;
 }
 
+/**
+ * Deterministic newest-first order of the audit listing. `id` breaks ties on
+ * `createdAt`, so offset pages and keyset pages never skip or repeat rows that
+ * share a timestamp.
+ */
+export const AUDIT_LIST_ORDER_BY: Prisma.AuditLogOrderByWithRelationInput[] = [
+  { createdAt: 'desc' },
+  { id: 'desc' },
+];
+
+/** Filters accepted by the audit list, export and stream-export queries. */
+export interface AuditLogFilters {
+  userId?: string;
+  actionType?: string;
+  agentId?: string;
+  severity?: string;
+  startDate?: string;
+  endDate?: string;
+  actorId?: string;
+  action?: string;
+  resourceType?: string;
+  resourceId?: string;
+  outcome?: string;
+  search?: string;
+  from?: string;
+  to?: string;
+}
+
+/**
+ * Builds the audit `where` clause. The organization scope (access control) is
+ * always present and no filter can replace it: filters only add exact-match
+ * column predicates, an inclusive `createdAt` range and `AND` conditions, so
+ * they can narrow the result set but never widen it. Filters that are not
+ * provided are left out entirely.
+ */
+export function buildAuditLogWhere(
+  organizationId: string,
+  filters: AuditLogFilters,
+): Prisma.AuditLogWhereInput {
+  const where: Prisma.AuditLogWhereInput = { organizationId };
+  const andConditions: Prisma.AuditLogWhereInput[] = [];
+
+  if (filters.userId) where.userId = filters.userId;
+  if (filters.actorId) where.userId = filters.actorId;
+  if (filters.actionType) where.action = filters.actionType;
+  if (filters.action) where.action = filters.action;
+  if (filters.resourceType) where.entity = filters.resourceType;
+  if (filters.resourceId) where.entityId = filters.resourceId;
+  if (filters.outcome) where.outcome = filters.outcome;
+
+  // Free-text search is limited to the first-class, human-readable columns
+  // documented on the query DTO; JSON payloads are deliberately not scanned.
+  if (filters.search) {
+    andConditions.push({
+      OR: [
+        { action: { contains: filters.search, mode: 'insensitive' } },
+        { entity: { contains: filters.search, mode: 'insensitive' } },
+        { entityId: { contains: filters.search, mode: 'insensitive' } },
+        { requestId: { contains: filters.search, mode: 'insensitive' } },
+      ],
+    });
+  }
+
+  if (filters.agentId) {
+    andConditions.push({
+      OR: [
+        { entityId: filters.agentId },
+        { oldValue: { path: ['agentId'], equals: filters.agentId } },
+        { newValue: { path: ['agentId'], equals: filters.agentId } },
+      ],
+    });
+  }
+
+  if (filters.severity) {
+    andConditions.push({
+      OR: [
+        { oldValue: { path: ['severity'], equals: filters.severity } },
+        { newValue: { path: ['severity'], equals: filters.severity } },
+      ],
+    });
+  }
+
+  const gte = filters.startDate ?? filters.from;
+  const lte = filters.endDate ?? filters.to;
+  if (gte || lte) {
+    where.createdAt = {};
+    if (gte) where.createdAt.gte = new Date(gte);
+    if (lte) where.createdAt.lte = new Date(lte);
+  }
+
+  if (andConditions.length > 0) where.AND = andConditions;
+
+  return where;
+}
+
 /** Persistence for the append-only audit log. Writes and reads only — no updates. */
 @Injectable()
 export class AuditRepository {
@@ -126,9 +221,21 @@ export class AuditRepository {
     });
   }
 
-  async findManyAndCount(where: Prisma.AuditLogWhereInput, pagination: PrismaPagination) {
+  /**
+   * Offset page of the audit listing plus the total count. The order is fixed
+   * to {@link AUDIT_LIST_ORDER_BY} so pages are stable when timestamps tie.
+   */
+  async findManyAndCount(
+    where: Prisma.AuditLogWhereInput,
+    pagination: Pick<PrismaPagination, 'skip' | 'take'>,
+  ) {
     const [items, total] = await this.prisma.$transaction([
-      this.prisma.auditLog.findMany({ where, ...pagination }),
+      this.prisma.auditLog.findMany({
+        where,
+        skip: pagination.skip,
+        take: pagination.take,
+        orderBy: AUDIT_LIST_ORDER_BY,
+      }),
       this.prisma.auditLog.count({ where }),
     ]);
     return { items, total };

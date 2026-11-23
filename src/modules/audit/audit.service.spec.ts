@@ -424,6 +424,37 @@ describe('AuditService', () => {
       const [where] = repository.findManyAndCount.mock.calls[0];
       expect(where.organizationId).toBe('org-2');
     });
+
+    it('passes page-mode filters and bounds to the repository, which owns the ordering', async () => {
+      await service.list('org-1', {
+        limit: 10,
+        offset: 30,
+        actorId: 'user-1',
+        resourceType: 'Wallet',
+        from: '2026-09-01T00:00:00.000Z',
+        to: '2026-09-30T00:00:00.000Z',
+      });
+
+      expect(repository.findManyAndCount).toHaveBeenCalledWith(
+        {
+          organizationId: 'org-1',
+          userId: 'user-1',
+          entity: 'Wallet',
+          createdAt: {
+            gte: new Date('2026-09-01T00:00:00.000Z'),
+            lte: new Date('2026-09-30T00:00:00.000Z'),
+          },
+        },
+        { skip: 30, take: 10 },
+      );
+      expect(repository.findPage).not.toHaveBeenCalled();
+    });
+
+    it('queries only the organization scope when no filter is supplied', async () => {
+      await service.list('org-1', { limit: 20 });
+
+      expect(repository.findManyAndCount).toHaveBeenCalledWith({ organizationId: 'org-1' }, { skip: 0, take: 20 });
+    });
   });
 
   describe('deriveAuditOutcome', () => {

@@ -1,8 +1,10 @@
 import { CanActivate, ExecutionContext, INestApplication, Injectable } from '@nestjs/common';
-import { APP_GUARD } from '@nestjs/core';
+import { APP_FILTER, APP_GUARD } from '@nestjs/core';
 import { Test } from '@nestjs/testing';
 import { AddressInfo } from 'net';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { ZodValidationExceptionFilter } from '../../common/filters/zod-validation-exception.filter';
+import { ValidationIssueCode } from '../../common/validators/zod-error';
 import { AuditArchiveService } from './audit-archive.service';
 import { encodeAuditCursor } from './audit-cursor';
 import { AUDIT_DEFAULT_PAGE_SIZE, AUDIT_MAX_PAGE_SIZE } from './audit-list.dto';
@@ -34,6 +36,7 @@ describe('GET /audit over HTTP', () => {
       controllers: [AuditController],
       providers: [
         { provide: APP_GUARD, useClass: FakeAuthGuard },
+        { provide: APP_FILTER, useClass: ZodValidationExceptionFilter },
         { provide: AuditService, useValue: auditService },
         { provide: AuditArchiveService, useValue: {} },
       ],
@@ -132,5 +135,62 @@ describe('GET /audit over HTTP', () => {
 
     expect(res.status).toBe(400);
     expect(auditService.list).not.toHaveBeenCalled();
+  });
+
+  type ErrorEnvelope = {
+    success: boolean;
+    error: { code: string; message: string; errors: Array<{ path: string; message: string; code: string }> };
+    meta: { requestId: string };
+  };
+
+  it.each([
+    ['actorId', '?actorId=user-1'],
+    ['action', '?action=wallet.created'],
+    ['resourceId', '?resourceId=wallet-1'],
+    ['from', '?from=2026-09-01T00:00:00.000Z'],
+    ['to', '?to=2026-09-30T00:00:00%2B02:00'],
+  ])('accepts the %s filter on its own', async (name, query) => {
+    const res = await get(query);
+
+    expect(res.status).toBe(200);
+    expect(auditService.list.mock.calls[0][1]).toHaveProperty(name);
+  });
+
+  it('rejects from > to with 400 and the standard validation envelope', async () => {
+    const res = await get('?from=2026-09-30T00:00:00.000Z&to=2026-09-01T00:00:00.000Z');
+    const body = (await res.json()) as ErrorEnvelope;
+
+    expect(res.status).toBe(400);
+    expect(body.success).toBe(false);
+    expect(body.meta.requestId).toEqual(expect.any(String));
+    expect(body.error.code).toBe('VALIDATION_ERROR');
+    expect(body.error.errors).toContainEqual({
+      path: 'to',
+      message: '`to` must be greater than or equal to `from`',
+      code: ValidationIssueCode.CUSTOM,
+    });
+    expect(auditService.list).not.toHaveBeenCalled();
+  });
+
+  it('rejects an unknown parameter with 400 and the standard validation envelope', async () => {
+    const res = await get('?actor=user-1');
+    const body = (await res.json()) as ErrorEnvelope;
+
+    expect(res.status).toBe(400);
+    expect(body.success).toBe(false);
+    expect(body.error.code).toBe('VALIDATION_ERROR');
+    expect(body.error.errors).toEqual(
+      expect.arrayContaining([expect.objectContaining({ code: ValidationIssueCode.UNRECOGNIZED_KEYS })]),
+    );
+  });
+
+  it('rejects a timestamp that is not ISO 8601 with 400 and the standard validation envelope', async () => {
+    const res = await get('?to=2026-09-30');
+    const body = (await res.json()) as ErrorEnvelope;
+
+    expect(res.status).toBe(400);
+    expect(body.success).toBe(false);
+    expect(body.error.code).toBe('VALIDATION_ERROR');
+    expect(body.error.errors).toEqual(expect.arrayContaining([expect.objectContaining({ path: 'to' })]));
   });
 });

@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
-import { AuditRepository, CreateAuditLogData } from './audit.repository';
+import { AuditRepository, buildAuditLogWhere, CreateAuditLogData } from './audit.repository';
 import { AuditHashService } from './audit-hash.service';
 import { CursorPaginated, Paginated } from '../../common/interfaces/api-response.interface';
 import { AuditListQuery, AUDIT_DEFAULT_PAGE_SIZE } from './audit-list.dto';
@@ -92,12 +92,11 @@ export class AuditService {
     query: AuditListQuery,
   ): Promise<CursorPaginated<ExportedAuditLog> | Paginated<ExportedAuditLog>>;
   async list(organizationId: string, query: AuditListQuery): Promise<CursorPaginated<ExportedAuditLog> | Paginated<ExportedAuditLog>> {
-    const where = this.buildFilterWhere(organizationId, query);
+    const where = buildAuditLogWhere(organizationId, query);
     if (!query.cursor) {
       const { items, total } = await this.repository.findManyAndCount(where, {
         skip: query.offset ?? 0,
         take: query.limit ?? AUDIT_DEFAULT_PAGE_SIZE,
-        orderBy: { createdAt: 'desc' },
       });
       return new Paginated(items as ExportedAuditLog[], buildPaginationMeta(total, query));
     }
@@ -117,7 +116,7 @@ export class AuditService {
     resourceId: string,
     query: AuditTimelineQuery,
   ): Promise<CursorPaginated<ExportedAuditLog>> {
-    const where = this.buildFilterWhere(organizationId, {
+    const where = buildAuditLogWhere(organizationId, {
       resourceId,
       from: query.from,
       to: query.to,
@@ -146,7 +145,7 @@ export class AuditService {
   }
 
   async export(organizationId: string, query: ExportAuditLogsQuery) {
-    const where = this.buildFilterWhere(organizationId, query);
+    const where = buildAuditLogWhere(organizationId, query);
     const limit = Math.min(query.limit ?? 100, 1000);
     const records = await this.repository.exportLogs(where, limit, query.cursor);
 
@@ -177,7 +176,7 @@ export class AuditService {
    * (one record per chunk, wrapped by `[`/`]`) or raw CSV rows.
    */
   async *streamExport(organizationId: string, query: StreamAuditLogsQuery): AsyncGenerator<Buffer> {
-    const where = this.buildFilterWhere(organizationId, query);
+    const where = buildAuditLogWhere(organizationId, query);
     const stream = this.repository.streamLogs(where, query.batchSize, query.cursor);
 
     if (query.format === 'csv') {
@@ -211,82 +210,6 @@ export class AuditService {
       first = false;
     }
     yield Buffer.from(']');
-  }
-
-  /** Builds the shared tenant + filter predicate used by list, export and streamExport. */
-  private buildFilterWhere(
-    organizationId: string,
-    query: {
-      userId?: string;
-      actionType?: string;
-      agentId?: string;
-      severity?: string;
-      startDate?: string;
-      endDate?: string;
-      actorId?: string;
-      action?: string;
-      resourceType?: string;
-      resourceId?: string;
-      outcome?: string;
-      search?: string;
-      from?: string;
-      to?: string;
-    },
-  ): Prisma.AuditLogWhereInput {
-    const where: Prisma.AuditLogWhereInput = { organizationId };
-    const andConditions: Prisma.AuditLogWhereInput[] = [];
-
-    if (query.userId) where.userId = query.userId;
-    if (query.actorId) where.userId = query.actorId;
-    if (query.actionType) where.action = query.actionType;
-    if (query.action) where.action = query.action;
-    if (query.resourceType) where.entity = query.resourceType;
-    if (query.resourceId) where.entityId = query.resourceId;
-    if (query.outcome) where.outcome = query.outcome;
-
-    // Free-text search is limited to the first-class, human-readable columns
-    // documented on the query DTO; JSON payloads are deliberately not scanned.
-    if (query.search) {
-      andConditions.push({
-        OR: [
-          { action: { contains: query.search, mode: 'insensitive' } },
-          { entity: { contains: query.search, mode: 'insensitive' } },
-          { entityId: { contains: query.search, mode: 'insensitive' } },
-          { requestId: { contains: query.search, mode: 'insensitive' } },
-        ],
-      });
-    }
-
-    if (query.agentId) {
-      andConditions.push({
-        OR: [
-          { entityId: query.agentId },
-          { oldValue: { path: ['agentId'], equals: query.agentId } },
-          { newValue: { path: ['agentId'], equals: query.agentId } },
-        ],
-      });
-    }
-
-    if (query.severity) {
-      andConditions.push({
-        OR: [
-          { oldValue: { path: ['severity'], equals: query.severity } },
-          { newValue: { path: ['severity'], equals: query.severity } },
-        ],
-      });
-    }
-
-    const gte = query.startDate ?? query.from;
-    const lte = query.endDate ?? query.to;
-    if (gte || lte) {
-      where.createdAt = {};
-      if (gte) where.createdAt.gte = new Date(gte);
-      if (lte) where.createdAt.lte = new Date(lte);
-    }
-
-    if (andConditions.length > 0) where.AND = andConditions;
-
-    return where;
   }
 
   /** Redacts sensitive payload fields from a raw audit row before it leaves the service. */
