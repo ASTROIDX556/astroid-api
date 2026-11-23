@@ -420,12 +420,18 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
           throw new PermanentJobError(errorMessage);
         }
 
-        // Preserve HTTP status error messages (e.g., "HTTP 503", "HTTP 500")
-        errorMessage = error instanceof WebhookDestinationResolutionError
-          ? error.message
-          : error instanceof Error && /^HTTP \d{3}$/.test(error.message)
-            ? error.message
-            : 'Webhook delivery failed';
+        // Preserve HTTP status error messages using responseStatus when available
+        if (error instanceof WebhookDestinationResolutionError) {
+          errorMessage = error.message;
+        } else if (responseStatus !== undefined && responseStatus >= 400) {
+          // Use the actual HTTP status from the response
+          errorMessage = `HTTP ${responseStatus}`;
+        } else if (error instanceof Error && /^HTTP\s+\d{3}$/.test(error.message)) {
+          // Fallback: preserve error messages that look like HTTP statuses
+          errorMessage = error.message;
+        } else {
+          errorMessage = 'Webhook delivery failed';
+        }
         const classification = classifyWebhookFailure(error, responseStatus);
         if (this.circuit?.enabled) {
           await this.circuit.recordFailure(
