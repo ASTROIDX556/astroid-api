@@ -137,6 +137,15 @@ the steady-state **and** the burst throttler of the selected tier. The counter
 is keyed by the verified API key id (`apikey:<id>`), so one key can never
 exhaust the budget of another.
 
+### Per-key override
+
+An API key may carry its own `rateLimitPerMinute` value, set when the key is
+created (`POST /developer/api-keys`) and copied to a replacement on rotation.
+It replaces the tier's steady-state budget for that key only; the burst
+allowance and every other key are unchanged, and the value never leaves the
+database — the Redis counter is still keyed by `apikey:<id>`. Null (the
+default) keeps the tier limit.
+
 ## Configuration
 
 | Variable | Default | Meaning |

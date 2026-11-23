@@ -16,6 +16,7 @@ export const createApiKeySchema = z
       .default([...DEFAULT_API_KEY_SCOPES]),
     permissions: z.array(z.string().max(60)).max(50).default([]),
     allowedIps: z.array(z.string().max(45)).max(50).default([]),
+    rateLimitPerMinute: z.number().int().positive().max(100000).optional(),
     expiresInDays: z.number().int().positive().max(365).optional(),
   })
   .strict();
@@ -56,6 +57,13 @@ export class CreateApiKeyDto {
     example: ['192.168.1.50', '10.0.0.0/24'],
   })
   allowedIps?: string[];
+
+  @ApiPropertyOptional({
+    description:
+      'Optional requests-per-minute override for this key. Omit to keep the configured tier limit.',
+    example: 600,
+  })
+  rateLimitPerMinute?: number;
 
   @ApiPropertyOptional({ description: 'Optional expiry in days (max 365)' })
   expiresInDays?: number;

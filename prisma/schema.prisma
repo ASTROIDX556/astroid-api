@@ -775,6 +775,9 @@ model ApiKey {
   permissions    String[]  @default([])
   scopes         String[]  @default(["read"])
   allowedIps     String[]  @default([])
+  // Per-key requests-per-minute override for the API rate limiter. Null keeps
+  // the organization's configured tier limit.
+  rateLimitPerMinute Int?
   lastUsedAt     DateTime?
   expiresAt      DateTime?
   revokedAt      DateTime?

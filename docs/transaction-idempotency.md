@@ -25,9 +25,9 @@ applied before hashing, so defaults and equivalent amounts (`50.0` and
 | Situation | Result |
 | --- | --- |
 | First request with a key | A `PROCESSING` record is created before the governance pipeline runs; the response, status and request id are stored on success. |
-| Same key and fingerprint, original completed | The original status, body and `requestId` are replayed with `Idempotent-Replay: true`; no second transaction or on-chain submission occurs. |
+| Same key and fingerprint, original completed | The original status, body and `requestId` are replayed with `Idempotency-Replayed: true` (and the legacy `Idempotent-Replay: true`); no second transaction or on-chain submission occurs. |
 | Same key and fingerprint, original still processing | `409` with `IDEMPOTENCY_KEY_IN_FLIGHT` and a `Retry-After` hint. |
-| Same key, different fingerprint | `409` with `IDEMPOTENCY_KEY_MISMATCH`. |
+| Same key, different fingerprint | `422` with `IDEMPOTENCY_KEY_MISMATCH`. |
 | Original fails before completion | The reservation is released so the client can retry the same key. |
 | Record older than the TTL | The expired record is deleted and the request is processed fresh. |
 
