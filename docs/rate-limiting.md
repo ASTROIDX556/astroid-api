@@ -61,6 +61,16 @@ out.
 API keys have no regeneration route today: a key is revoked and a new one is
 created, so the `POST /developer/api-keys` limit also bounds key replacement.
 
+## Per-key overrides
+
+`POST /developer/api-keys` accepts an optional `rateLimitPerMinute`. When it is
+set, that number replaces the steady-state budget of the key's tier for every
+request the key makes; the burst windows and the per-route sensitive limits are
+unchanged. A rotated key inherits the override of the key it replaces. The value
+is stored in `api_keys.rateLimitPerMinute` (nullable, so unset keys keep the
+tier budget) and contains no key material. The API-key record is what the guard
+reads, so no secret ever reaches a Redis key.
+
 ## Sliding window limiter
 
 `SlidingWindowThrottlerGuard` is the limiter used by the high-frequency

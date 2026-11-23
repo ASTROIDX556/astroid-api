@@ -33,6 +33,7 @@ export class ApiKeyRepository {
           permissions: true,
           scopes: true,
           allowedIps: true,
+          rateLimitPerMinute: true,
           lastUsedAt: true,
           expiresAt: true,
           revokedAt: true,

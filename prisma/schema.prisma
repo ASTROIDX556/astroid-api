@@ -775,6 +775,9 @@ model ApiKey {
   permissions    String[]  @default([])
   scopes         String[]  @default(["read"])
   allowedIps     String[]  @default([])
+  // Optional per-key override of the request budget (requests per window).
+  // When null the key is limited by its scope tier / the global default.
+  rateLimitPerMinute Int?
   lastUsedAt     DateTime?
   expiresAt      DateTime?
   revokedAt      DateTime?

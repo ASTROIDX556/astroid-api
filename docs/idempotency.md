@@ -14,8 +14,8 @@ The mechanism lives under `src/common/idempotency`; a handler opts in with
 |---|---|
 | No header | Normal execution. |
 | First request for a key | Executes normally; status, body and request id are stored. |
-| Repeat with the same body after completion | Replays the original status, body and `X-Request-ID`, plus `Idempotent-Replay: true`. |
-| Repeat with a different body | `409` with `IDEMPOTENCY_KEY_MISMATCH`. |
+| Repeat with the same body after completion | Replays the original status, body and `X-Request-ID`, plus `Idempotency-Replayed: true`. |
+| Repeat with a different body | `422` with `IDEMPOTENCY_KEY_MISMATCH`. |
 | Duplicate while the original is still running | `409` with `IDEMPOTENCY_KEY_IN_FLIGHT` and `Retry-After`. |
 | Original failed (including a 5xx) | The reservation is released, so the client may retry. |
 | Record older than the TTL | Treated as expired: removed and processed fresh. |

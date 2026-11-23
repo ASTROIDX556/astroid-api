@@ -49,6 +49,7 @@ export class ApiKeyService {
       scopes: input.scopes ?? [...DEFAULT_API_KEY_SCOPES],
       permissions: input.permissions,
       allowedIps: input.allowedIps || [],
+      rateLimitPerMinute: input.rateLimitPerMinute ?? null,
       expiresAt,
     });
 
@@ -120,6 +121,8 @@ export class ApiKeyService {
       scopes: key.scopes,
       permissions: key.permissions,
       allowedIps: key.allowedIps,
+      // A rotated key inherits the budget of the key it replaces.
+      rateLimitPerMinute: key.rateLimitPerMinute ?? null,
       expiresAt: newExpiresAt,
     });
 

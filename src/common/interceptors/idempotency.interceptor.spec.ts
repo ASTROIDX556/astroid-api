@@ -234,7 +234,7 @@ describe('IdempotencyInterceptor', () => {
     expect(response.setHeader).toHaveBeenCalledWith('Retry-After', '2');
   });
 
-  it('returns 409 with a stable code when the key is reused with a different body', async () => {
+  it('returns 422 with a stable code when the key is reused with a different body', async () => {
     vi.spyOn(reflector, 'getAllAndOverride').mockImplementation((key) =>
       key === 'idempotent_request' ? {} : undefined,
     );
@@ -242,7 +242,7 @@ describe('IdempotencyInterceptor', () => {
     const { context } = contextFor();
 
     const error = await interceptor().intercept(context, { handle: vi.fn() }).catch((caught: unknown) => caught);
-    expect((error as DomainException).getStatus()).toBe(409);
+    expect((error as DomainException).getStatus()).toBe(422);
     expect((error as DomainException).code).toBe(ErrorCode.IDEMPOTENCY_KEY_MISMATCH);
   });
 });
