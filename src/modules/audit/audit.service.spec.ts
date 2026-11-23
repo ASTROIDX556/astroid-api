@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { AuditService } from './audit.service';
+import { AuditService, deriveAuditOutcome } from './audit.service';
 import { AuditRepository } from './audit.repository';
 import { AuditHashService } from './audit-hash.service';
 import { AuditListQuery } from './audit-list.dto';
@@ -372,6 +372,71 @@ describe('AuditService', () => {
       totalPages: 0,
       hasNextPage: false,
       hasPreviousPage: false,
+    });
+  });
+
+  describe('list filters', () => {
+    it('combines actor, resource, action, outcome and search filters under one tenant', async () => {
+      await service.list('org-1', {
+        limit: 20,
+        actorId: 'user-1',
+        resourceType: 'transaction',
+        resourceId: 'tx-1',
+        action: 'TRANSFER_FUNDS',
+        outcome: 'FAILURE',
+        search: 'transfer',
+      });
+
+      const [where] = repository.findManyAndCount.mock.calls[0];
+      expect(where).toMatchObject({
+        organizationId: 'org-1',
+        userId: 'user-1',
+        entity: 'transaction',
+        entityId: 'tx-1',
+        action: 'TRANSFER_FUNDS',
+        outcome: 'FAILURE',
+      });
+      expect(where.AND).toEqual([
+        {
+          OR: [
+            { action: { contains: 'transfer', mode: 'insensitive' } },
+            { entity: { contains: 'transfer', mode: 'insensitive' } },
+            { entityId: { contains: 'transfer', mode: 'insensitive' } },
+            { requestId: { contains: 'transfer', mode: 'insensitive' } },
+          ],
+        },
+      ]);
+    });
+
+    it('never drops the tenant predicate, even when every filter is supplied', async () => {
+      await service.list('org-2', {
+        limit: 5,
+        actorId: 'user-9',
+        action: 'POLICY_CREATED',
+        resourceType: 'policy',
+        resourceId: 'policy-9',
+        outcome: 'SUCCESS',
+        search: 'policy',
+        from: '2026-09-01T00:00:00.000Z',
+        to: '2026-09-30T00:00:00.000Z',
+      });
+
+      const [where] = repository.findManyAndCount.mock.calls[0];
+      expect(where.organizationId).toBe('org-2');
+    });
+  });
+
+  describe('deriveAuditOutcome', () => {
+    it('prefers an explicit boolean success in the payload', () => {
+      expect(deriveAuditOutcome({ action: 'X', newValue: { success: true } })).toBe('SUCCESS');
+      expect(deriveAuditOutcome({ action: 'X', newValue: { success: false } })).toBe('FAILURE');
+    });
+
+    it('falls back to the action suffix and leaves undecidable rows null', () => {
+      expect(deriveAuditOutcome({ action: 'webhook.delivery.failed' })).toBe('FAILURE');
+      expect(deriveAuditOutcome({ action: 'policy.violated' })).toBe('FAILURE');
+      expect(deriveAuditOutcome({ action: 'transaction.created' })).toBeNull();
+      expect(deriveAuditOutcome({ action: 'X', newValue: ['not-an-object'] })).toBeNull();
     });
   });
 });

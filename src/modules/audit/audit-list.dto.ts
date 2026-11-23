@@ -20,6 +20,12 @@ export const auditListQuerySchema = z
     action: z.string().min(1).max(120).optional(),
     resourceType: z.string().min(1).max(120).optional(),
     resourceId: z.string().min(1).max(128).optional(),
+    outcome: z.enum(['SUCCESS', 'FAILURE']).optional(),
+    /**
+     * Free-text search over `action`, `entity`, `entityId` and `requestId`
+     * (case-insensitive substring match). Metadata payloads are not searched.
+     */
+    search: z.string().trim().min(1).max(200).optional(),
     from: z.string().datetime({ offset: true }).optional(),
     to: z.string().datetime({ offset: true }).optional(),
   })
@@ -59,6 +65,8 @@ export type AuditListQuery = {
   action?: string;
   resourceType?: string;
   resourceId?: string;
+  outcome?: 'SUCCESS' | 'FAILURE';
+  search?: string;
   from?: string;
   to?: string;
 };
