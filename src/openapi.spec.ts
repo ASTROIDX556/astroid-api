@@ -31,6 +31,7 @@ import { RiskController } from './modules/risk/risk.controller';
 import { StellarController } from './modules/stellar/stellar.controller';
 import { TransactionController } from './modules/transactions/transaction.controller';
 import { WalletController } from './modules/wallets/wallet.controller';
+import { QueueObservabilityController } from './modules/queue-observability/queue-observability.controller';
 import { WebhookController } from './modules/webhooks/webhook.controller';
 import { WebhookIngressController } from './modules/webhooks/webhook-ingress.controller';
 import {
@@ -129,6 +130,7 @@ const MODULE_CONTROLLERS: ReadonlyArray<{ file: string; controller: Type<unknown
   { file: 'notifications/notification.controller.ts', controller: NotificationController },
   { file: 'organizations/organization.controller.ts', controller: OrganizationController },
   { file: 'policies/policy.controller.ts', controller: PolicyController },
+  { file: 'queue-observability/queue-observability.controller.ts', controller: QueueObservabilityController },
   { file: 'risk/risk.controller.ts', controller: RiskController },
   { file: 'stellar/stellar.controller.ts', controller: StellarController },
   { file: 'transactions/transaction.controller.ts', controller: TransactionController },
@@ -215,6 +217,13 @@ const INTERNAL_ROUTES: AllowlistedRoute[] = [
     path: '/api/v1/health/stellar',
     // Diagnostic probe returning raw Horizon and Soroban connectivity checks.
     reason: 'Internal Stellar connectivity diagnostic returning raw network and node status',
+  },
+  {
+    method: 'GET',
+    path: '/api/v1/operations/queues',
+    // Queue observability endpoint excluded from OpenAPI to avoid circular dependency
+    // with BullMQ Queue types during schema generation.
+    reason: 'Queue observability endpoint excluded from OpenAPI document to avoid circular dependency with BullMQ types',
   },
 ];
 

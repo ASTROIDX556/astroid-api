@@ -1,6 +1,5 @@
 import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Queue } from 'bullmq';
 import { Queues, QueueName } from '../../queues/queues.constants';
 import { QueueObservabilityConfig } from '../../config/queue-observability.config';
 import { redisConfig } from '../../config/redis.config';
@@ -14,7 +13,7 @@ export interface QueueFailedJobDto {
 }
 
 export interface QueueObservabilityDto {
-  queue: string;
+  queueName: string;
   counts: {
     waiting: number;
     active: number;
@@ -31,10 +30,18 @@ export interface QueueObservabilityResponse {
   timestamp: string;
 }
 
+/** Minimal queue interface for observability - avoids BullMQ Queue circular deps. */
+interface QueueHandle {
+  getJobCounts(...types: string[]): Promise<Record<string, number>>;
+  getJobs(types: string[], start: number, end: number, asc: boolean): Promise<Array<{ timestamp?: number }>>;
+  getFailed(start: number, end: number): Promise<Array<{ id: string | number; name: string; failedReason?: string; attemptsMade?: number; processedOn?: number }>>;
+  close(): Promise<void>;
+}
+
 @Injectable()
 export class QueueObservabilityService implements OnModuleDestroy {
   private readonly logger = new Logger(QueueObservabilityService.name);
-  private readonly queueHandles = new Map<string, Queue>();
+  private readonly queueHandles = new Map<string, QueueHandle>();
 
   constructor(private readonly configService: ConfigService) {}
 
@@ -42,9 +49,10 @@ export class QueueObservabilityService implements OnModuleDestroy {
     return this.configService.get<QueueObservabilityConfig>('queueObservability')!;
   }
 
-  private getQueueHandle(queueName: QueueName): Queue {
+  private getQueueHandle(queueName: QueueName): QueueHandle {
     let queue = this.queueHandles.get(queueName);
     if (!queue) {
+      const { Queue } = require('bullmq');
       const { host, port, password, db } = redisConfig();
       queue = new Queue(queueName, {
         connection: { host, port, password: password || undefined, db },
@@ -99,7 +107,7 @@ export class QueueObservabilityService implements OnModuleDestroy {
           }
 
           return {
-            queue: queueName,
+            queueName: queueName,
             counts: {
               waiting: counts.waiting ?? 0,
               active: counts.active ?? 0,

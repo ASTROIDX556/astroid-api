@@ -1,12 +1,13 @@
 import { Controller, Get } from '@nestjs/common';
-import { ApiTags, ApiBearerAuth, ApiOperation, ApiResponse } from '@nestjs/swagger';
+import { ApiTags, ApiBearerAuth, ApiOperation, ApiResponse, ApiExcludeController } from '@nestjs/swagger';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { UserRole } from '@prisma/client';
-import { QueueObservabilityService, QueueObservabilityResponse } from './queue-observability.service';
+import { QueueObservabilityService } from './queue-observability.service';
 import { QueueObservabilityResponseDto } from './queue-observability.dto';
 import { DomainException } from '../../common/exceptions/domain.exception';
 import { ErrorCode } from '../../common/constants/error-codes';
 
+@ApiExcludeController()
 @ApiTags('operations')
 @ApiBearerAuth('access-token')
 @Controller('operations/queues')
@@ -35,7 +36,7 @@ export class QueueObservabilityController {
     status: 503,
     description: 'Queue observability is disabled or Redis is unavailable',
   })
-  async getObservability(): Promise<QueueObservabilityResponse> {
+  async getObservability(): Promise<QueueObservabilityResponseDto> {
     if (!this.observability['config'].enabled) {
       throw new DomainException(
         ErrorCode.SERVICE_UNAVAILABLE,

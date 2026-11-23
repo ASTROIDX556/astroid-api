@@ -55,9 +55,9 @@ export class QueueCountsDto {
 export class QueueObservabilityDto {
   @ApiProperty({ description: 'Queue name', example: 'webhooks' })
   @IsString()
-  queue = '';
+  queueName = '';
 
-  @ApiProperty({ type: QueueCountsDto })
+  @ApiProperty({ type: () => QueueCountsDto })
   counts = new QueueCountsDto();
 
   @ApiProperty({
@@ -69,13 +69,13 @@ export class QueueObservabilityDto {
 
   @ApiProperty({
     description: 'Recent failed jobs (payload stripped)',
-    type: [QueueFailedJobDto],
+    type: () => [QueueFailedJobDto],
   })
   failedJobs: QueueFailedJobDto[] = [];
 }
 
 export class QueueObservabilityResponseDto {
-  @ApiProperty({ type: [QueueObservabilityDto] })
+  @ApiProperty({ type: () => [QueueObservabilityDto] })
   queues: QueueObservabilityDto[] = [];
 
   @ApiProperty({ description: 'Timestamp of the observability snapshot', example: '2024-01-15T10:30:00.000Z' })
