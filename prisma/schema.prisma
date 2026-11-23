@@ -479,6 +479,11 @@ model BudgetReservation {
   amount         Decimal           @db.Decimal(30, 7)
   settledAmount  Decimal?          @db.Decimal(30, 7)
   status         ReservationStatus @default(PENDING)
+  // Start of the budget period the hold was taken in. Settling or releasing
+  // only adjusts `spent` while the budget is still in that period; after a
+  // rollover the hold belongs to the closed period's snapshot and the new
+  // period's spend is never touched. Null for holds created before this column.
+  periodStart    DateTime?
   createdAt      DateTime          @default(now())
   updatedAt      DateTime          @updatedAt
 

@@ -5,13 +5,37 @@ import { PrismaPagination } from '../../common/helpers/pagination';
 
 type BudgetQueryClient = Pick<PrismaService, 'budget'> | Prisma.TransactionClient;
 
+/** Why a reservation could not be taken. */
+export type BudgetReservationFailure =
+  /** The budget does not exist for the organization (or is deleted). */
+  | 'NotFoundException'
+  /** The reservation would take `spent` above `limitAmount`. */
+  | 'BudgetExceeded'
+  /** The budget's current period has ended and has not been rolled over yet. */
+  | 'BudgetPeriodElapsed'
+  /** Zero, negative or non-finite amount. */
+  | 'InvalidAmount';
+
 /**
- * Client accepted by the multi-statement writes below. Defaults to the shared
- * {@link PrismaService}, but callers running inside a
- * `PrismaTransactionService` unit of work pass the transactional client so the
- * row lock and the update commit or roll back together.
+ * Raised by {@link BudgetRepository.createReservation}. The message equals the
+ * reason, so existing `error.message` checks keep working.
  */
-type BudgetWriteClient = PrismaService | Prisma.TransactionClient;
+export class BudgetReservationError extends Error {
+  constructor(readonly reason: BudgetReservationFailure) {
+    super(reason);
+    this.name = 'BudgetReservationError';
+  }
+}
+
+/**
+ * A timestamp as a `timestamp(3)` value in UTC, for raw SQL. Prisma stores
+ * `DateTime` as UTC wall-clock time in `timestamp without time zone` columns;
+ * casting an ISO string through `timestamptz` and back to UTC makes the
+ * comparison independent of the session's `TimeZone` setting.
+ */
+function utcTimestamp(date: Date): Prisma.Sql {
+  return Prisma.sql`(${date.toISOString()}::timestamptz AT TIME ZONE 'UTC')`;
+}
 
 @Injectable()
 export class BudgetRepository {
@@ -48,68 +72,6 @@ export class BudgetRepository {
     return this.prisma.budget.update({
       where: { id },
       data: { spent: { increment: amount } },
-    });
-  }
-
-  /**
-   * Locks the budget row (`SELECT … FOR UPDATE`), verifies the reservation fits
-   * inside the remaining balance, and applies it — all on `client`.
-   *
-   * Pass a `Prisma.TransactionClient` to join an existing unit of work; the
-   * default keeps this method usable standalone. Note that the lock only
-   * protects the caller when it runs inside that transaction, which is why
-   * `BudgetService.reserveBudget` always wraps it in one.
-   *
-   * @throws Error with `NotFoundException` when the budget does not belong to
-   * the organization, or `ConflictException: BudgetExceeded` when the
-   * reservation would overshoot the limit.
-   */
-  async reserveBudget(
-    organizationId: string,
-    id: string,
-    amount: Prisma.Decimal,
-    client: BudgetWriteClient = this.prisma,
-  ): Promise<Budget> {
-    const rows = await client.$queryRaw<Budget[]>`SELECT * FROM "budgets" WHERE id = ${id} AND "organizationId" = ${organizationId} FOR UPDATE`;
-    if (!rows || rows.length === 0) {
-      throw new Error('NotFoundException');
-    }
-
-    const budget = rows[0];
-    const spentAfter = new Prisma.Decimal(budget.spent).plus(amount);
-    const limit = new Prisma.Decimal(budget.limitAmount);
-
-    if (spentAfter.greaterThan(limit)) {
-      throw new Error('ConflictException: BudgetExceeded');
-    }
-
-    return client.budget.update({
-      where: { id },
-      data: { spent: spentAfter },
-    });
-  }
-
-  /**
-   * Releases a held budget reservation by decrementing spent atomically.
-   */
-  async releaseBudget(
-    organizationId: string,
-    id: string,
-    amount: Prisma.Decimal,
-    client: BudgetWriteClient = this.prisma,
-  ): Promise<Budget> {
-    const rows = await client.$queryRaw<Budget[]>`SELECT * FROM "budgets" WHERE id = ${id} AND "organizationId" = ${organizationId} FOR UPDATE`;
-    if (!rows || rows.length === 0) {
-      throw new Error('NotFoundException');
-    }
-
-    const budget = rows[0];
-    const diff = new Prisma.Decimal(budget.spent).minus(amount);
-    const spentAfter = diff.isNegative() ? new Prisma.Decimal(0) : diff;
-
-    return client.budget.update({
-      where: { id },
-      data: { spent: spentAfter },
     });
   }
 
@@ -169,44 +131,61 @@ export class BudgetRepository {
   // ── atomic reservation ──────────────────────────────────────────────────
 
   /**
-   * Atomically creates a reservation and increments `spent` by `amount` using a
-   * conditional `UPDATE … WHERE limitAmount - spent >= amount`. The
-   * UPDATE runs first inside a serializable transaction; if it matches zero
-   * rows the budget is at or over its limit and the reservation is rejected
-   * before any INSERT happens.
+   * Atomically takes a reservation: one conditional UPDATE checks the limit and
+   * increments `spent` in a single statement, then the reservation row is
+   * inserted in the same transaction (both commit, or neither does).
    *
-   * Keeping the arithmetic in the database (not JS) means two concurrent
-   * callers that both read the same remaining balance cannot both succeed —
-   * only the one whose UPDATE lands first will match the WHERE condition.
+   * The UPDATE matches only when the budget belongs to the organization, is not
+   * deleted, its current period is still live (`periodEnd` is null or in the
+   * future at `now`), and `spent + amount <= limitAmount` — so an amount equal to
+   * the remaining balance succeeds. The arithmetic and the check never leave
+   * Postgres: concurrent callers queue on the row lock and each re-evaluates the
+   * WHERE clause against the latest committed `spent` (READ COMMITTED), so at
+   * most the amounts that fit succeed, without serialization aborts.
    *
-   * @throws Error('NotFoundException')   – budget not found for org
-   * @throws Error('BudgetExceeded')      – reservation would exceed the limit
+   * The reservation records the period it was taken in (`periodStart`, returned
+   * by the UPDATE itself), which later decides whether a settle or release may
+   * touch `spent`.
+   *
+   * @throws BudgetReservationError `InvalidAmount` | `NotFoundException` |
+   *   `BudgetPeriodElapsed` | `BudgetExceeded`
    */
   async createReservation(
     organizationId: string,
     budgetId: string,
     amount: Prisma.Decimal,
+    now: Date = new Date(),
   ): Promise<BudgetReservation> {
+    // Validation already rejects these upstream; the repository stays defensive
+    // because a negative amount would otherwise *lower* `spent`.
+    if (!amount.isFinite() || amount.lessThanOrEqualTo(0)) {
+      throw new BudgetReservationError('InvalidAmount');
+    }
+
     return this.prisma.$transaction(async (tx) => {
-      // Conditional atomic deduct: only succeeds when remaining >= amount.
-      const updated = await tx.$executeRaw`
+      const rows = await tx.$queryRaw<Array<{ periodStart: Date }>>`
         UPDATE "budgets"
         SET "spent" = "spent" + ${amount},
             "updatedAt" = NOW()
         WHERE "id" = ${budgetId}
           AND "organizationId" = ${organizationId}
           AND "deletedAt" IS NULL
-          AND ("limitAmount" - "spent") >= ${amount}
+          AND ("periodEnd" IS NULL OR "periodEnd" > ${utcTimestamp(now)})
+          AND "spent" + ${amount} <= "limitAmount"
+        RETURNING "periodStart"
       `;
 
-      if (updated === 0) {
-        // Distinguish not-found from over-budget for typed error mapping.
-        const exists = await tx.budget.findFirst({
+      if (rows.length === 0) {
+        // Nothing was written; work out why for typed error mapping.
+        const budget = await tx.budget.findFirst({
           where: { id: budgetId, organizationId, deletedAt: null },
-          select: { id: true },
+          select: { periodEnd: true },
         });
-        if (!exists) throw new Error('NotFoundException');
-        throw new Error('BudgetExceeded');
+        if (!budget) throw new BudgetReservationError('NotFoundException');
+        if (budget.periodEnd && budget.periodEnd.getTime() <= now.getTime()) {
+          throw new BudgetReservationError('BudgetPeriodElapsed');
+        }
+        throw new BudgetReservationError('BudgetExceeded');
       }
 
       return tx.budgetReservation.create({
@@ -215,68 +194,118 @@ export class BudgetRepository {
           organizationId,
           amount,
           status: ReservationStatus.PENDING,
+          periodStart: rows[0].periodStart,
         },
       });
-    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+    });
   }
 
   /**
-   * Settles a reservation — adjusts `spent` by the delta between the actual
-   * amount and the reserved amount, then marks the row SETTLED. Idempotent:
-   * a row already SETTLED is returned unchanged without touching `spent`.
+   * Settles a reservation once the payment has gone through. Idempotent: a
+   * SETTLED reservation is returned unchanged.
+   *
+   * - PENDING: `spent` already holds the reserved amount, so only the delta
+   *   between the actual and the reserved amount is applied.
+   * - RELEASED: the hold was returned, but money did move, so the full actual
+   *   amount is recorded again (real spend is never left uncounted).
+   *
+   * Either adjustment applies only while the budget is still in the period the
+   * reservation was taken in; a closed period's spend is already snapshotted.
    */
   async settleReservation(
     reservationId: string,
     actualAmount: Prisma.Decimal,
   ): Promise<BudgetReservation> {
     return this.prisma.$transaction(async (tx) => {
-      const reservation = await tx.budgetReservation.findUniqueOrThrow({
-        where: { id: reservationId },
-      });
-      if (reservation.status === ReservationStatus.SETTLED) return reservation;
-
-      const delta = actualAmount.minus(reservation.amount);
-      if (!delta.isZero()) {
-        await tx.budget.update({
-          where: { id: reservation.budgetId },
-          data: { spent: { increment: delta } },
-        });
+      const reservation = await this.lockReservation(tx, reservationId);
+      if (reservation.status === ReservationStatus.SETTLED) {
+        return tx.budgetReservation.findUniqueOrThrow({ where: { id: reservationId } });
       }
+
+      const adjustment =
+        reservation.status === ReservationStatus.RELEASED
+          ? actualAmount
+          : actualAmount.minus(reservation.amount);
+      await this.adjustSpentInReservationPeriod(tx, reservation, adjustment);
 
       return tx.budgetReservation.update({
         where: { id: reservationId },
         data: { status: ReservationStatus.SETTLED, settledAmount: actualAmount },
       });
-    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+    });
   }
 
   /**
-   * Releases a reservation — decrements `spent` to return the held amount,
-   * then marks the row RELEASED. Idempotent: a row already RELEASED or
-   * SETTLED is returned unchanged without touching `spent`.
+   * Releases a held reservation after a rejected, failed or cancelled
+   * transaction. Idempotent: only a PENDING reservation is released, so a
+   * retried or concurrent release returns the row without refunding twice.
+   * The held amount goes back to `spent` only while the budget is still in the
+   * reservation's period; releasing a hold from a closed period never reduces
+   * the new period's spend.
    */
   async releaseReservation(reservationId: string): Promise<BudgetReservation> {
     return this.prisma.$transaction(async (tx) => {
-      const reservation = await tx.budgetReservation.findUniqueOrThrow({
-        where: { id: reservationId },
-      });
-      if (
-        reservation.status === ReservationStatus.RELEASED ||
-        reservation.status === ReservationStatus.SETTLED
-      ) {
-        return reservation;
+      const reservation = await this.lockReservation(tx, reservationId);
+      if (reservation.status !== ReservationStatus.PENDING) {
+        return tx.budgetReservation.findUniqueOrThrow({ where: { id: reservationId } });
       }
 
-      await tx.budget.update({
-        where: { id: reservation.budgetId },
-        data: { spent: { decrement: reservation.amount } },
-      });
+      await this.adjustSpentInReservationPeriod(tx, reservation, reservation.amount.negated());
 
       return tx.budgetReservation.update({
         where: { id: reservationId },
         data: { status: ReservationStatus.RELEASED },
       });
-    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+    });
+  }
+
+  /**
+   * Locks the reservation row for the rest of the transaction, so a settle and
+   * a release (or two of either) on the same reservation run one after the
+   * other and the second sees the first one's status.
+   */
+  private async lockReservation(
+    tx: Prisma.TransactionClient,
+    reservationId: string,
+  ): Promise<Pick<BudgetReservation, 'id' | 'budgetId' | 'amount' | 'status' | 'periodStart' | 'createdAt'>> {
+    const rows = await tx.$queryRaw<
+      Array<Pick<BudgetReservation, 'id' | 'budgetId' | 'amount' | 'status' | 'periodStart' | 'createdAt'>>
+    >`
+      SELECT "id", "budgetId", "amount", "status", "periodStart", "createdAt"
+      FROM "budget_reservations"
+      WHERE "id" = ${reservationId}
+      FOR UPDATE
+    `;
+    const reservation = rows[0];
+    if (!reservation) {
+      throw new Prisma.PrismaClientKnownRequestError(`Budget reservation '${reservationId}' not found`, {
+        code: 'P2025',
+        clientVersion: Prisma.prismaVersion.client,
+      });
+    }
+    return { ...reservation, amount: new Prisma.Decimal(reservation.amount) };
+  }
+
+  /**
+   * Adds `delta` to `spent` only if the budget is still in the reservation's
+   * period. Holds created before `periodStart` was recorded count as current
+   * when they were made at or after the budget's current period start.
+   */
+  private async adjustSpentInReservationPeriod(
+    tx: Prisma.TransactionClient,
+    reservation: Pick<BudgetReservation, 'budgetId' | 'periodStart' | 'createdAt'>,
+    delta: Prisma.Decimal,
+  ): Promise<void> {
+    if (delta.isZero()) return;
+    await tx.budget.updateMany({
+      where: {
+        id: reservation.budgetId,
+        ...(reservation.periodStart
+          ? { periodStart: reservation.periodStart }
+          : { periodStart: { lte: reservation.createdAt } }),
+      },
+      data: { spent: { increment: delta } },
+    });
   }
 
   /**
