@@ -49,6 +49,7 @@ describe('WebhooksProcessor', () => {
           method: 'POST',
           headers: options.headers,
           body: options.body.toString('utf8'),
+          signal: options.signal,
         });
         // Return headers as a plain Record to match WebhookResponse type
         const headers: Record<string, string | string[] | undefined> = {};
@@ -72,6 +73,7 @@ describe('WebhooksProcessor', () => {
       fetchSpy.mockResolvedValue({
         ok: true,
         status: 200,
+        headers: {},
         text: () => Promise.resolve('OK'),
       });
 
@@ -103,6 +105,7 @@ describe('WebhooksProcessor', () => {
       fetchSpy.mockResolvedValue({
         ok: true,
         status: 200,
+        headers: {},
         text: () => Promise.resolve('OK'),
       });
 
@@ -114,6 +117,7 @@ describe('WebhooksProcessor', () => {
       fetchSpy.mockResolvedValue({
         ok: true,
         status: 201,
+        headers: {},
         text: () => Promise.resolve('Created'),
       });
 
@@ -125,6 +129,7 @@ describe('WebhooksProcessor', () => {
       fetchSpy.mockResolvedValue({
         ok: true,
         status: 200,
+        headers: {},
         text: () => Promise.resolve('OK'),
       });
 
@@ -142,6 +147,7 @@ describe('WebhooksProcessor', () => {
         fetchSpy.mockResolvedValue({
           ok: false,
           status,
+          headers: {},
           text: () => Promise.resolve(`Error ${status}`),
         });
 
@@ -154,6 +160,7 @@ describe('WebhooksProcessor', () => {
       fetchSpy.mockResolvedValue({
         ok: false,
         status: 500,
+        headers: {},
         text: () => Promise.resolve('Internal Server Error'),
       });
 
@@ -166,6 +173,7 @@ describe('WebhooksProcessor', () => {
       fetchSpy.mockResolvedValue({
         ok: false,
         status: 502,
+        headers: {},
         text: () => Promise.resolve('Bad Gateway'),
       });
 
@@ -177,6 +185,7 @@ describe('WebhooksProcessor', () => {
       fetchSpy.mockResolvedValue({
         ok: false,
         status: 503,
+        headers: {},
         text: () => Promise.resolve('Service Unavailable'),
       });
 
@@ -188,6 +197,7 @@ describe('WebhooksProcessor', () => {
       fetchSpy.mockResolvedValue({
         ok: false,
         status: 429,
+        headers: {},
         text: () => Promise.resolve('Too Many Requests'),
       });
 
@@ -200,6 +210,7 @@ describe('WebhooksProcessor', () => {
       fetchSpy.mockResolvedValue({
         ok: false,
         status: 500,
+        headers: {},
         text: () => Promise.resolve('Internal Server Error'),
       });
 
@@ -244,6 +255,7 @@ describe('WebhooksProcessor', () => {
       fetchSpy.mockResolvedValue({
         ok: true,
         status: 200,
+        headers: {},
         text: () => Promise.resolve('OK'),
       });
 
@@ -257,6 +269,7 @@ describe('WebhooksProcessor', () => {
       fetchSpy.mockResolvedValue({
         ok: false,
         status: 503,
+        headers: {},
         text: () => Promise.resolve('Service Unavailable'),
       });
 
@@ -277,6 +290,7 @@ describe('WebhooksProcessor', () => {
       fetchSpy.mockResolvedValue({
         ok: false,
         status: 503,
+        headers: {},
         text: () => Promise.resolve('Service Unavailable'),
       });
       const job = createMockJob({
@@ -330,7 +344,7 @@ describe('WebhooksProcessor', () => {
     it('keeps the same event identity across retry attempts', async () => {
       const upsert = vi.fn().mockResolvedValue({});
       mockPrisma.webhookDelivery = { upsert };
-      fetchSpy.mockResolvedValue({ ok: true, status: 200, text: () => Promise.resolve('OK') });
+      fetchSpy.mockResolvedValue({ ok: true, status: 200, headers: {}, text: () => Promise.resolve('OK') });
 
       const firstAttempt = createMockJob();
       const retryAttempt = createMockJob({ attemptsMade: 1 } as Partial<Job<WebhookJobData>>);
@@ -348,6 +362,7 @@ describe('WebhooksProcessor', () => {
       fetchSpy.mockResolvedValue({
         ok: false,
         status: 500,
+        headers: {},
         text: () => Promise.resolve(secretEcho),
       });
 
@@ -390,7 +405,7 @@ describe('WebhooksProcessor', () => {
     it('marks the delivery RETRYING while attempts remain and FAILED on the last attempt', async () => {
       const upsert = vi.fn().mockResolvedValue({});
       mockPrisma.webhookDelivery = { upsert };
-      fetchSpy.mockResolvedValue({ ok: false, status: 503, text: () => Promise.resolve('nope') });
+      fetchSpy.mockResolvedValue({ ok: false, status: 503, headers: {}, text: () => Promise.resolve('nope') });
 
       const maxAttempts = 5;
       for (let attempt = 0; attempt < maxAttempts; attempt++) {
@@ -424,7 +439,7 @@ describe('WebhooksProcessor', () => {
           },
         },
       );
-      fetchSpy.mockResolvedValue({ ok: false, status: 503, text: () => Promise.resolve('nope') });
+      fetchSpy.mockResolvedValue({ ok: false, status: 503, headers: {}, text: () => Promise.resolve('nope') });
 
       const maxAttempts = 5;
       for (let attempt = 0; attempt < maxAttempts; attempt++) {
@@ -456,7 +471,7 @@ describe('WebhooksProcessor', () => {
           },
         },
       );
-      fetchSpy.mockResolvedValue({ ok: false, status: 503, text: () => Promise.resolve('nope') });
+      fetchSpy.mockResolvedValue({ ok: false, status: 503, headers: {}, text: () => Promise.resolve('nope') });
 
       await expect(auditedProcessor.process(createMockJob())).rejects.toThrow('HTTP 503');
 

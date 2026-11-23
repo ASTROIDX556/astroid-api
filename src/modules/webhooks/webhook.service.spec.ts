@@ -72,6 +72,7 @@ describe('Webhook signing & delivery', () => {
             method: 'POST',
             headers: options.headers,
             body: options.body.toString('utf8'),
+            signal: options.signal,
           });
           // Return headers as a plain Record to match WebhookResponse type
           const headers: Record<string, string | string[] | undefined> = {};
@@ -96,7 +97,7 @@ describe('Webhook signing & delivery', () => {
     });
 
     it('sends X-Astroid-Signature, X-Astroid-Delivery, X-Astroid-Event headers', async () => {
-      fetchSpy.mockResolvedValue({ ok: true, status: 200, text: () => Promise.resolve('OK') });
+      fetchSpy.mockResolvedValue({ ok: true, status: 200, headers: {}, text: () => Promise.resolve('OK') });
       const job = {
         id: 'job-1',
         data: {
@@ -121,7 +122,7 @@ describe('Webhook signing & delivery', () => {
     });
 
     it('signature is HMAC-SHA256 of timestamp + body', async () => {
-      fetchSpy.mockResolvedValue({ ok: true, status: 200, text: () => Promise.resolve('OK') });
+      fetchSpy.mockResolvedValue({ ok: true, status: 200, headers: {}, text: () => Promise.resolve('OK') });
       const payload = { event: 'policy.violated', data: { id: 'p1' } };
       const job = {
         id: 'job-1',
@@ -145,7 +146,7 @@ describe('Webhook signing & delivery', () => {
     });
 
     it('uses 5000ms timeout on fetch', async () => {
-      fetchSpy.mockResolvedValue({ ok: true, status: 200, text: () => Promise.resolve('OK') });
+      fetchSpy.mockResolvedValue({ ok: true, status: 200, headers: {}, text: () => Promise.resolve('OK') });
       const job = {
         id: 'job-1',
         data: {
@@ -172,7 +173,7 @@ describe('Webhook signing & delivery', () => {
         undefined,
         destinationPolicy,
       );
-      fetchSpy.mockResolvedValue({ ok: true, status: 200, text: () => Promise.resolve('OK') });
+      fetchSpy.mockResolvedValue({ ok: true, status: 200, headers: {}, text: () => Promise.resolve('OK') });
 
       const job = {
         id: 'job-1',
@@ -198,7 +199,7 @@ describe('Webhook signing & delivery', () => {
     });
 
     it('throws UnrecoverableError for non-transient 4xx and does not retry', async () => {
-      fetchSpy.mockResolvedValue({ ok: false, status: 401, text: () => Promise.resolve('Unauthorized') });
+      fetchSpy.mockResolvedValue({ ok: false, status: 401, headers: {}, text: () => Promise.resolve('Unauthorized') });
       const job = {
         id: 'job-1',
         data: {
@@ -238,7 +239,7 @@ describe('Webhook signing & delivery', () => {
     });
 
     it('throws retriable error for transient 5xx to allow BullMQ exponential backoff', async () => {
-      fetchSpy.mockResolvedValue({ ok: false, status: 503, text: () => Promise.resolve('Service Unavailable') });
+      fetchSpy.mockResolvedValue({ ok: false, status: 503, headers: {}, text: () => Promise.resolve('Service Unavailable') });
       const job = {
         id: 'job-1',
         data: {

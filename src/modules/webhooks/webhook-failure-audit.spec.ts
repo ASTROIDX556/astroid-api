@@ -62,8 +62,10 @@ describe('WebhooksProcessor terminal failures', () => {
           signal: AbortSignal.timeout(options.timeoutMs),
         });
         const headers: Record<string, string | string[] | undefined> = {};
-        for (const [key, value] of response.headers.entries()) {
-          headers[key.toLowerCase()] = value;
+        if (response.headers) {
+          for (const [key, value] of Object.entries(response.headers)) {
+            headers[key.toLowerCase()] = value;
+          }
         }
         return { status: response.status, headers };
       },
@@ -94,6 +96,7 @@ describe('WebhooksProcessor terminal failures', () => {
       ok: false,
       status: 503,
       statusText: 'Service Unavailable',
+      headers: {},
       text: () => Promise.resolve('Service Unavailable'),
     });
 
@@ -107,6 +110,7 @@ describe('WebhooksProcessor terminal failures', () => {
       ok: false,
       status: 503,
       statusText: 'Service Unavailable',
+      headers: {},
       text: () => Promise.resolve('Service Unavailable'),
     });
 
@@ -130,6 +134,7 @@ describe('WebhooksProcessor terminal failures', () => {
       ok: false,
       status: 404,
       statusText: 'Not Found',
+      headers: {},
       text: () => Promise.resolve('Not Found'),
     });
     await expect(processor.process(makeJob(0))).rejects.toBeInstanceOf(UnrecoverableError);
@@ -156,7 +161,7 @@ describe('WebhooksProcessor terminal failures', () => {
       undefined,
       createDestinationPolicy(),
     );
-    fetchSpy.mockResolvedValue({ ok: true, status: 200 });
+    fetchSpy.mockResolvedValue({ ok: true, status: 200, headers: {} });
 
     await processor.process({
       ...makeJob(0),
