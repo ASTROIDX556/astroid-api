@@ -1,6 +1,7 @@
 import { UnrecoverableError, type BackoffStrategy, type JobsOptions } from 'bullmq';
 import type { RegisterQueueOptions } from '@nestjs/bullmq';
 import { jitteredBackoffDelay } from '../utils/backoff.util';
+import { mapPrismaError } from '../common/exceptions/prisma-error.mapper';
 
 /** Shared bounded retry and retention defaults for background work. */
 export const DEFAULT_JOB_OPTIONS = {
@@ -32,6 +33,12 @@ export function classifyJobError(error: unknown): JobErrorClassification {
   if (error instanceof PermanentJobError || error instanceof UnrecoverableError) return 'permanent';
   if (error instanceof RetryableJobError) return 'retryable';
   if (!error || typeof error !== 'object') return 'retryable';
+
+  // Prisma errors carry no HTTP status; classify them through the shared
+  // mapper. Constraint violations, missing rows and invalid queries cannot
+  // succeed on retry, while connection/unknown faults (mapped to 500) may.
+  const prisma = mapPrismaError(error);
+  if (prisma) return prisma.permanent ? 'permanent' : 'retryable';
 
   const candidate = error as { getStatus?: () => number; status?: number; statusCode?: number; name?: string };
   let status = candidate.status ?? candidate.statusCode;

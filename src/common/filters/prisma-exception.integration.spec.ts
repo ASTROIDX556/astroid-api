@@ -122,17 +122,23 @@ describe('PrismaExceptionFilter Integration', () => {
     });
   });
 
-  it('maps foreign key constraint failure to 409 CONFLICT', async () => {
+  it('maps foreign key constraint failure to 400 BAD_REQUEST without leaking internals', async () => {
     const res = await fetch(`${baseUrl}/test-prisma/fk`, {
       method: 'POST',
+      headers: { 'x-request-id': 'req-fk-1' },
     });
 
-    expect(res.status).toBe(409);
+    expect(res.status).toBe(400);
     const body = await res.json();
     expect(body).toMatchObject({
-      status: 409,
-      code: ErrorCode.CONFLICT,
+      status: 400,
+      code: ErrorCode.BAD_REQUEST,
+      requestId: 'req-fk-1',
     });
+    expect(body).not.toHaveProperty('stack');
+    // The raw Prisma message must not reach the client, nor any stack frame.
+    expect(body.detail).not.toBe('Foreign key constraint failed');
+    expect(JSON.stringify(body)).not.toMatch(/PrismaClient|\n\s+at |\.ts:\d+/);
   });
 
   it('maps value too long to 422 VALIDATION_ERROR', async () => {
