@@ -56,6 +56,11 @@ export enum ErrorCode {
   SOROBAN_REQUEST_REJECTED = 'SOROBAN_REQUEST_REJECTED',
 
   // Resilience
+  /**
+   * The database cannot be reached or the client failed to initialise (Prisma
+   * initialisation error or engine panic). Transient: safe to retry later.
+   */
+  DATABASE_UNAVAILABLE = 'DATABASE_UNAVAILABLE',
   CIRCUIT_OPEN = 'CIRCUIT_OPEN',
   LOCK_ACQUISITION_FAILED = 'LOCK_ACQUISITION_FAILED',
 
@@ -102,6 +107,7 @@ export const ERROR_STATUS: Record<ErrorCode, number> = {
   [ErrorCode.CONTRACT_PANIC]: 422,
   [ErrorCode.SOROBAN_UNAVAILABLE]: 503,
   [ErrorCode.SOROBAN_REQUEST_REJECTED]: 400,
+  [ErrorCode.DATABASE_UNAVAILABLE]: 503,
   [ErrorCode.CIRCUIT_OPEN]: 503,
   [ErrorCode.LOCK_ACQUISITION_FAILED]: 409,
   [ErrorCode.IDEMPOTENCY_KEY_MISMATCH]: 422,
@@ -149,6 +155,7 @@ export const ERROR_TITLE: Record<ErrorCode, string> = {
   [ErrorCode.CONTRACT_PANIC]: 'Smart Contract Panicked',
   [ErrorCode.SOROBAN_UNAVAILABLE]: 'Soroban RPC Unavailable',
   [ErrorCode.SOROBAN_REQUEST_REJECTED]: 'Soroban RPC Request Rejected',
+  [ErrorCode.DATABASE_UNAVAILABLE]: 'Database Unavailable',
   [ErrorCode.CIRCUIT_OPEN]: 'Service Temporarily Unavailable',
   [ErrorCode.LOCK_ACQUISITION_FAILED]: 'Resource Locked',
   [ErrorCode.IDEMPOTENCY_KEY_MISMATCH]: 'Idempotency Key Payload Mismatch',
