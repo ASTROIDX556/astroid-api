@@ -1,5 +1,5 @@
 import { Injectable, Optional } from '@nestjs/common';
-import { Budget, BudgetPeriod, Prisma } from '@prisma/client';
+import { Budget, BudgetPeriod, BudgetReservation, Prisma } from '@prisma/client';
 import { BudgetRepository } from './budget.repository';
 import { AllocateBudgetInput, CreateBudgetInput, UpdateBudgetInput } from './budget.dto';
 import {
@@ -267,38 +267,53 @@ export class BudgetService {
     }
   }
 
-  /** Records realised spend after a payment completes; emits warnings near cap. */
   /**
-   * Atomically reserves (deducts) budget by incrementing spent.
-   * Utilizes database row-level locking (SELECT FOR UPDATE) to prevent race conditions.
+   * Atomically reserves `amount` from the budget using a conditional database
+   * UPDATE (`WHERE limitAmount - spent >= amount`). The arithmetic stays in
+   * Postgres so two concurrent callers cannot both observe the same remaining
+   * balance and both succeed.
    *
-   * The `SELECT … FOR UPDATE` lock and the following `UPDATE` must land in the
-   * *same* transaction, otherwise the lock is released before the deduction and
-   * two concurrent agents can both observe the same remaining balance. The
-   * boundary is owned here (the service), and the repository is handed the
-   * transactional client to work on.
-   *
-   * @throws ConflictException if budget would be exceeded
+   * @throws NotFoundException         – budget not found for the organisation
+   * @throws BudgetExceededException   – reservation would exceed the limit
    */
-  async reserveBudget(organizationId: string, budgetId: string, amount: number) {
+  async reserveAtomic(
+    organizationId: string,
+    budgetId: string,
+    amount: number,
+  ): Promise<BudgetReservation> {
     try {
-      const budget = await this.transactions.run(
-        (tx) => this.repository.reserveBudget(organizationId, budgetId, new Decimal(amount), tx),
-        { name: 'budget.reserve' },
+      const reservation = await this.repository.createReservation(
+        organizationId,
+        budgetId,
+        new Decimal(amount),
       );
-      // Reservations also count as spend for threshold alerting. Evaluation is
-      // best-effort and cannot fail the committed reservation.
       if (this.budgetAlerts) {
-        await this.budgetAlerts.evaluate(organizationId, budget, new Decimal(budget.spent));
+        const budget = await this.repository.findById(organizationId, budgetId);
+        if (budget) {
+          await this.budgetAlerts.evaluate(organizationId, budget, new Decimal(budget.spent)).catch(() => undefined);
+        }
       }
-      return budget;
+      return reservation;
     } catch (error: unknown) {
-      const err = error as Error;
-      if (err.message && err.message.includes('NotFoundException')) {
-        throw new NotFoundException('Budget', budgetId);
-      }
-      if (err.message && err.message.includes('ConflictException')) {
-        throw new ConflictException('BudgetExceeded: Allocation exceeds the budget remaining balance');
+      const msg = (error as Error).message ?? '';
+      if (msg === 'NotFoundException') throw new NotFoundException('Budget', budgetId);
+      if (msg === 'BudgetExceeded') {
+        const budget = await this.repository.findById(organizationId, budgetId).catch(() => null);
+        await this.eventBus.emit(
+          DomainEventName.BudgetExceeded,
+          {
+            budgetId,
+            limit: budget?.limitAmount.toFixed(7) ?? '?',
+            attempted: new Decimal(amount).toFixed(7),
+          },
+          { organizationId, aggregateType: 'budget', aggregateId: budgetId },
+        );
+        throw new BudgetExceededException('Transaction would exceed the budget limit', {
+          budgetId,
+          limit: budget?.limitAmount.toFixed(7) ?? '?',
+          spent: budget?.spent.toFixed(7) ?? '?',
+          attempted: amount,
+        });
       }
       throw error;
     }
@@ -306,7 +321,8 @@ export class BudgetService {
 
   /**
    * Releases a previously reserved budget amount, decrementing spent.
-   * Runs under an atomic row-level lock.
+   * Used by the approvals flow to return a held amount when a request expires
+   * or is rejected. Runs under a serializable row-level lock.
    */
   async releaseBudget(organizationId: string, budgetId: string, amount: number) {
     try {
@@ -322,6 +338,45 @@ export class BudgetService {
       }
       throw error;
     }
+  }
+
+  /**
+   * Settles a reservation after the payment completes. Adjusts `spent` by the
+   * delta between the actual and reserved amounts, then marks the reservation
+   * SETTLED. Idempotent — safe to call more than once.
+   */
+  async settle(
+    organizationId: string,
+    reservationId: string,
+    actualAmount: number,
+  ): Promise<BudgetReservation> {
+    const reservation = await this.repository.settleReservation(
+      reservationId,
+      new Decimal(actualAmount),
+    );
+    const budget = await this.repository.findById(organizationId, reservation.budgetId);
+    await this.eventBus.emit(
+      DomainEventName.BudgetConsumed,
+      {
+        budgetId: reservation.budgetId,
+        amount: actualAmount,
+        spent: budget?.spent.toFixed(7) ?? '?',
+      },
+      { organizationId, aggregateType: 'budget', aggregateId: reservation.budgetId },
+    );
+    if (budget && this.budgetAlerts) {
+      await this.budgetAlerts.evaluate(organizationId, budget, new Decimal(budget.spent)).catch(() => undefined);
+    }
+    return reservation;
+  }
+
+  /**
+   * Releases a reservation after a failed or cancelled transaction, returning
+   * the held amount to the budget's available balance. Idempotent — safe to
+   * call more than once (guards against double-release).
+   */
+  async release(reservationId: string): Promise<BudgetReservation> {
+    return this.repository.releaseReservation(reservationId);
   }
 
   async consume(organizationId: string, budgetId: string, amount: number) {
