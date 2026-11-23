@@ -4,15 +4,14 @@ import { AgentRepository } from './agent.repository';
 import { AssignWalletInput, CreateAgentInput, UpdateAgentInput } from './agent.dto';
 import { ConflictException, NotFoundException } from '../../common/exceptions/domain.exception';
 import {
-  buildPaginationMeta,
+  cursorWhere,
+  paginatePage,
   PaginationQuery,
   toPrismaPagination,
-} from '../../common/helpers/pagination';
-import { Paginated } from '../../common/interfaces/api-response.interface';
+} from '../../common/pagination';
 import { EventBusService } from '../../events/event-bus.service';
 import { DomainEventName } from '../../events/event-names';
 
-const SORTABLE = ['createdAt', 'name', 'role', 'status'];
 
 /**
  * Manages the lifecycle of autonomous agents: registration, updates, status
@@ -52,9 +51,12 @@ export class AgentService {
     if (query.filter) {
       where.status = query.filter as AgentStatus;
     }
-    const pagination = toPrismaPagination(query, SORTABLE);
-    const { items, total } = await this.repository.findManyAndCount(where, pagination);
-    return new Paginated(items, buildPaginationMeta(total, query.page, query.limit));
+    const pagination = toPrismaPagination(query);
+    const { items, total } = await this.repository.findManyAndCount(
+      { ...where, ...cursorWhere(query.cursor) },
+      pagination,
+    );
+    return paginatePage(items, total, query);
   }
 
   async getOrThrow(organizationId: string, id: string): Promise<Agent> {

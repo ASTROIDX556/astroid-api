@@ -10,9 +10,11 @@ import {
 } from './transaction.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
+import { RequireScopes } from '../../common/decorators/require-scopes.decorator';
+import { API_KEY_SCOPES } from '../../common/constants/api-key-scopes';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 import { AuthenticatedUser } from '../../common/interfaces/authenticated-user.interface';
-import { PaginationQuery, paginationQuerySchema } from '../../common/helpers/pagination';
+import { PaginationQuery, paginationQuerySchema } from '../../common/pagination';
 
 @ApiTags('transactions')
 @Controller('transactions')
@@ -30,6 +32,7 @@ export class TransactionController {
 
   @Post()
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.FINANCE, UserRole.DEVELOPER)
+  @RequireScopes(API_KEY_SCOPES.TransactionCreate)
   @ApiOperation({
     summary: 'Create a transaction (runs the full governance pipeline)',
     description:

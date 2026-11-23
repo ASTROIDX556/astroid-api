@@ -3,6 +3,7 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { PrismaService } from '../database/prisma.service';
 import { DomainEventNameType } from './event-names';
 import { DomainEventEnvelope } from './domain-event.types';
+import { TraceContext } from '../common/context/trace.context';
 
 export interface EmitOptions {
   organizationId?: string;
@@ -10,6 +11,8 @@ export interface EmitOptions {
   aggregateId?: string;
   actorId?: string;
   correlationId?: string;
+  /** Defaults to the active trace context's request id when omitted. */
+  requestId?: string;
   /** When false, the event is broadcast but NOT written to the ledger. */
   persist?: boolean;
 }
@@ -45,6 +48,7 @@ export class EventBusService {
       aggregateId: options.aggregateId,
       actorId: options.actorId,
       correlationId: options.correlationId,
+      requestId: options.requestId ?? TraceContext.getTraceId() ?? null,
       payload,
       occurredAt: new Date(),
     };

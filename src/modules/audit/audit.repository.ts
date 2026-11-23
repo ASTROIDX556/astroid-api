@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
-import { PrismaPagination } from '../../common/helpers/pagination';
+import { PrismaPagination } from '../../common/pagination';
 
 export interface CreateAuditLogData {
   organizationId: string;
@@ -13,6 +13,7 @@ export interface CreateAuditLogData {
   newValue?: Prisma.InputJsonValue;
   ipAddress?: string | null;
   device?: string | null;
+  requestId?: string | null;
 }
 
 /** Persistence for the append-only audit log. Writes and reads only — no updates. */
@@ -32,6 +33,7 @@ export class AuditRepository {
         newValue: data.newValue,
         ipAddress: data.ipAddress ?? null,
         device: data.device ?? null,
+        requestId: data.requestId ?? null,
       },
     });
   }

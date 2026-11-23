@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma, Webhook } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
-import { PrismaPagination } from '../../common/helpers/pagination';
+import { PrismaPagination } from '../../common/pagination';
 
 /**
  * Persistence for Webhook rows. The `secret` column is never selected into list
@@ -29,6 +29,37 @@ export class WebhookRepository {
     const [items, total] = await this.prisma.$transaction([
       this.prisma.webhook.findMany({ where, ...pagination, select: WebhookRepository.SAFE_SELECT }),
       this.prisma.webhook.count({ where }),
+    ]);
+    return { items, total };
+  }
+
+  /** Delivery log for an organization, including permanently failed (DLQ) rows. */
+  async findDeliveriesAndCount(
+    where: Prisma.WebhookDeliveryWhereInput,
+    pagination: PrismaPagination,
+  ) {
+    const [items, total] = await this.prisma.$transaction([
+      this.prisma.webhookDelivery.findMany({
+        where,
+        ...pagination,
+        // The stored payload can be large; the log exposes attempt metadata only.
+        select: {
+          id: true,
+          webhookId: true,
+          eventName: true,
+          eventId: true,
+          status: true,
+          attempts: true,
+          lastError: true,
+          lastStatusCode: true,
+          lastAttemptAt: true,
+          nextAttemptAt: true,
+          deadLetteredAt: true,
+          createdAt: true,
+          updatedAt: true,
+        },
+      }),
+      this.prisma.webhookDelivery.count({ where }),
     ]);
     return { items, total };
   }

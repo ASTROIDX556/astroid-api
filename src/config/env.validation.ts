@@ -62,6 +62,19 @@ export const queueEnvSchema = z.object({
   QUEUE_CONCURRENCY: z.coerce.number().int().positive().default(5),
 });
 
+export const webhookEnvSchema = z.object({
+  /** Total delivery attempts before a delivery is dead-lettered. */
+  WEBHOOK_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(20).default(6),
+  /** Per-attempt HTTP timeout for the outbound webhook call. */
+  WEBHOOK_TIMEOUT_MS: z.coerce.number().int().positive().default(5_000),
+  /** Fraction of each backoff step applied as +/- jitter. */
+  WEBHOOK_BACKOFF_JITTER_RATIO: z.coerce.number().min(0).max(0.5).default(0.2),
+  /** Comma-separated backoff schedule in milliseconds, one step per retry. */
+  WEBHOOK_BACKOFF_DELAYS_MS: z
+    .string()
+    .default('30000,60000,300000,900000,1800000'),
+});
+
 export const throttleEnvSchema = z.object({
   THROTTLE_AUTH_LIMIT: z.coerce.number().int().positive().default(10),
   THROTTLE_API_LIMIT: z.coerce.number().int().positive().default(120),

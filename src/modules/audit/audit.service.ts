@@ -2,13 +2,12 @@ import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { AuditRepository, CreateAuditLogData } from './audit.repository';
 import {
-  buildPaginationMeta,
+  cursorWhere,
+  paginatePage,
   PaginationQuery,
   toPrismaPagination,
-} from '../../common/helpers/pagination';
-import { Paginated } from '../../common/interfaces/api-response.interface';
+} from '../../common/pagination';
 
-const SORTABLE = ['createdAt', 'action', 'entity'];
 
 /** An audit row as returned by `AuditRepository.exportLogs`, with its joined user. */
 type ExportedAuditLog = Prisma.AuditLogGetPayload<{
@@ -39,9 +38,12 @@ export class AuditService {
     if (query.filter) {
       where.entity = query.filter;
     }
-    const pagination = toPrismaPagination(query, SORTABLE);
-    const { items, total } = await this.repository.findManyAndCount(where, pagination);
-    return new Paginated(items, buildPaginationMeta(total, query.page, query.limit));
+    const pagination = toPrismaPagination(query);
+    const { items, total } = await this.repository.findManyAndCount(
+      { ...where, ...cursorWhere(query.cursor) },
+      pagination,
+    );
+    return paginatePage(items, total, query);
   }
 
   async export(organizationId: string, query: import('./audit-export.dto').ExportAuditLogsQuery) {

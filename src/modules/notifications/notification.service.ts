@@ -2,13 +2,12 @@ import { Injectable } from '@nestjs/common';
 import { NotificationChannel, NotificationType, Prisma } from '@prisma/client';
 import { NotificationRepository } from './notification.repository';
 import {
-  buildPaginationMeta,
+  cursorWhere,
+  paginatePage,
   PaginationQuery,
   toPrismaPagination,
-} from '../../common/helpers/pagination';
-import { Paginated } from '../../common/interfaces/api-response.interface';
+} from '../../common/pagination';
 
-const SORTABLE = ['createdAt', 'type', 'read'];
 
 export interface CreateNotificationData {
   organizationId: string;
@@ -69,9 +68,12 @@ export class NotificationService {
     if (query.filter === 'unread') {
       where.read = false;
     }
-    const pagination = toPrismaPagination(query, SORTABLE);
-    const { items, total } = await this.repository.findManyAndCount(where, pagination);
-    return new Paginated(items, buildPaginationMeta(total, query.page, query.limit));
+    const pagination = toPrismaPagination(query);
+    const { items, total } = await this.repository.findManyAndCount(
+      { ...where, ...cursorWhere(query.cursor) },
+      pagination,
+    );
+    return paginatePage(items, total, query);
   }
 
   async unreadCount(organizationId: string, userId: string) {

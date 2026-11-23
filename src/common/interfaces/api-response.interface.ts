@@ -15,6 +15,8 @@ export interface PaginationMeta extends ApiMeta {
   totalPages: number;
   hasNext: boolean;
   hasPrev: boolean;
+  /** Opaque cursor for the next page, or `null` when this is the last page. */
+  nextCursor: string | null;
 }
 
 export interface ApiSuccessResponse<T> {

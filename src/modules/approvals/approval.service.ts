@@ -10,15 +10,15 @@ import {
   NotFoundException,
 } from '../../common/exceptions/domain.exception';
 import {
-  buildPaginationMeta,
+  cursorWhere,
+  paginatePage,
   PaginationQuery,
   toPrismaPagination,
-} from '../../common/helpers/pagination';
-import { Paginated } from '../../common/interfaces/api-response.interface';
+} from '../../common/pagination';
 import { EventBusService } from '../../events/event-bus.service';
 import { DomainEventName } from '../../events/event-names';
+import { approvalDecidedAudit } from './events/approval-audit.events';
 
-const SORTABLE = ['createdAt', 'status', 'approvalType'];
 
 /**
  * Human-in-the-loop approval workflow for transactions that the pipeline flagged
@@ -39,9 +39,12 @@ export class ApprovalService {
     if (query.filter) {
       where.status = query.filter as ProposalStatus;
     }
-    const pagination = toPrismaPagination(query, SORTABLE);
-    const { items, total } = await this.repository.findManyAndCount(where, pagination);
-    return new Paginated(items, buildPaginationMeta(total, query.page, query.limit));
+    const pagination = toPrismaPagination(query);
+    const { items, total } = await this.repository.findManyAndCount(
+      { ...where, ...cursorWhere(query.cursor) },
+      pagination,
+    );
+    return paginatePage(items, total, query);
   }
 
   async getOrThrow(organizationId: string, id: string) {
@@ -89,6 +92,22 @@ export class ApprovalService {
       comment: input.comment,
     });
 
+    // Audit the individual vote after it is persisted — whether or not it
+    // reaches the approval threshold or triggers a rejection (#547).
+    const approvedCount = await this.repository.countApprovals(proposalId, 'APPROVED');
+    await this.eventBus.emit(
+      DomainEventName.ApprovalDecided,
+      approvalDecidedAudit({
+        proposalId,
+        transactionId: proposal.transactionId,
+        decision: input.decision,
+        comment: input.comment,
+        approvedCount,
+        requiredApprovals: proposal.requiredApprovals,
+      }),
+      { organizationId, actorId, aggregateType: 'proposal', aggregateId: proposalId },
+    );
+
     // A single rejection rejects the whole proposal.
     if (input.decision === ApprovalDecision.REJECTED) {
       await this.repository.updateProposalStatus(proposalId, { status: ProposalStatus.REJECTED });
@@ -101,7 +120,7 @@ export class ApprovalService {
       return this.getOrThrow(organizationId, proposalId);
     }
 
-    const approvals = await this.repository.countApprovals(proposalId, 'APPROVED');
+    const approvals = approvedCount;
     if (approvals < proposal.requiredApprovals) {
       // Threshold not yet reached — remain pending.
       return this.getOrThrow(organizationId, proposalId);

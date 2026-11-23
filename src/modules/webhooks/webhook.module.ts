@@ -6,13 +6,21 @@ import { WebhookRepository } from './webhook.repository';
 import { WebhookDispatcher } from './webhook.dispatcher';
 import { WebhookDeliveryService } from './services/webhook-delivery.service';
 import { WebhookWorker } from './workers/webhook.worker';
-import { WebhooksProcessor } from './webhooks.processor';
+import { WebhookRetryPolicy } from './webhook-retry.policy';
 import { Queues } from '../../queues/queues.constants';
 import { redisConfig } from '../../config/redis.config';
+import {
+  WEBHOOK_BACKOFF_TYPE,
+  loadWebhookRetrySettings,
+} from '../../config/webhook.config';
+
+const retrySettings = loadWebhookRetrySettings();
 
 /**
  * Webhooks module. The dispatcher listens to domain events and queues
  * the curated WEBHOOK_EVENTS set to subscribed external endpoints via BullMQ.
+ * Deliveries retry with a capped, jittered backoff and are dead-lettered onto
+ * `Queues.WebhookDeadLetter` once they fail permanently (#550).
  */
 @Module({
   imports: [
@@ -27,13 +35,18 @@ import { redisConfig } from '../../config/redis.config';
     BullModule.registerQueue({
       name: Queues.Webhooks,
       defaultJobOptions: {
-        attempts: 5,
-        backoff: {
-          type: 'exponential',
-          delay: 2000,
-        },
+        attempts: retrySettings.maxAttempts,
+        backoff: { type: WEBHOOK_BACKOFF_TYPE },
         removeOnComplete: { count: 1000 },
         removeOnFail: { age: 24 * 3600 },
+      },
+    }),
+    BullModule.registerQueue({
+      name: Queues.WebhookDeadLetter,
+      defaultJobOptions: {
+        attempts: 1,
+        removeOnComplete: { count: 1000 },
+        removeOnFail: { age: 7 * 24 * 3600 },
       },
     }),
   ],
@@ -44,7 +57,10 @@ import { redisConfig } from '../../config/redis.config';
     WebhookDispatcher,
     WebhookDeliveryService,
     WebhookWorker,
-    WebhooksProcessor,
+    {
+      provide: WebhookRetryPolicy,
+      useFactory: () => new WebhookRetryPolicy(loadWebhookRetrySettings()),
+    },
   ],
   exports: [WebhookService],
 })

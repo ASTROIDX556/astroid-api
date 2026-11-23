@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { Budget, Prisma } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
-import { PrismaPagination } from '../../common/helpers/pagination';
+import { PrismaPagination } from '../../common/pagination';
 
 /** Persistence for Budget rows, including atomic spend increments. */
 @Injectable()

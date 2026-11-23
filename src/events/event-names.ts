@@ -40,6 +40,7 @@ export const DomainEventName = {
   BudgetConsumed: 'budget.consumed',
   BudgetExceeded: 'budget.exceeded',
   BudgetWarning: 'budget.warning',
+  BudgetDeleted: 'budget.deleted',
 
   // Proposal / approval
   ProposalCreated: 'proposal.created',
@@ -47,6 +48,8 @@ export const DomainEventName = {
   ProposalRejected: 'proposal.rejected',
   ProposalExpired: 'proposal.expired',
   ProposalExecuted: 'proposal.executed',
+  // A single reviewer's vote, recorded before the proposal threshold is met.
+  ApprovalDecided: 'approval.decided',
 
   // Transaction / blockchain
   TransactionCreated: 'transaction.created',
@@ -59,6 +62,12 @@ export const DomainEventName = {
   // Risk
   RiskEvaluated: 'risk.evaluated',
   RiskAlert: 'risk.alert',
+
+  // API keys (developer surface)
+  ApiKeyCreated: 'api_key.created',
+  ApiKeyUpdated: 'api_key.updated',
+  ApiKeyRotated: 'api_key.rotated',
+  ApiKeyRevoked: 'api_key.revoked',
 
   // Notification / audit
   NotificationCreated: 'notification.created',

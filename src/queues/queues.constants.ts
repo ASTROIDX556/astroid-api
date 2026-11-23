@@ -7,6 +7,8 @@ export const Queues = {
   Notifications: 'notifications',
   /** Webhook retry attempts with exponential backoff. */
   Webhooks: 'webhooks',
+  /** Permanently failed webhook deliveries, retained for inspection/replay. */
+  WebhookDeadLetter: 'webhook-dead-letter',
   /** Periodic Stellar balance + state synchronization. */
   StellarSync: 'stellar-sync',
   /** Analytics roll-ups and precomputed aggregates. */

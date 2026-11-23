@@ -12,16 +12,20 @@ import {
 } from './policy.types';
 import { NotFoundException, VelocityLimitExceededException, ValidationException } from '../../common/exceptions/domain.exception';
 import {
-  buildPaginationMeta,
+  cursorWhere,
+  paginatePage,
   PaginationQuery,
   toPrismaPagination,
-} from '../../common/helpers/pagination';
-import { Paginated } from '../../common/interfaces/api-response.interface';
+} from '../../common/pagination';
 import { EventBusService } from '../../events/event-bus.service';
 import { DomainEventName } from '../../events/event-names';
+import {
+  policyCreatedAudit,
+  policyDeletedAudit,
+  policyUpdatedAudit,
+} from './events/policy-audit.events';
 import { PrismaService } from '../../database/prisma.service';
 
-const SORTABLE = ['createdAt', 'priority', 'name', 'type'];
 
 /**
  * Manages policy definitions and exposes evaluation to other modules. Wraps the
@@ -59,11 +63,12 @@ export class PolicyService {
       priority: input.priority,
       enabled: input.enabled,
     });
-    await this.eventBus.emit(
-      DomainEventName.PolicyCreated,
-      { policyId: policy.id, name: policy.name, type: policy.type },
-      { organizationId, actorId, aggregateType: 'policy', aggregateId: policy.id },
-    );
+    await this.eventBus.emit(DomainEventName.PolicyCreated, policyCreatedAudit(policy), {
+      organizationId,
+      actorId,
+      aggregateType: 'policy',
+      aggregateId: policy.id,
+    });
     return policy;
   }
 
@@ -72,9 +77,12 @@ export class PolicyService {
     if (query.search) {
       where.name = { contains: query.search, mode: 'insensitive' };
     }
-    const pagination = toPrismaPagination(query, SORTABLE);
-    const { items, total } = await this.repository.findManyAndCount(where, pagination);
-    return new Paginated(items, buildPaginationMeta(total, query.page, query.limit));
+    const pagination = toPrismaPagination(query);
+    const { items, total } = await this.repository.findManyAndCount(
+      { ...where, ...cursorWhere(query.cursor) },
+      pagination,
+    );
+    return paginatePage(items, total, query);
   }
 
   async getOrThrow(organizationId: string, id: string): Promise<Policy> {
@@ -86,7 +94,7 @@ export class PolicyService {
   }
 
   async update(organizationId: string, actorId: string, id: string, input: UpdatePolicyInput) {
-    await this.getOrThrow(organizationId, id);
+    const existing = await this.getOrThrow(organizationId, id);
     const data: Prisma.PolicyUpdateInput = {
       name: input.name,
       description: input.description,
@@ -111,18 +119,18 @@ export class PolicyService {
     const policy = await this.repository.update(id, data);
     await this.eventBus.emit(
       DomainEventName.PolicyUpdated,
-      { policyId: id },
+      policyUpdatedAudit(policy, existing),
       { organizationId, actorId, aggregateType: 'policy', aggregateId: id },
     );
     return policy;
   }
 
   async remove(organizationId: string, actorId: string, id: string) {
-    await this.getOrThrow(organizationId, id);
+    const existing = await this.getOrThrow(organizationId, id);
     await this.repository.softDelete(id);
     await this.eventBus.emit(
       DomainEventName.PolicyDeleted,
-      { policyId: id },
+      policyDeletedAudit(existing),
       { organizationId, actorId, aggregateType: 'policy', aggregateId: id },
     );
     return { id, deleted: true };

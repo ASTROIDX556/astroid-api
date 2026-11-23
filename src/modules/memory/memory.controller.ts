@@ -6,7 +6,7 @@ import { createMemorySchema, CreateMemoryInput } from './memory.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
-import { PaginationQuery, paginationQuerySchema } from '../../common/helpers/pagination';
+import { PaginationQuery, paginationQuerySchema } from '../../common/pagination';
 
 @ApiTags('memory')
 @Controller('memory')

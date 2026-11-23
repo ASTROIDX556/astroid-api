@@ -11,6 +11,7 @@ export enum ErrorCode {
   BAD_REQUEST = 'BAD_REQUEST',
   RATE_LIMITED = 'RATE_LIMITED',
   NOT_IMPLEMENTED = 'NOT_IMPLEMENTED',
+  INVALID_CURSOR = 'INVALID_CURSOR',
 
   // Auth / authz
   UNAUTHORIZED = 'UNAUTHORIZED',
@@ -48,6 +49,7 @@ export const ERROR_STATUS: Record<ErrorCode, number> = {
   [ErrorCode.BAD_REQUEST]: 400,
   [ErrorCode.RATE_LIMITED]: 429,
   [ErrorCode.NOT_IMPLEMENTED]: 501,
+  [ErrorCode.INVALID_CURSOR]: 400,
   [ErrorCode.UNAUTHORIZED]: 401,
   [ErrorCode.FORBIDDEN]: 403,
   [ErrorCode.INVALID_CREDENTIALS]: 401,

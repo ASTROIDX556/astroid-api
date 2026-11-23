@@ -1,5 +1,7 @@
 import { z } from 'zod';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { WebhookDeliveryStatus } from '@prisma/client';
+import { paginationQuerySchema } from '../../common/pagination';
 
 export const createWebhookSchema = z
   .object({
@@ -18,6 +20,13 @@ export const updateWebhookSchema = z
   })
   .strict();
 export type UpdateWebhookInput = z.infer<typeof updateWebhookSchema>;
+
+/** Delivery log filters (#550). `status=FAILED_PERMANENTLY` lists the DLQ. */
+export const listDeliveriesSchema = paginationQuerySchema.extend({
+  webhookId: z.string().min(1).max(64).optional(),
+  status: z.nativeEnum(WebhookDeliveryStatus).optional(),
+});
+export type ListDeliveriesQuery = z.infer<typeof listDeliveriesSchema>;
 
 // ── Swagger DTOs ──
 

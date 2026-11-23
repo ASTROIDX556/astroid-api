@@ -1,36 +1,41 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { Queues } from '../../../queues/queues.constants';
 import { WebhookJobData } from '../types/webhook-job.types';
+import { WebhookRetryPolicy } from '../webhook-retry.policy';
+import {
+  WEBHOOK_BACKOFF_TYPE,
+  loadWebhookRetrySettings,
+} from '../../../config/webhook.config';
 
 /**
- * Service for queuing webhook delivery jobs with BullMQ.
- * Handles retry logic and dead-letter queueing through the queue configuration.
+ * Queues webhook delivery jobs. The job carries the queue's retry policy
+ * (maximum attempts + the named custom backoff schedule the worker registers),
+ * while the delivery record in Postgres remains the authoritative attempt log.
  */
 @Injectable()
 export class WebhookDeliveryService {
   private readonly logger = new Logger(WebhookDeliveryService.name);
+  private readonly policy: WebhookRetryPolicy;
 
   constructor(
     @InjectQueue(Queues.Webhooks)
     private readonly webhookQueue: Queue<WebhookJobData>,
-  ) {}
+    @Optional() policy?: WebhookRetryPolicy,
+  ) {
+    this.policy = policy ?? new WebhookRetryPolicy(loadWebhookRetrySettings());
+  }
 
   /**
-   * Queues a webhook delivery job with exponential backoff retry policy.
-   * The job will be processed by the webhook worker with automatic retries.
-   * Uses 2000ms base delay for exponential backoff: 2000ms, 4000ms, 8000ms, 16000ms.
-   * Maximum 5 attempts total.
+   * Queues a webhook delivery. Retries use the capped, jittered backoff
+   * schedule registered by the worker (default 30s → 30m, max 6 attempts).
    */
   async queueDelivery(data: WebhookJobData): Promise<void> {
     try {
       await this.webhookQueue.add('webhook-delivery', data, {
-        attempts: 5,
-        backoff: {
-          type: 'exponential',
-          delay: 2000,
-        },
+        attempts: this.policy.maxAttempts,
+        backoff: { type: WEBHOOK_BACKOFF_TYPE },
         removeOnComplete: { count: 1000 },
         removeOnFail: { age: 24 * 3600 },
       });

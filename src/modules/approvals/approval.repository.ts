@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { Approval, Prisma, Proposal } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
-import { PrismaPagination } from '../../common/helpers/pagination';
+import { PrismaPagination } from '../../common/pagination';
 
 /** Persistence for Proposal + Approval rows. */
 @Injectable()

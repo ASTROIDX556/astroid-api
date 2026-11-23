@@ -12,12 +12,14 @@ import {
 } from './policy.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
+import { RequireScopes } from '../../common/decorators/require-scopes.decorator';
+import { API_KEY_SCOPES } from '../../common/constants/api-key-scopes';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 import { AuthenticatedUser } from '../../common/interfaces/authenticated-user.interface';
 import {
   PaginationQuery,
   paginationQuerySchema,
-} from '../../common/helpers/pagination';
+} from '../../common/pagination';
 
 @ApiTags('policies')
 @Controller('policies')
@@ -35,6 +37,7 @@ export class PolicyController {
 
   @Post()
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.FINANCE)
+  @RequireScopes(API_KEY_SCOPES.PolicyWrite)
   @ApiOperation({ summary: 'Create a policy' })
   create(
     @CurrentUser() user: AuthenticatedUser,
@@ -60,6 +63,7 @@ export class PolicyController {
 
   @Patch(':id')
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.FINANCE)
+  @RequireScopes(API_KEY_SCOPES.PolicyWrite)
   @ApiOperation({ summary: 'Update a policy' })
   update(
     @CurrentUser() user: AuthenticatedUser,
@@ -71,6 +75,7 @@ export class PolicyController {
 
   @Delete(':id')
   @Roles(UserRole.OWNER, UserRole.ADMIN)
+  @RequireScopes(API_KEY_SCOPES.PolicyWrite)
   @ApiOperation({ summary: 'Delete (soft) a policy' })
   remove(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
     return this.policyService.remove(user.organizationId, user.id, id);

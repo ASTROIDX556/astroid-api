@@ -489,6 +489,8 @@ model AuditLog {
   newValue       Json?
   ipAddress      String?
   device         String?
+  // Correlates the audit entry with the HTTP request that caused it (#547).
+  requestId      String?
   createdAt      DateTime @default(now())
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
@@ -540,6 +542,9 @@ model ApiKey {
   prefix         String
   hashedKey      String    @unique
   permissions    String[]  @default([])
+  // Granted API-key scopes (#539). An empty array is the legacy "unrestricted"
+  // key created before scopes existed; see docs for the migration path.
+  scopes         String[]  @default([])
   allowedIps     String[]  @default([])
   lastUsedAt     DateTime?
   expiresAt      DateTime?
@@ -559,6 +564,9 @@ enum WebhookDeliveryStatus {
   RETRYING
   FAILED
   DELIVERED
+  // Terminal state for deliveries that exhausted retries or hit a
+  // non-retryable response (#550). Mirrored into the dead-letter queue.
+  FAILED_PERMANENTLY
 }
 
 // ---------------------------------------------------------------------------
@@ -593,7 +601,10 @@ model WebhookDelivery {
   status         WebhookDeliveryStatus  @default(PENDING)
   attempts       Int                    @default(0)
   lastError      String?
-  responseStatus Int?
+  lastStatusCode Int?
+  lastAttemptAt  DateTime?
+  nextAttemptAt  DateTime?
+  deadLetteredAt DateTime?
   createdAt      DateTime               @default(now())
   updatedAt      DateTime               @updatedAt
 
@@ -605,6 +616,7 @@ model WebhookDelivery {
   @@index([status])
   @@index([eventId])
   @@index([createdAt])
+  @@index([status, nextAttemptAt])
   @@map("webhook_deliveries")
 }
 

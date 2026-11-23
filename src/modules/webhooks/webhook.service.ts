@@ -1,17 +1,20 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { WebhookRepository } from './webhook.repository';
-import { CreateWebhookInput, UpdateWebhookInput } from './webhook.dto';
+import {
+  CreateWebhookInput,
+  ListDeliveriesQuery,
+  UpdateWebhookInput,
+} from './webhook.dto';
 import { NotFoundException } from '../../common/exceptions/domain.exception';
 import {
-  buildPaginationMeta,
+  cursorWhere,
+  paginatePage,
   PaginationQuery,
   toPrismaPagination,
-} from '../../common/helpers/pagination';
-import { Paginated } from '../../common/interfaces/api-response.interface';
+} from '../../common/pagination';
 import { generateToken } from '../../utils/crypto.util';
 
-const SORTABLE = ['createdAt', 'url'];
 
 /** Strips the signing secret from a webhook before returning it to a client. */
 function redact<T extends { secret?: string }>(webhook: T): Omit<T, 'secret'> {
@@ -46,9 +49,32 @@ export class WebhookService {
     if (query.search) {
       where.url = { contains: query.search, mode: 'insensitive' };
     }
-    const pagination = toPrismaPagination(query, SORTABLE);
-    const { items, total } = await this.repository.findManyAndCount(where, pagination);
-    return new Paginated(items, buildPaginationMeta(total, query.page, query.limit));
+    const pagination = toPrismaPagination(query);
+    const { items, total } = await this.repository.findManyAndCount(
+      { ...where, ...cursorWhere(query.cursor) },
+      pagination,
+    );
+    return paginatePage(items, total, query);
+  }
+
+  /**
+   * Lists delivery attempts for the organization. Filter by `webhookId` and/or
+   * `status`; `status=FAILED_PERMANENTLY` is the dead-letter view (#550).
+   */
+  async listDeliveries(organizationId: string, query: ListDeliveriesQuery) {
+    const where: Prisma.WebhookDeliveryWhereInput = { organizationId };
+    if (query.webhookId) {
+      where.webhookId = query.webhookId;
+    }
+    if (query.status) {
+      where.status = query.status;
+    }
+    const pagination = toPrismaPagination(query);
+    const { items, total } = await this.repository.findDeliveriesAndCount(
+      { ...where, ...cursorWhere(query.cursor) },
+      pagination,
+    );
+    return paginatePage(items, total, query);
   }
 
   async getOrThrow(organizationId: string, id: string) {

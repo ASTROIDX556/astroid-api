@@ -9,7 +9,7 @@ import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 import {
   PaginationQuery,
   paginationQuerySchema,
-} from '../../common/helpers/pagination';
+} from '../../common/pagination';
 import {
   ExportAuditLogsQuery,
   exportAuditLogsQuerySchema,

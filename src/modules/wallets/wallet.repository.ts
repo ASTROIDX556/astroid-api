@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma, Wallet } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
-import { PrismaPagination } from '../../common/helpers/pagination';
+import { PrismaPagination } from '../../common/pagination';
 
 /** Persistence for Wallet rows. Non-custodial: no secret is ever stored. */
 @Injectable()

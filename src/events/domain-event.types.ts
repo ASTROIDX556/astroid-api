@@ -12,6 +12,8 @@ export interface DomainEventEnvelope<TPayload = Record<string, unknown>> {
   aggregateId?: string;
   actorId?: string;
   correlationId?: string;
+  /** HTTP request that caused the event, when emitted inside a request. */
+  requestId?: string | null;
   payload: TPayload;
   occurredAt: Date;
 }

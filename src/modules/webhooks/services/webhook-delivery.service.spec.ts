@@ -33,11 +33,8 @@ describe('WebhookDeliveryService', () => {
       'webhook-delivery',
       jobData,
       {
-        attempts: 5,
-        backoff: {
-          type: 'exponential',
-          delay: 2000,
-        },
+        attempts: 6,
+        backoff: { type: 'astroid-webhook-backoff' },
         removeOnComplete: { count: 1000 },
         removeOnFail: { age: 24 * 3600 },
       },
@@ -86,23 +83,20 @@ describe('WebhookDeliveryService', () => {
     await expect(service.queueDelivery(jobData)).rejects.toThrow('Redis connection failed');
   });
 
-  it('configures exponential backoff with 2000ms base delay', async () => {
+  it('uses the worker-registered capped backoff schedule', async () => {
     const jobData = createJobData();
     await service.queueDelivery(jobData);
 
     const callArgs = vi.mocked(mockQueue.add).mock.calls[0];
-    expect(callArgs?.[2]?.backoff).toEqual({
-      type: 'exponential',
-      delay: 2000,
-    });
+    expect(callArgs?.[2]?.backoff).toEqual({ type: 'astroid-webhook-backoff' });
   });
 
-  it('configures 5 retry attempts', async () => {
+  it('configures the default 6 attempts', async () => {
     const jobData = createJobData();
     await service.queueDelivery(jobData);
 
     const callArgs = vi.mocked(mockQueue.add).mock.calls[0];
-    expect(callArgs?.[2]?.attempts).toBe(5);
+    expect(callArgs?.[2]?.attempts).toBe(6);
   });
 
   it('configures job removal after 1000 completed jobs', async () => {

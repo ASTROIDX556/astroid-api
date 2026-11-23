@@ -27,16 +27,15 @@ import {
   NotFoundException,
 } from '../../common/exceptions/domain.exception';
 import {
-  buildPaginationMeta,
+  cursorWhere,
+  paginatePage,
   PaginationQuery,
   toPrismaPagination,
-} from '../../common/helpers/pagination';
-import { Paginated } from '../../common/interfaces/api-response.interface';
+} from '../../common/pagination';
 import { EventBusService } from '../../events/event-bus.service';
 import { DomainEventName } from '../../events/event-names';
 import { PrismaService } from '../../database/prisma.service';
 
-const SORTABLE = ['createdAt', 'amount', 'status', 'riskScore'];
 const Decimal = Prisma.Decimal;
 
 /**
@@ -246,9 +245,12 @@ export class TransactionService {
     if (query.filter) {
       where.status = query.filter as TransactionStatus;
     }
-    const pagination = toPrismaPagination(query, SORTABLE);
-    const { items, total } = await this.repository.findManyAndCount(where, pagination);
-    return new Paginated(items, buildPaginationMeta(total, query.page, query.limit));
+    const pagination = toPrismaPagination(query);
+    const { items, total } = await this.repository.findManyAndCount(
+      { ...where, ...cursorWhere(query.cursor) },
+      pagination,
+    );
+    return paginatePage(items, total, query);
   }
 
   async getOrThrow(organizationId: string, id: string): Promise<Transaction> {

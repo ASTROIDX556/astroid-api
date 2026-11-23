@@ -23,6 +23,7 @@ import {
 } from '@prisma/client';
 import { Keypair } from '@stellar/stellar-sdk';
 import * as argon2 from 'argon2';
+import { createHash } from 'crypto';
 
 const prisma = new PrismaClient();
 
@@ -222,6 +223,28 @@ async function main(): Promise<void> {
     });
   }
 
+  // --- Scoped API key (read-only integration) -------------------------------
+  // Demonstrates the scope model: this key can read wallets and transactions
+  // but is rejected by every write route.
+  const demoApiKey = 'ak_test_seeded_readonly_integration_key';
+  const demoApiKeyHash = createHash('sha256').update(demoApiKey).digest('hex');
+  const existingApiKey = await prisma.apiKey.findUnique({
+    where: { hashedKey: demoApiKeyHash },
+  });
+  if (!existingApiKey) {
+    await prisma.apiKey.create({
+      data: {
+        organizationId: org.id,
+        createdById: owner.id,
+        name: 'Seeded read-only integration',
+        prefix: demoApiKey.slice(0, 14),
+        hashedKey: demoApiKeyHash,
+        permissions: [],
+        scopes: ['wallet:read', 'transaction:read'],
+      },
+    });
+  }
+
   // --- Summary --------------------------------------------------------------
   // eslint-disable-next-line no-console
   console.log('Seed complete:');
@@ -229,6 +252,8 @@ async function main(): Promise<void> {
   console.log(`  organization : ${org.name} (${org.slug})`);
   // eslint-disable-next-line no-console
   console.log(`  owner login  : ${owner.email} / ${DEMO_PASSWORD}`);
+  // eslint-disable-next-line no-console
+  console.log(`  readonly key : ${demoApiKey} (scopes: wallet:read, transaction:read)`);
   if (generatedSecrets.length > 0) {
     // eslint-disable-next-line no-console
     console.log('  wallet secrets (shown once — fund on testnet, never stored):');

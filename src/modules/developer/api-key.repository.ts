@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { ApiKey, Prisma } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
-import { PrismaPagination } from '../../common/helpers/pagination';
+import { PrismaPagination } from '../../common/pagination';
 
 /**
  * Persistence for ApiKey rows. Only the SHA-256 `hashedKey` is ever stored — the
@@ -28,6 +28,7 @@ export class ApiKeyRepository {
           name: true,
           prefix: true,
           permissions: true,
+          scopes: true,
           allowedIps: true,
           lastUsedAt: true,
           expiresAt: true,
@@ -47,6 +48,10 @@ export class ApiKeyRepository {
   /** Resolves a presented key by its hash (used for API-key authentication). */
   findByHash(hashedKey: string): Promise<ApiKey | null> {
     return this.prisma.apiKey.findUnique({ where: { hashedKey } });
+  }
+
+  update(id: string, data: Prisma.ApiKeyUpdateInput): Promise<ApiKey> {
+    return this.prisma.apiKey.update({ where: { id }, data });
   }
 
   revoke(id: string): Promise<ApiKey> {

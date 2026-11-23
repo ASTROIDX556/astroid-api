@@ -9,6 +9,22 @@ export interface AuthenticatedUser {
   sessionId?: string;
 }
 
+/**
+ * The principal attached to the request when it is authenticated with an API
+ * key. Scope checks read only from this object; the guard never re-parses the
+ * presented credential.
+ */
+export interface AuthenticatedApiKey {
+  id: string;
+  organizationId: string;
+  name: string;
+  prefix: string;
+  scopes: string[];
+  permissions: string[];
+  revokedAt?: Date | null;
+  expiresAt?: Date | null;
+}
+
 /** Shape of the JWT access-token payload. */
 export interface JwtAccessPayload {
   sub: string;

@@ -5,7 +5,7 @@ import { markReadSchema, MarkReadInput } from './notification.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 import { AuthenticatedUser } from '../../common/interfaces/authenticated-user.interface';
-import { PaginationQuery, paginationQuerySchema } from '../../common/helpers/pagination';
+import { PaginationQuery, paginationQuerySchema } from '../../common/pagination';
 
 @ApiTags('notifications')
 @Controller('notifications')

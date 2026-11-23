@@ -8,15 +8,19 @@ import {
   NotFoundException,
 } from '../../common/exceptions/domain.exception';
 import {
-  buildPaginationMeta,
+  cursorWhere,
+  paginatePage,
   PaginationQuery,
   toPrismaPagination,
-} from '../../common/helpers/pagination';
-import { Paginated } from '../../common/interfaces/api-response.interface';
+} from '../../common/pagination';
 import { EventBusService } from '../../events/event-bus.service';
 import { DomainEventName } from '../../events/event-names';
+import {
+  budgetCreatedAudit,
+  budgetDeletedAudit,
+  budgetUpdatedAudit,
+} from './events/budget-audit.events';
 
-const SORTABLE = ['createdAt', 'name', 'limitAmount', 'spent', 'period'];
 const Decimal = Prisma.Decimal;
 
 /** Remaining = limit − spent, never negative. */
@@ -53,11 +57,12 @@ export class BudgetService {
       rollover: input.rollover,
       enabled: input.enabled,
     });
-    await this.eventBus.emit(
-      DomainEventName.BudgetCreated,
-      { budgetId: budget.id, name: budget.name, limitAmount: input.limitAmount },
-      { organizationId, actorId, aggregateType: 'budget', aggregateId: budget.id },
-    );
+    await this.eventBus.emit(DomainEventName.BudgetCreated, budgetCreatedAudit(budget), {
+      organizationId,
+      actorId,
+      aggregateType: 'budget',
+      aggregateId: budget.id,
+    });
     return budget;
   }
 
@@ -66,9 +71,12 @@ export class BudgetService {
     if (query.search) {
       where.name = { contains: query.search, mode: 'insensitive' };
     }
-    const pagination = toPrismaPagination(query, SORTABLE);
-    const { items, total } = await this.repository.findManyAndCount(where, pagination);
-    return new Paginated(items, buildPaginationMeta(total, query.page, query.limit));
+    const pagination = toPrismaPagination(query);
+    const { items, total } = await this.repository.findManyAndCount(
+      { ...where, ...cursorWhere(query.cursor) },
+      pagination,
+    );
+    return paginatePage(items, total, query);
   }
 
   async getOrThrow(organizationId: string, id: string): Promise<Budget> {
@@ -91,7 +99,7 @@ export class BudgetService {
   }
 
   async update(organizationId: string, actorId: string, id: string, input: UpdateBudgetInput) {
-    await this.getOrThrow(organizationId, id);
+    const existing = await this.getOrThrow(organizationId, id);
     const data: Prisma.BudgetUpdateInput = {
       name: input.name,
       period: input.period,
@@ -104,7 +112,7 @@ export class BudgetService {
     const budget = await this.repository.update(id, data);
     await this.eventBus.emit(
       DomainEventName.BudgetUpdated,
-      { budgetId: id },
+      budgetUpdatedAudit(budget, existing),
       { organizationId, actorId, aggregateType: 'budget', aggregateId: id },
     );
     return budget;
@@ -189,17 +197,18 @@ export class BudgetService {
   }
 
   async remove(organizationId: string, actorId: string, id: string) {
-    await this.getOrThrow(organizationId, id);
+    const existing = await this.getOrThrow(organizationId, id);
     const children = await this.repository.findChildren(id);
     if (children.length > 0) {
       throw new ConflictException('Cannot delete a budget that has child budgets');
     }
     await this.repository.softDelete(id);
-    await this.eventBus.emit(
-      DomainEventName.BudgetUpdated,
-      { budgetId: id, deleted: true },
-      { organizationId, actorId, aggregateType: 'budget', aggregateId: id },
-    );
+    await this.eventBus.emit(DomainEventName.BudgetDeleted, budgetDeletedAudit(existing), {
+      organizationId,
+      actorId,
+      aggregateType: 'budget',
+      aggregateId: id,
+    });
     return { id, deleted: true };
   }
 }
