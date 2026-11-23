@@ -42,10 +42,38 @@ function sha256(value: string): string {
 }
 
 /**
+ * Maximum number of proposals a single sweep transitions. A bounded batch
+ * keeps one tick from holding a database transaction open for too long; the
+ * next tick picks up whatever is left.
+ */
+export const APPROVAL_EXPIRY_BATCH_SIZE = 500;
+
+export interface ApprovalExpiryResult {
+  /** Proposals this sweep actually moved to `EXPIRED`. */
+  expired: number;
+  /** Ids of the proposals that were transitioned (and emitted an event). */
+  proposalIds: string[];
+}
+
+/**
  * Human-in-the-loop approval workflow for transactions that the pipeline flagged
  * as requiring sign-off. Collects approvals against a Proposal; once the
  * `requiredApprovals` threshold is met the underlying transaction is executed.
  * A single rejection rejects the whole proposal.
+ *
+ * Proposals can carry an `expiresAt`. Two mechanisms act on it:
+ *  - {@link expireStale} is the janitor: a scheduled sweep moves expired
+ *    pending proposals to the terminal `EXPIRED` state and emits
+ *    `proposal.expired` for each transition.
+ *  - {@link decide} is the guard: it refuses to act on an expired proposal
+ *    (HTTP 409) even if the sweep has not run yet, and every terminal
+ *    transition is a conditional `PENDING -> …` update so a decision racing
+ *    the sweep can never leave a proposal both approved and expired.
+ *
+ * Expiry is always evaluated against the application clock (`new Date()` at
+ * the call site), consistently in both the guard and the sweep, so clock skew
+ * between app replicas can only ever delay or duplicate a sweep — the
+ * conditional update resolves the outcome.
  */
 @Injectable()
 export class ApprovalService {
@@ -199,7 +227,8 @@ export class ApprovalService {
       comment: input.comment,
     });
 
-    // A single rejection rejects the whole proposal.
+    // A single rejection rejects the whole proposal. The conditional update
+    // loses harmlessly if the sweeper expired the proposal in the meantime.
     if (input.decision === ApprovalDecision.REJECTED) {
       await this.transition(proposal, ProposalStatus.REJECTED, organizationId, actorId);
       await this.transactions.cancel(organizationId, actorId, proposal.transactionId);
@@ -224,6 +253,77 @@ export class ApprovalService {
     );
 
     return this.getOrThrow(organizationId, proposalId);
+  }
+
+  /**
+   * Moves every pending proposal whose `expiresAt` is at or before `now` to
+   * `EXPIRED`, emitting `proposal.expired` once per transition.
+   *
+   * The candidate read is only a hint: each write is a conditional
+   * `updateMany(status = 'PENDING')`, so a proposal decided concurrently is
+   * skipped (and emits nothing) instead of being overwritten. The returned
+   * count is the number of rows this sweep actually changed.
+   *
+   * Called by the repeatable approval-expiry worker; also safe to invoke
+   * directly (e.g. from a test or an admin command).
+   */
+  async expireStale(now: Date = new Date()): Promise<ApprovalExpiryResult> {
+    const candidates = await this.repository.findExpiring(now, APPROVAL_EXPIRY_BATCH_SIZE);
+    const proposalIds: string[] = [];
+
+    for (const proposal of candidates) {
+      const changed = await this.repository.expireIfPending(proposal.id);
+      if (changed === 0) {
+        // A reviewer decided (or a previous sweep expired) it in the meantime.
+        continue;
+      }
+
+      proposalIds.push(proposal.id);
+
+      if (this.budgets && proposal.transaction?.budgetId) {
+        try {
+          await this.budgets.releaseBudget(
+            proposal.organizationId,
+            proposal.transaction.budgetId,
+            Number(proposal.transaction.amount),
+          );
+        } catch (error) {
+          this.logger.warn(
+            `Could not release budget for expired proposal ${proposal.id}: ${(error as Error).message}`,
+          );
+        }
+      }
+
+      if (proposal.transactionId) {
+        try {
+          await this.transactions.cancel(
+            proposal.organizationId,
+            'system:approval-sweep',
+            proposal.transactionId,
+          );
+        } catch {
+          // The transaction may already be terminal; expiry still succeeds.
+        }
+      }
+
+      await this.eventBus.emit(
+        DomainEventName.ProposalExpired,
+        { proposalId: proposal.id, transactionId: proposal.transactionId },
+        {
+          organizationId: proposal.organizationId,
+          aggregateType: 'proposal',
+          aggregateId: proposal.id,
+        },
+      );
+    }
+
+    if (proposalIds.length > 0) {
+      this.logger.log(
+        `Expired ${proposalIds.length} pending approval proposal(s) past their expiresAt`,
+      );
+    }
+
+    return { expired: proposalIds.length, proposalIds };
   }
 
   /**
