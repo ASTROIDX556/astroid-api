@@ -12,7 +12,6 @@ import {
 import {
   ApiOperation,
   ApiTags,
-  ApiBearerAuth,
   ApiParam,
   ApiBody,
   ApiQuery,
@@ -43,10 +42,12 @@ import { PaginationQuery, paginationQuerySchema } from '../../common/helpers/pag
 import { ApiPaginationQuery } from '../../common/decorators/api-pagination-query.decorator';
 import { ApiEnvelope, ApiPaginatedEnvelope } from '../../common/decorators/api-envelope.decorator';
 import { ApiErrorResponses } from '../../common/decorators/api-error-responses.decorator';
+import { ApiAuthenticated } from '../../common/decorators/api-authenticated.decorator';
 
 @ApiTags('budgets')
-@ApiBearerAuth('access-token')
+@ApiAuthenticated()
 @Controller('budgets')
+@ApiErrorResponses({ unauthorized: true, forbidden: true, tooManyRequests: true, serverError: true })
 export class BudgetController {
   constructor(private readonly budgetService: BudgetService) {}
 

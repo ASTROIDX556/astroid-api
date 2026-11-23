@@ -2,17 +2,18 @@ import { Controller, Get } from '@nestjs/common';
 import {
   ApiOperation,
   ApiTags,
-  ApiBearerAuth,
 } from '@nestjs/swagger';
 import { ApiErrorResponses } from '../../common/decorators/api-error-responses.decorator';
 import { ApiEnvelope } from '../../common/decorators/api-envelope.decorator';
 import { AnalyticsService } from './analytics.service';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { AnalyticsOverviewDto, AgentSpendDto } from './analytics.dto';
+import { ApiAuthenticated } from '../../common/decorators/api-authenticated.decorator';
 
 @ApiTags('analytics')
-@ApiBearerAuth('access-token')
+@ApiAuthenticated()
 @Controller('analytics')
+@ApiErrorResponses({ unauthorized: true, forbidden: true, tooManyRequests: true, serverError: true })
 export class AnalyticsController {
   constructor(private readonly analyticsService: AnalyticsService) {}
 

@@ -693,6 +693,173 @@ function isNamedOrTypedSchema(document: OpenAPIObject, schema: unknown): boolean
 }
 
 /**
+ * Authenticated operations that do not offer every scheme the authentication
+ * guard really accepts. `JwtAuthGuard` runs the `jwt` and `api-key` strategies,
+ * so a protected route is reachable with either credential and the document
+ * must list both as alternatives.
+ */
+export function findOperationsMissingSecuritySchemes(
+  routes: RegisteredRoute[],
+  document: OpenAPIObject,
+  requiredSchemes: ReadonlyArray<string>,
+  handlers: ReadonlyMap<string, string> = new Map(),
+): string[] {
+  const authenticated = new Set(routes.filter((route) => !route.isPublic).map(routeKey));
+  const findings: string[] = [];
+
+  for (const { method, path, operation } of listDocumentedOperations(document)) {
+    if (!authenticated.has(`${method} ${path}`)) continue;
+    const requirements = operation.security ?? document.security ?? [];
+    const offered = new Set(requirements.flatMap((requirement) => Object.keys(requirement)));
+    for (const scheme of requiredSchemes) {
+      if (!offered.has(scheme)) {
+        findings.push(
+          describeFinding(
+            { method, path },
+            handlers,
+            `accepts '${scheme}' but does not declare it as a security alternative`,
+          ),
+        );
+      }
+    }
+  }
+  return sorted(findings);
+}
+
+/**
+ * Error responses whose body is spelled out inline instead of referencing a
+ * shared component schema. Inline copies drift apart; the problem-details body
+ * is identical for every failure and must be declared once.
+ */
+export function findInlineErrorSchemas(
+  document: OpenAPIObject,
+  handlers: ReadonlyMap<string, string> = new Map(),
+  exclusions: ReadonlyArray<string> = [],
+): string[] {
+  const schemas = document.components?.schemas ?? {};
+  const excluded = new Set(exclusions);
+  const findings: string[] = [];
+
+  for (const { method, path, operation } of listDocumentedOperations(document)) {
+    if (excluded.has(`${method} ${path}`) || excluded.has(path)) continue;
+    for (const [status, response] of Object.entries(operation.responses ?? {})) {
+      if (!/^[45]/.test(status)) continue;
+      const resolved = resolveResponse(document, response);
+      const content = resolved?.content ?? {};
+      for (const [mediaType, media] of Object.entries(content)) {
+        const ref = (media?.schema as { $ref?: string } | undefined)?.$ref;
+        const named = typeof ref === 'string' && ref.split('/').pop()! in schemas;
+        if (!named) {
+          findings.push(
+            describeFinding(
+              { method, path },
+              handlers,
+              `(${status} ${mediaType}) declares an inline error body instead of a shared component schema`,
+            ),
+          );
+        }
+      }
+    }
+  }
+  return sorted(findings);
+}
+
+/** The error statuses every documented operation of a given kind must declare. */
+export interface StandardErrorExpectations {
+  /** Statuses required on every documented operation. */
+  always: ReadonlyArray<number>;
+  /** Statuses required on operations of authenticated routes. */
+  authenticated: ReadonlyArray<number>;
+  /** Statuses required on operations that accept a request body. */
+  withBody: ReadonlyArray<number>;
+  /**
+   * Statuses required on operations whose path ends in a parameter, which
+   * addresses one stored resource. A literal sub-path under a parameter
+   * (`/audit/resources/{id}/timeline`) is a scoped collection or action and can
+   * legitimately answer an empty result instead of 404.
+   */
+  withTrailingPathParam: ReadonlyArray<number>;
+  /** Route keys or paths exempt from the check (probes, for example). */
+  exclusions?: ReadonlyArray<string>;
+}
+
+/**
+ * Operations missing one of the standard error responses their route can really
+ * answer with: authentication and permission failures, the global rate limit,
+ * validation of a request body, a missing addressed resource, and the catch-all
+ * server error.
+ */
+export function findOperationsMissingStandardErrors(
+  routes: RegisteredRoute[],
+  document: OpenAPIObject,
+  expectations: StandardErrorExpectations,
+  handlers: ReadonlyMap<string, string> = new Map(),
+): string[] {
+  const byKey = new Map(routes.map((route) => [routeKey(route), route]));
+  const excluded = new Set(expectations.exclusions ?? []);
+  const findings: string[] = [];
+
+  for (const { method, path, operation } of listDocumentedOperations(document)) {
+    const key = `${method} ${path}`;
+    if (excluded.has(key) || excluded.has(path)) continue;
+    const route = byKey.get(key);
+    if (!route) continue;
+
+    const required = new Set<number>(expectations.always);
+    if (!route.isPublic) expectations.authenticated.forEach((status) => required.add(status));
+    if (route.acceptsBody) expectations.withBody.forEach((status) => required.add(status));
+    if (/\/\{[^}]+\}$/.test(path)) {
+      expectations.withTrailingPathParam.forEach((status) => required.add(status));
+    }
+
+    const documented = new Set(Object.keys(operation.responses ?? {}));
+    for (const status of [...required].sort((a, b) => a - b)) {
+      if (!documented.has(String(status))) {
+        findings.push(
+          describeFinding({ method, path }, handlers, `does not document the ${status} error response`),
+        );
+      }
+    }
+  }
+  return sorted(findings);
+}
+
+/**
+ * Component schemas that re-declare the `{ success, data, meta, requestId }`
+ * envelope instead of composing `ApiEnvelopeDto`. Exactly one component may own
+ * that shape.
+ */
+export function findDuplicateEnvelopeComponents(
+  document: OpenAPIObject,
+  envelopeComponent = 'ApiEnvelopeDto',
+): string[] {
+  const findings: string[] = [];
+  for (const [name, schema] of Object.entries(document.components?.schemas ?? {})) {
+    if (name === envelopeComponent) continue;
+    const properties = (schema as { properties?: Record<string, unknown> }).properties;
+    if (!properties) continue;
+    if (['success', 'data', 'meta', 'requestId'].every((field) => field in properties)) {
+      findings.push(
+        `components.schemas.${name} re-declares the response envelope; compose ${envelopeComponent} instead`,
+      );
+    }
+  }
+  return sorted(findings);
+}
+
+function resolveResponse(
+  document: OpenAPIObject,
+  response: unknown,
+): { content?: Record<string, { schema?: unknown }> } | undefined {
+  if (!response || typeof response !== 'object') return undefined;
+  const ref = (response as { $ref?: unknown }).$ref;
+  if (typeof ref === 'string') {
+    return resolvePointer(document, ref) as { content?: Record<string, { schema?: unknown }> } | undefined;
+  }
+  return response as { content?: Record<string, { schema?: unknown }> };
+}
+
+/**
  * `$ref`s that point at a schema the document does not define, each named with
  * where it appears (`GET /path` or `components.schemas.Name`).
  */
