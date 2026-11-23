@@ -6,13 +6,13 @@ import { ApprovalService, ApprovalExpiryResult } from './approval.service';
 import { APPROVAL_EXPIRY_JOB_NAME } from './approval-expiry.scheduler';
 
 /**
- * Consumes the `approvals` queue.
+ * Consumes the `approval-sweep` queue.
  *
  * The worker only invokes {@link ApprovalService.expireStale} — the sweep logic
  * (conditional transition, events, logging) lives in the service. Unknown job
  * names are ignored so the same queue can host future approval jobs.
  */
-@Processor(Queues.Approvals)
+@Processor(Queues.ApprovalSweep)
 export class ApprovalExpiryWorker extends WorkerHost implements OnModuleDestroy {
   private readonly logger = new Logger(ApprovalExpiryWorker.name);
 
@@ -28,7 +28,7 @@ export class ApprovalExpiryWorker extends WorkerHost implements OnModuleDestroy 
 
   async process(job: Job): Promise<ApprovalExpiryResult | null> {
     if (job.name !== APPROVAL_EXPIRY_JOB_NAME) {
-      this.logger.warn(`Ignoring unknown job '${job.name}' on the approvals queue`);
+      this.logger.warn(`Ignoring unknown job '${job.name}' on the approval-sweep queue`);
       return null;
     }
 

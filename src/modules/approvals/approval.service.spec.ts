@@ -218,7 +218,7 @@ describe('ApprovalService lifecycle guards', () => {
 
     await expect(
       service.decide('org-1', 'reviewer-1', stale.id, { decision: ApprovalDecision.APPROVED }),
-    ).rejects.toMatchObject({ code: ErrorCode.PROPOSAL_EXPIRED, status: 410 });
+    ).rejects.toMatchObject({ code: ErrorCode.PROPOSAL_EXPIRED, status: 409 });
     expect(repository.createApproval).not.toHaveBeenCalled();
     expect(repository.transitionStatus).toHaveBeenCalledWith(
       stale.id,
@@ -360,11 +360,11 @@ describe('ApprovalService lifecycle guards', () => {
 
       await expect(
         service.decide('org-1', 'user-1', alreadyExpired.id, { decision: ApprovalDecision.APPROVED }),
-      ).rejects.toMatchObject({ code: ErrorCode.PROPOSAL_EXPIRED, status: 410 });
+      ).rejects.toMatchObject({ code: ErrorCode.PROPOSAL_EXPIRED, status: 409 });
 
       await expect(
         service.decide('org-1', 'user-1', alreadyExpired.id, { decision: ApprovalDecision.REJECTED }),
-      ).rejects.toMatchObject({ code: ErrorCode.PROPOSAL_EXPIRED, status: 410 });
+      ).rejects.toMatchObject({ code: ErrorCode.PROPOSAL_EXPIRED, status: 409 });
 
       expect(repository.createApproval).not.toHaveBeenCalled();
     });

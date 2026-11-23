@@ -66,6 +66,17 @@ class FakeApprovalRepository {
     return 1;
   });
 
+  transitionStatus = vi.fn(
+    async (id: string, from: ProposalStatus, to: ProposalStatus) => {
+      const row = this.rows.find((entry) => entry.id === id);
+      if (!row || row.status !== from) {
+        return false;
+      }
+      row.status = to;
+      return true;
+    },
+  );
+
   findById = vi.fn(async (_organizationId: string, id: string) => {
     return this.rows.find((row) => row.id === id) ?? null;
   });
@@ -213,7 +224,7 @@ describe('ApprovalService expiry', () => {
 
     it('does not emit a second expiry event when the sweeper already expired it', async () => {
       repository.rows = [makeProposal()];
-      repository.expireIfPending.mockResolvedValueOnce(0);
+      repository.transitionStatus.mockResolvedValueOnce(false);
 
       await expect(
         service.decide('org_1', 'user_1', 'proposal_1', { decision: ApprovalDecision.REJECTED }),
@@ -226,14 +237,14 @@ describe('ApprovalService expiry', () => {
   describe('decide racing the sweeper', () => {
     it('refuses to approve when the sweeper won the PENDING -> EXPIRED race', async () => {
       repository.rows = [makeProposal({ expiresAt: null })];
-      repository.transitionFromPending.mockResolvedValueOnce(0);
+      repository.transitionStatus.mockResolvedValueOnce(false);
 
       const error = await service
         .decide('org_1', 'user_1', 'proposal_1', { decision: ApprovalDecision.APPROVED })
         .catch((caught: unknown) => caught);
 
       expect(error).toBeInstanceOf(DomainException);
-      expect((error as DomainException).code).toBe(ErrorCode.PROPOSAL_NOT_PENDING);
+      expect((error as DomainException).code).toBe(ErrorCode.INVALID_PROPOSAL_TRANSITION);
       expect((error as DomainException).getStatus()).toBe(409);
       expect(transactions.execute).not.toHaveBeenCalled();
       expect(eventBus.emit).not.toHaveBeenCalledWith(
@@ -252,8 +263,9 @@ describe('ApprovalService expiry', () => {
         decision: ApprovalDecision.APPROVED,
       });
 
-      expect(repository.transitionFromPending).toHaveBeenCalledWith(
+      expect(repository.transitionStatus).toHaveBeenCalledWith(
         'proposal_1',
+        ProposalStatus.PENDING,
         ProposalStatus.APPROVED,
       );
       expect(transactions.execute).toHaveBeenCalledWith('org_1', 'tx_1', 'user_1');
@@ -267,11 +279,11 @@ describe('ApprovalService expiry', () => {
 
     it('does not cancel a transaction for a rejection that lost the race', async () => {
       repository.rows = [makeProposal({ expiresAt: null })];
-      repository.transitionFromPending.mockResolvedValueOnce(0);
+      repository.transitionStatus.mockResolvedValueOnce(false);
 
       await expect(
         service.decide('org_1', 'user_1', 'proposal_1', { decision: ApprovalDecision.REJECTED }),
-      ).rejects.toMatchObject({ code: ErrorCode.PROPOSAL_NOT_PENDING });
+      ).rejects.toMatchObject({ code: ErrorCode.INVALID_PROPOSAL_TRANSITION });
 
       expect(transactions.cancel).not.toHaveBeenCalled();
     });

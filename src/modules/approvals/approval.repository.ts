@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { Approval, Prisma, ProposalStatus } from '@prisma/client';
+import { Approval, Prisma, Proposal, ProposalStatus, Transaction } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { PrismaPagination } from '../../common/helpers/pagination';
 
@@ -72,11 +72,15 @@ export class ApprovalRepository {
    * Pending proposals whose `expiresAt` has already passed, oldest first.
    * Used by the sweeper that moves stale approvals to their terminal state.
    */
-  findExpiring(now: Date, limit: number): Promise<Proposal[]> {
+  findExpiring(
+    now: Date,
+    limit: number,
+  ): Promise<Array<Proposal & { transaction: Transaction | null }>> {
     return this.prisma.proposal.findMany({
       where: { status: ProposalStatus.PENDING, expiresAt: { lte: now } },
       orderBy: { expiresAt: 'asc' },
       take: limit,
+      include: { transaction: true },
     });
   }
 

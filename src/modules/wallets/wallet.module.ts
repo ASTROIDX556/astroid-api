@@ -14,7 +14,12 @@ import { WalletBalanceInvalidationListener } from './wallet-balance-invalidation
  */
 @Module({
   controllers: [WalletController],
-  providers: [WalletService, WalletRepository, BalanceCacheService],
+  providers: [
+    WalletService,
+    WalletRepository,
+    BalanceCacheService,
+    WalletBalanceInvalidationListener,
+  ],
   exports: [WalletService, WalletRepository, BalanceCacheService],
 })
 export class WalletModule {}

@@ -30,7 +30,7 @@ export const APPROVAL_EXPIRY_INTERVAL_MS = 5 * 60 * 1000;
 export class ApprovalExpiryScheduler implements OnModuleInit {
   private readonly logger = new Logger(ApprovalExpiryScheduler.name);
 
-  constructor(@InjectQueue(Queues.Approvals) private readonly queue: Queue) {}
+  constructor(@InjectQueue(Queues.ApprovalSweep) private readonly queue: Queue) {}
 
   /**
    * Fire-and-forget registration: `queue.add` opens a Redis connection, and
@@ -54,7 +54,7 @@ export class ApprovalExpiryScheduler implements OnModuleInit {
       this.logger.log(
         `Registered repeatable '${APPROVAL_EXPIRY_JOB_NAME}' job every ${
           APPROVAL_EXPIRY_INTERVAL_MS / 60_000
-        } minute(s) on the '${Queues.Approvals}' queue`,
+        } minute(s) on the '${Queues.ApprovalSweep}' queue`,
       );
     } catch (error) {
       this.logger.error(

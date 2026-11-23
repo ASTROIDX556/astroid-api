@@ -407,6 +407,7 @@ export const environmentSchema = z
     ...appEnvSchema.shape,
     ...databaseEnvSchema.shape,
     ...redisEnvSchema.shape,
+    ...balanceCacheEnvSchema.shape,
     ...authEnvSchema.shape,
     ...stellarEnvSchema.shape,
     ...storageEnvSchema.shape,

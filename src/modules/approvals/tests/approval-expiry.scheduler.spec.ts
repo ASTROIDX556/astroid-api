@@ -71,7 +71,7 @@ describe('ApprovalExpiryWorker', () => {
     expect(expireStale).not.toHaveBeenCalled();
   });
 
-  it('is bound to the approvals queue', () => {
-    expect(Queues.Approvals).toBe('approvals');
+  it('is bound to the approval-sweep queue', () => {
+    expect(Queues.ApprovalSweep).toBe('approval-sweep');
   });
 });
