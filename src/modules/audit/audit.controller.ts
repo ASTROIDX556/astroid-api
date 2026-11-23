@@ -96,18 +96,33 @@ export class AuditController {
   @ApiOperation({
     summary: 'List audit log entries for the organization',
     description:
-      'Returns audit log entries, newest first. Pass `cursor` from `meta.nextCursor` for stable keyset pagination; page/offset mode is kept for backwards compatibility. Supports filtering by actor, action, resource type, resource id and an inclusive date range.',
+      'Returns audit log entries of the authenticated organization, always ordered by `createdAt DESC, id DESC`. ' +
+      '`id` breaks ties between entries that share a timestamp, so pages never skip or repeat rows. ' +
+      'Pass `cursor` from `meta.nextCursor` for stable keyset pagination; page/offset mode is kept for backwards compatibility and uses the same order. ' +
+      '`actorId`, `action`, `resourceType` and `resourceId` are exact, case-sensitive matches (no partial or fuzzy matching); ' +
+      '`from`/`to` bound `createdAt` inclusively and `from` must not be later than `to`. ' +
+      'Filters only narrow the organization-scoped result set; unknown query parameters are rejected with 400.',
   })
   @ApiPaginationQuery()
   @ApiQuery({ name: 'cursor', required: false, type: String, description: 'Opaque keyset cursor from meta.nextCursor' })
-  @ApiQuery({ name: 'actorId', required: false, type: String, description: 'Filter by acting user UUID' })
-  @ApiQuery({ name: 'action', required: false, type: String, description: 'Filter by audit action type' })
-  @ApiQuery({ name: 'resourceType', required: false, type: String, description: 'Filter by affected entity type (resource type)' })
-  @ApiQuery({ name: 'resourceId', required: false, type: String, description: 'Filter by affected entity UUID' })
+  @ApiQuery({ name: 'actorId', required: false, type: String, description: 'Exact match on the id of the acting user (stored as `userId`), 1-128 characters' })
+  @ApiQuery({ name: 'action', required: false, type: String, description: 'Exact match on the audit action, e.g. `transaction.created`, 1-120 characters' })
+  @ApiQuery({ name: 'resourceType', required: false, type: String, description: 'Exact match on the affected entity type (stored as `entity`), 1-120 characters' })
+  @ApiQuery({ name: 'resourceId', required: false, type: String, description: 'Exact match on the affected entity id (stored as `entityId`), 1-128 characters' })
   @ApiQuery({ name: 'outcome', required: false, enum: ['SUCCESS', 'FAILURE'], description: 'Filter by the derived result of the audited operation' })
   @ApiQuery({ name: 'search', required: false, type: String, description: 'Case-insensitive search over action, entity, entityId and requestId' })
-  @ApiQuery({ name: 'from', required: false, type: String, description: 'ISO 8601 start of the date range' })
-  @ApiQuery({ name: 'to', required: false, type: String, description: 'ISO 8601 end of the date range' })
+  @ApiQuery({
+    name: 'from',
+    required: false,
+    schema: { type: 'string', format: 'date-time', example: '2026-09-01T00:00:00.000Z' },
+    description: 'Inclusive ISO 8601 start of the range (`createdAt >= from`). Must not be later than `to`, otherwise 400',
+  })
+  @ApiQuery({
+    name: 'to',
+    required: false,
+    schema: { type: 'string', format: 'date-time', example: '2026-09-30T23:59:59.999Z' },
+    description: 'Inclusive ISO 8601 end of the range (`createdAt <= to`). Must not be earlier than `from`, otherwise 400',
+  })
   @ApiPageOrCursorPaginatedEnvelope(AuditLogEntryDto, {
     description: 'Paginated list of audit log entries',
   })
