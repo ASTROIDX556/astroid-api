@@ -10,7 +10,6 @@ import { verifyWebhookSignature } from './utils/signing';
 import { WebhookSignatureGuard } from '../../common/guards/webhook-signature.guard';
 import { WebhookIngressController } from './webhook-ingress.controller';
 import { RequestContext } from '../../common/context/request-context';
-import { RequestIdentity } from '../../common/context/request-context';
 
 const createDestinationPolicy = () => ({
   post: async (

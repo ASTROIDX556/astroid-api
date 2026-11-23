@@ -5,7 +5,6 @@ import { Queue } from 'bullmq';
 import { WebhookJobData } from '../types/webhook-job.types';
 import { DEFAULT_WEBHOOK_CONFIG } from '../../../config/webhook.config';
 import { RequestContext } from '../../../common/context/request-context';
-import { RequestIdentity } from '../../../common/context/request-context';
 
 describe('WebhookDeliveryService', () => {
   let service: WebhookDeliveryService;

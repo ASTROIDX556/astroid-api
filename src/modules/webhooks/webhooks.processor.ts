@@ -1,7 +1,7 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Inject, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { DelayedError, Job, UnrecoverableError } from 'bullmq';
+import { DelayedError, Job } from 'bullmq';
 import { PermanentJobError } from '../../queues/queue-policy';
 import { Queues } from '../../queues/queues.constants';
 import { WebhookJobData, WebhookJobResult } from './types/webhook-job.types';
