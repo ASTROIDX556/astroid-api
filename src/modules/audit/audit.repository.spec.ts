@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { PrismaService } from '../../database/prisma.service';
-import { AuditRepository } from './audit.repository';
+import { AuditRepository, CreateAuditLogData } from './audit.repository';
+import { AUDIT_CHAIN_GENESIS, computeAuditEntryHash } from './audit-hash';
 
 describe('AuditRepository.streamLogs', () => {
   it('fetches bounded pages and advances the cursor through every row', async () => {
@@ -65,6 +66,95 @@ describe('AuditRepository', () => {
     );
     expect(prisma.auditLog.create).not.toHaveBeenCalled();
   });
+
+  describe('AuditRepository.createChained', () => {
+    it('serializes concurrent appends so every row links to its predecessor', async () => {
+      const records: Array<CreateAuditLogData & { id: string; prevHash: string; hash: string }> = [];
+      let lockQueue = Promise.resolve();
+      const prisma = {
+        $transaction: vi.fn(async (callback: (tx: unknown) => Promise<unknown>) => {
+          let releaseLock: () => void = () => {};
+          const tx = {
+            $queryRaw: vi.fn(async () => {
+              const previousLock = lockQueue;
+              lockQueue = new Promise<void>((resolve) => {
+                releaseLock = resolve;
+              });
+              await previousLock;
+              return [];
+            }),
+            auditLog: {
+              findFirst: vi.fn(async () => {
+                const ordered = [...records].sort(
+                  (left, right) =>
+                    left.createdAt!.getTime() - right.createdAt!.getTime() ||
+                    left.id.localeCompare(right.id),
+                );
+                const latest = ordered[ordered.length - 1];
+                return latest ? { hash: latest.hash, createdAt: latest.createdAt } : null;
+              }),
+              create: vi.fn(async ({ data }: { data: typeof records[number] }) => {
+                records.push(data);
+                return data;
+              }),
+              upsert: vi.fn(),
+            },
+            auditLogArchive: {
+              findFirst: vi.fn().mockResolvedValue(null),
+            },
+          };
+          try {
+            return await callback(tx);
+          } finally {
+            releaseLock();
+          }
+        }),
+      };
+      const repository = new AuditRepository(prisma as unknown as PrismaService);
+      const createdAt = new Date('2026-11-22T14:00:00.000Z');
+
+      await Promise.all(
+        Array.from({ length: 20 }, (_, index) => {
+          const action = `ACTION_${index}`;
+          const entityId = `agent-${index}`;
+          return repository.createChained(
+            {
+              organizationId: 'org-1',
+              action,
+              entity: 'Agent',
+              entityId,
+              createdAt,
+            },
+            (id, prevHash, timestamp) =>
+              computeAuditEntryHash(
+                {
+                  id,
+                  actor: null,
+                  action,
+                  target: { entity: 'Agent', id: entityId },
+                  timestamp,
+                  payload: { oldValue: null, newValue: null, ipAddress: null, device: null },
+                },
+                prevHash,
+              ),
+          );
+        }),
+      );
+
+      const ordered = [...records].sort(
+        (left, right) =>
+          left.createdAt!.getTime() - right.createdAt!.getTime() ||
+          left.id.localeCompare(right.id),
+      );
+      let expectedPreviousHash = AUDIT_CHAIN_GENESIS;
+      for (const record of ordered) {
+        expect(record.prevHash).toBe(expectedPreviousHash);
+        expectedPreviousHash = record.hash;
+      }
+      expect(ordered).toHaveLength(20);
+      expect(prisma.$transaction).toHaveBeenCalledTimes(20);
+    });
+  });
 });
 
 describe('AuditRepository.findPage', () => {
@@ -109,6 +199,78 @@ describe('AuditRepository.findPage', () => {
     expect(findMany).toHaveBeenCalledWith({
       where: { organizationId: 'org-2' },
       take: 101,
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+    });
+  });
+
+  it('inverts the keyset comparison and ordering for ascending timelines', async () => {
+    const findMany = vi.fn().mockResolvedValue([]);
+    const repository = new AuditRepository({ auditLog: { findMany } } as unknown as PrismaService);
+    const createdAt = new Date('2026-09-29T12:00:00.000Z');
+
+    await repository.findPage({ organizationId: 'org-1', entityId: 'tx-1' }, { createdAt, id: 'audit-20' }, 21, 'asc');
+
+    expect(findMany).toHaveBeenCalledWith({
+      where: {
+        AND: [
+          { organizationId: 'org-1', entityId: 'tx-1' },
+          {
+            OR: [
+              { createdAt: { gt: createdAt } },
+              { createdAt, id: { gt: 'audit-20' } },
+            ],
+          },
+        ],
+      },
+      take: 21,
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+    });
+  });
+
+  it('never looks the cursor row up, so archived or deleted cursors keep working', async () => {
+    const findMany = vi.fn().mockResolvedValue([]);
+    const repository = new AuditRepository({ auditLog: { findMany } } as unknown as PrismaService);
+    const createdAt = new Date('2026-01-01T00:00:00.000Z');
+
+    await repository.findPage({ organizationId: 'org-1' }, { createdAt, id: 'gone' }, 5);
+
+    expect(findMany).toHaveBeenCalledWith({
+      where: {
+        AND: [
+          { organizationId: 'org-1' },
+          {
+            OR: [
+              { createdAt: { lt: createdAt } },
+              { createdAt, id: { lt: 'gone' } },
+            ],
+          },
+        ],
+      },
+      take: 5,
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+    });
+  });
+
+  it('passes composable filters through unchanged', async () => {
+    const findMany = vi.fn().mockResolvedValue([]);
+    const repository = new AuditRepository({ auditLog: { findMany } } as unknown as PrismaService);
+    const where = {
+      organizationId: 'org-1',
+      userId: 'user-1',
+      action: 'TRANSFER',
+      entity: 'Transaction',
+      entityId: 'tx-1',
+      createdAt: {
+        gte: new Date('2026-09-01T00:00:00.000Z'),
+        lte: new Date('2026-09-30T00:00:00.000Z'),
+      },
+    };
+
+    await repository.findPage(where, undefined, 10);
+
+    expect(findMany).toHaveBeenCalledWith({
+      where,
+      take: 10,
       orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
     });
   });

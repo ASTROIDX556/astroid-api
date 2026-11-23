@@ -1,7 +1,10 @@
-import { INestApplication, RequestMethod } from '@nestjs/common';
-import { METHOD_METADATA, PATH_METADATA } from '@nestjs/common/constants';
+import { INestApplication, RequestMethod, Type } from '@nestjs/common';
+import { METHOD_METADATA, PATH_METADATA, ROUTE_ARGS_METADATA } from '@nestjs/common/constants';
+import { RouteParamtypes } from '@nestjs/common/enums/route-paramtypes.enum';
 import { ApplicationConfig, DiscoveryService, MetadataScanner, Reflector } from '@nestjs/core';
 import { RoutePathFactory } from '@nestjs/core/router/route-path-factory';
+import { getSchemaPath } from '@nestjs/swagger';
+import { DECORATORS } from '@nestjs/swagger/dist/constants';
 import {
   OpenAPIObject,
   OperationObject,
@@ -39,6 +42,10 @@ export interface RegisteredRoute {
   handler: string;
   /** Whether the handler or its controller is marked `@Public()`. */
   isPublic: boolean;
+  /** Whether the handler declares a `@Body()` parameter. */
+  acceptsBody?: boolean;
+  /** The handler function, used to read its Swagger decorator metadata. */
+  handlerFunction?: object;
 }
 
 /** A route that is deliberately left out of the OpenAPI document. */
@@ -100,6 +107,12 @@ export function listRegisteredRoutes(app: INestApplication): RegisteredRoute[] {
       const requestMethod = Reflect.getMetadata(METHOD_METADATA, handler) as RequestMethod;
       const isPublic =
         reflector.getAllAndOverride<boolean>(IS_PUBLIC_KEY, [handler, metatype]) === true;
+      const routeArgs = Reflect.getMetadata(ROUTE_ARGS_METADATA, metatype, methodName) as
+        | Record<string, unknown>
+        | undefined;
+      const acceptsBody = Object.keys(routeArgs ?? {}).some((key) =>
+        key.startsWith(`${RouteParamtypes.BODY}:`),
+      );
 
       for (const ctrlPath of controllerPaths.length ? controllerPaths : ['']) {
         for (const methodPath of asArray<string>(methodPaths)) {
@@ -113,6 +126,8 @@ export function listRegisteredRoutes(app: INestApplication): RegisteredRoute[] {
               path: toOpenApiPath(path),
               handler: `${metatype.name}.${methodName}`,
               isPublic,
+              acceptsBody,
+              handlerFunction: handler,
             });
           }
         }
@@ -150,6 +165,161 @@ export function findUndocumentedRoutes(
       .filter((route) => !documented.has(routeKey(route)) && !allowed.has(routeKey(route)))
       .map((route) => `${routeKey(route)} (${route.handler}) is not in the OpenAPI document`),
   );
+}
+
+/** Maps `METHOD /path` to the controller handler that serves it. */
+export function routeHandlers(routes: RegisteredRoute[]): Map<string, string> {
+  return new Map(routes.map((route) => [routeKey(route), route.handler]));
+}
+
+function describeFinding(
+  route: { method: string; path: string },
+  handlers: ReadonlyMap<string, string>,
+  message = '',
+): string {
+  const handler = handlers.get(routeKey(route));
+  const location = `${routeKey(route)}${handler ? ` (${handler})` : ''}`;
+  return message ? `${location} ${message}` : location;
+}
+
+/** Documented operations with no non-empty `@ApiOperation()` summary. */
+export function findOperationsWithoutSummary(
+  document: OpenAPIObject,
+  handlers: ReadonlyMap<string, string> = new Map(),
+): string[] {
+  return sorted(
+    listDocumentedOperations(document)
+      .filter(({ operation }) => typeof operation.summary !== 'string' || !operation.summary.trim())
+      .map((operation) =>
+        describeFinding(operation, handlers, 'has no OpenAPI operation summary'),
+      ),
+  );
+}
+
+/** Documented operations with no response of any status. */
+export function findOperationsWithoutResponses(
+  document: OpenAPIObject,
+  handlers: ReadonlyMap<string, string> = new Map(),
+): string[] {
+  return sorted(
+    listDocumentedOperations(document)
+      .filter(({ operation }) => !operation.responses || Object.keys(operation.responses).length === 0)
+      .map((operation) => describeFinding(operation, handlers, 'documents no response')),
+  );
+}
+
+type RequestBodyLike = { content?: Record<string, { schema?: unknown }> };
+
+function requestBodyOf(
+  operation: OperationObject,
+  document: OpenAPIObject,
+): RequestBodyLike | undefined {
+  const body = operation.requestBody as (RequestBodyLike & { $ref?: string }) | undefined;
+  if (!body) return undefined;
+  if (typeof body.$ref === 'string') {
+    return resolvePointer(document, body.$ref) as RequestBodyLike | undefined;
+  }
+  return body;
+}
+
+function hasNamedSchemaRef(node: unknown, schemas: Record<string, unknown>): boolean {
+  return [...collectRefs(node)].some((ref) => {
+    if (!ref.startsWith('#/components/schemas/')) return false;
+    return ref.split('/').pop() as string in schemas;
+  });
+}
+
+/** Body-accepting routes whose operation has no named request schema. */
+export function findMissingRequestSchemas(
+  routes: RegisteredRoute[],
+  document: OpenAPIObject,
+  allowlist: AllowlistedRoute[] = [],
+  handlers: ReadonlyMap<string, string> = new Map(),
+): string[] {
+  const documented = new Map(listDocumentedOperations(document).map((entry) => [routeKey(entry), entry.operation]));
+  const allowed = new Set(allowlist.map(routeKey));
+  const schemas = document.components?.schemas ?? {};
+  const findings: string[] = [];
+
+  for (const route of routes) {
+    if (!route.acceptsBody || allowed.has(routeKey(route))) continue;
+    const operation = documented.get(routeKey(route));
+    if (!operation) continue;
+    const body = requestBodyOf(operation, document);
+    const contentSchemas = Object.values(body?.content ?? {}).map((media) => media.schema);
+    if (!contentSchemas.some((schema) => hasNamedSchemaRef(schema, schemas))) {
+      findings.push(
+        describeFinding(
+          route,
+          handlers,
+          'declares a request body with no DTO schema in components.schemas',
+        ),
+      );
+    }
+  }
+  return sorted(findings);
+}
+
+type DeclaredMetadata = {
+  in?: string;
+  type?: unknown;
+  schema?: unknown;
+  content?: unknown;
+};
+
+function declaredSchemaRefs(handler: object): Set<string> {
+  const refs = new Set<string>();
+  const add = (metadata: DeclaredMetadata | undefined) => {
+    if (!metadata) return;
+    if (typeof metadata.type === 'function' && metadata.type !== String && metadata.type !== Object) {
+      refs.add(getSchemaPath(metadata.type as Type<unknown>));
+    }
+    for (const source of [metadata.schema, metadata.content]) {
+      for (const ref of collectRefs(source)) {
+        if (ref.startsWith('#/components/schemas/')) refs.add(ref);
+      }
+    }
+  };
+
+  for (const metadata of Object.values(
+    (Reflect.getMetadata(DECORATORS.API_RESPONSE, handler) ?? {}) as Record<string, DeclaredMetadata>,
+  )) {
+    add(metadata);
+  }
+  for (const metadata of (Reflect.getMetadata(DECORATORS.API_PARAMETERS, handler) ?? []) as DeclaredMetadata[]) {
+    if (metadata.in === 'body') add(metadata);
+  }
+  return refs;
+}
+
+/** DTO schemas declared by a handler that the generated operation does not carry. */
+export function findMissingDeclaredSchemas(
+  routes: RegisteredRoute[],
+  document: OpenAPIObject,
+  handlers: ReadonlyMap<string, string> = new Map(),
+): string[] {
+  const documented = new Map(listDocumentedOperations(document).map((entry) => [routeKey(entry), entry.operation]));
+  const schemas = document.components?.schemas ?? {};
+  const findings: string[] = [];
+
+  for (const route of routes) {
+    const operation = documented.get(routeKey(route));
+    if (!operation) continue;
+    const actual = new Set<string>();
+    for (const source of [operation.responses, operation.requestBody]) {
+      for (const ref of collectRefs(source)) actual.add(ref);
+    }
+
+    if (!route.handlerFunction) continue;
+    for (const ref of declaredSchemaRefs(route.handlerFunction)) {
+      if (!actual.has(ref)) {
+        findings.push(describeFinding(route, handlers, `declares ${ref} but it is missing from the operation`));
+      } else if (!(ref.split('/').pop() as string in schemas)) {
+        findings.push(describeFinding(route, handlers, `declares ${ref} but the schema is not defined`));
+      }
+    }
+  }
+  return sorted(findings);
 }
 
 /** Documented operations that no registered route serves, e.g. a wrong prefix. */
@@ -207,21 +377,26 @@ export function findStaleAllowlistEntries(
 }
 
 /** Operations without a 2xx response, or whose 2xx response has no schema. */
-export function findOperationsWithoutSuccessSchema(document: OpenAPIObject): string[] {
+export function findOperationsWithoutSuccessSchema(
+  document: OpenAPIObject,
+  handlers: ReadonlyMap<string, string> = new Map(),
+): string[] {
   const findings: string[] = [];
   for (const { method, path, operation } of listDocumentedOperations(document)) {
     const success = Object.entries(operation.responses ?? {}).filter(([status]) =>
       status.startsWith('2'),
     );
     if (success.length === 0) {
-      findings.push(`${method} ${path} documents no 2xx response`);
+      findings.push(describeFinding({ method, path }, handlers, 'documents no 2xx response'));
       continue;
     }
     for (const [status, response] of success) {
       const content = (response as { content?: Record<string, { schema?: unknown }> }).content;
       const hasSchema = Object.values(content ?? {}).some((media) => media.schema !== undefined);
       if (!hasSchema) {
-        findings.push(`${method} ${path} (${status}) documents no response schema`);
+        findings.push(
+          describeFinding({ method, path }, handlers, `(${status}) documents no response schema`),
+        );
       }
     }
   }
@@ -298,6 +473,7 @@ function isNamedOrTypedSchema(document: OpenAPIObject, schema: unknown): boolean
 export function findOperationsMissingSecurity(
   routes: RegisteredRoute[],
   document: OpenAPIObject,
+  handlers: ReadonlyMap<string, string> = new Map(),
 ): string[] {
   const authenticated = new Set(routes.filter((route) => !route.isPublic).map(routeKey));
   const schemes = new Set(Object.keys(document.components?.securitySchemes ?? {}));
@@ -308,11 +484,15 @@ export function findOperationsMissingSecurity(
     const requirements = operation.security ?? document.security ?? [];
     const named = requirements.flatMap((requirement) => Object.keys(requirement));
     if (named.length === 0) {
-      findings.push(`${method} ${path} requires authentication but declares no security scheme`);
+      findings.push(
+        describeFinding({ method, path }, handlers, 'requires authentication but declares no security scheme'),
+      );
       continue;
     }
     for (const scheme of named.filter((name) => !schemes.has(name))) {
-      findings.push(`${method} ${path} declares the undefined security scheme '${scheme}'`);
+      findings.push(
+        describeFinding({ method, path }, handlers, `declares the undefined security scheme '${scheme}'`),
+      );
     }
   }
   return sorted(findings);
@@ -322,7 +502,10 @@ export function findOperationsMissingSecurity(
  * `$ref`s that point at a schema the document does not define, each named with
  * where it appears (`GET /path` or `components.schemas.Name`).
  */
-export function findDanglingRefs(document: OpenAPIObject): string[] {
+export function findDanglingRefs(
+  document: OpenAPIObject,
+  handlers: ReadonlyMap<string, string> = new Map(),
+): string[] {
   const schemas = document.components?.schemas ?? {};
   const findings = new Set<string>();
   const check = (where: string, node: unknown) => {
@@ -337,8 +520,8 @@ export function findDanglingRefs(document: OpenAPIObject): string[] {
     }
   };
 
-  for (const { method, path, operation } of listDocumentedOperations(document)) {
-    check(`${method} ${path}`, operation);
+  for (const documented of listDocumentedOperations(document)) {
+    check(describeFinding(documented, handlers, ''), documented.operation);
   }
   for (const [name, schema] of Object.entries(schemas)) {
     check(`components.schemas.${name}`, schema);

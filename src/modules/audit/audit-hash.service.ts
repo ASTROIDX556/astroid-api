@@ -1,14 +1,10 @@
 import { Injectable } from '@nestjs/common';
-import { sha256 } from '../../utils/crypto.util';
+import { createHash } from 'node:crypto';
 import { PrismaService } from '../../database/prisma.service';
-
-/**
- * Cryptographic hash chain service for tamper-evident audit logs.
- * Each audit entry includes the SHA-256 hash of the preceding record,
- * creating an immutable chain that detects any unauthorized modifications.
- */
+import { AUDIT_CHAIN_GENESIS, computeAuditEntryHash } from './audit-hash';
 
 export interface AuditHashInput {
+  id: string;
   organizationId: string;
   userId?: string | null;
   action: string;
@@ -18,11 +14,12 @@ export interface AuditHashInput {
   newValue?: unknown;
   ipAddress?: string | null;
   device?: string | null;
-  createdAt?: Date;
+  createdAt: Date;
+  prevHash?: string | null;
 }
 
 export interface AuditHashResult {
-  previousHash: string | null;
+  prevHash: string;
   hash: string;
 }
 
@@ -38,55 +35,41 @@ export interface IntegrityCheckResult {
 export class AuditHashService {
   constructor(private readonly prisma: PrismaService) {}
 
-  /**
-   * Computes the hash for an audit log entry based on its payload and the
-   * previous entry's hash. The hash is deterministic given the same inputs.
-   */
-  computeEntryHash(
-    input: AuditHashInput,
-    previousHash: string | null,
-  ): AuditHashResult {
-    const canonicalPayload = this.buildCanonicalPayload(input, previousHash);
-    const hash = sha256(canonicalPayload);
+  computeEntryHash(input: AuditHashInput, prevHash: string): AuditHashResult {
+    const hash = computeAuditEntryHash(
+      {
+        id: input.id,
+        actor: input.userId ?? null,
+        action: input.action,
+        target: { entity: input.entity, id: input.entityId ?? null },
+        timestamp: input.createdAt,
+        payload: {
+          oldValue: input.oldValue ?? null,
+          newValue: input.newValue ?? null,
+          ipAddress: input.ipAddress ?? null,
+          device: input.device ?? null,
+        },
+      },
+      prevHash,
+    );
 
-    return {
-      previousHash,
-      hash,
-    };
+    return { prevHash, hash };
   }
 
-  /**
-   * Retrieves the latest audit log entry hash for an organization.
-   * This is used to chain the next entry.
-   */
   async getLatestHash(organizationId: string): Promise<string | null> {
     const latest = await this.prisma.auditLog.findFirst({
-      where: {
-        organizationId,
-        hash: { not: null },
-      },
-      orderBy: { createdAt: 'desc' },
+      where: { organizationId, hash: { not: null } },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       select: { hash: true },
     });
 
     return latest?.hash ?? null;
   }
 
-  /**
-   * Validates the integrity of the entire audit chain for an organization.
-   * Traverses all entries and verifies each hash links correctly to the previous.
-   *
-   * Records that were moved into the compressed archive are not part of the
-   * live table any more. The archive stores the hash of the last archived
-   * entry, which anchors the chain: the first live entry is expected to point
-   * at that hash instead of at `null`.
-   */
-  async verifyChainIntegrity(
-    organizationId: string,
-  ): Promise<IntegrityCheckResult> {
+  async verifyChainIntegrity(organizationId: string): Promise<IntegrityCheckResult> {
     const entries = await this.prisma.auditLog.findMany({
       where: { organizationId },
-      orderBy: { createdAt: 'asc' },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
       select: {
         id: true,
         organizationId: true,
@@ -98,59 +81,40 @@ export class AuditHashService {
         newValue: true,
         ipAddress: true,
         device: true,
-        previousHash: true,
+        prevHash: true,
         hash: true,
         createdAt: true,
       },
     });
 
-    const archiveAnchor = await this.findArchiveAnchor(organizationId);
-    let expectedPreviousHash: string | null = archiveAnchor;
+    let expectedPreviousHash = await this.findArchiveAnchor(organizationId);
+    let totalChecked = 0;
 
-    for (let i = 0; i < entries.length; i++) {
-      const entry = entries[i];
-
-      // Skip entries that don't have hash chain data (pre-migration)
+    for (let index = 0; index < entries.length; index += 1) {
+      const entry = entries[index];
       if (entry.hash === null) {
         continue;
       }
 
-      // Check that the stored previousHash matches what we expect
-      if (entry.previousHash !== expectedPreviousHash) {
-        return {
-          valid: false,
-          totalChecked: i,
-          brokenAtEntryId: entry.id,
-          brokenAtIndex: i,
-          message: `Chain broken at entry ${entry.id} (index ${i}): expected previousHash "${expectedPreviousHash}", got "${entry.previousHash}"`,
-        };
+      totalChecked += 1;
+      const legacyHash = this.computeLegacyEntryHash(entry);
+      const isLegacyHash = legacyHash === entry.hash;
+      const expectedPrevHash = expectedPreviousHash ?? (isLegacyHash ? null : AUDIT_CHAIN_GENESIS);
+
+      if (entry.prevHash !== expectedPrevHash) {
+        return this.broken(
+          entry.id,
+          index,
+          totalChecked - 1,
+          `expected prevHash "${expectedPrevHash}", got "${entry.prevHash}"`,
+        );
       }
 
-      // Recompute the hash and verify it matches the stored value
-      const computed = this.computeEntryHash(
-        {
-          organizationId: entry.organizationId,
-          userId: entry.userId,
-          action: entry.action,
-          entity: entry.entity,
-          entityId: entry.entityId,
-          oldValue: entry.oldValue,
-          newValue: entry.newValue,
-          ipAddress: entry.ipAddress,
-          device: entry.device,
-          createdAt: entry.createdAt,
-        },
-        entry.previousHash,
-      );
-
-      if (computed.hash !== entry.hash) {
-        return {
-          valid: false,
-          totalChecked: i,
-          brokenAtEntryId: entry.id,
-          brokenAtIndex: i,
-          message: `Entry ${entry.id} (index ${i}) hash mismatch: expected "${computed.hash}", got "${entry.hash}"`,
-        };
+      const computedHash = isLegacyHash
+        ? legacyHash
+        : this.computeEntryHash(entry, entry.prevHash ?? AUDIT_CHAIN_GENESIS).hash;
+      if (computedHash !== entry.hash) {
+        return this.broken(entry.id, index, totalChecked - 1, 'hash mismatch');
       }
 
       expectedPreviousHash = entry.hash;
@@ -158,16 +122,13 @@ export class AuditHashService {
 
     return {
       valid: true,
-      totalChecked: entries.length,
+      totalChecked,
       brokenAtEntryId: null,
       brokenAtIndex: null,
-      message: `Chain integrity verified: all ${entries.length} entries are valid`,
+      message: `Chain integrity verified: all ${totalChecked} hashed entries are valid`,
     };
   }
 
-  /**
-   * Validates a single audit log entry's hash.
-   */
   async verifyEntryIntegrity(
     entryId: string,
     organizationId: string,
@@ -179,67 +140,24 @@ export class AuditHashService {
     if (!entry) {
       return { valid: false, message: `Entry ${entryId} not found` };
     }
-
     if (entry.hash === null) {
-      return {
-        valid: false,
-        message: `Entry ${entryId} has no hash (pre-migration entry)`,
-      };
+      return { valid: false, message: `Entry ${entryId} has no hash (legacy entry)` };
     }
 
-    const computed = this.computeEntryHash(
-      {
-        organizationId: entry.organizationId,
-        userId: entry.userId,
-        action: entry.action,
-        entity: entry.entity,
-        entityId: entry.entityId,
-        oldValue: entry.oldValue,
-        newValue: entry.newValue,
-        ipAddress: entry.ipAddress,
-        device: entry.device,
-        createdAt: entry.createdAt,
-      },
-      entry.previousHash,
-    );
-
-    if (computed.hash !== entry.hash) {
-      return {
-        valid: false,
-        message: `Entry ${entryId} hash mismatch: expected "${computed.hash}", got "${entry.hash}"`,
-      };
+    const legacyHash = this.computeLegacyEntryHash(entry);
+    const currentHash =
+      entry.prevHash === null
+        ? null
+        : this.computeEntryHash(entry, entry.prevHash).hash;
+    if (entry.hash !== legacyHash && entry.hash !== currentHash) {
+      return { valid: false, message: `Entry ${entryId} hash mismatch` };
     }
 
     return { valid: true, message: `Entry ${entryId} integrity verified` };
   }
 
-  /**
-   * The hash of the newest archived entry of an organization, if any. It is
-   * the anchor the live entries chain onto after the archival moved the older
-   * entries into the compressed archive.
-   *
-   * Only batches that carry an anchor are considered, so a batch of entries
-   * that predate the hash chain can never mask the anchor of an earlier batch.
-   */
-  private async findArchiveAnchor(organizationId: string): Promise<string | null> {
-    const archive = await this.prisma.auditLogArchive.findFirst({
-      where: { organizationId, chainBoundaryHash: { not: null } },
-      orderBy: [{ archivedThrough: 'desc' }, { createdAt: 'desc' }],
-      select: { chainBoundaryHash: true },
-    });
-    return archive?.chainBoundaryHash ?? null;
-  }
-
-  /**
-   * Builds a canonical string representation of the audit entry for hashing.
-   * The representation is deterministic and includes all fields that define
-   * the entry's content, plus the previous hash to create the chain.
-   */
-  private buildCanonicalPayload(
-    input: AuditHashInput,
-    previousHash: string | null,
-  ): string {
-    const parts: string[] = [
+  private computeLegacyEntryHash(input: AuditHashInput): string {
+    const payload = [
       `org:${input.organizationId}`,
       `user:${input.userId ?? ''}`,
       `action:${input.action}`,
@@ -249,10 +167,33 @@ export class AuditHashService {
       `new:${JSON.stringify(input.newValue ?? null)}`,
       `ip:${input.ipAddress ?? ''}`,
       `device:${input.device ?? ''}`,
-      `ts:${input.createdAt ? input.createdAt.toISOString() : new Date().toISOString()}`,
-      `prev:${previousHash ?? 'GENESIS'}`,
-    ];
+      `ts:${input.createdAt.toISOString()}`,
+      `prev:${input.prevHash ?? 'GENESIS'}`,
+    ].join('|');
+    return createHash('sha256').update(payload, 'utf8').digest('hex');
+  }
 
-    return parts.join('|');
+  private async findArchiveAnchor(organizationId: string): Promise<string | null> {
+    const archive = await this.prisma.auditLogArchive.findFirst({
+      where: { organizationId, chainBoundaryHash: { not: null } },
+      orderBy: [{ archivedThrough: 'desc' }, { createdAt: 'desc' }],
+      select: { chainBoundaryHash: true },
+    });
+    return archive?.chainBoundaryHash ?? null;
+  }
+
+  private broken(
+    entryId: string,
+    index: number,
+    totalChecked: number,
+    reason: string,
+  ): IntegrityCheckResult {
+    return {
+      valid: false,
+      totalChecked,
+      brokenAtEntryId: entryId,
+      brokenAtIndex: index,
+      message: `Chain broken at entry ${entryId} (index ${index}): ${reason}`,
+    };
   }
 }

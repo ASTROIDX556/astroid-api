@@ -25,12 +25,41 @@ export interface RiskFactorsInput {
   amountBaseline?: number;
 }
 
+export type RiskFactorCode =
+  | 'amount'
+  | 'amountAnomaly'
+  | 'unknownRecipient'
+  | 'destinationReputation'
+  | 'velocity'
+  | 'walletAge'
+  | 'policyViolations'
+  | 'suspiciousTiming';
+
 export interface RiskFactorScore {
+  /** Stable machine-readable factor code. */
+  code: RiskFactorCode;
+  /** Human-readable explanation of why this factor scored as it did. */
+  description: string;
+  /** Raw, non-sensitive value used by the rule (for example age or count). */
+  value: number | boolean | null;
+  /** Existing/additive factor name for backwards compatibility. */
   factor: string;
   weight: number;
   contribution: number;
+  /** Existing/additive detail for backwards compatibility. */
   detail: string;
 }
+
+export const RISK_FACTOR_DESCRIPTIONS: Record<RiskFactorCode, string> = {
+  amount: 'Transfer amount relative to its saturation threshold',
+  amountAnomaly: 'Transfer amount relative to the wallet historical average',
+  unknownRecipient: 'Whether the organization has previously paid this recipient',
+  destinationReputation: 'Failure rate and depth of destination payment history',
+  velocity: 'Recent transaction count and value moved',
+  walletAge: 'Sending wallet age relative to its seasoned threshold',
+  policyViolations: 'Policy violations detected for this transaction',
+  suspiciousTiming: 'Whether the transaction is attempted during suspicious hours',
+};
 
 export interface RiskAssessment {
   score: number;

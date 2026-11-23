@@ -9,6 +9,7 @@ import { WebhookRepository } from './webhook.repository';
 import { WebhookDispatcher } from './webhook.dispatcher';
 import { WebhookDeliveryService } from './services/webhook-delivery.service';
 import { WebhookAuditService } from './services/webhook-audit.service';
+import { WebhookAttemptService } from './services/webhook-attempt.service';
 import { WebhookCircuitService } from './services/webhook-circuit.service';
 import { WebhooksProcessor } from './webhooks.processor';
 import { createWebhookQueueOptions } from '../../queues/webhook.queue';
@@ -16,6 +17,8 @@ import { Queues } from '../../queues/queues.constants';
 import { redisConfig } from '../../config/redis.config';
 import { WebhookConfig } from '../../config/webhook.config';
 import { MetricsModule } from '../metrics/metrics.module';
+import { IdempotencyModule } from '../../common/idempotency/idempotency.module';
+import { EncryptionModule } from '../../common/encryption/encryption.module';
 import { WebhookSignatureGuard } from '../../common/guards/webhook-signature.guard';
 import { SlidingWindowThrottlerGuard } from '../../common/guards/sliding-window-throttler.guard';
 import { WebhookDestinationPolicy } from './webhook-destination.policy';
@@ -49,6 +52,8 @@ import { WebhookDestinationPolicy } from './webhook-destination.policy';
         createWebhookQueueOptions(config.getOrThrow<WebhookConfig>('webhook')),
     }),
     MetricsModule,
+    IdempotencyModule,
+    EncryptionModule,
   ],
   controllers: [WebhookController, WebhookIngressController],
   providers: [
@@ -58,6 +63,7 @@ import { WebhookDestinationPolicy } from './webhook-destination.policy';
     WebhookDispatcher,
     WebhookDeliveryService,
     WebhookAuditService,
+    WebhookAttemptService,
     WebhookCircuitService,
     WebhooksProcessor,
     WebhookIngressService,

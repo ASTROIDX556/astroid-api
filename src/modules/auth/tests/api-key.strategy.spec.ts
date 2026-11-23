@@ -19,6 +19,7 @@ describe('ApiKeyStrategy', () => {
     name: 'Test Key',
     prefix: 'ak_live_123456',
     permissions: ['transactions:write', 'policies:read'],
+    scopes: ['transactions:execute'],
     allowedIps: ['192.168.1.0/24'],
   };
 
@@ -46,7 +47,7 @@ describe('ApiKeyStrategy', () => {
         name: 'Test Key',
         prefix: 'ak_live_123456',
         permissions: ['transactions:write', 'policies:read'],
-        scopes: ['transactions:write', 'policies:read'],
+        scopes: ['transactions:execute'],
         allowedIps: ['192.168.1.0/24'],
         isApiKey: true,
         role: UserRole.DEVELOPER,

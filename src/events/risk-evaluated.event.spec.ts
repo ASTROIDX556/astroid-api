@@ -12,6 +12,9 @@ describe('RiskEvaluatedEvent (#414)', () => {
         band: 'HIGH',
         factors: [
           {
+            code: 'amount',
+            description: 'Amount is unusually high',
+            value: 1000,
             factor: 'amount',
             weight: 30,
             contribution: 25,

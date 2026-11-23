@@ -112,6 +112,7 @@ are rejected:
 | `PASSKEY_RP_ID`   | `localhost`             | WebAuthn relying-party ID.           |
 | `PASSKEY_RP_NAME` | `Astroid`               | WebAuthn relying-party display name. |
 | `PASSKEY_ORIGIN`  | `http://localhost:3001` | Expected WebAuthn origin.            |
+| `API_KEY_ROTATION_GRACE_PERIOD_SECONDS` | `86400` | Default grace period in seconds during which a rotating API key remains valid alongside its replacement. |
 
 ### Stellar
 
@@ -139,7 +140,7 @@ are rejected:
 | `PRICE_ORACLE_MAX_AGE_MS` | `300000` | Maximum accepted quote age in milliseconds. |
 | `PRICE_ORACLE_STATIC_PRICES` | _(empty)_ | Comma-separated static `ASSET=PRICE` fallback quotes. |
 
-### Audit archival
+### Audit
 
 | Variable | Default | Description |
 | -------- | ------- | ----------- |
@@ -148,11 +149,14 @@ are rejected:
 | `AUDIT_ARCHIVE_BATCH_SIZE` | `500` | Maximum records per archival batch. |
 | `AUDIT_ARCHIVE_MAX_BATCHES` | `20` | Maximum batches per archival run. |
 | `AUDIT_RETENTION_DAYS` | `90` | Hard-delete retention for audit records. |
+| `AUDIT_PAGE_SIZE_DEFAULT` | `20` | Default page size for audit listing and resource timelines. |
+| `AUDIT_PAGE_SIZE_MAX` | `100` | Hard upper bound for audit page sizes; larger values return 400. |
 
 ### Transaction idempotency
 
 | Variable | Default | Description |
 | -------- | ------- | ----------- |
+| `IDEMPOTENCY_HEADER_NAME` | `Idempotency-Key` | HTTP header carrying the key on `POST /transactions`. Trimmed; values must be 8–255 characters. |
 | `IDEMPOTENCY_KEY_TTL_HOURS` | `24` | How long a completed `Idempotency-Key` record stays replayable; after this window the key is ignored and a fresh submission is processed. |
 | `IDEMPOTENCY_WAIT_TIMEOUT_MS` | `5000` | How long a duplicate request waits for the in-flight original to finish before returning `409`. `0` returns the conflict immediately. |
 | `IDEMPOTENCY_POLL_INTERVAL_MS` | `100` | Poll interval used while waiting for the in-flight original. |
@@ -168,6 +172,14 @@ are rejected:
 
 See [`docs/wallet-reconciliation.md`](wallet-reconciliation.md) for the worker,
 queue and event behaviour.
+
+### Approval Expiry & Sweep
+
+| Variable | Default | Description |
+| -------- | ------- | ----------- |
+| `APPROVAL_TTL_HOURS` | `72` | Default lifetime in hours for approval requests before automatic expiration. |
+| `APPROVAL_SWEEP_INTERVAL_MS` | `60000` | Fixed interval in milliseconds between background sweep jobs (default: 1 minute). |
+| `APPROVAL_SWEEP_BATCH_SIZE` | `100` | Maximum number of expired pending proposals processed per batch during a sweep. |
 
 ### Storage (S3-compatible)
 
@@ -250,7 +262,7 @@ deliveries of a failing endpoint instead of hammering it.
 | `PUBLIC_RATE_LIMIT_MAX_REQUESTS` | `60` | Requests allowed per client IP per sliding window on public routes. |
 | `PUBLIC_RATE_LIMIT_WINDOW_SECONDS` | `60` | Sliding-window size for the public-route rate limiter. |
 | `PUBLIC_RATE_LIMIT_TRUST_PROXY` | `false` | Reads client IP from `X-Forwarded-For`. Only enable behind a trusted reverse proxy. |
-| `PUBLIC_RATE_LIMIT_CLIENT_IDENTIFIERS` | _(empty)_ | Comma-separated client identifiers to add to the IP bucket, currently `apiKey`. |
+| `PUBLIC_RATE_LIMIT_CLIENT_IDENTIFIERS` | _(empty)_ | Comma-separated client identifiers to add to the IP bucket (`ip`, `apiKey`). Unknown entries are ignored. |
 | `RATE_LIMIT_LOGIN_MAX` | `5` | `POST /auth/login` requests per client IP per window. |
 | `RATE_LIMIT_LOGIN_WINDOW_SECONDS` | `60` | Window of the login limit. |
 | `RATE_LIMIT_REFRESH_MAX` | `30` | `POST /auth/refresh` requests per client IP per window. |
@@ -262,11 +274,33 @@ deliveries of a failing endpoint instead of hammering it.
 | `RATE_LIMIT_WEBHOOK_ROTATE_MAX` | `10` | `POST /webhooks/:id/rotate-secret` requests per API key or user per window. |
 | `RATE_LIMIT_WEBHOOK_ROTATE_WINDOW_SECONDS` | `3600` | Window of the webhook secret rotation limit. |
 
+### Budgets
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `BUDGET_ALERT_THRESHOLDS` | `80,100` | Comma-separated budget-utilisation percentages that emit a `budget.threshold_reached` event once per budget period. A budget's own `alertThresholds` overrides this list. |
+| `BUDGET_ROLLOVER_ENABLED` | `true` | Register the repeatable budget period rollover job at boot. |
+| `BUDGET_ROLLOVER_INTERVAL_MINUTES` | `1` | Cadence of the repeatable rollover job. |
+| `BUDGET_ROLLOVER_BATCH_SIZE` | `100` | Budgets loaded per page (1–1000). |
+| `BUDGET_ROLLOVER_MAX_BATCHES` | `20` | Maximum pages processed in one run; later ticks pick up the rest. |
+
 ### Metrics
 
 | Variable              | Default                      | Description                                                   |
 | --------------------- | ---------------------------- | ------------------------------------------------------------- |
 | `METRICS_ALLOWED_IPS` | loopback and RFC 1918 ranges | Comma-separated CIDR ranges allowed to scrape `GET /metrics`. |
+
+### Graceful shutdown
+
+| Variable                   | Default | Description                                                                                                                                    |
+| -------------------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SHUTDOWN_GRACE_PERIOD_MS` | `20000` | How long in-flight HTTP requests and BullMQ jobs may run after SIGTERM/SIGINT before they are terminated. Positive integer in milliseconds. |
+
+### Health checks
+
+| Variable                          | Default | Description                                                                                       |
+| --------------------------------- | ------- | ------------------------------------------------------------------------------------------------- |
+| `HEALTH_CHECK_MIGRATIONS_ENABLED` | `true`  | `true` or `false`. Reports pending Prisma migrations in the diagnostic readiness check (`GET /api/v1/health/readiness`). Set to `false` to skip it, e.g. against a scratch database. |
 
 ### AI provider
 

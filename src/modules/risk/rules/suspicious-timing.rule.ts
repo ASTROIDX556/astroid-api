@@ -14,6 +14,9 @@ export const SuspiciousTimingRule: RiskRule = {
     const suspicious =
       hour !== undefined && hour >= config.suspiciousHourStart && hour < config.suspiciousHourEnd;
     return {
+      code: 'suspiciousTiming',
+      description: suspicious ? 'Overnight transaction' : 'Normal hours',
+      value: hour ?? null,
       factor: 'suspiciousTiming',
       weight,
       contribution: suspicious ? weight : 0,

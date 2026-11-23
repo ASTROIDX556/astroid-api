@@ -51,6 +51,12 @@ export enum ErrorCode {
   // Resilience
   CIRCUIT_OPEN = 'CIRCUIT_OPEN',
   LOCK_ACQUISITION_FAILED = 'LOCK_ACQUISITION_FAILED',
+
+  // Idempotency
+  /** Same key reused with a different request payload. */
+  IDEMPOTENCY_KEY_MISMATCH = 'IDEMPOTENCY_KEY_MISMATCH',
+  /** A duplicate arrived while the original request is still running. */
+  IDEMPOTENCY_KEY_IN_FLIGHT = 'IDEMPOTENCY_KEY_IN_FLIGHT',
 }
 
 /** HTTP status codes paired with the domain error codes above. */
@@ -89,6 +95,8 @@ export const ERROR_STATUS: Record<ErrorCode, number> = {
   [ErrorCode.CONTRACT_PANIC]: 422,
   [ErrorCode.CIRCUIT_OPEN]: 503,
   [ErrorCode.LOCK_ACQUISITION_FAILED]: 409,
+  [ErrorCode.IDEMPOTENCY_KEY_MISMATCH]: 409,
+  [ErrorCode.IDEMPOTENCY_KEY_IN_FLIGHT]: 409,
 };
 
 /**
@@ -132,6 +140,8 @@ export const ERROR_TITLE: Record<ErrorCode, string> = {
   [ErrorCode.CONTRACT_PANIC]: 'Smart Contract Panicked',
   [ErrorCode.CIRCUIT_OPEN]: 'Service Temporarily Unavailable',
   [ErrorCode.LOCK_ACQUISITION_FAILED]: 'Resource Locked',
+  [ErrorCode.IDEMPOTENCY_KEY_MISMATCH]: 'Idempotency Key Payload Mismatch',
+  [ErrorCode.IDEMPOTENCY_KEY_IN_FLIGHT]: 'Idempotency Key In Use',
 };
 
 /** Namespace for the problem type URIs derived from {@link ErrorCode}s. */

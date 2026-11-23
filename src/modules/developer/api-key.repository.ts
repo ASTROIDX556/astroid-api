@@ -28,7 +28,10 @@ export class ApiKeyRepository {
           createdById: true,
           name: true,
           prefix: true,
+          lastFour: true,
+          status: true,
           permissions: true,
+          scopes: true,
           allowedIps: true,
           lastUsedAt: true,
           expiresAt: true,
@@ -77,7 +80,18 @@ export class ApiKeyRepository {
   }
 
   revoke(id: string): Promise<ApiKey> {
-    return this.prisma.apiKey.update({ where: { id }, data: { revokedAt: new Date() } });
+    return this.prisma.apiKey.update({ where: { id }, data: { revokedAt: new Date(), status: 'revoked' } });
+  }
+
+  markRotating(
+    id: string,
+    data: { status: string; rotatedAt: Date; expiresAt: Date; replacementId: string },
+  ): Promise<ApiKey> {
+    return this.prisma.apiKey.update({ where: { id }, data });
+  }
+
+  update(id: string, data: Prisma.ApiKeyUpdateInput): Promise<ApiKey> {
+    return this.prisma.apiKey.update({ where: { id }, data });
   }
 
   touchLastUsed(id: string): Promise<ApiKey> {

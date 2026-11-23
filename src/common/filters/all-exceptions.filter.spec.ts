@@ -317,7 +317,7 @@ describe('AllExceptionsFilter', () => {
       expect(renderedBody(response).code).toBe(ErrorCode.NOT_FOUND);
     });
 
-    it('maps other known Prisma request errors onto 400 BAD_REQUEST', () => {
+    it('maps a P2003 foreign key constraint error onto 409 CONFLICT', () => {
       const { host, response } = buildHost();
       const error = new Prisma.PrismaClientKnownRequestError('Foreign key constraint failed', {
         code: 'P2003',
@@ -326,8 +326,47 @@ describe('AllExceptionsFilter', () => {
 
       filter.catch(error, host);
 
+      expect(response.status).toHaveBeenCalledWith(409);
+      expect(renderedBody(response).code).toBe(ErrorCode.CONFLICT);
+    });
+
+    it('maps a P2000 value too long error onto 422 VALIDATION_ERROR', () => {
+      const { host, response } = buildHost();
+      const error = new Prisma.PrismaClientKnownRequestError('Value too long', {
+        code: 'P2000',
+        clientVersion: '5.22.0',
+      });
+
+      filter.catch(error, host);
+
+      expect(response.status).toHaveBeenCalledWith(422);
+      expect(renderedBody(response).code).toBe(ErrorCode.VALIDATION_ERROR);
+    });
+
+    it('maps PrismaClientValidationError onto 400 BAD_REQUEST', () => {
+      const { host, response } = buildHost();
+      const error = new Prisma.PrismaClientValidationError('Invalid arg', {
+        clientVersion: '5.22.0',
+      });
+
+      filter.catch(error, host);
+
       expect(response.status).toHaveBeenCalledWith(400);
       expect(renderedBody(response).code).toBe(ErrorCode.BAD_REQUEST);
+    });
+
+    it('maps unknown Prisma request errors onto 500 INTERNAL_ERROR without leaking internals', () => {
+      const { host, response } = buildHost();
+      const error = new Prisma.PrismaClientKnownRequestError('SELECT * FROM secret_table failed', {
+        code: 'P9999',
+        clientVersion: '5.22.0',
+      });
+
+      filter.catch(error, host);
+
+      expect(response.status).toHaveBeenCalledWith(500);
+      expect(renderedBody(response).code).toBe(ErrorCode.INTERNAL_ERROR);
+      expect(renderedBody(response).detail).toBe('An unexpected database error occurred');
     });
   });
 

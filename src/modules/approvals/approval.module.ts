@@ -4,13 +4,14 @@ import { ApprovalService } from './approval.service';
 import { ApprovalRepository } from './approval.repository';
 import { ApprovalIdempotencyRepository } from './approval-idempotency.repository';
 import { TransactionModule } from '../transactions/transaction.module';
+import { BudgetModule } from '../budgets/budget.module';
 
 /**
- * Approvals module. Imports the transactions module so an approved proposal can
- * execute its underlying transaction and a rejected one can cancel it.
+ * Approvals module. Imports the transactions and budget modules so proposals
+ * can execute or cancel transactions and release held budgets upon expiration.
  */
 @Module({
-  imports: [TransactionModule],
+  imports: [TransactionModule, BudgetModule],
   controllers: [ApprovalController],
   providers: [ApprovalService, ApprovalRepository, ApprovalIdempotencyRepository],
   exports: [ApprovalService],

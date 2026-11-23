@@ -640,9 +640,14 @@ if [ -f "$SCHEMA_PATH" ] && [ -d "$MIGRATIONS_DIR" ]; then
     in_model && /^[[:space:]]*\}[[:space:]]*$/ { emit_model(); model = ""; table = ""; field_count = 0; in_model = 0; next }
     in_enum && /^[[:space:]]*\}[[:space:]]*$/ { emit_enum(); enum_name = ""; in_enum = 0; next }
     in_model && /^[[:space:]]*@@map[[:space:]]*\(/ {
-      # POSIX awk has no match(..., array); the @@map line holds exactly one
-      # quoted table name, so the first quoted string is the mapping.
-      if (match($0, /"[^"]+"/)) table = substr($0, RSTART + 1, RLENGTH - 2)
+      # POSIX awk (mawk on ubuntu-latest) has no match(s, re, array); parse
+      # the quoted map target with sub() instead so the check stays portable.
+      if ($0 ~ /@@map[[:space:]]*\(/) {
+        mapped = $0
+        sub(/^[^"]*"/, "", mapped)
+        sub(/".*$/, "", mapped)
+        if (mapped != "") table = mapped
+      }
       next
     }
     in_model && /^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*[[:space:]]+[A-Za-z_][A-Za-z0-9_]*(\?|\[\])?/ {

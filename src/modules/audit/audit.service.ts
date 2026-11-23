@@ -2,11 +2,13 @@ import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { AuditRepository, CreateAuditLogData } from './audit.repository';
 import { AuditHashService } from './audit-hash.service';
-import { CursorPaginated } from '../../common/interfaces/api-response.interface';
-import { AuditListQuery } from './audit-list.dto';
-import { decodeCursor, encodeCursor } from '../../common/pagination/cursor-pagination';
+import { CursorPaginated, Paginated } from '../../common/interfaces/api-response.interface';
+import { AuditListQuery, AUDIT_DEFAULT_PAGE_SIZE } from './audit-list.dto';
+import { AuditTimelineQuery } from './audit-timeline.dto';
+import { decodeAuditCursor, encodeAuditCursor } from './audit-cursor';
 import { ExportAuditLogsQuery, StreamAuditLogsQuery } from './audit-export.dto';
 import { sanitizeAuditPayload } from '../../common/helpers/audit-sanitizer';
+import { buildPaginationMeta } from '../../common/helpers/pagination';
 
 /** An audit row as returned by `AuditRepository.exportLogs`, with its joined user. */
 type ExportedAuditLog = Prisma.AuditLogGetPayload<{
@@ -59,11 +61,12 @@ export class AuditService {
       ...(data.oldValue === undefined ? {} : { oldValue: sanitizeAuditPayload(data.oldValue) }),
       ...(data.newValue === undefined ? {} : { newValue: sanitizeAuditPayload(data.newValue) }),
     };
-    const previousHash = await this.hashService.getLatestHash(safeData.organizationId);
-    const createdAt = new Date();
-
-    const hashResult = this.hashService.computeEntryHash(
+    return this.repository.createChained({
+      ...safeData,
+      requestId: data.requestId ?? null,
+    }, (id, prevHash, timestamp) => this.hashService.computeEntryHash(
       {
+        id,
         organizationId: safeData.organizationId,
         userId: safeData.userId,
         action: safeData.action,
@@ -73,33 +76,73 @@ export class AuditService {
         newValue: safeData.newValue,
         ipAddress: safeData.ipAddress,
         device: safeData.device,
-        createdAt,
+        createdAt: timestamp,
       },
-      previousHash,
-    );
-
-    return this.repository.create({
-      ...safeData,
-      requestId: data.requestId ?? null,
-      outcome: deriveAuditOutcome(safeData),
-      previousHash: hashResult.previousHash,
-      hash: hashResult.hash,
-    });
+      prevHash,
+    ).hash);
   }
 
-  /** Cursor-paginated audit log listing, newest first. */
-  async list(organizationId: string, query: AuditListQuery): Promise<CursorPaginated<ExportedAuditLog>> {
+  /** Audit log listing, preserving cursor mode and adding standard page mode. */
+  async list(
+    organizationId: string,
+    query: AuditListQuery & { cursor: string },
+  ): Promise<CursorPaginated<ExportedAuditLog>>;
+  async list(
+    organizationId: string,
+    query: AuditListQuery,
+  ): Promise<CursorPaginated<ExportedAuditLog> | Paginated<ExportedAuditLog>>;
+  async list(organizationId: string, query: AuditListQuery): Promise<CursorPaginated<ExportedAuditLog> | Paginated<ExportedAuditLog>> {
     const where = this.buildFilterWhere(organizationId, query);
-    const cursor = query.cursor ? decodeCursor(query.cursor) : undefined;
-    const take = query.limit + 1;
-
+    if (!query.cursor) {
+      const { items, total } = await this.repository.findManyAndCount(where, {
+        skip: query.offset ?? 0,
+        take: query.limit ?? AUDIT_DEFAULT_PAGE_SIZE,
+        orderBy: { createdAt: 'desc' },
+      });
+      return new Paginated(items as ExportedAuditLog[], buildPaginationMeta(total, query));
+    }
+    const cursor = decodeAuditCursor(query.cursor);
+    const take = (query.limit ?? AUDIT_DEFAULT_PAGE_SIZE) + 1;
     const rows = (await this.repository.findPage(where, cursor, take)) as ExportedAuditLog[];
-    const hasMore = rows.length > query.limit;
-    const items = hasMore ? rows.slice(0, query.limit) : rows;
-    const last = items[items.length - 1];
-    const nextCursor = hasMore && last ? encodeCursor({ createdAt: last.createdAt, id: last.id }) : null;
 
-    return new CursorPaginated(items, { limit: query.limit, hasMore, nextCursor });
+    return this.toCursorPage(rows, query.limit ?? AUDIT_DEFAULT_PAGE_SIZE);
+  }
+
+  /**
+   * Ascending audit timeline for one resource. Uses the same opaque `(createdAt,
+   * id)` cursor as the listing, with the comparison direction inverted.
+   */
+  async timeline(
+    organizationId: string,
+    resourceId: string,
+    query: AuditTimelineQuery,
+  ): Promise<CursorPaginated<ExportedAuditLog>> {
+    const where = this.buildFilterWhere(organizationId, {
+      resourceId,
+      from: query.from,
+      to: query.to,
+    });
+    const limit = query.limit;
+    const rows = (await this.repository.findPage(
+      where,
+      query.cursor ? decodeAuditCursor(query.cursor) : undefined,
+      limit + 1,
+      'asc',
+    )) as ExportedAuditLog[];
+
+    return this.toCursorPage(rows, limit);
+  }
+
+  /** Turns a `limit + 1` database fetch into a cursor page with stable meta. */
+  private toCursorPage(rows: ExportedAuditLog[], limit: number): CursorPaginated<ExportedAuditLog> {
+    const hasMore = rows.length > limit;
+    const items = hasMore ? rows.slice(0, limit) : rows;
+    const last = items[items.length - 1];
+    const nextCursor = hasMore && last
+      ? encodeAuditCursor({ createdAt: last.createdAt, id: last.id })
+      : null;
+
+    return new CursorPaginated(items, { limit, hasMore, nextCursor });
   }
 
   async export(organizationId: string, query: ExportAuditLogsQuery) {

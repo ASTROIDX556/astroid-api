@@ -11,6 +11,7 @@ import { RedisThrottlerStorage } from './common/throttler/redis-throttler.storag
 import { DatabaseModule } from './database/database.module';
 import { EventsModule } from './events/events.module';
 import { LocksModule } from './common/locks/locks.module';
+import { IdempotencyModule } from './common/idempotency/idempotency.module';
 import { ShutdownModule } from './common/shutdown/shutdown.module';
 import { REDIS_CLIENT } from './common/locks/locks.constants';
 import { EncryptionModule } from './common/encryption/encryption.module';
@@ -26,7 +27,8 @@ import { AstroidThrottlerGuard } from './common/guards/throttler.guard';
 import { PublicRateLimitGuard } from './common/guards/public-rate-limit.guard';
 import { ResponseInterceptor } from './common/interceptors/response.interceptor';
 import { AuditInterceptor } from './common/interceptors/audit.interceptor';
-import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
+import { GlobalExceptionFilter } from './common/filters/global-exception.filter';
+import { PrismaExceptionFilter } from './common/filters/prisma-exception.filter';
 import { AgentPolicyGuard } from './modules/policies/guards/agent-policy.guard';
 
 import { AuthModule } from './modules/auth/auth.module';
@@ -37,6 +39,7 @@ import { WalletReconciliationModule } from './modules/wallets/wallet-reconciliat
 import { PolicyModule } from './modules/policies/policy.module';
 import { RiskModule } from './modules/risk/risk.module';
 import { BudgetModule } from './modules/budgets/budget.module';
+import { BudgetRolloverModule } from './modules/budgets/budget-rollover.module';
 import { TransactionModule } from './modules/transactions/transaction.module';
 import { ApprovalModule } from './modules/approvals/approval.module';
 import { AnalyticsModule } from './modules/analytics/analytics.module';
@@ -106,6 +109,7 @@ import { RequestIdInterceptor } from './common/interceptors/request-id.intercept
     DatabaseModule,
     EventsModule,
     LocksModule,
+    IdempotencyModule,
     EncryptionModule,
 
     // Domain modules
@@ -117,6 +121,7 @@ import { RequestIdInterceptor } from './common/interceptors/request-id.intercept
     PolicyModule,
     RiskModule,
     BudgetModule,
+    BudgetRolloverModule,
     TransactionModule,
     ApprovalModule,
     AnalyticsModule,
@@ -147,7 +152,8 @@ import { RequestIdInterceptor } from './common/interceptors/request-id.intercept
     { provide: APP_INTERCEPTOR, useClass: AuditInterceptor },
     { provide: APP_INTERCEPTOR, useClass: StructuredAuditInterceptor },
     { provide: APP_INTERCEPTOR, useClass: MetricsInterceptor },
-    { provide: APP_FILTER, useClass: AllExceptionsFilter },
+    { provide: APP_FILTER, useClass: GlobalExceptionFilter },
+    { provide: APP_FILTER, useClass: PrismaExceptionFilter },
   ],
 })
 export class AppModule implements NestModule {

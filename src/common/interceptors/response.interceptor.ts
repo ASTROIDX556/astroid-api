@@ -28,15 +28,15 @@ export class ResponseInterceptor<T> implements NestInterceptor<T, ApiSuccessResp
   ): Observable<ApiSuccessResponse<unknown>> {
     const http = context.switchToHttp();
     const request = http.getRequest<Request>();
-    // A replayed idempotent response returns the original request id and status,
-    // not the values of the duplicate request that asked for it.
-    const requestId =
-      RequestContext.getData<string>(IDEMPOTENT_REPLAY_REQUEST_ID) ??
-      (request.headers[REQUEST_ID_HEADER] as string) ??
-      'unknown';
 
     return next.handle().pipe(
       map((payload): ApiSuccessResponse<unknown> => {
+        // Read replay metadata when the value is emitted: an idempotent replay
+        // publishes the original request id from inside the handler chain.
+        const requestId =
+          RequestContext.getData<string>(IDEMPOTENT_REPLAY_REQUEST_ID) ??
+          (request.headers[REQUEST_ID_HEADER] as string) ??
+          'unknown';
         const replayStatus = RequestContext.getData<number>(IDEMPOTENT_REPLAY_STATUS);
         if (replayStatus) {
           http.getResponse<Response>().status(replayStatus);

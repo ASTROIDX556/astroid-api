@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { TransactionIdempotencyRecord } from '@prisma/client';
+import { IdempotencyRecord } from '@prisma/client';
 import { IdempotencyService } from './idempotency.service';
 import { PrismaService } from '../../database/prisma.service';
 import { RequestContext, RequestContextData } from '../context/request-context';
@@ -17,18 +17,19 @@ const OTHER_ROUTE = 'POST /transactions/execute';
  * (principal, route, keyHash) uniqueness as the database constraint.
  */
 function createPrisma() {
-  const rows = new Map<string, TransactionIdempotencyRecord>();
+  const rows = new Map<string, IdempotencyRecord>();
   let sequence = 0;
 
-  const matchesIdentity = (row: TransactionIdempotencyRecord, where: Record<string, unknown>) =>
+  const matchesIdentity = (row: IdempotencyRecord, where: Record<string, unknown>) =>
     (typeof where.principalId !== 'string' || row.principalId === where.principalId) &&
+    (typeof where.scope !== 'string' || row.scope === where.scope) &&
     (typeof where.route !== 'string' || row.route === where.route) &&
     (typeof where.keyHash !== 'string' || row.keyHash === where.keyHash);
 
   return {
     rows,
     prisma: {
-      transactionIdempotencyRecord: {
+      idempotencyRecord: {
         deleteMany: vi.fn(async ({ where }: { where: Record<string, unknown> }) => {
           let count = 0;
           for (const [id, row] of rows) {
@@ -47,25 +48,25 @@ function createPrisma() {
         create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
           const duplicate = [...rows.values()].some(
             (row) =>
-              row.principalId === data.principalId &&
+              row.scope === data.scope &&
               row.route === data.route &&
               row.keyHash === data.keyHash,
           );
           if (duplicate) throw { code: 'P2002' };
-          const row: TransactionIdempotencyRecord = {
+          const row: IdempotencyRecord = {
             id: `idem_${(sequence += 1)}`,
             principalId: data.principalId as string,
-            operation: data.operation as string,
+            scope: (data.scope as string | undefined) ?? (data.principalId as string),
             route: data.route as string,
             keyHash: data.keyHash as string,
             requestHash: data.requestHash as string,
             status: 'PROCESSING',
             transactionId: null,
-            response: null,
+            responseBody: null,
             responseStatus: null,
             requestId: null,
             createdAt: new Date(),
-            completedAt: null,
+            updatedAt: new Date(),
             expiresAt: data.expiresAt as Date,
           };
           rows.set(row.id, row);
@@ -73,7 +74,7 @@ function createPrisma() {
         }),
         findUnique: vi.fn(async ({ where }: { where: Record<string, unknown> }) => {
           if (typeof where.id === 'string') return rows.get(where.id) ?? null;
-          const identity = where.principalId_route_keyHash as Record<string, unknown>;
+          const identity = where.scope_route_keyHash as Record<string, unknown>;
           return (
             [...rows.values()].find((row) => matchesIdentity(row, identity)) ?? null
           );
@@ -82,7 +83,7 @@ function createPrisma() {
           async ({ where, data }: { where: { id: string }; data: Record<string, unknown> }) => {
             const row = rows.get(where.id);
             if (!row) throw new Error(`missing record ${where.id}`);
-            const updated = { ...row, ...data } as TransactionIdempotencyRecord;
+            const updated = { ...row, ...data } as IdempotencyRecord;
             rows.set(row.id, updated);
             return updated;
           },
@@ -93,7 +94,7 @@ function createPrisma() {
               (row) => row.transactionId === where.transactionId && row.status === where.status,
             );
             for (const row of matching) {
-              rows.set(row.id, { ...row, ...data } as TransactionIdempotencyRecord);
+              rows.set(row.id, { ...row, ...data } as IdempotencyRecord);
             }
             return { count: matching.length };
           },
@@ -200,6 +201,16 @@ describe('IdempotencyService', () => {
     const other = await service.reserve(reserveInput({ principalId: 'user_2' }));
 
     expect(other.created).toBe(true);
+    expect(store.rows.size).toBe(2);
+  });
+
+  it('scopes the same key to distinct credential namespaces', async () => {
+    const first = await service.reserve(reserveInput({ scope: 'user:same-id' }));
+    const second = await service.reserve(reserveInput({ scope: 'apikey:same-id' }));
+
+    expect(first.record.scope).toBe('user:same-id');
+    expect(second.record.scope).toBe('apikey:same-id');
+    expect(second.created).toBe(true);
     expect(store.rows.size).toBe(2);
   });
 

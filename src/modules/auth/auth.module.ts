@@ -11,6 +11,7 @@ import { ApiKeyAuthGuard } from '../../common/guards/api-key-auth.guard';
 import { ScopesGuard } from '../../common/guards/scopes.guard';
 import { TokenBlacklistService } from './services/token-blacklist.service';
 import { TokenVerificationCacheService } from './services/token-verification-cache.service';
+import { AuthRepository } from './auth.repository';
 import { CacheService } from '../../common/cache/cache.service';
 import { PasskeyController } from './controllers/passkey.controller';
 import { PasskeyService } from './services/passkey.service';
@@ -60,6 +61,7 @@ import { closeRedisClient } from '../../common/shutdown/close-redis-client';
     ScopesGuard,
     PasskeyService,
     TokenBlacklistService,
+    AuthRepository,
   ],
   exports: [
     AuthService,

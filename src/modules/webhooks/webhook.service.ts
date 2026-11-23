@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, Optional } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { WebhookRepository } from './webhook.repository';
 import { CreateWebhookInput, UpdateWebhookInput } from './webhook.dto';
@@ -13,6 +13,7 @@ import { CursorPaginated } from '../../common/interfaces/api-response.interface'
 import { CursorPaginationQuery, decodeCursor, encodeCursor } from '../../common/pagination/cursor-pagination';
 import { generateToken } from '../../utils/crypto.util';
 import { WebhookDestinationPolicy, WebhookDestinationError } from './webhook-destination.policy';
+import { EncryptionService } from '../../common/encryption/encryption.service';
 
 const SORTABLE = ['createdAt', 'url'];
 
@@ -32,15 +33,17 @@ export class WebhookService {
   constructor(
     private readonly repository: WebhookRepository,
     private readonly destinationPolicy: WebhookDestinationPolicy,
+    @Optional() private readonly encryptionService?: EncryptionService,
   ) {}
 
   async create(organizationId: string, input: CreateWebhookInput) {
     await this.validateDestination(input.url);
     const secret = `whsec_${generateToken(24)}`;
+    const storedSecret = this.encryptionService ? this.encryptionService.encrypt(secret) : secret;
     const webhook = await this.repository.create({
       organizationId,
       url: input.url,
-      secret,
+      secret: storedSecret,
       events: input.events,
       enabled: input.enabled,
     });
@@ -93,7 +96,8 @@ export class WebhookService {
   async rotateSecret(organizationId: string, id: string) {
     await this.getOrThrow(organizationId, id);
     const secret = `whsec_${generateToken(24)}`;
-    const webhook = await this.repository.update(id, { secret });
+    const storedSecret = this.encryptionService ? this.encryptionService.encrypt(secret) : secret;
+    const webhook = await this.repository.update(id, { secret: storedSecret });
     return { ...redact(webhook), secret };
   }
 

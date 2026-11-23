@@ -1,11 +1,21 @@
 import { z } from 'zod';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { isValidCursor } from '../../common/pagination/cursor-pagination';
+import { auditPaginationEnvSchema } from '../../config/env.validation';
+import { isValidAuditCursor } from './audit-cursor';
+
+const paginationLimits = auditPaginationEnvSchema.parse(process.env);
+
+/** Configured defaults for audit listing and resource timeline queries. */
+export const AUDIT_DEFAULT_PAGE_SIZE = paginationLimits.AUDIT_PAGE_SIZE_DEFAULT;
+export const AUDIT_MAX_PAGE_SIZE = paginationLimits.AUDIT_PAGE_SIZE_MAX;
 
 export const auditListQuerySchema = z
   .object({
-    cursor: z.string().max(256).refine(isValidCursor, 'Invalid cursor').optional(),
-    limit: z.coerce.number().int().min(1).max(100).default(20),
+    cursor: z.string().max(256).refine(isValidAuditCursor, 'Invalid cursor').optional(),
+    offset: z.coerce.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
+    page: z.coerce.number().int().positive().max(1_000_000_000).optional(),
+    pageSize: z.coerce.number().int().min(1).max(AUDIT_MAX_PAGE_SIZE).optional(),
+    limit: z.coerce.number().int().min(1).max(AUDIT_MAX_PAGE_SIZE).optional(),
     actorId: z.string().min(1).max(128).optional(),
     action: z.string().min(1).max(120).optional(),
     resourceType: z.string().min(1).max(120).optional(),
@@ -21,6 +31,12 @@ export const auditListQuerySchema = z
   })
   .strict()
   .superRefine((query, context) => {
+    if (query.offset !== undefined && query.page !== undefined) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ['offset'], message: 'Provide either offset or page, not both' });
+    }
+    if (query.pageSize !== undefined && query.limit !== undefined) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ['pageSize'], message: 'Provide either pageSize or limit, not both' });
+    }
     if (query.from && query.to && new Date(query.from) > new Date(query.to)) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
@@ -28,9 +44,30 @@ export const auditListQuerySchema = z
         message: '`to` must be greater than or equal to `from`',
       });
     }
+  })
+  .transform((query) => {
+    const limit = query.pageSize ?? query.limit ?? AUDIT_DEFAULT_PAGE_SIZE;
+    const page = query.page ?? (query.offset === undefined ? 1 : Math.floor(query.offset / limit) + 1);
+    const offset = query.offset ?? (page - 1) * limit;
+    if (!Number.isSafeInteger(offset)) {
+      throw new z.ZodError([{ code: z.ZodIssueCode.custom, path: ['page'], message: 'Pagination offset exceeds the supported range' }]);
+    }
+    return { ...query, limit, pageSize: limit, page, offset };
   });
 
-export type AuditListQuery = z.infer<typeof auditListQuerySchema>;
+export type AuditListQuery = {
+  cursor?: string;
+  limit?: number;
+  pageSize?: number;
+  page?: number;
+  offset?: number;
+  actorId?: string;
+  action?: string;
+  resourceType?: string;
+  resourceId?: string;
+  from?: string;
+  to?: string;
+};
 /** An audit log entry as returned by the API. */
 export class AuditLogEntryDto {
   @ApiProperty({ description: 'Audit log entry id', format: 'uuid', example: '018f0a1b-7777-4000-8000-000000000000' })
@@ -63,11 +100,11 @@ export class AuditLogEntryDto {
   @ApiPropertyOptional({ type: Object, description: 'State after the action' })
   newValue?: Record<string, unknown>;
 
-  @ApiPropertyOptional({
-    description: 'Derived result of the audited operation',
-    enum: ['SUCCESS', 'FAILURE'],
-  })
-  outcome?: string;
+  @ApiPropertyOptional({ description: 'Hash of the previous audit entry, or GENESIS for the first entry' })
+  prevHash?: string;
+
+  @ApiPropertyOptional({ description: 'SHA-256 hash of this audit entry' })
+  hash?: string;
 
   @ApiProperty({ description: 'Creation timestamp', example: '2026-01-15T10:30:00.000Z' })
   createdAt!: string;
@@ -93,12 +130,15 @@ export class AuditIntegrityDto {
   @ApiProperty({ description: 'Whether the hash chain is intact', example: true })
   valid!: boolean;
 
-  @ApiProperty({ description: 'Number of entries that were checked', example: 120 })
-  entriesChecked!: number;
+  @ApiProperty({ description: 'Number of hashed entries that were checked', example: 120 })
+  totalChecked!: number;
 
   @ApiPropertyOptional({ description: 'Id of the first entry that broke the chain' })
-  brokenAt?: string;
+  brokenAtEntryId?: string | null;
 
-  @ApiPropertyOptional({ description: 'Explanation of the failure' })
-  reason?: string;
+  @ApiPropertyOptional({ description: 'Zero-based index of the first broken entry' })
+  brokenAtIndex?: number | null;
+
+  @ApiProperty({ description: 'Integrity verification result', example: 'Chain integrity verified' })
+  message!: string;
 }

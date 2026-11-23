@@ -11,18 +11,23 @@ import {
   SwaggerModule,
 } from '@nestjs/swagger';
 import { OpenAPIObject } from '@nestjs/swagger/dist/interfaces/open-api-spec.interface';
+import { DECORATORS } from '@nestjs/swagger/dist/constants';
 import { Public } from '../decorators/public.decorator';
 import {
   RegisteredRoute,
   findDanglingRefs,
   findDuplicateRoutes,
+  findMissingDeclaredSchemas,
+  findMissingRequestSchemas,
   findOperationsMissingSecurity,
-  findOperationsWithUntypedRequestBody,
+  findOperationsWithoutResponses,
   findOperationsWithoutSuccessSchema,
+  findOperationsWithoutSummary,
   findStaleAllowlistEntries,
   findUndocumentedRoutes,
   findUnservedOperations,
   listRegisteredRoutes,
+  routeHandlers,
   routeKey,
   toOpenApiPath,
 } from './openapi-coverage';
@@ -47,11 +52,17 @@ const ok = (schema: object = { type: 'object' }) => ({
   '200': { description: 'ok', content: { 'application/json': { schema } } },
 });
 
-const route = (method: string, path: string, isPublic = false): RegisteredRoute => ({
+const route = (
+  method: string,
+  path: string,
+  isPublic = false,
+  acceptsBody = false,
+): RegisteredRoute => ({
   method,
   path,
   handler: `Fixture.${method.toLowerCase()}${path.replace(/\W+/g, '_')}`,
   isPublic,
+  acceptsBody,
 });
 
 describe('OpenAPI coverage checks on deliberately broken fixtures', () => {
@@ -136,38 +147,61 @@ describe('OpenAPI coverage checks on deliberately broken fixtures', () => {
     ]);
   });
 
-  it('names a request body without content, without a schema, or with an untyped schema', () => {
-    const findings = findOperationsWithUntypedRequestBody(
-      doc(
-        {
-          '/api/v1/a': {
-            post: {
-              requestBody: {
-                content: { 'application/json': { schema: { $ref: '#/components/schemas/CreateA' } } },
-              },
-              responses: ok(),
-            },
-          },
-          '/api/v1/b': {
-            post: {
-              requestBody: { content: { 'application/json': { schema: {} } } },
-              responses: ok(),
-            },
-          },
-          '/api/v1/c': {
-            post: { requestBody: { content: {} }, responses: ok() },
-          },
-          '/api/v1/d': {
-            get: { responses: ok() },
-          },
-        },
-        { CreateA: { type: 'object' } },
-      ),
-    );
+  it('names the handler whose operation has no summary or no response', () => {
+    const document = doc({
+      '/api/v1/a': { get: { summary: 'Has a summary', responses: ok() } },
+      '/api/v1/b': { get: { description: 'No summary', responses: ok() } },
+      '/api/v1/c': { get: { summary: 'No responses', responses: {} } },
+    });
+    const handlers = new Map([
+      ['GET /api/v1/b', 'BetaController.list'],
+      ['GET /api/v1/c', 'GammaController.list'],
+    ]);
 
-    expect(findings).toEqual([
-      'POST /api/v1/b (application/json) documents an untyped request body schema',
-      'POST /api/v1/c documents a request body without content',
+    expect(findOperationsWithoutSummary(document, handlers)).toEqual([
+      'GET /api/v1/b (BetaController.list) has no OpenAPI operation summary',
+    ]);
+    expect(findOperationsWithoutResponses(document, handlers)).toEqual([
+      'GET /api/v1/c (GammaController.list) documents no response',
+    ]);
+  });
+
+  it('names a body-accepting route whose operation has no named DTO schema', () => {
+    const routes = [
+      route('POST', '/api/v1/agents', false, true),
+      route('POST', '/api/v1/webhooks/receive', true, true),
+    ];
+    const document = doc({ '/api/v1/agents': { post: { responses: ok() } } });
+
+    expect(findMissingRequestSchemas(routes, document, [], routeHandlers(routes))).toEqual([
+      'POST /api/v1/agents (Fixture.post_api_v1_agents) declares a request body with no DTO schema in components.schemas',
+    ]);
+    expect(
+      findMissingRequestSchemas(routes, document, [
+        { method: 'POST', path: '/api/v1/agents', reason: 'fixture' },
+      ]),
+    ).toEqual([]);
+  });
+
+  it('names the handler whose declared DTO schema is absent from the operation', () => {
+    class CreateThingDto {}
+    const handler = () => undefined;
+    Reflect.defineMetadata(
+      DECORATORS.API_PARAMETERS,
+      [{ in: 'body', type: CreateThingDto }],
+      handler,
+    );
+    const routes: RegisteredRoute[] = [
+      {
+        ...route('POST', '/api/v1/things'),
+        acceptsBody: true,
+        handlerFunction: handler,
+      },
+    ];
+    const document = doc({ '/api/v1/things': { post: { responses: ok() } } });
+
+    expect(findMissingDeclaredSchemas(routes, document, routeHandlers(routes))).toEqual([
+      'POST /api/v1/things (Fixture.post_api_v1_things) declares #/components/schemas/CreateThingDto but it is missing from the operation',
     ]);
   });
 
