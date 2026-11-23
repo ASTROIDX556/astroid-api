@@ -84,6 +84,10 @@ export class PolicyService {
    * Evaluates an intent against all applicable stored policies. Emits a
    * PolicyEvaluated event (and PolicyViolated on failure) for the ledger.
    * Also persists an audit log entry for compliance tracking.
+   *
+   * Fallback semantics: when no policies apply to the intent (or none are configured
+   * for the organization/agent), evaluation explicitly falls through to the documented
+   * default: allow with 0 violations and unconstrained spend (`passed: true`).
    */
   async evaluateIntent(
     intent: TransactionIntent,

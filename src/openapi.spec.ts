@@ -43,6 +43,7 @@ import {
   findMissingRequestSchemas,
   findOperationsMissingSecurity,
   findOperationsWithoutResponses,
+  findOperationsWithoutSuccessEnvelope,
   findOperationsWithoutSuccessSchema,
   findOperationsWithoutSummary,
   findStaleAllowlistEntries,
@@ -157,8 +158,10 @@ function operationLabel(
 /**
  * Routes deliberately left out of the OpenAPI document. Every entry must still
  * be served and still be undocumented, or the allowlist check fails, so an entry
- * cannot outlive its reason. Health probes are intentionally documented because
- * orchestrators consume their contract, so they are not allowlisted here.
+ * cannot outlive its reason. Orchestrator probes (/health/live, /health/ready)
+ * are documented with standard response envelopes because infrastructure consumes them.
+ * Richer diagnostic health routes are internal and un-enveloped, so they are explicitly
+ * allowlisted here.
  */
 const INTERNAL_ROUTES: AllowlistedRoute[] = [
   {
@@ -177,13 +180,49 @@ const INTERNAL_ROUTES: AllowlistedRoute[] = [
     // (`@ApiExcludeController()` in webhook-ingress.controller.ts).
     reason: 'Partner webhook ingress authenticated by HMAC signature, not by the documented schemes',
   },
+  {
+    method: 'GET',
+    path: '/api/v1/health',
+    // Internal root health check returning raw HealthStatusDto for service orchestrators.
+    reason: 'Internal application health diagnostic returning raw HealthStatusDto without client envelope',
+  },
+  {
+    method: 'GET',
+    path: '/api/v1/health/liveness',
+    // Diagnostic probe returning un-enveloped liveness report.
+    reason: 'Internal process liveness diagnostic returning raw status report for infrastructure',
+  },
+  {
+    method: 'GET',
+    path: '/api/v1/health/readiness',
+    // Diagnostic probe returning un-enveloped readiness breakdown.
+    reason: 'Internal dependency readiness diagnostic returning raw per-service status for infrastructure',
+  },
+  {
+    method: 'GET',
+    path: '/api/v1/health/database',
+    // Diagnostic probe returning raw Prisma connection check.
+    reason: 'Internal database connectivity diagnostic returning raw database status',
+  },
+  {
+    method: 'GET',
+    path: '/api/v1/health/redis',
+    // Diagnostic probe returning raw Redis connection check.
+    reason: 'Internal Redis connectivity diagnostic returning raw cache status',
+  },
+  {
+    method: 'GET',
+    path: '/api/v1/health/stellar',
+    // Diagnostic probe returning raw Horizon and Soroban connectivity checks.
+    reason: 'Internal Stellar connectivity diagnostic returning raw network and node status',
+  },
 ];
 
 /**
- * The liveness probes only ever answer 200 — they are not part of the
- * authenticated surface and have no error to report.
+ * The liveness probe only ever answers 200 — it is not part of the
+ * authenticated surface and has no error to report.
  */
-const LIVENESS_PROBES = ['/health/live', '/api/v1/health/liveness'];
+const LIVENESS_PROBES = ['/health/live'];
 
 /** Paths the API serves outside its prefix, as they appear in the document. */
 const UNPREFIXED_PATHS = new Set(GLOBAL_PREFIX_EXCLUDED_ROUTES.map((route) => `/${route.path}`));
@@ -333,6 +372,10 @@ describe('OpenAPI Documentation', () => {
 
   it('documents a 2xx response with a schema for every operation', () => {
     expect(findOperationsWithoutSuccessSchema(document, handlers)).toEqual([]);
+  });
+
+  it('declares a success response using the { success, data, meta, requestId } envelope on every operation', () => {
+    expect(findOperationsWithoutSuccessEnvelope(document, handlers)).toEqual([]);
   });
 
   it('documents a named request DTO schema for every route with a request body', () => {
