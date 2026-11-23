@@ -279,6 +279,22 @@ export class BudgetRepository {
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
   }
 
+  /**
+   * Sum of PENDING (held, not yet settled or released) reservations per
+   * budget. Budgets with no pending reservation are absent from the map.
+   */
+  async sumPendingReservations(budgetIds: string[]): Promise<Map<string, Prisma.Decimal>> {
+    if (budgetIds.length === 0) return new Map();
+    const rows = await this.prisma.budgetReservation.groupBy({
+      by: ['budgetId'],
+      where: { budgetId: { in: budgetIds }, status: ReservationStatus.PENDING },
+      _sum: { amount: true },
+    });
+    return new Map(
+      rows.map((row) => [row.budgetId, new Prisma.Decimal(row._sum.amount ?? 0)]),
+    );
+  }
+
   findReservationById(id: string): Promise<BudgetReservation | null> {
     return this.prisma.budgetReservation.findUnique({ where: { id } });
   }

@@ -16,6 +16,17 @@ export type StellarConfig = {
   /** Static fee limit in stroops paired with {@link fallbackGasLimit}. */
   fallbackFeeStroops: number;
   anchorAssets: Record<string, string>;
+  /** Timeout, retry and circuit-breaker policy for Soroban RPC calls. */
+  sorobanRpc: SorobanRpcResilienceConfig;
+};
+
+export type SorobanRpcResilienceConfig = {
+  timeoutMs: number;
+  maxAttempts: number;
+  retryBaseDelayMs: number;
+  retryMaxDelayMs: number;
+  failureThreshold: number;
+  cooldownMs: number;
 };
 
 export function parseAnchorAssets(raw: string): Record<string, string> {
@@ -47,5 +58,13 @@ export const stellarConfig = registerAs('stellar', (): StellarConfig => {
     fallbackGasLimit: env.STELLAR_FALLBACK_GAS_LIMIT,
     fallbackFeeStroops: env.STELLAR_FALLBACK_FEE_STROOPS,
     anchorAssets: parseAnchorAssets(env.STELLAR_ANCHOR_ASSETS),
+    sorobanRpc: {
+      timeoutMs: env.STELLAR_SOROBAN_RPC_TIMEOUT_MS,
+      maxAttempts: env.STELLAR_SOROBAN_RPC_MAX_ATTEMPTS,
+      retryBaseDelayMs: env.STELLAR_SOROBAN_RPC_RETRY_BASE_DELAY_MS,
+      retryMaxDelayMs: env.STELLAR_SOROBAN_RPC_RETRY_MAX_DELAY_MS,
+      failureThreshold: env.STELLAR_SOROBAN_RPC_CIRCUIT_FAILURE_THRESHOLD,
+      cooldownMs: env.STELLAR_SOROBAN_RPC_CIRCUIT_COOLDOWN_MS,
+    },
   };
 });

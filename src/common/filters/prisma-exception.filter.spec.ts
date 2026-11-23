@@ -105,7 +105,7 @@ describe('PrismaExceptionFilter', () => {
   });
 
   describe('P2003 - Foreign key constraint', () => {
-    it('maps P2003 to 409 CONFLICT', () => {
+    it('maps P2003 to 400 BAD_REQUEST', () => {
       const { host, response } = buildHost();
       const error = new Prisma.PrismaClientKnownRequestError('Foreign key constraint failed on the field: `userId`', {
         code: 'P2003',
@@ -114,10 +114,10 @@ describe('PrismaExceptionFilter', () => {
 
       filter.catch(error, host);
 
-      expect(response.status).toHaveBeenCalledWith(409);
+      expect(response.status).toHaveBeenCalledWith(400);
       const body = renderedBody(response);
-      expect(body.status).toBe(409);
-      expect(body.code).toBe(ErrorCode.CONFLICT);
+      expect(body.status).toBe(400);
+      expect(body.code).toBe(ErrorCode.BAD_REQUEST);
       expect(body.detail).toBe(
         'Foreign key constraint failed: referenced resource does not exist or has dependent records',
       );

@@ -48,6 +48,13 @@ export enum ErrorCode {
   INVALID_STELLAR_TRANSACTION = 'INVALID_STELLAR_TRANSACTION',
   CONTRACT_REVERTED = 'CONTRACT_REVERTED',
   CONTRACT_PANIC = 'CONTRACT_PANIC',
+  /**
+   * The Soroban RPC endpoint is unreachable, timing out, overloaded or its
+   * circuit breaker is open. Transient: safe to retry later.
+   */
+  SOROBAN_UNAVAILABLE = 'SOROBAN_UNAVAILABLE',
+  /** The Soroban RPC endpoint rejected the request (4xx or JSON-RPC error). Not retryable. */
+  SOROBAN_REQUEST_REJECTED = 'SOROBAN_REQUEST_REJECTED',
 
   // Resilience
   CIRCUIT_OPEN = 'CIRCUIT_OPEN',
@@ -95,9 +102,11 @@ export const ERROR_STATUS: Record<ErrorCode, number> = {
   [ErrorCode.INVALID_STELLAR_TRANSACTION]: 400,
   [ErrorCode.CONTRACT_REVERTED]: 422,
   [ErrorCode.CONTRACT_PANIC]: 422,
+  [ErrorCode.SOROBAN_UNAVAILABLE]: 503,
+  [ErrorCode.SOROBAN_REQUEST_REJECTED]: 400,
   [ErrorCode.CIRCUIT_OPEN]: 503,
   [ErrorCode.LOCK_ACQUISITION_FAILED]: 409,
-  [ErrorCode.IDEMPOTENCY_KEY_MISMATCH]: 409,
+  [ErrorCode.IDEMPOTENCY_KEY_MISMATCH]: 422,
   [ErrorCode.IDEMPOTENCY_KEY_IN_FLIGHT]: 409,
 };
 
@@ -140,6 +149,8 @@ export const ERROR_TITLE: Record<ErrorCode, string> = {
   [ErrorCode.INVALID_STELLAR_TRANSACTION]: 'Invalid Stellar Transaction',
   [ErrorCode.CONTRACT_REVERTED]: 'Smart Contract Reverted',
   [ErrorCode.CONTRACT_PANIC]: 'Smart Contract Panicked',
+  [ErrorCode.SOROBAN_UNAVAILABLE]: 'Soroban RPC Unavailable',
+  [ErrorCode.SOROBAN_REQUEST_REJECTED]: 'Soroban RPC Request Rejected',
   [ErrorCode.CIRCUIT_OPEN]: 'Service Temporarily Unavailable',
   [ErrorCode.LOCK_ACQUISITION_FAILED]: 'Resource Locked',
   [ErrorCode.IDEMPOTENCY_KEY_MISMATCH]: 'Idempotency Key Payload Mismatch',

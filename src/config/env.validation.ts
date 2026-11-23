@@ -64,6 +64,9 @@ export const balanceCacheEnvSchema = z.object({
   // Namespace of the cache entries. Two deployments (staging, production, …)
   // that share a Redis instance never share a balance entry.
   BALANCE_CACHE_ENV: z.string().min(1).default(process.env.NODE_ENV ?? 'development'),
+  // Native XLM balance below which a wallet is reported as low. Read by the
+  // balance cache watcher on every refresh.
+  LOW_XLM_THRESHOLD: z.coerce.number().nonnegative().default(10),
 });
 
 export const authEnvSchema = z.object({
@@ -97,6 +100,19 @@ export const stellarEnvSchema = z.object({
   // Static fee limit, in stroops, used alongside the fallback gas limit.
   STELLAR_FALLBACK_FEE_STROOPS: z.coerce.number().int().nonnegative().default(100_000),
   STELLAR_ANCHOR_ASSETS: z.string().default(''),
+  // Soroban RPC resilience (see src/integrations/stellar/soroban.client.ts).
+  // Per-attempt timeout for an outbound Soroban RPC call.
+  STELLAR_SOROBAN_RPC_TIMEOUT_MS: z.coerce.number().int().positive().max(60_000).default(5_000),
+  // Total attempts per call, including the first. Only timeouts, connection
+  // errors, 5xx and 429 are retried.
+  STELLAR_SOROBAN_RPC_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(3).default(3),
+  // Base and maximum delay of the jittered exponential backoff between attempts.
+  STELLAR_SOROBAN_RPC_RETRY_BASE_DELAY_MS: z.coerce.number().int().positive().default(250),
+  STELLAR_SOROBAN_RPC_RETRY_MAX_DELAY_MS: z.coerce.number().int().positive().default(2_000),
+  // Consecutive failed attempts that open the circuit breaker.
+  STELLAR_SOROBAN_RPC_CIRCUIT_FAILURE_THRESHOLD: z.coerce.number().int().positive().default(5),
+  // How long the circuit stays open before a single half-open probe.
+  STELLAR_SOROBAN_RPC_CIRCUIT_COOLDOWN_MS: z.coerce.number().int().positive().default(30_000),
 });
 
 export const priceOracleEnvSchema = z.object({
@@ -378,6 +394,8 @@ export const INSECURE_DEFAULT_ENCRYPTION_KEY =
   '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 
 export const encryptionEnvSchema = z.object({
+  // Legacy alias accepted as a fallback when ENCRYPTION_KEY is unset.
+  ENCRYPTION_MASTER_KEY: z.string().optional(),
   ENCRYPTION_KEY: z
     .string()
     .default(INSECURE_DEFAULT_ENCRYPTION_KEY)

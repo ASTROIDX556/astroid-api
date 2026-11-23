@@ -5,7 +5,6 @@ import { ApprovalDecision, Prisma, Proposal, ProposalStatus, Transaction } from 
 import { ApprovalRepository } from './approval.repository';
 import { DecideProposalInput } from './approval.dto';
 import { TransactionService } from '../transactions/transaction.service';
-import { BudgetService } from '../budgets/budget.service';
 import { DomainException } from '../../common/exceptions/domain.exception';
 import { ErrorCode } from '../../common/constants/error-codes';
 import {
@@ -27,6 +26,7 @@ import {
 import { approvalConfig } from '../../config/approval.config';
 import { idempotencyConfig, IdempotencyConfig } from '../../config/idempotency.config';
 import { ApprovalIdempotencyRepository } from './approval-idempotency.repository';
+import { ApprovalExpiryQueue } from '../../queues/approval-expiry.queue';
 
 const SORTABLE = ['createdAt', 'status', 'approvalType'];
 const DECISION_OPERATION = 'approvals.decide';
@@ -83,7 +83,6 @@ export class ApprovalService {
     private readonly repository: ApprovalRepository,
     private readonly transactions: TransactionService,
     private readonly eventBus: EventBusService,
-    @Optional() private readonly budgets?: BudgetService,
     @Optional()
     @Inject(approvalConfig.KEY)
     private readonly approvalConfiguration?: ConfigType<typeof approvalConfig>,
@@ -91,6 +90,7 @@ export class ApprovalService {
     // is missing); typed optional only because it follows optional parameters.
     private readonly idempotency?: ApprovalIdempotencyRepository,
     @Optional() private readonly config?: ConfigService,
+    @Optional() private readonly expiryQueue?: ApprovalExpiryQueue,
   ) {}
 
   async list(organizationId: string, query: PaginationQuery) {
@@ -231,6 +231,8 @@ export class ApprovalService {
     // loses harmlessly if the sweeper expired the proposal in the meantime.
     if (input.decision === ApprovalDecision.REJECTED) {
       await this.transition(proposal, ProposalStatus.REJECTED, organizationId, actorId);
+      await this.expiryQueue?.cancel(proposal.id);
+      // cancel() releases the transaction's budget reservation.
       await this.transactions.cancel(organizationId, actorId, proposal.transactionId);
       return this.getOrThrow(organizationId, proposalId);
     }
@@ -243,6 +245,7 @@ export class ApprovalService {
 
     // Threshold reached: approve, execute the transaction, then mark executed.
     await this.transition(proposal, ProposalStatus.APPROVED, organizationId, actorId, { approvals });
+    await this.expiryQueue?.cancel(proposal.id);
 
     await this.transactions.execute(organizationId, proposal.transactionId, actorId);
     await this.transition(
@@ -280,20 +283,8 @@ export class ApprovalService {
 
       proposalIds.push(proposal.id);
 
-      if (this.budgets && proposal.transaction?.budgetId) {
-        try {
-          await this.budgets.releaseBudget(
-            proposal.organizationId,
-            proposal.transaction.budgetId,
-            Number(proposal.transaction.amount),
-          );
-        } catch (error) {
-          this.logger.warn(
-            `Could not release budget for expired proposal ${proposal.id}: ${(error as Error).message}`,
-          );
-        }
-      }
-
+      // Cancelling the transaction releases its budget reservation
+      // (idempotently) — the same path as a manual rejection.
       if (proposal.transactionId) {
         try {
           await this.transactions.cancel(
@@ -328,7 +319,7 @@ export class ApprovalService {
 
   /**
    * Sweeps expired pending proposals in bounded batches.
-   * Atomically transitions them to EXPIRED, releases held budgets, cancels transactions,
+   * Atomically transitions them to EXPIRED, cancels their transactions (which releases held budget),
    * and emits ProposalExpired events.
    *
    * Idempotent under concurrency: conditional update guarantees budget is released exactly once.
@@ -353,6 +344,25 @@ export class ApprovalService {
   }
 
   /**
+   * Handles the delayed per-proposal expiry job. Expires the proposal only if
+   * it is still PENDING and its deadline has passed; a proposal that was
+   * approved, rejected or already expired (duplicate delivery, worker restart,
+   * a racing sweep) is left untouched.
+   *
+   * @returns true when this call performed the PENDING -> EXPIRED transition.
+   */
+  async expireById(organizationId: string, proposalId: string): Promise<boolean> {
+    const proposal = await this.repository.findById(organizationId, proposalId);
+    if (!proposal || proposal.status !== ProposalStatus.PENDING) return false;
+    if (proposal.expiresAt && proposal.expiresAt.getTime() > Date.now()) {
+      // Fired early (clock skew, or the TTL was extended); the sweep or a
+      // read will expire it once the deadline passes.
+      return false;
+    }
+    return this.expireProposal(proposal, organizationId, 'system:approval-expiry');
+  }
+
+  /**
    * Transitions a pending proposal atomically to EXPIRED and releases any held budget.
    * Guarantees idempotent single-execution: if another worker already transitioned
    * the proposal, this returns false and avoids double-releasing budget.
@@ -374,27 +384,17 @@ export class ApprovalService {
       return false; // raced with another worker or user decision
     }
 
-    // Release held budget reservation exactly once
-    if (this.budgets && proposal.transaction?.budgetId) {
-      try {
-        await this.budgets.releaseBudget(
-          organizationId,
-          proposal.transaction.budgetId,
-          Number(proposal.transaction.amount),
-        );
-      } catch (err) {
-        this.logger.warn(
-          `Could not release budget for expired proposal ${proposal.id}: ${(err as Error).message}`,
-        );
-      }
-    }
-
-    // Cancel underlying transaction if still cancellable
+    // Same budget path as a manual rejection: cancelling the transaction
+    // releases its budget reservation (idempotently). A transaction that can
+    // no longer be cancelled was already cancelled (and released) or has moved
+    // on to execution, where settle/release owns the reservation.
     if (proposal.transactionId) {
       try {
         await this.transactions.cancel(organizationId, actorId, proposal.transactionId);
-      } catch {
-        // gracefully continue
+      } catch (err) {
+        this.logger.debug(
+          `Transaction ${proposal.transactionId} of expired proposal ${proposal.id} was not cancelled: ${(err as Error).message}`,
+        );
       }
     }
 

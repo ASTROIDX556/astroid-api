@@ -16,6 +16,7 @@ import { ShutdownModule } from './common/shutdown/shutdown.module';
 import { REDIS_CLIENT } from './common/locks/locks.constants';
 import { EncryptionModule } from './common/encryption/encryption.module';
 import { RequestIdMiddleware } from './middleware/request-id.middleware';
+import { CorrelationIdMiddleware } from './common/middleware/correlation-id.middleware';
 import { StructuredRequestLoggingMiddleware } from './middleware/structured-request-logging.middleware';
 import { RawBodyMiddleware } from './common/middleware/raw-body.middleware';
 import { createPinoHttpOptions } from './common/logging/pino-http.options';
@@ -162,7 +163,9 @@ import { RequestIdInterceptor } from './common/interceptors/request-id.intercept
 })
 export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer): void {
-    consumer.apply(RequestIdMiddleware, StructuredRequestLoggingMiddleware).forRoutes('*');
+    consumer
+      .apply(CorrelationIdMiddleware, RequestIdMiddleware, StructuredRequestLoggingMiddleware)
+      .forRoutes('*');
     consumer.apply(RawBodyMiddleware).forRoutes({
       path: 'webhooks/receive',
       method: RequestMethod.POST,

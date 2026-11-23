@@ -36,6 +36,7 @@ import { DomainEventName } from '../../events/event-names';
 import { PrismaService } from '../../database/prisma.service';
 import { PrismaTransactionService } from '../../database/prisma-transaction.service';
 import { idempotencyConfig, IdempotencyConfig } from '../../config/idempotency.config';
+import { ApprovalExpiryQueue } from '../../queues/approval-expiry.queue';
 import { IdempotencyService } from '../../common/idempotency/idempotency.service';
 import {
   IDEMPOTENT_DEFAULT_STATUS,
@@ -105,6 +106,7 @@ export class TransactionService {
     @Optional() private readonly transactions?: PrismaTransactionService,
     @Optional() private readonly config?: ConfigService,
     @Optional() private readonly idempotency?: IdempotencyService,
+    @Optional() private readonly approvalExpiry?: ApprovalExpiryQueue,
   ) {}
 
   async create(
@@ -566,6 +568,9 @@ export class TransactionService {
         isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
       },
     );
+    // A cancelled transaction will never spend: return its held budget.
+    // Release is idempotent, so a retried cancel or a racing expiry is safe.
+    await this.releaseReservation(cancelled.budgetReservationId);
     await this.eventBus.emit(
       DomainEventName.TransactionCancelled,
       { transactionId: id },
@@ -575,6 +580,22 @@ export class TransactionService {
   }
 
   // ── internals ──────────────────────────────────────────────────────────
+
+  /**
+   * Returns a held budget reservation (best effort, idempotent). Shared by
+   * cancellation, manual rejection and approval expiry so every terminal
+   * non-spend outcome frees budget the same way.
+   */
+  async releaseReservation(reservationId: string | null | undefined): Promise<void> {
+    if (!reservationId) return;
+    try {
+      await this.budgets.release(reservationId);
+    } catch (error) {
+      this.logger.warn(
+        `Could not release budget reservation ${reservationId}: ${(error as Error).message}`,
+      );
+    }
+  }
 
   /** Resolves and validates the sender wallet + agent before any evaluation. */
   private async preflight(
@@ -656,6 +677,7 @@ export class TransactionService {
         expiresAt,
       },
     });
+    await this.approvalExpiry?.schedule({ proposalId: proposal.id, organizationId, expiresAt });
     await this.eventBus.emit(
       DomainEventName.ProposalCreated,
       { proposalId: proposal.id, transactionId: tx.id, requiredApprovals: proposal.requiredApprovals },

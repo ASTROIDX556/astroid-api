@@ -95,14 +95,31 @@ export class BudgetService {
     return budget;
   }
 
-  /** Returns the budget with computed remaining balance and its direct children. */
+  /**
+   * Returns the budget with its balance breakdown and its direct children.
+   *
+   * - `spent`     – recorded spend plus held reservations (unchanged meaning:
+   *                 a reservation counts against the limit as soon as it is made)
+   * - `reserved`  – the part of `spent` held by PENDING reservations
+   * - `available` – `limitAmount - spent`, floored at zero (same as `remaining`,
+   *                 which is kept for existing clients)
+   */
   async getDetail(organizationId: string, id: string) {
     const budget = await this.getOrThrow(organizationId, id);
     const children = await this.repository.findChildren(id);
+    const reserved = await this.repository.sumPendingReservations([budget.id, ...children.map((c) => c.id)]);
+    const balance = (b: Budget) => {
+      const left = remaining(b).toFixed(7);
+      return {
+        remaining: left,
+        available: left,
+        reserved: (reserved.get(b.id) ?? new Decimal(0)).toFixed(7),
+      };
+    };
     return {
       ...budget,
-      remaining: remaining(budget).toFixed(7),
-      children: children.map((c) => ({ ...c, remaining: remaining(c).toFixed(7) })),
+      ...balance(budget),
+      children: children.map((c) => ({ ...c, ...balance(c) })),
     };
   }
 

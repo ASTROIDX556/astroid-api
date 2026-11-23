@@ -80,7 +80,6 @@ describe('ApprovalService idempotency', () => {
       transactions as unknown as TransactionService,
       { emit: vi.fn().mockResolvedValue(undefined) } as unknown as EventBusService,
       undefined,
-      undefined,
       idempotency as unknown as ApprovalIdempotencyRepository,
       { get: vi.fn(() => settings) } as unknown as ConfigService,
     );
@@ -117,7 +116,7 @@ describe('ApprovalService idempotency', () => {
     expect(transactions.execute).toHaveBeenCalledTimes(1);
   });
 
-  it('rejects reuse of a key with a different payload as a 409 mismatch', async () => {
+  it('rejects reuse of a key with a different payload as a 422 mismatch', async () => {
     await decide('decision-key-3');
 
     const error = await decide('decision-key-3', 'user-1', ApprovalDecision.REJECTED).catch(
@@ -125,7 +124,7 @@ describe('ApprovalService idempotency', () => {
     );
 
     expect(error).toBeInstanceOf(DomainException);
-    expect((error as DomainException).getStatus()).toBe(409);
+    expect((error as DomainException).getStatus()).toBe(422);
     expect(error).toMatchObject({ code: ErrorCode.IDEMPOTENCY_KEY_MISMATCH });
     expect(repository.createApproval).toHaveBeenCalledTimes(1);
   });
@@ -247,7 +246,7 @@ describe('ApprovalService lifecycle guards', () => {
   });
 
   describe('sweepExpired and budget release', () => {
-    it('sweeps expired pending proposals, releases held budget, and cancels transactions', async () => {
+    it('sweeps expired pending proposals and cancels their transactions, which releases held budget', async () => {
       const expiredProposal = {
         ...proposal({
           id: 'prop-expired-1',
@@ -267,14 +266,7 @@ describe('ApprovalService lifecycle guards', () => {
       };
       const transactions = { cancel: vi.fn().mockResolvedValue(undefined) };
       const eventBus = { emit: vi.fn().mockResolvedValue(undefined) };
-      const budgets = { releaseBudget: vi.fn().mockResolvedValue(undefined) };
-
-      const service = new ApprovalService(
-        repository as never,
-        transactions as never,
-        eventBus as never,
-        budgets as never,
-      );
+      const service = new ApprovalService(repository as never, transactions as never, eventBus as never);
 
       const summary = await service.sweepExpired(10);
 
@@ -284,7 +276,6 @@ describe('ApprovalService lifecycle guards', () => {
         ProposalStatus.PENDING,
         ProposalStatus.EXPIRED,
       );
-      expect(budgets.releaseBudget).toHaveBeenCalledWith('org-1', 'budget-1', 50);
       expect(transactions.cancel).toHaveBeenCalledWith('org-1', 'system:approval-sweep', 'tx-1');
       expect(eventBus.emit).toHaveBeenCalledWith(
         'proposal.expired',
@@ -300,6 +291,7 @@ describe('ApprovalService lifecycle guards', () => {
           id: 'prop-concurrent-1',
           expiresAt: new Date(Date.now() - 5000),
         }),
+        transactionId: 'tx-concurrent',
         transaction: {
           id: 'tx-concurrent',
           budgetId: 'budget-abc',
@@ -319,14 +311,7 @@ describe('ApprovalService lifecycle guards', () => {
       };
       const transactions = { cancel: vi.fn().mockResolvedValue(undefined) };
       const eventBus = { emit: vi.fn().mockResolvedValue(undefined) };
-      const budgets = { releaseBudget: vi.fn().mockResolvedValue(undefined) };
-
-      const service = new ApprovalService(
-        repository as never,
-        transactions as never,
-        eventBus as never,
-        budgets as never,
-      );
+      const service = new ApprovalService(repository as never, transactions as never, eventBus as never);
 
       // Run sweep twice (simulating overlapping workers or repeated job runs)
       const [result1, result2] = await Promise.all([
@@ -336,8 +321,9 @@ describe('ApprovalService lifecycle guards', () => {
 
       const totalExpired = result1.expired + result2.expired;
       expect(totalExpired).toBe(1); // exactly one worker won the transition
-      expect(budgets.releaseBudget).toHaveBeenCalledTimes(1);
-      expect(budgets.releaseBudget).toHaveBeenCalledWith('org-1', 'budget-abc', 100);
+      // Only the winner cancels the transaction, so the reservation is
+      // released through the cancel path exactly once.
+      expect(transactions.cancel).toHaveBeenCalledTimes(1);
     });
 
     it('rejects decision on already expired proposal with PROPOSAL_EXPIRED error', async () => {
@@ -367,6 +353,120 @@ describe('ApprovalService lifecycle guards', () => {
       ).rejects.toMatchObject({ code: ErrorCode.PROPOSAL_EXPIRED, status: 409 });
 
       expect(repository.createApproval).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('delayed expiry job', () => {
+    function buildExpiryService(current: ReturnType<typeof proposal> | null) {
+      let status = current?.status;
+      const repository = {
+        findById: vi.fn(async () => (current ? { ...current, status, transaction: null } : null)),
+        transitionStatus: vi.fn(async (_id: string, from: ProposalStatus, to: ProposalStatus) => {
+          if (status !== from) return false;
+          status = to;
+          return true;
+        }),
+        createApproval: vi.fn().mockResolvedValue(undefined),
+        countApprovals: vi.fn().mockResolvedValue(1),
+        findApprovalByUser: vi.fn().mockResolvedValue(null),
+      };
+      const transactions = { cancel: vi.fn().mockResolvedValue(undefined), execute: vi.fn().mockResolvedValue(undefined) };
+      const eventBus = { emit: vi.fn().mockResolvedValue(undefined) };
+      const expiryQueue = { schedule: vi.fn(), cancel: vi.fn().mockResolvedValue(undefined) };
+      const service = new ApprovalService(
+        repository as never,
+        transactions as never,
+        eventBus as never,
+        undefined,
+        undefined,
+        undefined,
+        expiryQueue as never,
+      );
+      return { service, repository, transactions, eventBus, expiryQueue, status: () => status };
+    }
+
+    const due = (overrides: Partial<ReturnType<typeof proposal>> = {}) =>
+      proposal({ id: 'prop-due', transactionId: 'tx-due', expiresAt: new Date(Date.now() - 1_000), ...overrides });
+
+    it('expires a pending proposal, cancels its transaction and emits proposal.expired', async () => {
+      const ctx = buildExpiryService(due());
+
+      await expect(ctx.service.expireById('org-1', 'prop-due')).resolves.toBe(true);
+
+      expect(ctx.status()).toBe(ProposalStatus.EXPIRED);
+      expect(ctx.transactions.cancel).toHaveBeenCalledWith('org-1', 'system:approval-expiry', 'tx-due');
+      expect(ctx.eventBus.emit).toHaveBeenCalledWith(
+        'proposal.expired',
+        { proposalId: 'prop-due', transactionId: 'tx-due' },
+        expect.objectContaining({ organizationId: 'org-1', actorId: 'system:approval-expiry' }),
+      );
+    });
+
+    it.each([ProposalStatus.APPROVED, ProposalStatus.REJECTED, ProposalStatus.EXECUTED, ProposalStatus.EXPIRED])(
+      'leaves a %s proposal unchanged',
+      async (status) => {
+        const ctx = buildExpiryService(due({ status }));
+
+        await expect(ctx.service.expireById('org-1', 'prop-due')).resolves.toBe(false);
+
+        expect(ctx.repository.transitionStatus).not.toHaveBeenCalled();
+        expect(ctx.transactions.cancel).not.toHaveBeenCalled();
+        expect(ctx.eventBus.emit).not.toHaveBeenCalled();
+      },
+    );
+
+    it('is idempotent under duplicate delivery', async () => {
+      const ctx = buildExpiryService(due());
+
+      const results = await Promise.all([
+        ctx.service.expireById('org-1', 'prop-due'),
+        ctx.service.expireById('org-1', 'prop-due'),
+      ]);
+
+      expect(results.filter(Boolean)).toHaveLength(1);
+      expect(ctx.transactions.cancel).toHaveBeenCalledTimes(1);
+      expect(ctx.eventBus.emit).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not expire a proposal whose deadline has not passed', async () => {
+      const ctx = buildExpiryService(due({ expiresAt: new Date(Date.now() + 60_000) }));
+
+      await expect(ctx.service.expireById('org-1', 'prop-due')).resolves.toBe(false);
+      expect(ctx.repository.transitionStatus).not.toHaveBeenCalled();
+    });
+
+    it('returns false for an unknown proposal', async () => {
+      const ctx = buildExpiryService(null);
+      await expect(ctx.service.expireById('org-1', 'missing')).resolves.toBe(false);
+    });
+
+    it('cancels the expiry job on rejection, and a later job cannot override the decision', async () => {
+      const ctx = buildExpiryService(proposal({ id: 'prop-r', transactionId: 'tx-r', expiresAt: new Date(Date.now() + 60_000) }));
+
+      await ctx.service.decide('org-1', 'reviewer-1', 'prop-r', { decision: ApprovalDecision.REJECTED });
+
+      expect(ctx.expiryQueue.cancel).toHaveBeenCalledWith('prop-r');
+      expect(ctx.status()).toBe(ProposalStatus.REJECTED);
+
+      vi.useFakeTimers();
+      try {
+        vi.setSystemTime(Date.now() + 120_000);
+        await expect(ctx.service.expireById('org-1', 'prop-r')).resolves.toBe(false);
+      } finally {
+        vi.useRealTimers();
+      }
+      expect(ctx.status()).toBe(ProposalStatus.REJECTED);
+    });
+
+    it('cancels the expiry job on approval, and a later job cannot override the decision', async () => {
+      const ctx = buildExpiryService(proposal({ id: 'prop-a', transactionId: 'tx-a', requiredApprovals: 1, approvalType: 'SINGLE', expiresAt: new Date(Date.now() + 60_000) }));
+
+      await ctx.service.decide('org-1', 'reviewer-1', 'prop-a', { decision: ApprovalDecision.APPROVED });
+
+      expect(ctx.expiryQueue.cancel).toHaveBeenCalledWith('prop-a');
+      expect(ctx.status()).toBe(ProposalStatus.EXECUTED);
+      await expect(ctx.service.expireById('org-1', 'prop-a')).resolves.toBe(false);
+      expect(ctx.status()).toBe(ProposalStatus.EXECUTED);
     });
   });
 });

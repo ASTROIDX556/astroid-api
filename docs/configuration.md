@@ -112,6 +112,7 @@ invalidation rules.
 | ------------------- | ------------- | ----------- |
 | `BALANCE_CACHE_TTL` | `30`          | Staleness window in seconds (1–3600) for a cached wallet balance. A terminal transaction event deletes the entry immediately, so this only bounds the staleness after an external balance change. |
 | `BALANCE_CACHE_ENV` | `NODE_ENV`    | Namespace folded into every balance cache key, so deployments sharing a Redis instance never read each other's entries. |
+| `LOW_XLM_THRESHOLD` | `10`          | Native XLM balance below which a wallet is reported as low. |
 
 ### Authentication
 
@@ -138,6 +139,12 @@ invalidation rules.
 | `STELLAR_FALLBACK_GAS_LIMIT` | `1000000` | Static gas limit used when simulation fails or omits a gas estimate. |
 | `STELLAR_FALLBACK_FEE_STROOPS` | `100000` | Static fee limit in stroops paired with the fallback gas limit. |
 | `STELLAR_ANCHOR_ASSETS` | _(empty)_ | Comma-separated `CODE=ISSUER` mappings for anchored Stellar assets. |
+| `STELLAR_SOROBAN_RPC_TIMEOUT_MS` | `5000` | Per-attempt timeout for an outbound Soroban RPC call (max `60000`). |
+| `STELLAR_SOROBAN_RPC_MAX_ATTEMPTS` | `3` | Total attempts per Soroban RPC call including the first (`1`–`3`). Only timeouts, connection errors, 5xx and 429 are retried. |
+| `STELLAR_SOROBAN_RPC_RETRY_BASE_DELAY_MS` | `250` | Base delay of the jittered exponential backoff between Soroban RPC attempts. |
+| `STELLAR_SOROBAN_RPC_RETRY_MAX_DELAY_MS` | `2000` | Upper bound for a single Soroban RPC backoff delay. |
+| `STELLAR_SOROBAN_RPC_CIRCUIT_FAILURE_THRESHOLD` | `5` | Consecutive failed attempts that open the Soroban RPC circuit breaker. Calls then fail fast with `503 SOROBAN_UNAVAILABLE`. |
+| `STELLAR_SOROBAN_RPC_CIRCUIT_COOLDOWN_MS` | `30000` | How long the Soroban RPC circuit stays open before a single half-open probe. |
 
 ### Price oracle
 
@@ -325,4 +332,5 @@ deliveries of a failing endpoint instead of hammering it.
 | Variable               | Default              | Description                                                                                  |
 | ---------------------- | -------------------- | -------------------------------------------------------------------------------------------- |
 | `ENCRYPTION_KEY`       | development-only key | 32-byte key: 64 hex characters, 32 raw bytes, or base64 of 32 bytes. Required in production. |
+| `ENCRYPTION_MASTER_KEY` | —                   | Legacy alias read only when `ENCRYPTION_KEY` is unset.                                       |
 | `ENCRYPTION_ALGORITHM` | `aes-256-gcm`        | Cipher algorithm.                                                                            |
