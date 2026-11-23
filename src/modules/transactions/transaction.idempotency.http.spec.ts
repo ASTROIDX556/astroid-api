@@ -194,18 +194,20 @@ describe('transaction creation idempotency over HTTP', () => {
     const key = 'integration-replay-1';
 
     const first = await post(key, basePayload, 'req-original');
-    const firstBody = (await first.json()) as { success: boolean; requestId: string; data: { transaction: { id: string } } };
+    const firstBody = (await first.json()) as { success: boolean; requestId: string; data: { transaction: { id: string } }; meta: Record<string, unknown> };
 
     expect(first.status).toBe(201);
     expect(first.headers.get(IDEMPOTENT_REPLAY_HEADER)).toBeNull();
-    expect(firstBody).toMatchObject({ success: true, requestId: 'req-original' });
+    expect(firstBody).toMatchObject({ success: true, requestId: 'req-original', meta: {} });
 
     const replay = await post(key, { ...basePayload }, 'req-duplicate');
     const replayBody = (await replay.json()) as typeof firstBody;
 
     expect(replay.status).toBe(201);
     expect(replay.headers.get(IDEMPOTENT_REPLAY_HEADER)).toBe('true');
-    expect(replayBody).toEqual(firstBody);
+    expect(replayBody.meta).toEqual({ idempotentReplay: true });
+    expect(replayBody.requestId).toBe('req-original');
+    expect(replayBody.success).toBe(true);
     expect(created).toBe(1);
     expect(store.rows.size).toBe(1);
   });

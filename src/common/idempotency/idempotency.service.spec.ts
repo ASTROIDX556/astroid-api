@@ -4,6 +4,7 @@ import { IdempotencyService } from './idempotency.service';
 import { PrismaService } from '../../database/prisma.service';
 import { RequestContext, RequestContextData } from '../context/request-context';
 import {
+  IDEMPOTENT_REPLAY,
   IDEMPOTENT_REPLAY_REQUEST_ID,
   IDEMPOTENT_REPLAY_STATUS,
 } from './idempotency.constants';
@@ -185,6 +186,23 @@ describe('IdempotencyService', () => {
       expect(body).toEqual({ ok: true });
       expect(RequestContext.getData(IDEMPOTENT_REPLAY_REQUEST_ID)).toBe('req-original');
       expect(RequestContext.getData(IDEMPOTENT_REPLAY_STATUS)).toBe(201);
+    });
+  });
+
+  it('marks the request context as a replay so the envelope carries idempotentReplay', async () => {
+    const { record } = await service.reserve(reserveInput());
+    await service.complete({
+      recordId: record.id,
+      statusCode: 201,
+      body: { ok: true },
+      requestId: 'req-original',
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+    const replayed = await service.reserve(reserveInput());
+
+    await RequestContext.run(requestContext('req-duplicate'), async () => {
+      service.replay<{ ok: boolean }>(service.completedResponse(replayed.record)!);
+      expect(RequestContext.getData(IDEMPOTENT_REPLAY)).toBe(true);
     });
   });
 
