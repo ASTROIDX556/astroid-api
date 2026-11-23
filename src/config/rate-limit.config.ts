@@ -34,11 +34,9 @@ export type RateLimitConfig = {
 };
 
 /**
- * Parses the `PUBLIC_RATE_LIMIT_CLIENT_IDENTIFIERS` list. Unknown entries are
- * ignored so a typo cannot break startup; the IP always participates anyway.
- *
- * Read outside the Zod environment schema (same pattern as
- * `BALANCE_CACHE_TTL`) so the schema file keeps a fixed set of keys.
+ * Parses the validated `PUBLIC_RATE_LIMIT_CLIENT_IDENTIFIERS` list. Unknown
+ * entries are ignored so a typo cannot break startup; the IP always
+ * participates anyway.
  */
 function parseClientIdentifiers(raw: string | undefined): PublicRateLimitIdentifier[] {
   if (!raw) {
@@ -69,7 +67,7 @@ export const rateLimitConfig = registerAs('rateLimit', (): RateLimitConfig => {
       maxRequests: env.PUBLIC_RATE_LIMIT_MAX_REQUESTS,
       windowSeconds: env.PUBLIC_RATE_LIMIT_WINDOW_SECONDS,
       trustProxy: env.PUBLIC_RATE_LIMIT_TRUST_PROXY,
-      clientIdentifiers: parseClientIdentifiers(process.env.PUBLIC_RATE_LIMIT_CLIENT_IDENTIFIERS),
+      clientIdentifiers: parseClientIdentifiers(env.PUBLIC_RATE_LIMIT_CLIENT_IDENTIFIERS),
     },
     sensitive: {
       login: {

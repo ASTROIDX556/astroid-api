@@ -300,6 +300,10 @@ export const rateLimitEnvSchema = z.object({
     .enum(['true', 'false'])
     .default('false')
     .transform((value) => value === 'true'),
+  // Comma-separated extra identifiers folded into the public bucket key next to
+  // the client IP (`ip`, `apiKey`). Entries are parsed leniently by
+  // `rate-limit.config.ts`; unknown ones are ignored.
+  PUBLIC_RATE_LIMIT_CLIENT_IDENTIFIERS: z.string().default(''),
   // Per-route limits of the sensitive-route limiter (`@SensitiveRateLimit`). Each
   // pair is requests allowed per sliding window of that many seconds, counted per
   // route and per caller (the client IP before login, the principal after it).
@@ -313,6 +317,15 @@ export const rateLimitEnvSchema = z.object({
   RATE_LIMIT_WEBHOOK_CREATE_WINDOW_SECONDS: z.coerce.number().int().positive().default(3600),
   RATE_LIMIT_WEBHOOK_ROTATE_MAX: z.coerce.number().int().positive().default(10),
   RATE_LIMIT_WEBHOOK_ROTATE_WINDOW_SECONDS: z.coerce.number().int().positive().default(3600),
+});
+
+export const healthEnvSchema = z.object({
+  // Readiness reports pending Prisma migrations. Set to `false` to skip that
+  // check, e.g. in local development against a scratch database.
+  HEALTH_CHECK_MIGRATIONS_ENABLED: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((value) => value === 'true'),
 });
 
 export const metricsEnvSchema = z.object({
@@ -399,6 +412,8 @@ export const environmentSchema = z
     ...throttleEnvSchema.shape,
     ...rateLimitEnvSchema.shape,
     ...metricsEnvSchema.shape,
+    ...shutdownEnvSchema.shape,
+    ...healthEnvSchema.shape,
     ...aiEnvSchema.shape,
     ...encryptionEnvSchema.shape,
   })
