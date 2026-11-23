@@ -2,52 +2,31 @@ import { readdirSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 import { describe, expect, it, beforeAll, afterAll, vi } from 'vitest';
 import { Test, TestingModule } from '@nestjs/testing';
-import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
+import { SwaggerModule } from '@nestjs/swagger';
 import { PrismaService } from './database/prisma.service';
 import { AppModule } from './app.module';
-import { INestApplication, Type } from '@nestjs/common';
+import { INestApplication } from '@nestjs/common';
+import { CONTROLLER_WATERMARK } from '@nestjs/common/constants';
 import { ConfigService } from '@nestjs/config';
 import { OpenAPIObject } from '@nestjs/swagger/dist/interfaces/open-api-spec.interface';
 import { GLOBAL_PREFIX_EXCLUDED_ROUTES } from './common/constants/global-prefix';
-import { AiController } from './modules/ai/ai.controller';
-import { AgentController } from './modules/agents/agent.controller';
-import { AnalyticsController } from './modules/analytics/analytics.controller';
-import { ApprovalController } from './modules/approvals/approval.controller';
-import { AuditController } from './modules/audit/audit.controller';
-import { AuthController } from './modules/auth/auth.controller';
-import { PasskeyController } from './modules/auth/controllers/passkey.controller';
-import { BudgetController } from './modules/budgets/budget.controller';
-import { DlqController } from './modules/admin/dlq.controller';
-import { QueueManagementController } from './modules/admin/queue-management.controller';
-import { DeadLetterController } from './modules/dead-letter/dead-letter.controller';
-import { ApiKeyController } from './modules/developer/api-key.controller';
-import { HealthController } from './modules/health/health.controller';
-import { MemoryController } from './modules/memory/memory.controller';
-import { MetricsController } from './modules/metrics/metrics.controller';
-import { NotificationController } from './modules/notifications/notification.controller';
-import { OrganizationController } from './modules/organizations/organization.controller';
-import { PolicyController } from './modules/policies/policy.controller';
-import { RiskController } from './modules/risk/risk.controller';
-import { StellarController } from './modules/stellar/stellar.controller';
-import { TransactionController } from './modules/transactions/transaction.controller';
-import { WalletController } from './modules/wallets/wallet.controller';
-import { WebhookController } from './modules/webhooks/webhook.controller';
-import { WebhookIngressController } from './modules/webhooks/webhook-ingress.controller';
+import { buildSwaggerConfig } from './common/openapi/swagger-config';
 import {
   AllowlistedRoute,
   RegisteredRoute,
+  RouteCheck,
+  RouteDocumentationGap,
   collectRefs,
   findDanglingRefs,
   findDuplicateRoutes,
   findMissingDeclaredSchemas,
   findMissingRequestSchemas,
-  findOperationsMissingSecurity,
   findOperationsWithoutResponses,
   findOperationsWithoutSuccessEnvelope,
   findOperationsWithoutSuccessSchema,
-  findOperationsWithoutSummary,
+  findRouteDocumentationGaps,
   findStaleAllowlistEntries,
-  findUndocumentedRoutes,
+  findStaleClientErrorExemptions,
   findUnservedOperations,
   listDocumentedOperations,
   listRegisteredRoutes,
@@ -110,33 +89,6 @@ process.env.AI_MODEL = 'meta/llama-3.1-70b-instruct';
 
 const MODULES_DIR = join(process.cwd(), 'src', 'modules');
 
-const MODULE_CONTROLLERS: ReadonlyArray<{ file: string; controller: Type<unknown> }> = [
-  { file: 'admin/dlq.controller.ts', controller: DlqController },
-  { file: 'admin/queue-management.controller.ts', controller: QueueManagementController },
-  { file: 'ai/ai.controller.ts', controller: AiController },
-  { file: 'agents/agent.controller.ts', controller: AgentController },
-  { file: 'analytics/analytics.controller.ts', controller: AnalyticsController },
-  { file: 'approvals/approval.controller.ts', controller: ApprovalController },
-  { file: 'audit/audit.controller.ts', controller: AuditController },
-  { file: 'auth/auth.controller.ts', controller: AuthController },
-  { file: 'auth/controllers/passkey.controller.ts', controller: PasskeyController },
-  { file: 'budgets/budget.controller.ts', controller: BudgetController },
-  { file: 'dead-letter/dead-letter.controller.ts', controller: DeadLetterController },
-  { file: 'developer/api-key.controller.ts', controller: ApiKeyController },
-  { file: 'health/health.controller.ts', controller: HealthController },
-  { file: 'memory/memory.controller.ts', controller: MemoryController },
-  { file: 'metrics/metrics.controller.ts', controller: MetricsController },
-  { file: 'notifications/notification.controller.ts', controller: NotificationController },
-  { file: 'organizations/organization.controller.ts', controller: OrganizationController },
-  { file: 'policies/policy.controller.ts', controller: PolicyController },
-  { file: 'risk/risk.controller.ts', controller: RiskController },
-  { file: 'stellar/stellar.controller.ts', controller: StellarController },
-  { file: 'transactions/transaction.controller.ts', controller: TransactionController },
-  { file: 'wallets/wallet.controller.ts', controller: WalletController },
-  { file: 'webhooks/webhook-ingress.controller.ts', controller: WebhookIngressController },
-  { file: 'webhooks/webhook.controller.ts', controller: WebhookController },
-];
-
 function controllerFiles(directory: string = MODULES_DIR): string[] {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
     const path = join(directory, entry.name);
@@ -144,6 +96,25 @@ function controllerFiles(directory: string = MODULES_DIR): string[] {
     if (!entry.name.endsWith('.controller.ts')) return [];
     return [relative(MODULES_DIR, path).split(sep).join('/')];
   });
+}
+
+/**
+ * Every `@Controller()` class exported by a `*.controller.ts` file under
+ * src/modules, found by importing the file and reading Nest's controller
+ * metadata. Guards the route checks against a controller that exists on disk
+ * but is not registered in any module (its routes would silently be skipped).
+ */
+async function controllerClassesOnDisk(): Promise<Array<{ file: string; name: string }>> {
+  const controllers: Array<{ file: string; name: string }> = [];
+  for (const file of controllerFiles()) {
+    const exported = (await import(`./modules/${file}`)) as Record<string, unknown>;
+    for (const value of Object.values(exported)) {
+      if (typeof value === 'function' && Reflect.getMetadata(CONTROLLER_WATERMARK, value) === true) {
+        controllers.push({ file, name: value.name });
+      }
+    }
+  }
+  return controllers;
 }
 
 function operationLabel(
@@ -219,10 +190,40 @@ const INTERNAL_ROUTES: AllowlistedRoute[] = [
 ];
 
 /**
- * The liveness probe only ever answers 200 — it is not part of the
- * authenticated surface and has no error to report.
+ * Documented routes exempt from the 4xx check, and only from that check: they
+ * cannot answer with any client error, and documenting one would be false.
+ * Every entry must still be served, documented and free of 4xx responses, or
+ * the exemption check fails.
  */
-const LIVENESS_PROBES = ['/health/live'];
+const NO_CLIENT_ERROR_ROUTES: AllowlistedRoute[] = [
+  {
+    method: 'GET',
+    path: '/health/live',
+    // @Public(), takes no input and skips every rate limiter (health.controller.ts).
+    reason: 'Liveness probe: public, takes no input and skips all rate limiting, so it only ever answers 200',
+  },
+  {
+    method: 'GET',
+    path: '/health/ready',
+    // @Public(), takes no input and skips every rate limiter; 503 is its only error.
+    reason: 'Readiness probe: public, takes no input and skips all rate limiting, so it answers only 200 or 503',
+  },
+];
+
+/**
+ * The per-route checks, one test each, so every kind of gap fails distinctly
+ * and lists each offending route as `Controller.handler (METHOD /path): ...`.
+ */
+const ROUTE_CHECKS: ReadonlyArray<[RouteCheck, string]> = [
+  ['path', 'documents the path of every registered route'],
+  ['method', 'documents the HTTP method of every registered route on its path'],
+  ['summary', 'gives every route operation a non-empty summary'],
+  ['tags', 'gives every route operation at least one tag'],
+  ['requestBody', 'documents a request body schema for every handler that takes a @Body()'],
+  ['clientError', 'documents at least one 4xx error response for every route'],
+  ['security', 'declares a defined security requirement on every guarded route'],
+  ['publicSecurity', 'declares no security requirement on @Public() routes'],
+];
 
 /** Paths the API serves outside its prefix, as they appear in the document. */
 const UNPREFIXED_PATHS = new Set(GLOBAL_PREFIX_EXCLUDED_ROUTES.map((route) => `/${route.path}`));
@@ -241,8 +242,15 @@ describe('OpenAPI Documentation', () => {
   let document: OpenAPIObject;
   let routes: RegisteredRoute[];
   let handlers: Map<string, string>;
+  let gaps: RouteDocumentationGap[];
+  let controllersOnDisk: Array<{ file: string; name: string }>;
 
   beforeAll(async () => {
+    // Read the controller files before the application starts: once it is
+    // initialised its Redis-backed queue clients begin connecting, and the
+    // tests below must not yield to them (see afterAll).
+    controllersOnDisk = await controllerClassesOnDisk();
+
     moduleFixture = await Test.createTestingModule({
       imports: [AppModule],
     })
@@ -270,19 +278,14 @@ describe('OpenAPI Documentation', () => {
 
     await app.init();
 
-    const swaggerConfig = new DocumentBuilder()
-      .setTitle('Astroid API')
-      .setDescription(
-        'The intelligence layer for the Financial Operating System for autonomous AI agents on Stellar.',
-      )
-      .setVersion('1.0')
-      .addBearerAuth({ type: 'http', scheme: 'bearer', bearerFormat: 'JWT' }, 'access-token')
-      .addApiKey({ type: 'apiKey', in: 'header', name: 'x-api-key' }, 'api-key')
-      .build();
-
-    document = SwaggerModule.createDocument(app, swaggerConfig);
+    // The same configuration main.ts serves at /docs.
+    document = SwaggerModule.createDocument(app, buildSwaggerConfig());
     routes = listRegisteredRoutes(app);
     handlers = routeHandlers(routes);
+    gaps = findRouteDocumentationGaps(routes, document, {
+      allowlist: INTERNAL_ROUTES,
+      noClientErrorRoutes: NO_CLIENT_ERROR_ROUTES,
+    });
   }, 60_000);
 
   afterAll(async () => {
@@ -301,6 +304,7 @@ describe('OpenAPI Documentation', () => {
   it('should generate a valid OpenAPI document', () => {
     expect(document).toBeDefined();
     expect(document.openapi).toMatch(/^3\.0\./);
+    expect(document.info).toEqual(buildSwaggerConfig().info);
     expect(document.info.title).toBe('Astroid API');
     expect(document.info.version).toBe('1.0');
     expect(document.paths).toBeDefined();
@@ -317,15 +321,36 @@ describe('OpenAPI Documentation', () => {
     );
   });
 
-  it('enumerates every controller in src/modules', () => {
-    expect(controllerFiles().sort()).toEqual(MODULE_CONTROLLERS.map(({ file }) => file).sort());
-    expect([...new Set(routes.map((route) => route.handler.split('.')[0]))].sort()).toEqual(
-      MODULE_CONTROLLERS.map(({ controller }) => controller.name).sort(),
-    );
+  it('registers every controller declared under src/modules, so none of its routes escape the checks', () => {
+    const onDisk = controllersOnDisk;
+    const registered = new Set(routes.map((route) => route.handler.split('.')[0]));
+
+    expect(onDisk.length, 'no @Controller() classes found under src/modules').toBeGreaterThan(20);
+    expect(
+      controllerFiles().filter((file) => !onDisk.some((controller) => controller.file === file)),
+      'controller files that export no @Controller() class',
+    ).toEqual([]);
+    expect(
+      onDisk
+        .filter(({ name }) => !registered.has(name))
+        .map(({ file, name }) => `${name} (src/modules/${file}) is not registered in any module`),
+    ).toEqual([]);
   });
 
-  it('documents every registered route with its method and path', () => {
-    expect(findUndocumentedRoutes(routes, document, INTERNAL_ROUTES)).toEqual([]);
+  describe('per-route documentation', () => {
+    it('checks every registered route that is not allowlisted', () => {
+      const allowlisted = new Set(INTERNAL_ROUTES.map(routeKey));
+      expect(routes.filter((route) => !allowlisted.has(routeKey(route))).length).toBeGreaterThan(100);
+    });
+
+    it.each(ROUTE_CHECKS)('%s: %s', (check) => {
+      const failures = gaps.filter((gap) => gap.check === check).map((gap) => gap.message);
+      expect(failures, `${failures.length} route(s) fail the '${check}' check`).toEqual([]);
+    });
+
+    it('keeps every 4xx exemption served, documented, still without a 4xx and justified', () => {
+      expect(findStaleClientErrorExemptions(routes, document, NO_CLIENT_ERROR_ROUTES)).toEqual([]);
+    });
   });
 
   it('documents only operations that a route serves', () => {
@@ -360,10 +385,6 @@ describe('OpenAPI Documentation', () => {
     expect(
       parameters.find((parameter) => parameter.in === 'header' && parameter.name === 'Idempotency-Key'),
     ).toMatchObject({ required: false });
-  });
-
-  it('gives every documented operation a non-empty summary', () => {
-    expect(findOperationsWithoutSummary(document, handlers)).toEqual([]);
   });
 
   it('documents at least one response for every operation', () => {
@@ -450,21 +471,10 @@ describe('OpenAPI Documentation', () => {
     }
   });
 
-  it('declares a defined security scheme on every authenticated operation', () => {
-    expect(findOperationsMissingSecurity(routes, document, handlers)).toEqual([]);
-  });
-
   it('should have security schemes defined', () => {
     expect(document.components?.securitySchemes).toBeDefined();
     expect(document.components?.securitySchemes?.['access-token']).toBeDefined();
     expect(document.components?.securitySchemes?.['api-key']).toBeDefined();
-  });
-
-  it('should have tags for all endpoints', () => {
-    const offenders = listDocumentedOperations(document)
-      .filter(({ operation }) => !Array.isArray(operation.tags) || operation.tags.length === 0)
-      .map((operation) => operationLabel(operation, handlers));
-    expect(offenders).toEqual([]);
   });
 
   // ── Documentation validity ───────────────────────────────────────────────
@@ -494,16 +504,12 @@ describe('OpenAPI Documentation', () => {
   });
 
   it('documents the shared error envelope for every error response', () => {
+    // That every route documents a 4xx at all is the per-route 'clientError' check.
     for (const { method, path, operation } of listDocumentedOperations(document)) {
       const errorResponses = Object.entries(operation.responses).filter(([status]) =>
         status.startsWith('4') || status.startsWith('5'),
       );
       const label = operationLabel({ method, path }, handlers);
-      if (LIVENESS_PROBES.includes(path)) {
-        expect(errorResponses.length, label).toBe(0);
-        continue;
-      }
-      expect(errorResponses.length, label).toBeGreaterThan(0);
 
       for (const [status, response] of errorResponses) {
         const content = (response as { content?: Record<string, unknown> }).content;
