@@ -222,8 +222,13 @@ export const queueEnvSchema = z.object({
   WEBHOOK_HTTP_TIMEOUT_MS: z.coerce.number().int().positive().max(120_000).default(5_000),
   WEBHOOK_FAILED_JOB_RETENTION_SECONDS: z.coerce.number().int().positive().max(2_592_000).default(86_400),
   WEBHOOK_DEAD_LETTER_RETENTION_SECONDS: z.coerce.number().int().positive().max(2_592_000).default(604_800),
-  QUEUE_OBSERVABILITY_ENABLED: z.coerce.boolean().default(false),
-  QUEUE_OBSERVABILITY_MAX_FAILED_JOBS: z.coerce.number().int().positive().default(100),
+  /** Enable the queue observability endpoint (off by default). */
+  QUEUE_OBSERVABILITY_ENABLED: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
+  /** Maximum failed jobs to return per queue (capped at 20). */
+  QUEUE_OBSERVABILITY_MAX_FAILED_JOBS: z.coerce.number().int().min(1).max(20).default(10),
 });
 
 /**

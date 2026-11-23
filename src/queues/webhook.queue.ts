@@ -25,6 +25,12 @@ export const WEBHOOK_FAILED_JOB_RETENTION_SECONDS = 24 * 3_600;
 export const WEBHOOK_DEAD_LETTER_QUEUE = Queues.DeadLetter;
 
 /**
+ * Default per-endpoint concurrency limit for webhook deliveries.
+ * Prevents one slow endpoint from starving the shared queue.
+ */
+export const WEBHOOK_PER_ENDPOINT_CONCURRENCY = 1;
+
+/**
  * Builds the retry policy of the webhook queue from the resolved
  * configuration.
  *

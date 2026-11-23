@@ -1,7 +1,7 @@
 import { Injectable, Logger, Optional } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { ConfigService } from '@nestjs/config';
-import { Queue } from 'bullmq';
+import { Queue, JobsOptions } from 'bullmq';
 
 import { QueueJobMetadata, Queues } from '../../../queues/queues.constants';
 import { WEBHOOK_JOB_NAME, webhookJobOptions, webhookJobOptionsFor } from '../../../queues/webhook.queue';
@@ -9,6 +9,7 @@ import { DEFAULT_WEBHOOK_CONFIG, WebhookConfig } from '../../../config/webhook.c
 import { WebhookJobData } from '../types/webhook-job.types';
 import { RequestContext } from '../../../common/context/request-context';
 import { resolveRequestId } from '../../../common/helpers/request-id';
+import { buildWebhookConcurrencyGroup } from '../types/webhook-job.types';
 
 /**
  * Service for queuing webhook delivery jobs with BullMQ.
@@ -66,7 +67,11 @@ export class WebhookDeliveryService {
         ...data,
         ...(hasMetadata ? { metadata } : {}),
       };
-      const options = this.config ? webhookJobOptionsFor(this.settings) : webhookJobOptions;
+      const baseOptions = this.config ? webhookJobOptionsFor(this.settings) : webhookJobOptions;
+      const options: JobsOptions & { group?: string } = {
+        ...baseOptions,
+        group: buildWebhookConcurrencyGroup(data.webhookId),
+      };
       await this.webhookQueue.add(
         WEBHOOK_JOB_NAME,
         jobData,

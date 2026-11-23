@@ -23,7 +23,11 @@ const createDestinationPolicy = () => ({
       body: options.body,
       signal: AbortSignal.timeout(options.timeoutMs),
     });
-    return { status: response.status };
+    const headers: Record<string, string | string[] | undefined> = {};
+    for (const [key, value] of response.headers.entries()) {
+      headers[key.toLowerCase()] = value;
+    }
+    return { status: response.status, headers };
   },
 });
 
