@@ -7,6 +7,7 @@ import { stellarConfig } from './stellar.config';
 import { storageConfig } from './storage.config';
 import { queueConfig } from './queue.config';
 import { idempotencyConfig } from './idempotency.config';
+import { walletReconciliationConfig } from './wallet-reconciliation.config';
 import { aiConfig } from './ai.config';
 import { metricsConfig } from './metrics.config';
 import { encryptionConfig } from './encryption.config';
@@ -14,7 +15,10 @@ import { rateLimitConfig } from './rate-limit.config';
 import { throttlerConfig } from './throttler.config';
 import { shutdownConfig } from './shutdown.config';
 import { webhookConfig } from './webhook.config';
-import { balanceCacheConfig } from './balance-cache.config';
+import { budgetAlertConfig } from './budget-alert.config';
+import { budgetRolloverConfig } from './budget-rollover.config';
+import { auditConfig } from './audit.config';
+import { approvalConfig } from './approval.config';
 
 export * from './app.config';
 export * from './database.config';
@@ -24,6 +28,7 @@ export * from './stellar.config';
 export * from './storage.config';
 export * from './queue.config';
 export * from './idempotency.config';
+export * from './wallet-reconciliation.config';
 export * from './ai.config';
 export * from './metrics.config';
 export * from './encryption.config';
@@ -31,7 +36,10 @@ export * from './rate-limit.config';
 export * from './throttler.config';
 export * from './shutdown.config';
 export * from './webhook.config';
-export * from './balance-cache.config';
+export * from './budget-alert.config';
+export * from './budget-rollover.config';
+export * from './audit.config';
+export * from './approval.config';
 
 /**
  * Global configuration module. Every slice is registered via `registerAs` and
@@ -50,6 +58,7 @@ export const AppConfigModule = ConfigModule.forRoot({
     storageConfig,
     queueConfig,
     idempotencyConfig,
+    walletReconciliationConfig,
     aiConfig,
     metricsConfig,
     encryptionConfig,
@@ -57,6 +66,9 @@ export const AppConfigModule = ConfigModule.forRoot({
     throttlerConfig,
     shutdownConfig,
     webhookConfig,
-    balanceCacheConfig,
+    budgetAlertConfig,
+    budgetRolloverConfig,
+    auditConfig,
+    approvalConfig,
   ],
 });

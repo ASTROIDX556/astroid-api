@@ -7,25 +7,14 @@ import { IS_PUBLIC_KEY } from '../decorators/public.decorator';
 import { AuthenticatedUser } from '../interfaces/authenticated-user.interface';
 import { ForbiddenException, UnauthorizedException } from '../exceptions/domain.exception';
 import { ErrorCode } from '../constants/error-codes';
+import { API_KEY_SCOPES } from '../constants/scopes';
+import type { ApiKeyScope } from '../constants/scopes';
 
 /**
- * Checks whether a granted permission scope matches a required scope.
- * Supports exact match (`'transactions:write'`), resource wildcards (`'transactions:*'`),
- * and global wildcards (`'*'`, `'admin'`).
+ * Checks an exact grant and rejects values outside the API-key scope vocabulary.
  */
 export function matchScope(grantedScope: string, requiredScope: string): boolean {
-  if (grantedScope === '*' || grantedScope === 'admin' || grantedScope === requiredScope) {
-    return true;
-  }
-
-  const [grantedResource, grantedAction] = grantedScope.split(':');
-  const [requiredResource] = requiredScope.split(':');
-
-  if (grantedAction === '*' && grantedResource === requiredResource) {
-    return true;
-  }
-
-  return false;
+  return API_KEY_SCOPES.some((scope) => scope === grantedScope) && grantedScope === requiredScope;
 }
 
 /**
@@ -45,7 +34,7 @@ export class ScopesGuard implements CanActivate {
       return true;
     }
 
-    const requiredScopes = this.reflector.getAllAndOverride<string[] | undefined>(SCOPES_KEY, [
+    const requiredScopes = this.reflector.getAllAndOverride<ApiKeyScope[] | undefined>(SCOPES_KEY, [
       context.getHandler(),
       context.getClass(),
     ]);
@@ -57,7 +46,7 @@ export class ScopesGuard implements CanActivate {
     const request = context.switchToHttp().getRequest<
       Request & {
         user?: AuthenticatedUser;
-        apiKey?: { permissions?: string[] };
+        apiKey?: { scopes?: string[] };
       }
     >();
 
@@ -76,8 +65,7 @@ export class ScopesGuard implements CanActivate {
 
     const grantedScopes = [
       ...(user.scopes ?? []),
-      ...(user.permissions ?? []),
-      ...(request.apiKey?.permissions ?? []),
+      ...(request.apiKey?.scopes ?? []),
     ];
 
     const missingScopes = requiredScopes.filter(
@@ -87,6 +75,7 @@ export class ScopesGuard implements CanActivate {
     if (missingScopes.length > 0) {
       throw new ForbiddenException(
         `Insufficient API key permissions. Missing required scope(s): ${missingScopes.join(', ')}`,
+        ErrorCode.FORBIDDEN,
       );
     }
 

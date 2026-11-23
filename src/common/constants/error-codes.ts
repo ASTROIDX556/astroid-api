@@ -33,6 +33,7 @@ export enum ErrorCode {
   APPROVAL_REQUIRED = 'APPROVAL_REQUIRED',
   PROPOSAL_EXPIRED = 'PROPOSAL_EXPIRED',
   PROPOSAL_NOT_PENDING = 'PROPOSAL_NOT_PENDING',
+  INVALID_PROPOSAL_TRANSITION = 'INVALID_PROPOSAL_TRANSITION',
   WALLET_FROZEN = 'WALLET_FROZEN',
   AGENT_NOT_ACTIVE = 'AGENT_NOT_ACTIVE',
   EMERGENCY_LOCK = 'EMERGENCY_LOCK',
@@ -50,6 +51,12 @@ export enum ErrorCode {
   // Resilience
   CIRCUIT_OPEN = 'CIRCUIT_OPEN',
   LOCK_ACQUISITION_FAILED = 'LOCK_ACQUISITION_FAILED',
+
+  // Idempotency
+  /** Same key reused with a different request payload. */
+  IDEMPOTENCY_KEY_MISMATCH = 'IDEMPOTENCY_KEY_MISMATCH',
+  /** A duplicate arrived while the original request is still running. */
+  IDEMPOTENCY_KEY_IN_FLIGHT = 'IDEMPOTENCY_KEY_IN_FLIGHT',
 }
 
 /** HTTP status codes paired with the domain error codes above. */
@@ -75,6 +82,7 @@ export const ERROR_STATUS: Record<ErrorCode, number> = {
   [ErrorCode.APPROVAL_REQUIRED]: 202,
   [ErrorCode.PROPOSAL_EXPIRED]: 409,
   [ErrorCode.PROPOSAL_NOT_PENDING]: 409,
+  [ErrorCode.INVALID_PROPOSAL_TRANSITION]: 409,
   [ErrorCode.WALLET_FROZEN]: 423,
   [ErrorCode.AGENT_NOT_ACTIVE]: 409,
   [ErrorCode.EMERGENCY_LOCK]: 423,
@@ -87,6 +95,8 @@ export const ERROR_STATUS: Record<ErrorCode, number> = {
   [ErrorCode.CONTRACT_PANIC]: 422,
   [ErrorCode.CIRCUIT_OPEN]: 503,
   [ErrorCode.LOCK_ACQUISITION_FAILED]: 409,
+  [ErrorCode.IDEMPOTENCY_KEY_MISMATCH]: 409,
+  [ErrorCode.IDEMPOTENCY_KEY_IN_FLIGHT]: 409,
 };
 
 /**
@@ -117,6 +127,7 @@ export const ERROR_TITLE: Record<ErrorCode, string> = {
   [ErrorCode.APPROVAL_REQUIRED]: 'Approval Required',
   [ErrorCode.PROPOSAL_EXPIRED]: 'Proposal Expired',
   [ErrorCode.PROPOSAL_NOT_PENDING]: 'Proposal Not Pending',
+  [ErrorCode.INVALID_PROPOSAL_TRANSITION]: 'Invalid Proposal Transition',
   [ErrorCode.WALLET_FROZEN]: 'Wallet Frozen',
   [ErrorCode.AGENT_NOT_ACTIVE]: 'Agent Not Active',
   [ErrorCode.EMERGENCY_LOCK]: 'Emergency Lock Active',
@@ -129,6 +140,8 @@ export const ERROR_TITLE: Record<ErrorCode, string> = {
   [ErrorCode.CONTRACT_PANIC]: 'Smart Contract Panicked',
   [ErrorCode.CIRCUIT_OPEN]: 'Service Temporarily Unavailable',
   [ErrorCode.LOCK_ACQUISITION_FAILED]: 'Resource Locked',
+  [ErrorCode.IDEMPOTENCY_KEY_MISMATCH]: 'Idempotency Key Payload Mismatch',
+  [ErrorCode.IDEMPOTENCY_KEY_IN_FLIGHT]: 'Idempotency Key In Use',
 };
 
 /** Namespace for the problem type URIs derived from {@link ErrorCode}s. */

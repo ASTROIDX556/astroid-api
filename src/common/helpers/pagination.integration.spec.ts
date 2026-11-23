@@ -60,21 +60,20 @@ describe('List pagination (integration)', () => {
     return { res, body: (await res.json()) as ListBody };
   }
 
-  it('returns the first 50 rows with total metadata and header by default', async () => {
+  it('returns the first 20 rows with total metadata and header by default', async () => {
     const { res, body } = await get();
 
     expect(res.status).toBe(200);
     expect(res.headers.get('x-total-count')).toBe('120');
-    expect(body.data).toHaveLength(50);
+    expect(body.data).toHaveLength(20);
     expect(body.data[0].id).toBe(1);
     expect(body.meta).toEqual({
-      offset: 0,
       page: 1,
-      limit: 50,
+      pageSize: 20,
       total: 120,
-      totalPages: 3,
-      hasNext: true,
-      hasPrev: false,
+      totalPages: 6,
+      hasNextPage: true,
+      hasPreviousPage: false,
     });
   });
 
@@ -85,7 +84,7 @@ describe('List pagination (integration)', () => {
     expect(body.data.map((row) => row.id)).toEqual([
       31, 32, 33, 34, 35, 36, 37, 38, 39, 40,
     ]);
-    expect(body.meta).toMatchObject({ offset: 30, limit: 10, hasPrev: true, hasNext: true });
+    expect(body.meta).toMatchObject({ page: 4, pageSize: 10, hasPreviousPage: true, hasNextPage: true });
   });
 
   it('returns a short final slice and no next page at the end', async () => {
@@ -93,7 +92,7 @@ describe('List pagination (integration)', () => {
 
     expect(body.data).toHaveLength(20);
     expect(body.data[19].id).toBe(120);
-    expect(body.meta.hasNext).toBe(false);
+    expect(body.meta.hasNextPage).toBe(false);
   });
 
   it('returns an empty slice past the end instead of failing', async () => {
@@ -104,15 +103,15 @@ describe('List pagination (integration)', () => {
     expect(res.headers.get('x-total-count')).toBe('120');
   });
 
-  it('allows the maximum limit of 200', async () => {
-    const { res, body } = await get('?limit=200');
+  it('allows the maximum limit of 100', async () => {
+    const { res, body } = await get('?limit=100');
 
     expect(res.status).toBe(200);
-    expect(body.data).toHaveLength(120);
+    expect(body.data).toHaveLength(100);
   });
 
   it.each([
-    ['limit above the cap', '?limit=201'],
+    ['limit above the cap', '?limit=101'],
     ['negative offset', '?offset=-1'],
     ['negative limit', '?limit=-10'],
     ['zero limit', '?limit=0'],

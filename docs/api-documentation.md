@@ -83,8 +83,10 @@ envelope schema. Use the envelope decorator alone.
 ### Error responses
 
 Every error answers with an RFC 9457 problem details document
-(`application/problem+json`). The `@ApiErrorResponses` decorator documents the
-status codes an endpoint can actually return and references the shared
+(`application/problem+json`). `GlobalExceptionFilter` (registered globally in `AppModule`)
+intercepts all domain exceptions, validation failures, database errors, and unexpected
+faults, mapping them to this uniform envelope. The `@ApiErrorResponses` decorator
+documents the status codes an endpoint can actually return and references the shared
 `ApiErrorEnvelopeDto` schema:
 
 ```ts

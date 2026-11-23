@@ -8,6 +8,7 @@ import {
   SETTLED_TRANSACTION_STATUSES,
   SpendingPolicyRepository,
 } from './spending-policy.repository';
+import { EXCLUDED_SPEND_STATUSES } from './spending-window.util';
 
 type MockPrisma = {
   policy: {
@@ -17,7 +18,11 @@ type MockPrisma = {
     update: ReturnType<typeof vi.fn>;
     count: ReturnType<typeof vi.fn>;
   };
-  transaction: { findMany: ReturnType<typeof vi.fn>; count: ReturnType<typeof vi.fn> };
+  transaction: {
+    findMany: ReturnType<typeof vi.fn>;
+    count: ReturnType<typeof vi.fn>;
+    aggregate: ReturnType<typeof vi.fn>;
+  };
   auditLog: { create: ReturnType<typeof vi.fn> };
   $transaction: ReturnType<typeof vi.fn>;
 };
@@ -35,6 +40,7 @@ function makePrisma(): MockPrisma {
     transaction: {
       findMany: vi.fn().mockResolvedValue([]),
       count: vi.fn().mockResolvedValue(0),
+      aggregate: vi.fn().mockResolvedValue({ _sum: { amount: null } }),
     },
     auditLog: { create: vi.fn().mockResolvedValue({ id: 'audit-1' }) },
     $transaction: vi.fn((arg: unknown) =>
@@ -173,6 +179,56 @@ describe('SpendingPolicyRepository', () => {
           createdAt: { gte: new Date('2026-01-01T00:00:00Z') },
         },
       });
+    });
+
+    it('sums spend since a window bound scoped to org/agent/asset, excluding terminal-failed', async () => {
+      prisma.transaction.aggregate.mockResolvedValueOnce({
+        _sum: { amount: { toNumber: () => 250 } as unknown },
+      });
+
+      const total = await repository.sumSpendSince({
+        organizationId: 'org-1',
+        agentId: 'agent-1',
+        asset: 'USDC',
+        since: new Date('2026-09-01T00:00:00Z'),
+      });
+
+      expect(total).toBe(250);
+      expect(prisma.transaction.aggregate).toHaveBeenCalledTimes(1);
+      const where = prisma.transaction.aggregate.mock.calls[0][0].where;
+      expect(where).toEqual({
+        organizationId: 'org-1',
+        agentId: 'agent-1',
+        asset: 'USDC',
+        deletedAt: null,
+        status: { notIn: [...EXCLUDED_SPEND_STATUSES] },
+        createdAt: { gte: new Date('2026-09-01T00:00:00Z') },
+      });
+      // In-flight + settled spend counts; only terminal-failed is excluded, so
+      // PENDING and DRAFT are NOT in the excluded set.
+      expect(where.status.notIn).not.toContain(TransactionStatus.PENDING);
+      expect(where.status.notIn).not.toContain(TransactionStatus.DRAFT);
+      expect(where.status.notIn).toEqual(
+        expect.arrayContaining([
+          TransactionStatus.FAILED,
+          TransactionStatus.REJECTED,
+          TransactionStatus.CANCELLED,
+          TransactionStatus.EXPIRED,
+        ]),
+      );
+    });
+
+    it('returns zero when no spend falls in the window', async () => {
+      prisma.transaction.aggregate.mockResolvedValueOnce({ _sum: { amount: null } });
+
+      const total = await repository.sumSpendSince({
+        organizationId: 'org-1',
+        agentId: 'agent-1',
+        asset: 'USDC',
+        since: new Date(),
+      });
+
+      expect(total).toBe(0);
     });
   });
 

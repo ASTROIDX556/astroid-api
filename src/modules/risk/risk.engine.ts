@@ -8,6 +8,7 @@ import {
   RiskFactorsInput,
   RiskRuleContext,
   RiskRule,
+  RiskFactorScore,
 } from './risk.types';
 import {
   AmountRule,
@@ -62,7 +63,9 @@ export class RiskEngine {
     const effectiveRules = rules ?? this.defaultRules;
     const context: RiskRuleContext = { input, config: effectiveConfig };
 
-    const factors = effectiveRules.map((rule) => rule.evaluate(context));
+    const factors = this.normalizeFactors(
+      effectiveRules.map((rule) => rule.evaluate(context)),
+    );
 
     const score = Math.round(
       clamp(
@@ -71,6 +74,7 @@ export class RiskEngine {
         100,
       ),
     );
+    this.normalizeContributions(factors, score);
     const band = this.toBand(score, effectiveConfig);
     return {
       score,
@@ -82,6 +86,59 @@ export class RiskEngine {
       canAutoExecute: score < effectiveConfig.blockThreshold,
       requiresApproval: score >= effectiveConfig.reviewThreshold,
     };
+  }
+
+  private normalizeFactors(factors: RiskFactorScore[]): RiskFactorScore[] {
+    const order = [
+      'amount',
+      'amountAnomaly',
+      'unknownRecipient',
+      'destinationReputation',
+      'velocity',
+      'walletAge',
+      'policyViolations',
+      'suspiciousTiming',
+    ];
+    const index = new Map(order.map((code, i) => [code, i]));
+
+    return factors
+      .map((factor) => {
+        const code = factor.code ?? (factor.factor as RiskFactorScore['code']);
+        return {
+          ...factor,
+          code,
+          description: factor.description ?? factor.detail,
+        };
+      })
+      .sort((a, b) => {
+        const ai = index.get(a.code ?? '') ?? order.length;
+        const bi = index.get(b.code ?? '') ?? order.length;
+        return ai === bi ? a.factor.localeCompare(b.factor) : ai - bi;
+      });
+  }
+
+  /** Round the breakdown without changing the existing rounded scalar score. */
+  private normalizeContributions(factors: RiskFactorScore[], score: number): void {
+    for (const factor of factors) {
+      factor.contribution = Math.round((factor.contribution + Number.EPSILON) * 100) / 100;
+    }
+
+    let remainingCents = Math.round(
+      (score - factors.reduce((sum, factor) => sum + factor.contribution, 0)) * 100,
+    );
+    for (const factor of factors) {
+      if (remainingCents === 0) break;
+      const currentCents = Math.round(factor.contribution * 100);
+      const adjustment = remainingCents > 0
+        ? Math.min(remainingCents, Math.max(Math.round(factor.weight * 100) - currentCents, 0))
+        : Math.max(remainingCents, -currentCents);
+      factor.contribution = (currentCents + adjustment) / 100;
+      remainingCents -= adjustment;
+    }
+
+    if (remainingCents !== 0 && factors.length > 0) {
+      factors[0].contribution += remainingCents / 100;
+    }
   }
 
   /**

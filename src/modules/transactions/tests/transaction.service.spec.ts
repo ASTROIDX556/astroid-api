@@ -19,6 +19,8 @@ import { DomainException } from '../../../common/exceptions/domain.exception';
 import { ErrorCode } from '../../../common/constants/error-codes';
 import { parseIdempotencyKey } from '../transaction.dto';
 import { PrismaTransactionService } from '../../../database/prisma-transaction.service';
+import { IdempotencyService } from '../../../common/idempotency/idempotency.service';
+import { IdempotencyRecord } from '@prisma/client';
 
 /**
  * Stand-in transaction manager that runs the callback straight through with a
@@ -28,6 +30,88 @@ import { PrismaTransactionService } from '../../../database/prisma-transaction.s
 const passthroughTxService = {
   runWithRetry: (fn: (tx: never) => Promise<unknown>) => fn({} as never),
 } as unknown as PrismaTransactionService;
+
+/**
+ * In-memory stand-in for the `transaction_idempotency_records` table. The real
+ * IdempotencyService runs against it, so the specs exercise the production
+ * reservation/replay logic without a database.
+ */
+function createIdempotencyPrisma(): PrismaService {
+  const rows = new Map<string, IdempotencyRecord>();
+  let sequence = 0;
+  const findByIdentity = (where: Record<string, unknown>) =>
+    [...rows.values()].find(
+      (row) =>
+        row.scope === (where.scope ?? where.principalId) &&
+        row.route === where.route &&
+        row.keyHash === where.keyHash,
+    );
+
+  return {
+    idempotencyRecord: {
+      deleteMany: vi.fn(async ({ where }: { where: Record<string, unknown> }) => {
+        let count = 0;
+        for (const [id, row] of rows) {
+          if (typeof where.id === 'string' && where.id !== id) continue;
+          if (typeof where.principalId === 'string' && where.principalId !== row.principalId) continue;
+          if (typeof where.scope === 'string' && where.scope !== row.scope) continue;
+          if (typeof where.route === 'string' && where.route !== row.route) continue;
+          if (typeof where.keyHash === 'string' && where.keyHash !== row.keyHash) continue;
+          const expiry = where.expiresAt as { lte?: Date } | undefined;
+          if (expiry?.lte && row.expiresAt.getTime() > expiry.lte.getTime()) continue;
+          if ('transactionId' in where && where.transactionId === null && row.transactionId !== null) {
+            continue;
+          }
+          rows.delete(id);
+          count += 1;
+        }
+        return { count };
+      }),
+      create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
+        if (findByIdentity(data)) throw { code: 'P2002' };
+        const row: IdempotencyRecord = {
+          id: `idempotency_${(sequence += 1)}`,
+          principalId: data.principalId as string,
+          scope: (data.scope as string | undefined) ?? (data.principalId as string),
+          route: data.route as string,
+          keyHash: data.keyHash as string,
+          requestHash: data.requestHash as string,
+          status: 'PROCESSING',
+          transactionId: null,
+          responseBody: null,
+          responseStatus: null,
+          requestId: null,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          expiresAt: data.expiresAt as Date,
+        };
+        rows.set(row.id, row);
+        return row;
+      }),
+      findUnique: vi.fn(async ({ where }: { where: Record<string, unknown> }) => {
+        if (typeof where.id === 'string') return rows.get(where.id) ?? null;
+        const identity = where.scope_route_keyHash as Record<string, unknown>;
+        return findByIdentity(identity) ?? null;
+      }),
+      update: vi.fn(async ({ where, data }: { where: { id: string }; data: Record<string, unknown> }) => {
+        const row = rows.get(where.id);
+        if (!row) throw new Error(`missing idempotency record ${where.id}`);
+        const updated = { ...row, ...data } as IdempotencyRecord;
+        rows.set(row.id, updated);
+        return updated;
+      }),
+      updateMany: vi.fn(async ({ where, data }: { where: Record<string, unknown>; data: Record<string, unknown> }) => {
+        const matching = [...rows.values()].filter(
+          (row) => row.transactionId === where.transactionId && row.status === where.status,
+        );
+        for (const row of matching) {
+          rows.set(row.id, { ...row, ...data } as IdempotencyRecord);
+        }
+        return { count: matching.length };
+      }),
+    },
+  } as unknown as PrismaService;
+}
 
 describe('TransactionService', () => {
   describe('Governance simulation', () => {
@@ -103,6 +187,7 @@ describe('TransactionService', () => {
             spentThisMonth: 0,
           }),
           evaluateSpendingLimits: vi.fn().mockResolvedValue(undefined),
+          withSpendEnforcementLock: vi.fn(async (_agentId: string, fn: () => Promise<unknown>) => fn()),
         } as unknown as SpendingLimitService,
         passthroughTxService,
       );
@@ -160,6 +245,7 @@ describe('TransactionService - create', () => {
   let service: TransactionService;
   let stellarService: StellarService;
   let transactionRepository: TransactionRepository;
+  let idempotencyService: IdempotencyService;
   let idempotencySettings: {
     keyTtlMs: number;
     waitTimeoutMs: number;
@@ -191,7 +277,6 @@ describe('TransactionService - create', () => {
           provide: TransactionRepository,
           useValue: (() => {
             let stored: Record<string, unknown> | undefined;
-            const idempotencyRecords = new Map<string, Record<string, unknown>>();
             return {
               create: vi.fn().mockImplementation((data: Record<string, unknown>) => {
                 stored = { id: 'tx_1', ...data, status: data.status ?? TransactionStatus.DRAFT };
@@ -202,43 +287,10 @@ describe('TransactionService - create', () => {
                 return Promise.resolve(stored);
               }),
               findById: vi.fn().mockImplementation(() => Promise.resolve(stored)),
-              reserveIdempotencyKey: vi.fn().mockImplementation((input: Record<string, unknown>) => {
-                const recordKey = `${input.principalId}:${input.operation}:${input.keyHash}`;
-                const existing = idempotencyRecords.get(recordKey);
-                if (existing && (existing.expiresAt as Date).getTime() <= Date.now()) {
-                  idempotencyRecords.delete(recordKey);
-                }
-                const current = idempotencyRecords.get(recordKey);
-                if (current) return Promise.resolve({ record: current, created: false });
-                const record = {
-                  id: `idempotency_${idempotencyRecords.size + 1}`,
-                  ...input,
-                  status: 'PROCESSING',
-                  transactionId: null,
-                  response: null,
-                };
-                idempotencyRecords.set(recordKey, record);
-                return Promise.resolve({ record, created: true });
-              }),
-              attachIdempotencyTransaction: vi.fn().mockImplementation((id: string, transactionId: string) => {
-                const record = [...idempotencyRecords.values()].find((item) => item.id === id);
-                if (record) record.transactionId = transactionId;
-                return Promise.resolve(record);
-              }),
-              completeIdempotencyKey: vi.fn().mockImplementation((id: string, transactionId: string, response: unknown) => {
-                const record = [...idempotencyRecords.values()].find((item) => item.id === id);
-                if (record) Object.assign(record, { transactionId, response, status: 'COMPLETED' });
-                return Promise.resolve(record);
-              }),
-              releaseIdempotencyKey: vi.fn().mockImplementation((id: string) => {
-                for (const [recordKey, record] of idempotencyRecords) {
-                  if (record.id === id) idempotencyRecords.delete(recordKey);
-                }
-                return Promise.resolve({ count: 1 });
-              }),
             };
           })(),
         },
+        { provide: IdempotencyService, useValue: new IdempotencyService(createIdempotencyPrisma()) },
         { provide: WalletService, useValue: { getOrThrow: vi.fn().mockResolvedValue(wallet) } },
         {
           provide: AgentService,
@@ -310,6 +362,7 @@ describe('TransactionService - create', () => {
           useValue: {
             aggregateSpend: vi.fn().mockResolvedValue({ spentToday: 0, spentThisWeek: 0, spentThisMonth: 0 }),
             evaluateSpendingLimits: vi.fn().mockResolvedValue(undefined),
+            withSpendEnforcementLock: vi.fn(async (_agentId: string, fn: () => Promise<unknown>) => fn()),
           },
         },
       ],
@@ -317,6 +370,7 @@ describe('TransactionService - create', () => {
 
     service = module.get<TransactionService>(TransactionService);
     transactionRepository = module.get<TransactionRepository>(TransactionRepository);
+    idempotencyService = module.get<IdempotencyService>(IdempotencyService);
     stellarService = module.get<StellarService>(StellarService);
   });
 
@@ -413,6 +467,7 @@ describe('TransactionService - create', () => {
           useValue: {
             aggregateSpend: vi.fn().mockResolvedValue({ spentToday: 0, spentThisWeek: 0, spentThisMonth: 0 }),
             evaluateSpendingLimits: vi.fn().mockResolvedValue(undefined),
+            withSpendEnforcementLock: vi.fn(async (_agentId: string, fn: () => Promise<unknown>) => fn()),
           },
         },
       ],
@@ -440,6 +495,14 @@ describe('TransactionService - create', () => {
       expect.objectContaining({ score: 65, requiresApproval: true }),
       { actorId: 'user_1' },
     );
+  });
+
+  it('does not touch idempotency storage when no key is supplied', async () => {
+    const reserve = vi.spyOn(idempotencyService, 'reserve');
+
+    await service.create('org_1', 'user_1', input);
+
+    expect(reserve).not.toHaveBeenCalled();
   });
 
   it('replays a matching request without creating or submitting another transaction', async () => {
@@ -478,6 +541,7 @@ describe('TransactionService - create', () => {
 
   it('stores the configured retention window as the record expiry', async () => {
     idempotencySettings.keyTtlMs = 3_600_000;
+    const reserve = vi.spyOn(idempotencyService, 'reserve');
     const before = Date.now();
 
     await service.create('org_1', 'user_1', input, {
@@ -485,7 +549,7 @@ describe('TransactionService - create', () => {
       key: 'transaction-key-ttl',
     });
 
-    const expiresAt = vi.mocked(transactionRepository.reserveIdempotencyKey).mock.calls[0][0].expiresAt;
+    const expiresAt = reserve.mock.calls[0][0].expiresAt;
     expect(expiresAt.getTime()).toBeGreaterThanOrEqual(before + 3_600_000);
     expect(expiresAt.getTime()).toBeLessThanOrEqual(Date.now() + 3_600_000);
   });
@@ -578,6 +642,7 @@ describe('TransactionService - create', () => {
           useValue: {
             aggregateSpend: vi.fn().mockResolvedValue({ spentToday: 0, spentThisWeek: 0, spentThisMonth: 0 }),
             evaluateSpendingLimits: vi.fn().mockResolvedValue(undefined),
+            withSpendEnforcementLock: vi.fn(async (_agentId: string, fn: () => Promise<unknown>) => fn()),
           },
         },
       ],

@@ -124,3 +124,6 @@ jobs:
 
       - name: Run tests
         run: npm run test
+        env:
+          NODE_ENV: test
+          DATABASE_URL: postgresql://postgres:password@localhost:5432/astroid_test?schema=public

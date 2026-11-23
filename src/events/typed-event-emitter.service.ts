@@ -23,6 +23,7 @@ export interface DomainEventMap {
   'wallet.frozen': PayloadTypes.WalletFrozenPayload;
   'wallet.archived': PayloadTypes.WalletArchivedPayload;
   'wallet.balance_updated': PayloadTypes.WalletBalanceUpdatedPayload;
+  'wallet.balance_drift_detected': PayloadTypes.WalletBalanceDriftDetectedPayload;
 
   // Agent
   'agent.registered': PayloadTypes.AgentRegisteredPayload;
@@ -46,6 +47,8 @@ export interface DomainEventMap {
   'budget.consumed': PayloadTypes.BudgetConsumedPayload;
   'budget.exceeded': PayloadTypes.BudgetExceededPayload;
   'budget.warning': PayloadTypes.BudgetWarningPayload;
+  'budget.threshold_reached': PayloadTypes.BudgetThresholdReachedPayload;
+  'budget.period_rollover': PayloadTypes.BudgetPeriodRolloverPayload;
 
   // Proposal / Approval
   'proposal.created': PayloadTypes.ProposalCreatedPayload;
@@ -68,6 +71,9 @@ export interface DomainEventMap {
 
   // Audit
   'audit.recorded': PayloadTypes.AuditRecordedPayload;
+
+  // Session / refresh-token reuse
+  'session.family_revoked': PayloadTypes.SessionFamilyRevokedPayload;
 
   // Webhook delivery / circuit breaker
   'webhook.circuit_opened': PayloadTypes.WebhookCircuitOpenedPayload;

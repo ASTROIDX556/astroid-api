@@ -1,8 +1,10 @@
-import { Injectable, Logger } from '@nestjs/common';
-import { ApprovalDecision, Prisma, ProposalStatus } from '@prisma/client';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
+import { ConfigType } from '@nestjs/config';
+import { ApprovalDecision, Prisma, Proposal, ProposalStatus, Transaction } from '@prisma/client';
 import { ApprovalRepository } from './approval.repository';
 import { DecideProposalInput } from './approval.dto';
 import { TransactionService } from '../transactions/transaction.service';
+import { BudgetService } from '../budgets/budget.service';
 import { DomainException } from '../../common/exceptions/domain.exception';
 import { ErrorCode } from '../../common/constants/error-codes';
 import {
@@ -17,6 +19,11 @@ import {
 import { Paginated } from '../../common/interfaces/api-response.interface';
 import { EventBusService } from '../../events/event-bus.service';
 import { DomainEventName } from '../../events/event-names';
+import {
+  assertTransition,
+  InvalidProposalTransitionException,
+} from './approval-state-machine';
+import { approvalConfig } from '../../config/approval.config';
 
 const SORTABLE = ['createdAt', 'status', 'approvalType'];
 
@@ -62,6 +69,10 @@ export class ApprovalService {
     private readonly repository: ApprovalRepository,
     private readonly transactions: TransactionService,
     private readonly eventBus: EventBusService,
+    @Optional() private readonly budgets?: BudgetService,
+    @Optional()
+    @Inject(approvalConfig.KEY)
+    private readonly approvalConfiguration?: ConfigType<typeof approvalConfig>,
   ) {}
 
   async list(organizationId: string, query: PaginationQuery) {
@@ -71,6 +82,7 @@ export class ApprovalService {
     }
     const pagination = toPrismaPagination(query, SORTABLE);
     const { items, total } = await this.repository.findManyAndCount(where, pagination);
+    await Promise.all(items.map((proposal) => this.expireIfNeeded(proposal, organizationId)));
     return new Paginated(items, buildPaginationMeta(total, query));
   }
 
@@ -79,6 +91,7 @@ export class ApprovalService {
     if (!proposal) {
       throw new NotFoundException('Proposal', id);
     }
+    await this.expireIfNeeded(proposal, organizationId);
     return proposal;
   }
 
@@ -132,30 +145,22 @@ export class ApprovalService {
     proposalId: string,
     input: DecideProposalInput,
   ) {
-    const proposal = await this.getOrThrow(organizationId, proposalId);
+    // Do not use getOrThrow here: action-time expiry must itself own the
+    // PENDING -> EXPIRED compare-and-set transition.
+    const proposal = await this.repository.findById(organizationId, proposalId);
+    if (!proposal) throw new NotFoundException('Proposal', proposalId);
 
-    if (proposal.status !== ProposalStatus.PENDING) {
-      throw new DomainException(
-        ErrorCode.PROPOSAL_NOT_PENDING,
-        `Proposal is '${proposal.status}' and can no longer be decided`,
-      );
-    }
-    if (proposal.expiresAt && proposal.expiresAt.getTime() <= Date.now()) {
-      // The sweeper is a janitor, not the guard: expire it here if the sweep
-      // has not run yet, then refuse the decision. Only emit when this call
-      // actually performed the transition.
-      const changed = await this.repository.expireIfPending(proposalId);
-      if (changed > 0) {
-        await this.eventBus.emit(
-          DomainEventName.ProposalExpired,
-          { proposalId, transactionId: proposal.transactionId },
-          { organizationId, actorId, aggregateType: 'proposal', aggregateId: proposalId },
-        );
+    if (
+      proposal.status === ProposalStatus.EXPIRED ||
+      (proposal.expiresAt && proposal.expiresAt.getTime() <= Date.now())
+    ) {
+      if (proposal.status === ProposalStatus.PENDING) {
+        await this.expireProposal(proposal, organizationId, actorId);
       }
-      throw new DomainException(
-        ErrorCode.PROPOSAL_EXPIRED,
-        'Proposal has expired and can no longer be decided',
-      );
+      throw new DomainException(ErrorCode.PROPOSAL_EXPIRED, 'Proposal has expired');
+    }
+    if (proposal.status !== ProposalStatus.PENDING) {
+      throw new InvalidProposalTransitionException(proposal.status, ProposalStatus.APPROVED);
     }
 
     const already = await this.repository.findApprovalByUser(proposalId, actorId);
@@ -173,22 +178,8 @@ export class ApprovalService {
     // A single rejection rejects the whole proposal. The conditional update
     // loses harmlessly if the sweeper expired the proposal in the meantime.
     if (input.decision === ApprovalDecision.REJECTED) {
-      const changed = await this.repository.transitionFromPending(
-        proposalId,
-        ProposalStatus.REJECTED,
-      );
-      if (changed === 0) {
-        throw new DomainException(
-          ErrorCode.PROPOSAL_NOT_PENDING,
-          `Proposal is no longer 'PENDING' and can no longer be decided`,
-        );
-      }
+      await this.transition(proposal, ProposalStatus.REJECTED, organizationId, actorId);
       await this.transactions.cancel(organizationId, actorId, proposal.transactionId);
-      await this.eventBus.emit(
-        DomainEventName.ProposalRejected,
-        { proposalId, transactionId: proposal.transactionId },
-        { organizationId, actorId, aggregateType: 'proposal', aggregateId: proposalId },
-      );
       return this.getOrThrow(organizationId, proposalId);
     }
 
@@ -199,33 +190,159 @@ export class ApprovalService {
     }
 
     // Threshold reached: approve, execute the transaction, then mark executed.
-    // The conditional transition guarantees a proposal the sweeper (or another
-    // reviewer) already moved out of PENDING is never approved here, so it can
-    // never be both APPROVED and EXPIRED.
-    const changed = await this.repository.transitionFromPending(
-      proposalId,
-      ProposalStatus.APPROVED,
-    );
-    if (changed === 0) {
-      throw new DomainException(
-        ErrorCode.PROPOSAL_NOT_PENDING,
-        `Proposal is no longer 'PENDING' and can no longer be decided`,
-      );
-    }
-    await this.eventBus.emit(
-      DomainEventName.ProposalApproved,
-      { proposalId, transactionId: proposal.transactionId, approvals },
-      { organizationId, actorId, aggregateType: 'proposal', aggregateId: proposalId },
-    );
+    await this.transition(proposal, ProposalStatus.APPROVED, organizationId, actorId, { approvals });
 
     await this.transactions.execute(organizationId, proposal.transactionId, actorId);
-    await this.repository.updateProposalStatus(proposalId, { status: ProposalStatus.EXECUTED });
-    await this.eventBus.emit(
-      DomainEventName.ProposalExecuted,
-      { proposalId, transactionId: proposal.transactionId },
-      { organizationId, actorId, aggregateType: 'proposal', aggregateId: proposalId },
+    await this.transition(
+      { ...proposal, status: ProposalStatus.APPROVED },
+      ProposalStatus.EXECUTED,
+      organizationId,
+      actorId,
     );
 
     return this.getOrThrow(organizationId, proposalId);
+  }
+
+  /**
+   * Sweeps expired pending proposals in bounded batches.
+   * Atomically transitions them to EXPIRED, releases held budgets, cancels transactions,
+   * and emits ProposalExpired events.
+   *
+   * Idempotent under concurrency: conditional update guarantees budget is released exactly once.
+   */
+  async sweepExpired(batchSize?: number): Promise<{ scanned: number; expired: number }> {
+    const limit = batchSize ?? this.approvalConfiguration?.sweepBatchSize ?? 100;
+    const now = new Date();
+    const candidates = await this.repository.findExpiredPending(now, limit);
+    let expiredCount = 0;
+
+    for (const proposal of candidates) {
+      const transitioned = await this.expireProposal(proposal, proposal.organizationId);
+      if (transitioned) {
+        expiredCount++;
+      }
+    }
+
+    this.logger.log(
+      `Approval sweep completed: evaluated ${candidates.length} candidate(s), transitioned ${expiredCount} to EXPIRED`,
+    );
+    return { scanned: candidates.length, expired: expiredCount };
+  }
+
+  /**
+   * Transitions a pending proposal atomically to EXPIRED and releases any held budget.
+   * Guarantees idempotent single-execution: if another worker already transitioned
+   * the proposal, this returns false and avoids double-releasing budget.
+   */
+  async expireProposal(
+    proposal: Proposal & { transaction?: Transaction | null },
+    organizationId: string,
+    actorId = 'system:approval-sweep',
+  ): Promise<boolean> {
+    assertTransition(proposal.status, ProposalStatus.EXPIRED);
+
+    // Conditional atomic compare-and-set: where: { id: proposal.id, status: PENDING }
+    const changed = await this.repository.transitionStatus(
+      proposal.id,
+      ProposalStatus.PENDING,
+      ProposalStatus.EXPIRED,
+    );
+    if (!changed) {
+      return false; // raced with another worker or user decision
+    }
+
+    // Release held budget reservation exactly once
+    if (this.budgets && proposal.transaction?.budgetId) {
+      try {
+        await this.budgets.releaseBudget(
+          organizationId,
+          proposal.transaction.budgetId,
+          Number(proposal.transaction.amount),
+        );
+      } catch (err) {
+        this.logger.warn(
+          `Could not release budget for expired proposal ${proposal.id}: ${(err as Error).message}`,
+        );
+      }
+    }
+
+    // Cancel underlying transaction if still cancellable
+    if (proposal.transactionId) {
+      try {
+        await this.transactions.cancel(organizationId, actorId, proposal.transactionId);
+      } catch {
+        // gracefully continue
+      }
+    }
+
+    // Emit standard domain event
+    await this.eventBus.emit(
+      DomainEventName.ProposalExpired,
+      { proposalId: proposal.id, transactionId: proposal.transactionId },
+      { organizationId, actorId, aggregateType: 'proposal', aggregateId: proposal.id },
+    );
+
+    return true;
+  }
+
+  /** Expires stale proposals during reads as well as state-changing actions. */
+  private async expireIfNeeded(
+    proposal: Proposal & { transaction?: Transaction | null },
+    organizationId: string,
+  ): Promise<void> {
+    if (proposal.status !== ProposalStatus.PENDING || !proposal.expiresAt || proposal.expiresAt >= new Date()) {
+      return;
+    }
+    const transitioned = await this.expireProposal(proposal, organizationId);
+    if (transitioned) {
+      proposal.status = ProposalStatus.EXPIRED;
+    }
+  }
+
+  /** The single service path for every Proposal status mutation and its event. */
+  private async transition(
+    proposal: Proposal,
+    to: ProposalStatus,
+    organizationId: string,
+    actorId?: string,
+    extra: { approvals?: number } = {},
+  ): Promise<void> {
+    assertTransition(proposal.status, to);
+    const changed = await this.repository.transitionStatus(proposal.id, proposal.status, to);
+    if (!changed) throw new InvalidProposalTransitionException(proposal.status, to);
+
+    const options = { organizationId, actorId, aggregateType: 'proposal', aggregateId: proposal.id };
+    switch (to) {
+      case ProposalStatus.APPROVED:
+        await this.eventBus.emit(
+          DomainEventName.ProposalApproved,
+          { proposalId: proposal.id, transactionId: proposal.transactionId, ...extra },
+          options,
+        );
+        return;
+      case ProposalStatus.REJECTED:
+        await this.eventBus.emit(
+          DomainEventName.ProposalRejected,
+          { proposalId: proposal.id, transactionId: proposal.transactionId },
+          options,
+        );
+        return;
+      case ProposalStatus.EXPIRED:
+        await this.eventBus.emit(
+          DomainEventName.ProposalExpired,
+          { proposalId: proposal.id, transactionId: proposal.transactionId },
+          options,
+        );
+        return;
+      case ProposalStatus.EXECUTED:
+        await this.eventBus.emit(
+          DomainEventName.ProposalExecuted,
+          { proposalId: proposal.id, transactionId: proposal.transactionId },
+          options,
+        );
+        return;
+      default:
+        return;
+    }
   }
 }

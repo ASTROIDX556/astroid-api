@@ -94,6 +94,18 @@ export interface WalletBalanceUpdatedPayload extends Record<string, unknown> {
   balanceCount?: number;
 }
 
+/**
+ * Emitted at most once per wallet per reconciliation run when the freshly
+ * fetched native balance differs from the stored snapshot by more than the
+ * configured drift threshold.
+ */
+export interface WalletBalanceDriftDetectedPayload extends Record<string, unknown> {
+  walletId: string;
+  previousBalance: string;
+  newBalance: string;
+  reconciledAt: string;
+}
+
 export interface AgentRegisteredPayload extends Record<string, unknown> {
   agentId: string;
   name: string;
@@ -190,6 +202,45 @@ export interface BudgetWarningPayload extends Record<string, unknown> {
   threshold?: string | number;
   utilisation?: number | string;
   walletId?: string;
+}
+
+export interface BudgetThresholdReachedPayload extends Record<string, unknown> {
+  /** Budget whose period usage crossed the threshold. */
+  budgetId: string;
+  /** Budget period the alert belongs to (DAILY, WEEKLY, MONTHLY, …). */
+  period: string;
+  /** Start of the budget period, ISO-8601. Resets alert tracking per period. */
+  periodStart: string;
+  /** Percentage of the limit that was crossed (e.g. 80 or 100). */
+  threshold: number;
+  /** Current usage as a fixed 7-decimal string. */
+  usage: string;
+  /** Budget limit as a fixed 7-decimal string. */
+  limit: string;
+  /** Usage as a percentage of the limit, fixed 2 decimals. */
+  utilisation: string;
+  /** Budget currency (e.g. USDC). */
+  currency: string;
+}
+
+export interface BudgetPeriodRolloverPayload extends Record<string, unknown> {
+  budgetId: string;
+  organizationId: string;
+  /** Period that was closed by this rollover. */
+  closedPeriodStart: string;
+  closedPeriodEnd: string;
+  /** Final spend snapshot of the closed period. */
+  spent: string;
+  /** Period opened by this rollover. */
+  periodStart: string;
+  periodEnd: string;
+  /** Carry-over applied to the new period (negative when overspend carried). */
+  carryOverAmount: string;
+  carryOverRule: string;
+  timezone: string;
+  currency: string;
+  /** Number of elapsed periods closed in this run (more than one after downtime). */
+  periodsClosed: number;
 }
 
 export interface ProposalCreatedPayload extends Record<string, unknown> {
@@ -406,6 +457,15 @@ export interface JobRequeuedPayload extends Record<string, unknown> {
   organizationId?: string;
   /** Reason the job was re-queued. */
   reason?: string;
+}
+
+export interface SessionFamilyRevokedPayload extends Record<string, unknown> {
+  /** Identifier of the token family whose sessions were revoked. */
+  familyId: string;
+  /** The session that presented the reused token, when known. */
+  sessionId?: string;
+  /** The user owning the family, when known. */
+  userId?: string | null;
 }
 
 export interface WebhookPermanentlyFailedPayload extends Record<string, unknown> {

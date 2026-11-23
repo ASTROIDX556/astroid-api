@@ -45,6 +45,40 @@ StructuredAuditInterceptor
 
 The interceptor never awaits the publication: the response cycle is not delayed by the audit write. `AuditRecordedListener` turns the event into the hash-chained audit-log row, and swallows (but logs) any persistence failure so an audit outage never breaks the audited operation.
 
+## Hash-chain format
+
+The chain scope is **one chain per organization**. New entries store `prevHash`
+and `hash`; the first entry with no predecessor stores the literal `GENESIS`
+in `prevHash`. The hash is lowercase hexadecimal SHA-256 over UTF-8 bytes of
+the following canonical string:
+
+```text
+JSON.stringify([id, actor, action, target, timestamp, payload]) + prevHash
+```
+
+The array order is fixed. `actor` is `userId` or `null`; `target` is the object
+`{ "entity": entity, "id": entityId-or-null }`; `timestamp` is `createdAt` in
+ISO-8601 UTC form; `payload` contains `oldValue`, `newValue`, `ipAddress`, and
+`device` (all keys are present, nullable values use JSON `null`). Nested object
+keys in the payload are serialized in lexicographic order; array order is
+preserved. `requestId` and `sourceEventId` are intentionally excluded.
+
+Each append locks the stable organization row with `SELECT ... FOR UPDATE`,
+then reads the last live hash (or archived anchor) and inserts the new row in
+the same PostgreSQL transaction. The per-organization row lock serializes
+writers across application instances; Read Committed isolation is sufficient
+because the next writer reads only after acquiring that lock. If a supplied
+event timestamp is not later than the previous hashed entry, it is advanced by
+one millisecond so verification and archive order remain deterministic.
+
+The read-only `GET /audit/integrity/verify` endpoint is restricted to
+authenticated organization owners, administrators, and auditors. Unhashed
+pre-migration rows are treated as an unverified legacy segment and skipped;
+the first new entry after such a segment starts at `GENESIS`. Previously
+hashed rows continue to be checked with the former canonical format so this
+change does not invalidate existing hashes. An archived batch's final hash
+anchors the first live entry.
+
 ## One row per operation
 
 Three interceptors can observe a request, so the ownership is explicit:

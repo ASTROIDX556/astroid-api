@@ -247,7 +247,12 @@ describe('DeadLetterService', () => {
       ]);
       expect(where.payload).toEqual({ path: ['queue'], equals: 'webhooks' });
       expect(result.items).toHaveLength(1);
-      expect(result.meta).toMatchObject({ offset: 0, limit: 50, total: 1 });
+      expect(result.meta).toMatchObject({
+        page: 1,
+        pageSize: 20,
+        total: 1,
+        totalPages: 1,
+      });
     });
 
     it('slices the ledger with the requested offset/limit and occurredAt sort', async () => {
@@ -269,13 +274,12 @@ describe('DeadLetterService', () => {
       });
       expect(result.items).toEqual([{ id: 'evt-11' }]);
       expect(result.meta).toEqual({
-        offset: 10,
         page: 2,
-        limit: 10,
+        pageSize: 10,
         total: 35,
         totalPages: 4,
-        hasNext: true,
-        hasPrev: true,
+        hasNextPage: true,
+        hasPreviousPage: true,
       });
     });
 

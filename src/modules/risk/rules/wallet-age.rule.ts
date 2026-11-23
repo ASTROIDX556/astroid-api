@@ -13,6 +13,9 @@ export const WalletAgeRule: RiskRule = {
     const seasoned = clamp(input.walletAgeDays / config.walletSeasonedDays, 0, 1);
     const weight = config.weights?.walletAge ?? WalletAgeRule.defaultWeight;
     return {
+      code: 'walletAge',
+      description: `Wallet age ${input.walletAgeDays} day(s)`,
+      value: input.walletAgeDays,
       factor: 'walletAge',
       weight,
       contribution: (1 - seasoned) * weight,

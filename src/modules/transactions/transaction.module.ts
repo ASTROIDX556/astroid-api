@@ -1,5 +1,4 @@
 import { Module } from '@nestjs/common';
-import { ScheduleModule } from '@nestjs/schedule';
 import { TransactionController } from './transaction.controller';
 import { TransactionService } from './transaction.service';
 import { TransactionRepository } from './transaction.repository';
@@ -18,7 +17,7 @@ import { BullModule } from '@nestjs/bullmq';
 import { Queues } from '../../queues/queues.constants';
 import { createQueueRegistrationOptions } from '../../queues/queue-policy';
 import { TransactionWorker } from './workers/transaction.worker';
-import { TransactionIdempotencyCleanupService } from './transaction-idempotency-cleanup.service';
+import { IdempotencyModule } from '../../common/idempotency/idempotency.module';
 
 /**
  * Transaction pipeline module. Pulls together wallets, agents, policies, risk
@@ -28,13 +27,13 @@ import { TransactionIdempotencyCleanupService } from './transaction-idempotency-
  */
 @Module({
   imports: [
-    ScheduleModule.forRoot(),
     WalletModule,
     AgentModule,
     PolicyModule,
     RiskModule,
     BudgetModule,
     StellarModule,
+    IdempotencyModule,
     BullModule.registerQueue(
       // Transaction execution is retried with exponential backoff and jitter.
       // A job that still fails on its last attempt is dead-lettered by the
@@ -55,7 +54,6 @@ import { TransactionIdempotencyCleanupService } from './transaction-idempotency-
     SpendingLimitService,
     SpendingLimitGuard,
     TransactionWorker,
-    TransactionIdempotencyCleanupService,
   ],
   exports: [TransactionService, SorobanSimulationService, StellarSimulationService, GasEstimationService, SpendingLimitService],
 })

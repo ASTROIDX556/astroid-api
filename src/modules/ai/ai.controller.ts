@@ -11,7 +11,7 @@ import { z } from 'zod';
 import { AiService } from './ai.service';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
-import { AiBriefingDto, ChatMessageDto, AiChatResponseDto } from './ai.dto';
+import { AiBriefingDto, ChatMessageDto, AiChatResponseDto, ChatRequestDto } from './ai.dto';
 
 const chatSchema = z.object({ message: z.string().min(1).max(2000) });
 type ChatInput = z.infer<typeof chatSchema>;
@@ -61,21 +61,7 @@ export class AiController {
       'The assistant has access to the organization\'s financial data and can answer questions ' +
       'about transactions, policies, budgets, and agents.',
   })
-  @ApiBody({
-    schema: {
-      type: 'object',
-      properties: {
-        message: {
-          type: 'string',
-          minLength: 1,
-          maxLength: 2000,
-          example: 'What was our total spend this month?',
-          description: 'User message to the AI assistant',
-        },
-      },
-      required: ['message'],
-    },
-  })
+  @ApiBody({ type: ChatRequestDto })
   @ApiEnvelope(AiChatResponseDto, { description: 'AI assistant response' })
   @ApiErrorResponses({
     validation: 'Validation error (empty or too long message)',

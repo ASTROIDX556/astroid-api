@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { RiskBand } from '@prisma/client';
 import { RiskEngine } from './risk.engine';
 import { RiskFactorsInput, RiskRuleContext, RiskRule } from './risk.types';
+import { RISK_FACTOR_DESCRIPTIONS, RiskFactorCode } from './risk.types';
 
 const lowRisk: RiskFactorsInput = {
   amount: 20,
@@ -124,6 +125,73 @@ describe('RiskEngine', () => {
     expect(names).toContain('suspiciousTiming');
   });
 
+  it('returns stable factor metadata in deterministic order', () => {
+    const result = engine.assess(lowRisk);
+    expect(result.factors.map((factor) => factor.code)).toEqual([
+      'amount',
+      'amountAnomaly',
+      'unknownRecipient',
+      'destinationReputation',
+      'velocity',
+      'walletAge',
+      'policyViolations',
+      'suspiciousTiming',
+    ]);
+    for (const factor of result.factors) {
+      expect(factor.description).toBeTruthy();
+      expect(factor.description).toBe(factor.detail);
+      expect(['number', 'boolean', 'object'].includes(typeof factor.value)).toBe(true);
+    }
+    expect(result.factors.find((factor) => factor.code === 'amount')).toMatchObject({
+      description: 'Amount 20',
+      value: 20,
+    });
+    expect(result.factors.find((factor) => factor.code === 'unknownRecipient')).toMatchObject({
+      description: 'Known recipient',
+      value: true,
+    });
+    expect(result.factors.find((factor) => factor.code === 'velocity')).toMatchObject({
+      description: '1 recent transactions, 0 total value',
+      value: 1,
+    });
+  });
+
+  it('keeps factor contributions reconciled to the rounded score', () => {
+    const result = engine.assess({
+      amount: 333,
+      asset: 'USDC',
+      knownRecipient: false,
+      recentTransactionCount: 7,
+      walletAgeDays: 41,
+      policyViolations: 1,
+      hourUtc: 2,
+      amountBaseline: 100,
+      destinationPaymentCount: 3,
+      destinationFailureCount: 1,
+    });
+
+    const sum = result.factors.reduce((total, factor) => total + factor.contribution, 0);
+    expect(Math.abs(sum - result.score)).toBeLessThanOrEqual(0.01);
+  });
+
+  it('keeps the existing scalar score and documents every factor code', () => {
+    const result = engine.assess(lowRisk);
+    expect(result.score).toBe(1);
+    expect(Object.keys(RISK_FACTOR_DESCRIPTIONS).sort()).toEqual([
+      'amount',
+      'amountAnomaly',
+      'destinationReputation',
+      'policyViolations',
+      'suspiciousTiming',
+      'unknownRecipient',
+      'velocity',
+      'walletAge',
+    ]);
+    for (const code of Object.keys(RISK_FACTOR_DESCRIPTIONS) as RiskFactorCode[]) {
+      expect(RISK_FACTOR_DESCRIPTIONS[code].length).toBeGreaterThan(0);
+    }
+  });
+
   // ── Configurable band thresholds ─────────────────────────────────────────
 
   it('maps score thresholds to the default bands', () => {
@@ -237,6 +305,9 @@ describe('RiskEngine', () => {
       defaultWeight: 10,
       evaluate({ input }: RiskRuleContext) {
         return {
+          code: 'amount',
+          description: input.asset === 'SCAM' ? 'Scam asset detected' : 'Normal asset',
+          value: input.asset === 'SCAM',
           factor: 'customFlag',
           weight: 10,
           contribution: input.asset === 'SCAM' ? 10 : 0,
@@ -257,6 +328,9 @@ describe('RiskEngine', () => {
       defaultWeight: 100,
       evaluate() {
         return {
+          code: 'amount',
+          description: 'Custom heavy penalty',
+          value: 1,
           factor: 'heavyPenalty',
           weight: 100,
           contribution: 100,
@@ -276,7 +350,15 @@ describe('RiskEngine', () => {
       name: 'solo',
       defaultWeight: 42,
       evaluate() {
-        return { factor: 'solo', weight: 42, contribution: 42, detail: 'Solo rule' };
+        return {
+          code: 'amount',
+          description: 'Solo rule',
+          value: 42,
+          factor: 'solo',
+          weight: 42,
+          contribution: 42,
+          detail: 'Solo rule',
+        };
       },
     };
 

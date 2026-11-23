@@ -11,13 +11,14 @@ import { RedisThrottlerStorage } from './common/throttler/redis-throttler.storag
 import { DatabaseModule } from './database/database.module';
 import { EventsModule } from './events/events.module';
 import { LocksModule } from './common/locks/locks.module';
+import { IdempotencyModule } from './common/idempotency/idempotency.module';
 import { ShutdownModule } from './common/shutdown/shutdown.module';
 import { REDIS_CLIENT } from './common/locks/locks.constants';
 import { EncryptionModule } from './common/encryption/encryption.module';
 import { RequestIdMiddleware } from './middleware/request-id.middleware';
 import { StructuredRequestLoggingMiddleware } from './middleware/structured-request-logging.middleware';
 import { RawBodyMiddleware } from './common/middleware/raw-body.middleware';
-import { REQUEST_ID_HEADER } from './common/constants/headers';
+import { createPinoHttpOptions } from './common/logging/pino-http.options';
 
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
@@ -26,16 +27,19 @@ import { AstroidThrottlerGuard } from './common/guards/throttler.guard';
 import { PublicRateLimitGuard } from './common/guards/public-rate-limit.guard';
 import { ResponseInterceptor } from './common/interceptors/response.interceptor';
 import { AuditInterceptor } from './common/interceptors/audit.interceptor';
-import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
+import { GlobalExceptionFilter } from './common/filters/global-exception.filter';
+import { PrismaExceptionFilter } from './common/filters/prisma-exception.filter';
 import { AgentPolicyGuard } from './modules/policies/guards/agent-policy.guard';
 
 import { AuthModule } from './modules/auth/auth.module';
 import { OrganizationModule } from './modules/organizations/organization.module';
 import { AgentModule } from './modules/agents/agent.module';
 import { WalletModule } from './modules/wallets/wallet.module';
+import { WalletReconciliationModule } from './modules/wallets/wallet-reconciliation.module';
 import { PolicyModule } from './modules/policies/policy.module';
 import { RiskModule } from './modules/risk/risk.module';
 import { BudgetModule } from './modules/budgets/budget.module';
+import { BudgetRolloverModule } from './modules/budgets/budget-rollover.module';
 import { TransactionModule } from './modules/transactions/transaction.module';
 import { ApprovalModule } from './modules/approvals/approval.module';
 import { AnalyticsModule } from './modules/analytics/analytics.module';
@@ -56,7 +60,6 @@ import { AuditLogInterceptor } from './common/interceptors/audit-log.interceptor
 import { StructuredAuditInterceptor } from './common/interceptors/structured-audit.interceptor';
 import { MetricsInterceptor } from './common/interceptors/metrics.interceptor';
 import { RequestIdInterceptor } from './common/interceptors/request-id.interceptor';
-import { sanitizeAuditPayload, sanitizeLogArguments } from './common/helpers/audit-sanitizer';
 
 /**
  * Root application module. Wires the global infrastructure (config, logging,
@@ -81,27 +84,9 @@ import { sanitizeAuditPayload, sanitizeLogArguments } from './common/helpers/aud
 @Module({
   imports: [
     AppConfigModule,
-    LoggerModule.forRoot({
-      pinoHttp: {
-        // Reuse the request id set by RequestIdMiddleware for correlated logs.
-        genReqId: (req) => (req.headers[REQUEST_ID_HEADER] as string) ?? undefined,
-        // Never log Authorization headers, cookies or API keys.
-        redact: {
-          paths: ['req.headers.authorization', 'req.headers.cookie', 'req.headers["x-api-key"]'],
-          remove: true,
-        },
-        formatters: {
-          log: (object: Record<string, unknown>) =>
-            sanitizeAuditPayload(object) as Record<string, unknown>,
-        },
-        hooks: {
-          logMethod(args, method) {
-            return method.apply(this, sanitizeLogArguments(args) as typeof args);
-          },
-        },
-        autoLogging: false,
-      },
-    }),
+    // Redaction of credentials and secrets is configured once, at the logger
+    // (see common/logging/pino-http.options.ts and docs/security-redaction.md).
+    LoggerModule.forRoot({ pinoHttp: createPinoHttpOptions() }),
     // Three rate-limit tiers, all driven by THROTTLE_* env vars (see
     // config/throttler.config.ts). Every route is subject to all named
     // throttlers, but AstroidThrottlerGuard enforces only the one matching the
@@ -124,6 +109,7 @@ import { sanitizeAuditPayload, sanitizeLogArguments } from './common/helpers/aud
     DatabaseModule,
     EventsModule,
     LocksModule,
+    IdempotencyModule,
     EncryptionModule,
 
     // Domain modules
@@ -131,9 +117,11 @@ import { sanitizeAuditPayload, sanitizeLogArguments } from './common/helpers/aud
     OrganizationModule,
     AgentModule,
     WalletModule,
+    WalletReconciliationModule,
     PolicyModule,
     RiskModule,
     BudgetModule,
+    BudgetRolloverModule,
     TransactionModule,
     ApprovalModule,
     AnalyticsModule,
@@ -164,7 +152,8 @@ import { sanitizeAuditPayload, sanitizeLogArguments } from './common/helpers/aud
     { provide: APP_INTERCEPTOR, useClass: AuditInterceptor },
     { provide: APP_INTERCEPTOR, useClass: StructuredAuditInterceptor },
     { provide: APP_INTERCEPTOR, useClass: MetricsInterceptor },
-    { provide: APP_FILTER, useClass: AllExceptionsFilter },
+    { provide: APP_FILTER, useClass: GlobalExceptionFilter },
+    { provide: APP_FILTER, useClass: PrismaExceptionFilter },
   ],
 })
 export class AppModule implements NestModule {

@@ -1,10 +1,15 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { Prisma, TransactionStatus } from '@prisma/client';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { PolicyService } from '../policies/policy.service';
 import { AuditService } from '../audit/audit.service';
 import { PolicyConfiguration, SpendPeriods, TransactionIntent } from '../policies/policy.types';
 import { PolicyViolationException } from '../../common/exceptions/domain.exception';
+import { RedisLock } from '../../common/locks/redis-lock.util';
+import {
+  EXCLUDED_SPEND_STATUSES,
+  windowBoundsUtc,
+} from '../policies/spending-window.util';
 
 /**
  * Daily/weekly/monthly spend windows, returned by `aggregateSpend`.
@@ -46,59 +51,65 @@ export class SpendingLimitService {
     private readonly prisma: PrismaService,
     private readonly policyService: PolicyService,
     private readonly auditService: AuditService,
+    private readonly redisLock: RedisLock,
   ) {}
 
   /**
-   * Computes the agent's confirmed spend aggregates for the three standard
-   * periods. All three windows are derived from UTC boundaries so they reset
-   * consistently regardless of the server's local timezone.
+   * Computes the agent's accumulated spend aggregates for the three standard
+   * calendar periods. All three windows are derived from UTC boundaries (see
+   * {@link windowBoundsUtc}) so they reset consistently regardless of the
+   * server's local timezone.
    *
-   * The query runs inside a `READ COMMITTED` snapshot (Prisma default) which
-   * is sufficient because:
-   *   - We read committed rows only (no phantom reads needed for a sum check).
-   *   - The TransactionLockInterceptor already serialises requests on
-   *     `transaction:{walletId}` at the application level, preventing two
-   *     concurrent submissions from the same wallet from racing here.
+   * Spend that counts toward a window is everything that has left the wallet or
+   * is in flight — PENDING, SUBMITTED, CONFIRMED and COMPLETED, but also DRAFT
+   * and APPROVED — i.e. every status except terminal-failed (FAILED, CANCELLED,
+   * REJECTED, EXPIRED). Counting in-flight spend is deliberate: an agent must
+   * not bypass a window by racing several transactions through before any of
+   * them settle. This matches the budget ledger's own aggregation and means a
+   * freshly created DRAFT transaction is already visible to a concurrent check
+   * running under {@link withSpendEnforcementLock}.
    *
-   * Only PENDING, SUBMITTED, CONFIRMED, and COMPLETED transactions count toward
-   * the aggregate — DRAFT/REJECTED/FAILED/CANCELLED/EXPIRED are excluded.
+   * The aggregate queries are read-only; they run together so the three windows
+   * reflect one consistent snapshot. Race-condition safety between this read
+   * and the subsequent transaction write is provided by the caller holding
+   * {@link withSpendEnforcementLock} around the check-then-create critical
+   * section (and, for the same wallet, by the `@UseTransactionLock` interceptor
+   * that serialises the whole handler). A READ COMMITTED snapshot alone cannot
+   * stop two concurrent reads from both seeing the same pre-spend total.
+   *
+   * @param organizationId Optional org filter; the read endpoint scopes by it so
+   *   a caller cannot read another organisation's spend by guessing an agent id.
    */
-  async aggregateSpend(agentId: string, asset: string): Promise<SpendAggregates> {
-    const windows = this.windowBounds();
-    const counted = this.countedStatuses();
+  async aggregateSpend(
+    agentId: string,
+    asset: string,
+    organizationId?: string,
+  ): Promise<SpendAggregates> {
+    const windows = windowBoundsUtc();
+    // Shared predicate for all three windows. `notIn` keeps every in-flight and
+    // settled status and drops only terminal-failed states.
+    const where = {
+      agentId,
+      asset,
+      status: { notIn: [...EXCLUDED_SPEND_STATUSES] },
+      deletedAt: null,
+      ...(organizationId ? { organizationId } : {}),
+    };
 
     // Run all three aggregates in parallel within a single Prisma transaction
     // to get a consistent snapshot.
     const [dayResult, weekResult, monthResult] = await this.prisma.$transaction([
       this.prisma.transaction.aggregate({
         _sum: { amount: true },
-        where: {
-          agentId,
-          asset,
-          status: { in: counted },
-          deletedAt: null,
-          createdAt: { gte: windows.startOfDay },
-        },
+        where: { ...where, createdAt: { gte: windows.startOfDay } },
       }),
       this.prisma.transaction.aggregate({
         _sum: { amount: true },
-        where: {
-          agentId,
-          asset,
-          status: { in: counted },
-          deletedAt: null,
-          createdAt: { gte: windows.startOfWeek },
-        },
+        where: { ...where, createdAt: { gte: windows.startOfWeek } },
       }),
       this.prisma.transaction.aggregate({
         _sum: { amount: true },
-        where: {
-          agentId,
-          asset,
-          status: { in: counted },
-          deletedAt: null,
-          createdAt: { gte: windows.startOfMonth },
-        },
+        where: { ...where, createdAt: { gte: windows.startOfMonth } },
       }),
     ]);
 
@@ -120,6 +131,7 @@ export class SpendingLimitService {
   async aggregateSpendByAsset(
     agentId: string,
     assets: string[],
+    organizationId?: string,
   ): Promise<Record<string, SpendAggregates>> {
     const unique = [...new Set(assets)];
     if (unique.length === 0) {
@@ -128,7 +140,7 @@ export class SpendingLimitService {
 
     const entries = await Promise.all(
       unique.map(async (asset) => {
-        const aggregates = await this.aggregateSpend(agentId, asset);
+        const aggregates = await this.aggregateSpend(agentId, asset, organizationId);
         return [asset, aggregates] as const;
       }),
     );
@@ -137,9 +149,13 @@ export class SpendingLimitService {
   }
 
   /**
-   * Returns true if the agent has at least one active spending-limit policy
-   * (a policy with `dailyLimit`, `weeklyLimit`, or `monthlyLimit` configured).
-   * Used to short-circuit the aggregate query when no periodic limits apply.
+   * Returns true if an applicable policy (enabled or disabled) declares a
+   * periodic limit (`dailyLimit`/`weeklyLimit`/`monthlyLimit`, or a matching
+   * per-asset limit). Used to short-circuit the aggregate query.
+   *
+   * A *disabled* policy with limits still counts here: the evaluation path
+   * fails closed on disabled policies, so the aggregate query must run to
+   * produce the denial instead of silently allowing the spend.
    */
   async hasSpendingLimitPolicy(
     organizationId: string,
@@ -148,7 +164,6 @@ export class SpendingLimitService {
     const policies = await this.prisma.policy.findMany({
       where: {
         organizationId,
-        enabled: true,
         deletedAt: null,
         OR: [{ agentId: null }, { agentId }],
       },
@@ -276,46 +291,30 @@ export class SpendingLimitService {
 
   // ── private helpers ──────────────────────────────────────────────────────
 
-  /** UTC window boundaries used by the spend aggregates. */
-  private windowBounds(): {
-    startOfDay: Date;
-    startOfWeek: Date;
-    startOfMonth: Date;
-  } {
-    const now = new Date();
-
-    // UTC day boundary — midnight today
-    const startOfDay = new Date(
-      Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()),
-    );
-
-    // UTC week boundary — most-recent Monday at midnight
-    const dayOfWeek = now.getUTCDay(); // 0 = Sunday
-    const daysSinceMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
-    const startOfWeek = new Date(
-      Date.UTC(
-        now.getUTCFullYear(),
-        now.getUTCMonth(),
-        now.getUTCDate() - daysSinceMonday,
-      ),
-    );
-
-    // UTC month boundary — 1st of the current month
-    const startOfMonth = new Date(
-      Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1),
-    );
-
-    return { startOfDay, startOfWeek, startOfMonth };
-  }
-
-  /** Transaction states that count as real, settled spend. */
-  private countedStatuses(): TransactionStatus[] {
-    return [
-      TransactionStatus.PENDING,
-      TransactionStatus.SUBMITTED,
-      TransactionStatus.CONFIRMED,
-      TransactionStatus.COMPLETED,
-    ];
+  /**
+   * Runs `operation` while holding an agent-scoped distributed lock so two
+   * concurrent rolling-window evaluations for the same agent cannot both read
+   * a stale aggregate and both pass — the "Redis lock" guard the issue asks
+   * for. A READ COMMITTED database transaction alone cannot prevent two
+   * concurrent reads from seeing the same pre-spend total, so the lock is what
+   * makes the check authoritative.
+   *
+   * The key is the **agent**, not the wallet: a rolling-window budget is an
+   * agent limit, so an agent spending through two different wallets must still
+   * be serialised against its own budget. Callers must run the spend check and
+   * persist the spend row *inside* `operation`, so the just-created row
+   * (counted, because DRAFT is no longer excluded) is visible to the next
+   * serialised caller.
+   *
+   * Choice of Redis lock over a database transaction: the critical section reads
+   * the aggregate, evaluates the policy, scores risk, then writes the
+   * transaction row across several services — it is not a single SQL statement
+   * and spans non-DB work (risk scoring), so it cannot be expressed as one
+   * Prisma transaction. A short-lived Redis lock around the section is the
+   * proportionate, cross-instance guard.
+   */
+  async withSpendEnforcementLock<T>(agentId: string, operation: () => Promise<T>): Promise<T> {
+    return this.redisLock.withLock(`agent-spending:${agentId}`, operation);
   }
 
   /**
