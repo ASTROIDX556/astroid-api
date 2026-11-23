@@ -523,7 +523,7 @@ describe('TransactionService - create', () => {
     expect(stellarService.submitPayment).toHaveBeenCalledTimes(1);
   });
 
-  it('rejects reuse of a key with a different payload', async () => {
+  it('rejects reuse of a key with a different payload as a 422 mismatch', async () => {
     await service.create('org_1', 'user_1', input, {
       principalId: 'principal_1',
       key: 'transaction-key-2',
@@ -534,7 +534,10 @@ describe('TransactionService - create', () => {
         principalId: 'principal_1',
         key: 'transaction-key-2',
       }),
-    ).rejects.toMatchObject({ status: 409 });
+    ).rejects.toMatchObject({
+      status: 422,
+      code: ErrorCode.IDEMPOTENCY_KEY_MISMATCH,
+    });
     expect(transactionRepository.create).toHaveBeenCalledTimes(1);
     expect(stellarService.submitPayment).toHaveBeenCalledTimes(1);
   });
