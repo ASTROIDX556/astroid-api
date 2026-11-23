@@ -204,6 +204,8 @@ Create a transaction (runs the full governance pipeline).
 
 **Response:** Transaction object with governance evaluation result
 
+**Budget:** when `budgetId` is set, the amount is reserved atomically against the budget's current period before execution. A reservation that does not fit the remaining balance is refused with `422` and code `BUDGET_EXCEEDED`; the hold is released if the transaction is later rejected, fails or is cancelled (see `docs/budget-period-rollover.md`).
+
 **Idempotency:** send an optional `Idempotency-Key` header (1-128 ASCII
 letters, digits, dots, underscores, tildes or hyphens) to make submission
 replay-safe. A repeat request with the same key and payload returns the original

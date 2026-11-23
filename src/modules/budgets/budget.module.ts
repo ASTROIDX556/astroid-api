@@ -8,12 +8,17 @@ import { AgentBudgetGuard } from './guards/agent-budget.guard';
 import { BudgetAlertRepository } from './budget-alert.repository';
 import { BudgetAlertService } from './services/budget-alert.service';
 import { BudgetAlertWorker } from './workers/budget-alert.worker';
+import { BudgetPeriodRepository } from './budget-period.repository';
+import { BudgetRolloverService } from './services/budget-rollover.service';
 import { NotificationModule } from '../notifications/notification.module';
 import { IdempotencyModule } from '../../common/idempotency/idempotency.module';
 
 /**
- * Budget module. Exports the service so the transactions pipeline can enforce
- * spend limits (assertWithinBudget) and record realised spend (consume).
+ * Budget module. Exports the service so the transactions pipeline can take
+ * atomic budget reservations (reserveAtomic) and settle or release them.
+ * BudgetRolloverService lives here because a reservation made after a period
+ * boundary rolls the budget over first; BudgetRolloverModule imports it for the
+ * scheduled job.
  * Also provides the PolicyEvaluatorService for combined policy + budget
  * evaluation, and RollingWindowBudgetService for configurable rolling-window
  * spend checks (distinct from the fixed-period Budget counter).
@@ -36,7 +41,15 @@ import { IdempotencyModule } from '../../common/idempotency/idempotency.module';
     BudgetAlertRepository,
     BudgetAlertService,
     BudgetAlertWorker,
+    BudgetPeriodRepository,
+    BudgetRolloverService,
   ],
-  exports: [BudgetService, PolicyEvaluatorService, RollingWindowBudgetService, AgentBudgetGuard],
+  exports: [
+    BudgetService,
+    PolicyEvaluatorService,
+    RollingWindowBudgetService,
+    AgentBudgetGuard,
+    BudgetRolloverService,
+  ],
 })
 export class BudgetModule {}

@@ -4,15 +4,15 @@ import { Queues } from '../../queues/queues.constants';
 import { createQueueRegistrationOptions } from '../../queues/queue-policy';
 import { redisConfig } from '../../config/redis.config';
 import { MetricsModule } from '../metrics/metrics.module';
-import { BudgetPeriodRepository } from './budget-period.repository';
-import { BudgetRolloverService } from './services/budget-rollover.service';
+import { BudgetModule } from './budget.module';
 import { BudgetRolloverWorker } from '../../workers/budget-rollover.worker';
 import { BudgetRolloverScheduler } from '../../workers/budget-rollover.scheduler';
 
 /**
  * Scheduled fixed-period budget rollover. Owns its queue, repeatable scheduler
  * and processor; the period math itself lives in a pure utility so it can be
- * tested without Redis or Postgres.
+ * tested without Redis or Postgres. The rollover service itself is provided
+ * by BudgetModule, which also uses it for reservations made after a boundary.
  */
 @Module({
   imports: [
@@ -29,13 +29,12 @@ import { BudgetRolloverScheduler } from '../../workers/budget-rollover.scheduler
       },
     }),
     MetricsModule,
+    BudgetModule,
   ],
   providers: [
-    BudgetPeriodRepository,
-    BudgetRolloverService,
     BudgetRolloverWorker,
     BudgetRolloverScheduler,
   ],
-  exports: [BudgetRolloverService, BudgetRolloverScheduler],
+  exports: [BudgetModule, BudgetRolloverScheduler],
 })
 export class BudgetRolloverModule {}

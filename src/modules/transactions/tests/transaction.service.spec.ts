@@ -15,7 +15,7 @@ import { PrismaService } from '../../../database/prisma.service';
 import { AgentStatus, RiskBand, TransactionStatus, WalletStatus } from '@prisma/client';
 import { Keypair } from '@stellar/stellar-sdk';
 import { CreateTransactionInput } from '../transaction.dto';
-import { DomainException } from '../../../common/exceptions/domain.exception';
+import { DomainException, ForbiddenException } from '../../../common/exceptions/domain.exception';
 import { ErrorCode } from '../../../common/constants/error-codes';
 import { parseIdempotencyKey } from '../transaction.dto';
 import { PrismaTransactionService } from '../../../database/prisma-transaction.service';
@@ -333,7 +333,9 @@ describe('TransactionService - create', () => {
         {
           provide: BudgetService,
           useValue: {
-            assertWithinBudget: vi.fn().mockResolvedValue(undefined),
+            reserveAtomic: vi.fn().mockResolvedValue({ id: 'rsv_1' }),
+            settle: vi.fn().mockResolvedValue(undefined),
+            release: vi.fn().mockResolvedValue(undefined),
             assertAgentBudgetWithinLimit: vi.fn().mockResolvedValue(undefined),
             withAgentBudgetLimit: vi.fn(
               (_organizationId, _agentId, _asset, _amount, operation) => operation(),
@@ -455,7 +457,7 @@ describe('TransactionService - create', () => {
             record: vi.fn().mockResolvedValue(undefined),
           },
         },
-        { provide: BudgetService, useValue: { assertWithinBudget: vi.fn(), consume: vi.fn() } },
+        { provide: BudgetService, useValue: { reserveAtomic: vi.fn(), consume: vi.fn() } },
         { provide: StellarService, useValue: { submitPayment: vi.fn() } },
         { provide: EventBusService, useValue: { emit: vi.fn().mockResolvedValue(undefined) } },
         {
@@ -657,6 +659,93 @@ describe('TransactionService - create', () => {
     expect(error).toBeInstanceOf(DomainException);
     expect((error as DomainException).code).toBe(ErrorCode.POLICY_VIOLATION);
     expect(blockedStellar.submitPayment).not.toHaveBeenCalled();
+  });
+
+  describe('budget reservation lifecycle', () => {
+    const budgeted = { ...input, budgetId: 'budget_1' };
+    let budgets: {
+      reserveAtomic: ReturnType<typeof vi.fn>;
+      settle: ReturnType<typeof vi.fn>;
+      release: ReturnType<typeof vi.fn>;
+      withAgentBudgetLimit: ReturnType<typeof vi.fn>;
+    };
+
+    beforeEach(() => {
+      budgets = (service as unknown as { budgets: typeof budgets }).budgets;
+      // Mirror the real repository: the connected reservation is readable as
+      // `budgetReservationId` on the stored row.
+      const create = vi.mocked(transactionRepository.create);
+      const original = create.getMockImplementation() as TransactionRepository['create'];
+      create.mockImplementation((data) => {
+        const connect = (data.budgetReservation as { connect?: { id: string } } | undefined)?.connect;
+        return original({
+          ...data,
+          budgetId: 'budget_1',
+          budgetReservationId: connect?.id ?? null,
+        } as unknown as Parameters<TransactionRepository['create']>[0]);
+      });
+    });
+
+    it('settles the reservation after a successful payment and never releases it', async () => {
+      const result = await service.create('org_1', 'user_1', budgeted);
+
+      expect(budgets.reserveAtomic).toHaveBeenCalledWith('org_1', 'budget_1', 50);
+      expect(budgets.settle).toHaveBeenCalledWith('org_1', 'rsv_1', 50);
+      expect(budgets.release).not.toHaveBeenCalled();
+      expect(result.transaction.status).toBe(TransactionStatus.COMPLETED);
+    });
+
+    it('releases the reservation when the agent budget check rejects after it was taken', async () => {
+      budgets.withAgentBudgetLimit.mockRejectedValueOnce(
+        new ForbiddenException("Transaction would exceed the active budget 'Agent cap'"),
+      );
+
+      await expect(service.create('org_1', 'user_1', budgeted)).rejects.toBeInstanceOf(ForbiddenException);
+
+      expect(budgets.release).toHaveBeenCalledTimes(1);
+      expect(budgets.release).toHaveBeenCalledWith('rsv_1');
+      expect(stellarService.submitPayment).not.toHaveBeenCalled();
+    });
+
+    it('releases the reservation when the transaction row cannot be persisted', async () => {
+      vi.mocked(transactionRepository.create).mockRejectedValueOnce(new Error('insert failed'));
+
+      await expect(service.create('org_1', 'user_1', budgeted)).rejects.toThrow('insert failed');
+
+      expect(budgets.release).toHaveBeenCalledWith('rsv_1');
+    });
+
+    it('releases the reservation when the network rejects the payment without throwing', async () => {
+      vi.mocked(stellarService.submitPayment).mockResolvedValueOnce({
+        hash: 'stellar_hash_failed',
+        ledger: 0,
+        successful: false,
+      } as Awaited<ReturnType<StellarService['submitPayment']>>);
+
+      const result = await service.create('org_1', 'user_1', budgeted);
+
+      expect(result.transaction.status).toBe(TransactionStatus.FAILED);
+      expect(budgets.settle).not.toHaveBeenCalled();
+      expect(budgets.release).toHaveBeenCalledTimes(1);
+      expect(budgets.release).toHaveBeenCalledWith('rsv_1');
+    });
+
+    it('releases the reservation when the submission throws', async () => {
+      vi.mocked(stellarService.submitPayment).mockRejectedValueOnce(new Error('horizon timeout'));
+
+      await expect(service.create('org_1', 'user_1', budgeted)).rejects.toThrow('horizon timeout');
+
+      expect(budgets.settle).not.toHaveBeenCalled();
+      expect(budgets.release).toHaveBeenCalledTimes(1);
+      expect(budgets.release).toHaveBeenCalledWith('rsv_1');
+    });
+
+    it('does not take a reservation for a transaction without a budget', async () => {
+      await service.create('org_1', 'user_1', input);
+
+      expect(budgets.reserveAtomic).not.toHaveBeenCalled();
+      expect(budgets.release).not.toHaveBeenCalled();
+    });
   });
 });
 
