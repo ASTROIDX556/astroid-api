@@ -16,6 +16,7 @@ import type { ZodTypeAny } from 'zod';
 
 import { ErrorCode } from '../constants/error-codes';
 import {
+  IDEMPOTENCY_REPLAYED_HEADER,
   IDEMPOTENT_REPLAY_HEADER,
   REQUEST_ID_HEADER,
 } from '../constants/headers';
@@ -110,6 +111,7 @@ export class IdempotencyInterceptor implements NestInterceptor {
     if (handle.replay) {
       response.status(handle.replay.statusCode);
       response.setHeader(IDEMPOTENT_REPLAY_HEADER, 'true');
+      response.setHeader(IDEMPOTENCY_REPLAYED_HEADER, 'true');
       if (handle.replay.requestId) {
         // Preserve the original request id in the envelope and on the wire.
         request.headers[REQUEST_ID_HEADER] = handle.replay.requestId;

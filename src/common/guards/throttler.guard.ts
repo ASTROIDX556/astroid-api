@@ -53,7 +53,30 @@ export class AstroidThrottlerGuard extends ThrottlerGuard {
       return true;
     }
 
-    return super.handleRequest(requestProps);
+    // A per-key override replaces the tier's requests-per-window budget for the
+    // authenticated API key. The short burst throttler keeps its own allowance,
+    // so a raised steady-state limit cannot be turned into an unbounded spike.
+    const override = throttler.name?.endsWith('-burst')
+      ? undefined
+      : this.apiKeyLimitOverride(context);
+
+    return super.handleRequest(
+      override === undefined ? requestProps : { ...requestProps, limit: override },
+    );
+  }
+
+  /**
+   * Requests-per-window configured on the calling API key, if any. The key is
+   * attached by the API-key authentication guard; JWT callers never have one.
+   */
+  private apiKeyLimitOverride(context: ExecutionContext): number | undefined {
+    const request = context.switchToHttp().getRequest<
+      Request & { apiKey?: { rateLimitPerMinute?: number | null } }
+    >();
+    const limit = request.apiKey?.rateLimitPerMinute;
+    return typeof limit === 'number' && Number.isInteger(limit) && limit > 0
+      ? limit
+      : undefined;
   }
 
   /**
