@@ -21,7 +21,12 @@ const createDestinationPolicy = () => ({
       body: options.body,
       signal: AbortSignal.timeout(options.timeoutMs),
     });
-    return { status: response.status };
+    const headers: Record<string, string | string[] | undefined> = {};
+    const responseHeaders = response.headers ?? new Headers();
+    for (const [key, value] of responseHeaders.entries()) {
+      headers[key.toLowerCase()] = value;
+    }
+    return { status: response.status, headers };
   },
 });
 
@@ -73,7 +78,7 @@ describe('webhook delivery integration', () => {
       typeof webhookJobOptions,
     ];
     expect(name).toBe(WEBHOOK_JOB_NAME);
-    expect(options).toEqual(webhookJobOptions);
+    expect(options).toEqual({ ...webhookJobOptions, group: expect.any(String) });
     expect(options.attempts).toBeGreaterThan(1);
     expect(options.backoff).toEqual(expect.objectContaining({ type: 'exponential' }));
     expect(data).not.toHaveProperty('secret');

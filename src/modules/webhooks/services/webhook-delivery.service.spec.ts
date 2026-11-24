@@ -43,7 +43,7 @@ describe('WebhookDeliveryService', () => {
           traceId: expect.any(String),
         },
       }),
-      {
+      expect.objectContaining({
         attempts: 5,
         backoff: {
           type: 'custom',
@@ -51,7 +51,7 @@ describe('WebhookDeliveryService', () => {
         },
         removeOnComplete: { count: 1000 },
         removeOnFail: { age: 24 * 3600, count: 5_000 },
-      },
+      }),
     );
   });
 
