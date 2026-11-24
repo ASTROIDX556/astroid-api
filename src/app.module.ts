@@ -26,6 +26,8 @@ import { RolesGuard } from './common/guards/roles.guard';
 import { ScopesGuard } from './common/guards/scopes.guard';
 import { AstroidThrottlerGuard } from './common/guards/throttler.guard';
 import { PublicRateLimitGuard } from './common/guards/public-rate-limit.guard';
+import { CredentialRateLimitGuard } from './common/guards/credential-rate-limit.guard';
+import { CredentialQuotaCache } from './common/throttler/credential-quota';
 import { ResponseInterceptor } from './common/interceptors/response.interceptor';
 import { AuditInterceptor } from './common/interceptors/audit.interceptor';
 import { GlobalExceptionFilter } from './common/filters/global-exception.filter';
@@ -56,6 +58,7 @@ import { HealthModule } from './modules/health/health.module';
 import { MetricsModule } from './modules/metrics/metrics.module';
 import { AdminModule } from './modules/admin/admin.module';
 import { DeadLetterModule } from './modules/dead-letter/dead-letter.module';
+import { QueueObservabilityModule } from './modules/queue-observability/queue-observability.module';
 import { AgentTraceInterceptor } from './common/interceptors/agent-trace.interceptor';
 import { RequestContextInterceptor } from './common/interceptors/request-context.interceptor';
 import { AuditLogInterceptor } from './common/interceptors/audit-log.interceptor';
@@ -75,6 +78,9 @@ import { RequestIdInterceptor } from './common/interceptors/request-id.intercept
  *   - RolesGuard        : RBAC on routes decorated with @Roles()
  *   - ScopesGuard       : Fine-grained permission scopes for API keys & agents
  *   - ThrottlerGuard    : per-organization / per-IP rate limiting, shared via Redis
+ *   - CredentialRateLimitGuard: per-credential minute/day quota with plain
+ *                          X-RateLimit-* headers, keyed by the verified API key
+ *                          (runs after authentication; falls back to user/IP)
  *   - ResponseInterceptor: wraps every result in the success envelope
  *   - AuditLogInterceptor: persists masked mutation requests to the audit trail
  *   - StructuredAuditInterceptor: publishes `audit.recorded` events for every
@@ -138,6 +144,7 @@ import { RequestIdInterceptor } from './common/interceptors/request-id.intercept
     MetricsModule,
     DeadLetterModule,
     AdminModule,
+    QueueObservabilityModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: PublicRateLimitGuard },
@@ -145,6 +152,8 @@ import { RequestIdInterceptor } from './common/interceptors/request-id.intercept
     { provide: APP_GUARD, useClass: RolesGuard },
     { provide: APP_GUARD, useClass: ScopesGuard },
     { provide: APP_GUARD, useClass: AstroidThrottlerGuard },
+    CredentialQuotaCache,
+    { provide: APP_GUARD, useClass: CredentialRateLimitGuard },
     AgentPolicyGuard,
     { provide: APP_INTERCEPTOR, useClass: RequestIdInterceptor },
     { provide: APP_INTERCEPTOR, useClass: RequestContextInterceptor },

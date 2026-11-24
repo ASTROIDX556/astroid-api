@@ -21,6 +21,7 @@ import {
   ConflictException,
   NotFoundException,
 } from '../../../common/exceptions/domain.exception';
+import { TransactionPreflightService } from '../services/transaction-preflight.service';
 
 /**
  * Stand-in for the interactive-transaction client handed to the callback. The
@@ -97,7 +98,10 @@ describe('TransactionService status transitions under write conflicts', () => {
     hasPaidRecipient: ReturnType<typeof vi.fn>;
     recentCountForWallet: ReturnType<typeof vi.fn>;
   };
-  let stellar: { submitPayment: ReturnType<typeof vi.fn> };
+  let stellar: {
+    buildPaymentXdr: ReturnType<typeof vi.fn>;
+    submitPayment: ReturnType<typeof vi.fn>;
+  };
   let eventBus: { emit: ReturnType<typeof vi.fn> };
   let budgets: { consume: ReturnType<typeof vi.fn>; release: ReturnType<typeof vi.fn> };
 
@@ -127,6 +131,14 @@ describe('TransactionService status transitions under write conflicts', () => {
       prisma,
       {} as unknown as SpendingLimitService,
       txManager,
+      {
+        simulate: vi.fn().mockResolvedValue({
+          kind: 'ok',
+          simulatedAt: new Date(),
+          minResourceFee: '100000',
+          footprintSummary: { readOnlyCount: 0, readWriteCount: 0 },
+        }),
+      } as unknown as TransactionPreflightService,
     );
 
     return { service, $transaction, findProposal };
@@ -144,6 +156,7 @@ describe('TransactionService status transitions under write conflicts', () => {
       recentCountForWallet: vi.fn().mockResolvedValue(0),
     };
     stellar = {
+      buildPaymentXdr: vi.fn().mockResolvedValue('safe-payment-xdr'),
       submitPayment: vi.fn().mockResolvedValue({
         successful: true,
         hash: 'stellar_hash_1',
@@ -297,7 +310,12 @@ describe('TransactionService status transitions under write conflicts', () => {
       expect(repository.update).toHaveBeenNthCalledWith(
         1,
         'tx_1',
-        { status: TransactionStatus.SUBMITTED },
+        expect.objectContaining({
+          status: TransactionStatus.SUBMITTED,
+          simulatedAt: expect.any(Date),
+          minResourceFee: expect.anything(),
+          footprintSummary: { readOnlyCount: 0, readWriteCount: 0 },
+        }),
         TX_CLIENT,
       );
       expect(budgets.consume).not.toHaveBeenCalled();

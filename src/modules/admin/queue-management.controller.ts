@@ -8,7 +8,7 @@ import {
   HttpCode,
   HttpStatus,
 } from '@nestjs/common';
-import { ApiOperation, ApiTags, ApiParam, ApiQuery, ApiBearerAuth } from '@nestjs/swagger';
+import { ApiOperation, ApiTags, ApiParam, ApiQuery } from '@nestjs/swagger';
 import { ApiErrorResponses } from '../../common/decorators/api-error-responses.decorator';
 import { ApiEnvelope } from '../../common/decorators/api-envelope.decorator';
 import { UserRole } from '@prisma/client';
@@ -38,6 +38,7 @@ import {
   BatchPurgeResult,
   QueueHealthSnapshot,
 } from './queue-management.service';
+import { ApiAuthenticated } from '../../common/decorators/api-authenticated.decorator';
 
 /**
  * Administrative Queue Management controller providing advanced DLQ
@@ -52,9 +53,10 @@ import {
  * operations with granular error reporting.
  */
 @ApiTags('admin-queue-management')
-@ApiBearerAuth('access-token')
+@ApiAuthenticated()
 @Controller('admin/queues')
 @Roles(UserRole.OWNER, UserRole.ADMIN)
+@ApiErrorResponses({ unauthorized: true, forbidden: true, tooManyRequests: true, serverError: true })
 export class QueueManagementController {
   constructor(private readonly queueManagement: QueueManagementService) {}
 

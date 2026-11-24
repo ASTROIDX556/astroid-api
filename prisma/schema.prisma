@@ -522,6 +522,11 @@ model Transaction {
   stellarHash       String?
   confirmationCount Int               @default(0)
   gasEstimate       Decimal?          @db.Decimal(30, 7)
+  simulatedAt       DateTime?
+  minResourceFee    Decimal?          @db.Decimal(30, 0)
+  footprintSummary  Json?
+  simulationErrorCode    String?
+  simulationErrorMessage String?
   metadata          Json              @default("{}")
   createdAt         DateTime          @default(now())
   updatedAt         DateTime          @updatedAt
@@ -780,9 +785,10 @@ model ApiKey {
   permissions    String[]  @default([])
   scopes         String[]  @default(["read"])
   allowedIps     String[]  @default([])
-  // Per-key requests-per-minute override for the API rate limiter. Null keeps
-  // the organization's configured tier limit.
+  // Per-key overrides for the credential rate limiter. Null keeps the
+  // configured default tier limit.
   rateLimitPerMinute Int?
+  rateLimitPerDay    Int?
   lastUsedAt     DateTime?
   expiresAt      DateTime?
   revokedAt      DateTime?

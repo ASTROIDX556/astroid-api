@@ -60,21 +60,26 @@ describe('Webhook signing & delivery', () => {
     const URL = 'https://example.com/webhook';
     const EVENT_ID = 'evt-123';
     let destinationPolicy: {
-      post: (url: string, options: { headers: Record<string, string>; body: Buffer; timeoutMs: number }) => Promise<{ status: number }>;
+      post: (url: string, options: { headers: Record<string, string>; body: Buffer; timeoutMs: number }) => Promise<{ status: number; headers: Record<string, string | string[] | undefined> }>;
     };
 
     beforeEach(() => {
       fetchSpy = vi.fn();
       vi.stubGlobal('fetch', fetchSpy);
       destinationPolicy = {
-        post: async (url, options) => {
+        post: async (url: string, options: { headers: Record<string, string>; body: Buffer; timeoutMs: number }) => {
           const response = await fetch(url, {
             method: 'POST',
             headers: options.headers,
             body: options.body.toString('utf8'),
             signal: AbortSignal.timeout(options.timeoutMs),
           });
-          return { status: response.status };
+          const headers: Record<string, string | string[] | undefined> = {};
+          const responseHeaders = response.headers ?? new Headers();
+          for (const [key, value] of responseHeaders.entries()) {
+            headers[key.toLowerCase()] = value;
+          }
+          return { status: response.status, headers };
         },
       };
       processor = new WebhooksProcessor(
@@ -212,7 +217,7 @@ describe('Webhook signing & delivery', () => {
       fetchSpy.mockResolvedValue({
         ok: false,
         status: 302,
-        headers: { get: () => 'http://127.0.0.1/' },
+        headers: new Headers({ location: 'http://127.0.0.1/' }),
       });
       const job = {
         id: 'job-1',

@@ -56,6 +56,21 @@ describe('application logger redaction', () => {
     expect(text).toContain('vitest');
   });
 
+  it('redacts an authorization header and a refreshToken body when a whole request is logged', () => {
+    log.logger.info(
+      {
+        req: { method: 'POST', url: '/api/v1/auth/refresh', headers: { authorization: `Bearer ${BEARER}` } },
+        body: { refreshToken: 'eyJ.refresh.token-value' },
+      },
+      'request payload',
+    );
+
+    const text = log.text();
+    expect(text).not.toContain(BEARER);
+    expect(text).not.toContain('eyJ.refresh.token-value');
+    expect((log.last().body as Record<string, unknown>).refreshToken).toBe('[REDACTED]');
+  });
+
   it('masks the Set-Cookie header of a logged response', () => {
     log.logger.info({ res: { statusCode: 200, headers: { 'set-cookie': 'sid=topsecretvalue' } } }, 'response');
 

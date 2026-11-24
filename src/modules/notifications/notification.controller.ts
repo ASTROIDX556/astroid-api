@@ -2,7 +2,6 @@ import { Body, Controller, Get, Post, Query } from '@nestjs/common';
 import {
   ApiOperation,
   ApiTags,
-  ApiBearerAuth,
   ApiBody,
   ApiQuery,
 } from '@nestjs/swagger';
@@ -22,10 +21,12 @@ import { PaginationQuery, paginationQuerySchema } from '../../common/helpers/pag
 import { ApiPaginationQuery } from '../../common/decorators/api-pagination-query.decorator';
 import { ApiEnvelope, ApiPaginatedEnvelope } from '../../common/decorators/api-envelope.decorator';
 import { ApiErrorResponses } from '../../common/decorators/api-error-responses.decorator';
+import { ApiAuthenticated } from '../../common/decorators/api-authenticated.decorator';
 
 @ApiTags('notifications')
-@ApiBearerAuth('access-token')
+@ApiAuthenticated()
 @Controller('notifications')
+@ApiErrorResponses({ unauthorized: true, forbidden: true, tooManyRequests: true, serverError: true })
 export class NotificationController {
   constructor(private readonly notificationService: NotificationService) {}
 

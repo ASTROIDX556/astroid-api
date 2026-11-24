@@ -7,6 +7,7 @@ import { MetricsAccessGuard } from './metrics-access.guard';
 import { Public } from '../../common/decorators/public.decorator';
 import { SkipAudit } from '../../common/decorators/skip-audit.decorator';
 import { SkipPublicRateLimit } from '../../common/decorators/skip-public-rate-limit.decorator';
+import { SkipCredentialRateLimit } from '../../common/decorators/skip-credential-rate-limit.decorator';
 
 /**
  * Prometheus scrape endpoint. Public (no JWT/API key) but restricted to
@@ -21,6 +22,7 @@ import { SkipPublicRateLimit } from '../../common/decorators/skip-public-rate-li
 @SkipAudit()
 @SkipThrottle()
 @SkipPublicRateLimit()
+@SkipCredentialRateLimit()
 @UseGuards(MetricsAccessGuard)
 export class MetricsController {
   constructor(private readonly metricsService: MetricsService) {}

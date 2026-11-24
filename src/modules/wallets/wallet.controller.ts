@@ -12,7 +12,6 @@ import {
 import {
   ApiOperation,
   ApiTags,
-  ApiBearerAuth,
   ApiParam,
   ApiBody,
   ApiQuery,
@@ -41,11 +40,13 @@ import { ApiPaginationQuery } from '../../common/decorators/api-pagination-query
 import { ApiEnvelope, ApiPaginatedEnvelope } from '../../common/decorators/api-envelope.decorator';
 import { ApiErrorResponses } from '../../common/decorators/api-error-responses.decorator';
 import { AstroidThrottlerGuard } from '../../common/guards/throttler.guard';
+import { ApiAuthenticated } from '../../common/decorators/api-authenticated.decorator';
 
 @ApiTags('wallets')
-@ApiBearerAuth('access-token')
+@ApiAuthenticated()
 @UseGuards(AgentThrottlerGuard)
 @Controller('wallets')
+@ApiErrorResponses({ unauthorized: true, forbidden: true, tooManyRequests: true, serverError: true })
 export class WalletController {
   constructor(private readonly walletService: WalletService) {}
 

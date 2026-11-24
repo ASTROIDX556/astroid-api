@@ -125,6 +125,49 @@ describe('ApiKeyService', () => {
       );
     });
 
+    it('persists and returns the per-key minute and day rate-limit overrides', async () => {
+      repository.create.mockImplementation((data) =>
+        Promise.resolve({
+          id: 'key-quota',
+          ...data,
+          lastUsedAt: null,
+          revokedAt: null,
+          createdAt: new Date(),
+        }),
+      );
+
+      const result = await service.create(orgId, userId, {
+        name: 'Quota Key',
+        permissions: [],
+        allowedIps: [],
+        rateLimitPerMinute: 600,
+        rateLimitPerDay: 500000,
+      });
+
+      expect(repository.create).toHaveBeenCalledWith(
+        expect.objectContaining({ rateLimitPerMinute: 600, rateLimitPerDay: 500000 }),
+      );
+      expect(result).toMatchObject({ rateLimitPerMinute: 600, rateLimitPerDay: 500000 });
+    });
+
+    it('stores null overrides when the caller sets none, keeping the configured defaults', async () => {
+      repository.create.mockImplementation((data) =>
+        Promise.resolve({
+          id: 'key-no-quota',
+          ...data,
+          lastUsedAt: null,
+          revokedAt: null,
+          createdAt: new Date(),
+        }),
+      );
+
+      await service.create(orgId, userId, { name: 'Plain Key', permissions: [], allowedIps: [] });
+
+      expect(repository.create).toHaveBeenCalledWith(
+        expect.objectContaining({ rateLimitPerMinute: null, rateLimitPerDay: null }),
+      );
+    });
+
     it('applies the default scope set ["read"] when scopes is omitted', async () => {
       repository.create.mockImplementation((data) =>
         Promise.resolve({
@@ -511,6 +554,35 @@ describe('ApiKeyService', () => {
   });
 
   describe('rotate', () => {
+    it('copies the rate-limit overrides to the replacement key', async () => {
+      repository.findById.mockResolvedValue({
+        id: 'key-old',
+        organizationId: orgId,
+        createdById: userId,
+        name: 'Quota Worker',
+        prefix: 'ak_live_old123',
+        status: 'active',
+        scopes: ['read'],
+        permissions: [],
+        allowedIps: [],
+        rateLimitPerMinute: 600,
+        rateLimitPerDay: 500000,
+        expiresAt: null,
+        revokedAt: null,
+        rotatedAt: null,
+      });
+      repository.create.mockImplementation((data) =>
+        Promise.resolve({ id: 'key-new', ...data, createdAt: new Date() }),
+      );
+      repository.markRotating.mockResolvedValue({ id: 'key-old', status: 'rotating' });
+
+      await service.rotate(orgId, userId, 'key-old');
+
+      expect(repository.create).toHaveBeenCalledWith(
+        expect.objectContaining({ rateLimitPerMinute: 600, rateLimitPerDay: 500000 }),
+      );
+    });
+
     it('rotates an active key, issues a replacement key once, marks old key rotating with expiresAt and logs audit', async () => {
       const oldKey = {
         id: 'key-old',

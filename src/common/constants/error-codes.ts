@@ -15,6 +15,7 @@ export enum ErrorCode {
    * refuses the request rather than run without one.
    */
   RATE_LIMIT_UNAVAILABLE = 'RATE_LIMIT_UNAVAILABLE',
+  SERVICE_UNAVAILABLE = 'SERVICE_UNAVAILABLE',
   NOT_IMPLEMENTED = 'NOT_IMPLEMENTED',
 
   // Auth / authz
@@ -43,6 +44,8 @@ export enum ErrorCode {
 
   // Stellar
   STELLAR_ERROR = 'STELLAR_ERROR',
+  /** A transaction failed deterministic Soroban preflight and must not be retried. */
+  SIMULATION_FAILED = 'SIMULATION_FAILED',
   INVALID_STELLAR_ADDRESS = 'INVALID_STELLAR_ADDRESS',
   INVALID_STELLAR_TRANSACTION = 'INVALID_STELLAR_TRANSACTION',
   CONTRACT_REVERTED = 'CONTRACT_REVERTED',
@@ -80,6 +83,7 @@ export const ERROR_STATUS: Record<ErrorCode, number> = {
   [ErrorCode.BAD_REQUEST]: 400,
   [ErrorCode.RATE_LIMITED]: 429,
   [ErrorCode.RATE_LIMIT_UNAVAILABLE]: 503,
+  [ErrorCode.SERVICE_UNAVAILABLE]: 503,
   [ErrorCode.NOT_IMPLEMENTED]: 501,
   [ErrorCode.UNAUTHORIZED]: 401,
   [ErrorCode.FORBIDDEN]: 403,
@@ -101,6 +105,7 @@ export const ERROR_STATUS: Record<ErrorCode, number> = {
   [ErrorCode.VELOCITY_LIMIT_EXCEEDED]: 422,
   [ErrorCode.PRICE_UNAVAILABLE]: 503,
   [ErrorCode.STELLAR_ERROR]: 502,
+  [ErrorCode.SIMULATION_FAILED]: 422,
   [ErrorCode.INVALID_STELLAR_ADDRESS]: 400,
   [ErrorCode.INVALID_STELLAR_TRANSACTION]: 400,
   [ErrorCode.CONTRACT_REVERTED]: 422,
@@ -149,6 +154,7 @@ export const ERROR_TITLE: Record<ErrorCode, string> = {
   [ErrorCode.VELOCITY_LIMIT_EXCEEDED]: 'Velocity Limit Exceeded',
   [ErrorCode.PRICE_UNAVAILABLE]: 'Price Quote Unavailable',
   [ErrorCode.STELLAR_ERROR]: 'Stellar Network Error',
+  [ErrorCode.SIMULATION_FAILED]: 'Transaction Simulation Failed',
   [ErrorCode.INVALID_STELLAR_ADDRESS]: 'Invalid Stellar Address',
   [ErrorCode.INVALID_STELLAR_TRANSACTION]: 'Invalid Stellar Transaction',
   [ErrorCode.CONTRACT_REVERTED]: 'Smart Contract Reverted',
@@ -160,6 +166,7 @@ export const ERROR_TITLE: Record<ErrorCode, string> = {
   [ErrorCode.LOCK_ACQUISITION_FAILED]: 'Resource Locked',
   [ErrorCode.IDEMPOTENCY_KEY_MISMATCH]: 'Idempotency Key Payload Mismatch',
   [ErrorCode.IDEMPOTENCY_KEY_IN_FLIGHT]: 'Idempotency Key In Use',
+  [ErrorCode.SERVICE_UNAVAILABLE]: 'Service Unavailable',
 };
 
 /** Namespace for the problem type URIs derived from {@link ErrorCode}s. */

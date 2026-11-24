@@ -16,9 +16,13 @@ import { Public } from '../decorators/public.decorator';
 import {
   RegisteredRoute,
   findDanglingRefs,
+  findDuplicateEnvelopeComponents,
+  findInlineErrorSchemas,
   findDuplicateRoutes,
   findMissingDeclaredSchemas,
   findMissingRequestSchemas,
+  findOperationsMissingSecuritySchemes,
+  findOperationsMissingStandardErrors,
   findOperationsWithUntypedRequestBody,
   findOperationsWithoutResponses,
   findOperationsWithoutSuccessEnvelope,
@@ -427,6 +431,159 @@ describe('OpenAPI coverage checks on deliberately broken fixtures', () => {
       'GET /api/v1/agents/{id} references the missing schema #/components/schemas/AgentDto',
       'POST /api/v1/wallets references the missing component #/components/requestBodies/CreateWallet',
       'components.schemas.WalletDto references the missing schema #/components/schemas/OwnerDto',
+    ]);
+  });
+
+  it('names a protected operation that omits one of the accepted credentials', () => {
+    const findings = findOperationsMissingSecuritySchemes(
+      [route('GET', '/api/v1/a'), route('GET', '/api/v1/public', true)],
+      doc({
+        '/api/v1/a': {
+          get: { responses: ok(), security: [{ 'access-token': [] }] },
+        },
+        '/api/v1/public': { get: { responses: ok() } },
+      }),
+      ['access-token', 'api-key'],
+    );
+
+    expect(findings).toEqual(["GET /api/v1/a accepts 'api-key' but does not declare it as a security alternative"]);
+  });
+
+  it('accepts either credential when both are offered as alternatives', () => {
+    const document = doc({
+      '/api/v1/a': {
+        get: { responses: ok(), security: [{ 'access-token': [] }, { 'api-key': [] }] },
+      },
+    });
+
+    expect(
+      findOperationsMissingSecuritySchemes([route('GET', '/api/v1/a')], document, ['access-token', 'api-key']),
+    ).toEqual([]);
+  });
+
+  it('names an error response that spells its body out inline, even behind a response $ref', () => {
+    const document = doc(
+      {
+        '/api/v1/a': {
+          get: {
+            responses: {
+              ...ok(),
+              '404': {
+                description: 'missing',
+                content: { 'application/problem+json': { schema: { type: 'object' } } },
+              },
+              '429': { $ref: '#/components/responses/TooManyRequests' },
+            },
+          },
+        },
+      },
+      { Problem: { type: 'object' } },
+    );
+    document.components!.responses = {
+      TooManyRequests: {
+        description: 'slow down',
+        content: { 'application/json': { schema: { type: 'object' } } },
+      },
+    };
+
+    const findings = findInlineErrorSchemas(document);
+
+    expect(findings).toEqual([
+      'GET /api/v1/a (404 application/problem+json) declares an inline error body instead of a shared component schema',
+      'GET /api/v1/a (429 application/json) declares an inline error body instead of a shared component schema',
+    ]);
+  });
+
+  it('accepts an error body referencing a shared component and honours exclusions', () => {
+    const document = doc(
+      {
+        '/api/v1/a': {
+          get: {
+            responses: {
+              ...ok(),
+              '404': {
+                description: 'missing',
+                content: {
+                  'application/problem+json': { schema: { $ref: '#/components/schemas/Problem' } },
+                },
+              },
+            },
+          },
+        },
+        '/health/ready': {
+          get: { responses: { '503': { description: 'down', content: { 'application/json': { schema: { type: 'object' } } } } } },
+        },
+      },
+      { Problem: { type: 'object' } },
+    );
+
+    expect(findInlineErrorSchemas(document, new Map(), ['/health/ready'])).toEqual([]);
+    expect(findInlineErrorSchemas(document)).toHaveLength(1);
+  });
+
+  it('names the standard error responses an operation is missing', () => {
+    const findings = findOperationsMissingStandardErrors(
+      [route('POST', '/api/v1/a/{id}', false, true), route('GET', '/health/live', true)],
+      doc({
+        '/api/v1/a/{id}': { post: { responses: { ...ok(), '401': { description: 'no' } } } },
+        '/health/live': { get: { responses: ok() } },
+      }),
+      {
+        always: [429, 500],
+        authenticated: [401, 403],
+        withBody: [400],
+        withTrailingPathParam: [404],
+        exclusions: ['/health/live'],
+      },
+    );
+
+    expect(findings).toEqual([
+      'POST /api/v1/a/{id} does not document the 400 error response',
+      'POST /api/v1/a/{id} does not document the 403 error response',
+      'POST /api/v1/a/{id} does not document the 404 error response',
+      'POST /api/v1/a/{id} does not document the 429 error response',
+      'POST /api/v1/a/{id} does not document the 500 error response',
+    ]);
+  });
+
+  it('does not demand 404 from a scoped collection under a path parameter', () => {
+    const responses = {
+      ...ok(),
+      '401': { description: 'no' },
+      '403': { description: 'no' },
+      '429': { description: 'slow down' },
+      '500': { description: 'boom' },
+    };
+
+    expect(
+      findOperationsMissingStandardErrors(
+        [route('GET', '/api/v1/audit/resources/{resourceId}/timeline')],
+        doc({ '/api/v1/audit/resources/{resourceId}/timeline': { get: { responses } } }),
+        { always: [429, 500], authenticated: [401, 403], withBody: [400], withTrailingPathParam: [404] },
+      ),
+    ).toEqual([]);
+  });
+
+  it('names a component that re-declares the success envelope', () => {
+    const findings = findDuplicateEnvelopeComponents(
+      doc(
+        { '/api/v1/a': { get: { responses: ok() } } },
+        {
+          ApiEnvelopeDto: {
+            type: 'object',
+            properties: { success: {}, data: {}, meta: {}, requestId: {} },
+          },
+          AgentEnvelopeDto: {
+            type: 'object',
+            properties: { success: {}, data: {}, meta: {}, requestId: {} },
+          },
+          AgentDto: { type: 'object', properties: { id: {} } },
+        },
+      ),
+    );
+
+    expect(findings).toEqual([
+      'components.schemas.AgentEnvelopeDto re-declares the response envelope; compose ApiEnvelopeDto instead',
     ]);
   });
 

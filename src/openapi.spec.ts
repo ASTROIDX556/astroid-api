@@ -18,9 +18,13 @@ import {
   RouteDocumentationGap,
   collectRefs,
   findDanglingRefs,
+  findDuplicateEnvelopeComponents,
+  findInlineErrorSchemas,
   findDuplicateRoutes,
   findMissingDeclaredSchemas,
   findMissingRequestSchemas,
+  findOperationsMissingSecuritySchemes,
+  findOperationsMissingStandardErrors,
   findOperationsWithoutResponses,
   findOperationsWithoutSuccessEnvelope,
   findOperationsWithoutSuccessSchema,
@@ -187,6 +191,13 @@ const INTERNAL_ROUTES: AllowlistedRoute[] = [
     // Diagnostic probe returning raw Horizon and Soroban connectivity checks.
     reason: 'Internal Stellar connectivity diagnostic returning raw network and node status',
   },
+  {
+    method: 'GET',
+    path: '/api/v1/operations/queues',
+    // Queue observability endpoint excluded from OpenAPI to avoid circular dependency
+    // with BullMQ Queue types during schema generation.
+    reason: 'Queue observability endpoint excluded from OpenAPI document to avoid circular dependency with BullMQ types',
+  },
 ];
 
 /**
@@ -224,6 +235,13 @@ const ROUTE_CHECKS: ReadonlyArray<[RouteCheck, string]> = [
   ['security', 'declares a defined security requirement on every guarded route'],
   ['publicSecurity', 'declares no security requirement on @Public() routes'],
 ];
+
+/**
+ * Infrastructure probes answer with the success envelope even when unhealthy
+ * (`success: false` plus per-dependency detail), not with problem details, and
+ * are exempt from the rate limiter. They are held to their own contract.
+ */
+const INFRASTRUCTURE_PROBES = ['/health/live', '/health/ready'];
 
 /** Paths the API serves outside its prefix, as they appear in the document. */
 const UNPREFIXED_PATHS = new Set(GLOBAL_PREFIX_EXCLUDED_ROUTES.map((route) => `/${route.path}`));
@@ -469,6 +487,37 @@ describe('OpenAPI Documentation', () => {
       const schema = Object.values(content ?? {})[0]?.schema;
       expect(collectRefs(schema).has('#/components/schemas/PaginationMetaDto'), path).toBe(true);
     }
+  });
+
+  it('offers every scheme the authentication guard accepts on protected operations', () => {
+    expect(
+      findOperationsMissingSecuritySchemes(routes, document, ['access-token', 'api-key'], handlers),
+    ).toEqual([]);
+  });
+
+  it('references a shared component schema for every error response body', () => {
+    expect(findInlineErrorSchemas(document, handlers, INFRASTRUCTURE_PROBES)).toEqual([]);
+  });
+
+  it('documents the standard error responses each operation can answer with', () => {
+    expect(
+      findOperationsMissingStandardErrors(
+        routes,
+        document,
+        {
+          always: [429, 500],
+          authenticated: [401, 403],
+          withBody: [400],
+          withTrailingPathParam: [404],
+          exclusions: INFRASTRUCTURE_PROBES,
+        },
+        handlers,
+      ),
+    ).toEqual([]);
+  });
+
+  it('declares the success envelope in exactly one component schema', () => {
+    expect(findDuplicateEnvelopeComponents(document)).toEqual([]);
   });
 
   it('should have security schemes defined', () => {

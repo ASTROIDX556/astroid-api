@@ -50,6 +50,7 @@ export class ApiKeyService {
       permissions: input.permissions,
       allowedIps: input.allowedIps || [],
       rateLimitPerMinute: input.rateLimitPerMinute ?? null,
+      rateLimitPerDay: input.rateLimitPerDay ?? null,
       expiresAt,
     });
 
@@ -62,6 +63,7 @@ export class ApiKeyService {
       scopes: apiKey.scopes,
       permissions: apiKey.permissions,
       rateLimitPerMinute: apiKey.rateLimitPerMinute,
+      rateLimitPerDay: apiKey.rateLimitPerDay,
       expiresAt: apiKey.expiresAt,
       key: raw,
     };
@@ -123,6 +125,7 @@ export class ApiKeyService {
       permissions: key.permissions,
       allowedIps: key.allowedIps,
       rateLimitPerMinute: key.rateLimitPerMinute,
+      rateLimitPerDay: key.rateLimitPerDay,
       expiresAt: newExpiresAt,
     });
 

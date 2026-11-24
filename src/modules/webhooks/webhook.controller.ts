@@ -12,7 +12,6 @@ import {
 import {
   ApiOperation,
   ApiTags,
-  ApiBearerAuth,
   ApiParam,
   ApiBody,
   ApiQuery,
@@ -42,10 +41,12 @@ import { ApiPaginationQuery } from '../../common/decorators/api-pagination-query
 import { WebhookDeliveryDto, WebhookResponseDto } from './webhook.dto';
 import { Idempotent } from '../../common/decorators/idempotent.decorator';
 import { IdempotencyInterceptor } from '../../common/interceptors/idempotency.interceptor';
+import { ApiAuthenticated } from '../../common/decorators/api-authenticated.decorator';
 
 @ApiTags('webhooks')
-@ApiBearerAuth('access-token')
+@ApiAuthenticated()
 @Controller('webhooks')
+@ApiErrorResponses({ unauthorized: true, forbidden: true, tooManyRequests: true, serverError: true })
 export class WebhookController {
   constructor(private readonly webhookService: WebhookService) {}
 

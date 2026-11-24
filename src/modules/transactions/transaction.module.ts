@@ -10,6 +10,7 @@ import { BudgetModule } from '../budgets/budget.module';
 import { SorobanSimulationService } from './services/soroban-simulation.service';
 import { StellarSimulationService } from './services/stellar-simulation.service';
 import { GasEstimationService } from './services/gas-estimation.service';
+import { TransactionPreflightService } from './services/transaction-preflight.service';
 import { StellarModule } from '../stellar/stellar.module';
 import { SpendingLimitService } from './spending-limit.service';
 import { SpendingLimitGuard } from './guards/spending-limit.guard';
@@ -55,6 +56,7 @@ import { ApprovalExpiryQueue } from '../../queues/approval-expiry.queue';
     SorobanSimulationService,
     StellarSimulationService,
     GasEstimationService,
+    TransactionPreflightService,
     SpendingLimitService,
     SpendingLimitGuard,
     TransactionWorker,

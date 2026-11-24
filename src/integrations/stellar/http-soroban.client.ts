@@ -19,6 +19,10 @@ export interface RawSimulateTransactionResult {
   error?: string;
 }
 
+interface RawLatestLedgerResult {
+  sequence: number | string;
+}
+
 type FootprintEntry = { contractId: string; key: unknown };
 
 /**
@@ -43,10 +47,20 @@ export class HttpSorobanClient implements SorobanClient {
     return this.toResult(raw);
   }
 
+  async getLatestLedger(): Promise<number> {
+    const raw = await this.rpc.call<RawLatestLedgerResult>('getLatestLedger');
+    const sequence = Number(raw.sequence);
+    if (!Number.isSafeInteger(sequence) || sequence < 0) {
+      throw new Error('Soroban RPC returned an invalid latest ledger sequence');
+    }
+    return sequence;
+  }
+
   private toResult(raw: RawSimulateTransactionResult): SorobanSimulationResult {
     const transactionData = this.decodeTransactionData(raw.transactionData);
     const result: SorobanSimulationResult = {
       success: !raw.error,
+      latestLedger: raw.latestLedger,
       minResourceFee: raw.minResourceFee ?? '0',
       cost: {
         cpuInstructions: toNumber(raw.cost?.cpuInsns) ?? transactionData?.resources().instructions() ?? 0,
