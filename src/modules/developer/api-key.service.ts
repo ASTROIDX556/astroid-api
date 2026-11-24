@@ -85,8 +85,12 @@ export class ApiKeyService {
     id: string,
     input?: RotateApiKeyInput,
   ) {
+    const now = new Date();
     const key = await this.repository.findById(organizationId, id);
     if (!key) {
+      throw new NotFoundException('ApiKey', id);
+    }
+    if (key.createdById !== actorId) {
       throw new NotFoundException('ApiKey', id);
     }
     if (key.revokedAt || key.status === 'revoked') {
@@ -95,13 +99,13 @@ export class ApiKeyService {
     if (key.status === 'rotating' || key.rotatedAt) {
       throw new ConflictException('API key is already being rotated');
     }
-    if (key.expiresAt && key.expiresAt.getTime() <= Date.now()) {
+    if (key.expiresAt && key.expiresAt.getTime() <= now.getTime()) {
       throw new ConflictException('API key is expired');
     }
 
     const defaultGrace = this.authConfiguration?.apiKeyRotationGracePeriodSeconds ?? 86400;
     const gracePeriodSeconds = input?.gracePeriodSeconds ?? defaultGrace;
-    const graceExpiresAt = new Date(Date.now() + gracePeriodSeconds * 1000);
+    const graceExpiresAt = new Date(now.getTime() + gracePeriodSeconds * 1000);
     const previousKeyExpiresAt =
       key.expiresAt && key.expiresAt.getTime() < graceExpiresAt.getTime()
         ? key.expiresAt
@@ -110,10 +114,9 @@ export class ApiKeyService {
     const { raw, prefix, hashedKey } = await generateApiKey('live');
     const lastFour = raw.slice(-4);
     const newExpiresAt = input?.expiresInDays
-      ? new Date(Date.now() + input.expiresInDays * 86_400_000)
-      : null;
-
-    const newApiKey = await this.repository.create({
+      ? new Date(now.getTime() + input.expiresInDays * 86_400_000)
+      : key.expiresAt;
+    const replacement = {
       organizationId,
       createdById: actorId,
       name: key.name,
@@ -127,39 +130,20 @@ export class ApiKeyService {
       rateLimitPerMinute: key.rateLimitPerMinute,
       rateLimitPerDay: key.rateLimitPerDay,
       expiresAt: newExpiresAt,
-    });
+    };
 
-    await this.repository.markRotating(key.id, {
-      status: 'rotating',
-      rotatedAt: new Date(),
-      expiresAt: previousKeyExpiresAt,
-      replacementId: newApiKey.id,
-    });
-
-    if (this.auditService) {
-      try {
-        await this.auditService.record({
-          organizationId,
-          userId: actorId,
-          action: 'API_KEY_ROTATED',
-          entity: 'ApiKey',
-          entityId: key.id,
-          oldValue: {
-            keyId: key.id,
-            prefix: key.prefix,
-            status: 'rotating',
-            expiresAt: previousKeyExpiresAt,
-          },
-          newValue: {
-            keyId: newApiKey.id,
-            prefix: newApiKey.prefix,
-            status: 'active',
-          },
-        });
-      } catch {
-        // audit log failure should not break rotation
-      }
+    const rotated = await this.repository.rotate(
+      organizationId,
+      key.id,
+      actorId,
+      replacement,
+      now,
+      previousKeyExpiresAt,
+    );
+    if (!rotated) {
+      throw new ConflictException('API key is no longer active');
     }
+    const newApiKey = rotated.replacement;
 
     return {
       id: newApiKey.id,
@@ -219,13 +203,17 @@ export class ApiKeyService {
     // looked up by their public prefix. Revoked and expired rows are excluded
     // by the repository, and re-checked below so a stale cache can never let a
     // dead key through.
-    const keys = await this.repository.findActiveByPrefix(trimmedKey.slice(0, 14));
+    const keys = await this.repository.findAuthenticatableByPrefix(trimmedKey.slice(0, 14));
     
     for (const key of keys) {
-      if (key.revokedAt) {
+      if (key.revokedAt || key.status === 'revoked') {
         continue;
       }
-      if (key.expiresAt && key.expiresAt.getTime() < Date.now()) {
+      const now = Date.now();
+      if (key.expiresAt && key.expiresAt.getTime() <= now) {
+        continue;
+      }
+      if (key.status === 'rotating' && (!key.previousKeyExpiresAt || key.previousKeyExpiresAt.getTime() <= now)) {
         continue;
       }
       

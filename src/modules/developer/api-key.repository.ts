@@ -58,7 +58,8 @@ export class ApiKeyRepository {
   /**
    * Resolves the candidate keys for a presented key by its public prefix,
    * keeping only the rows that could still authenticate a request: not
-   * revoked and not expired.
+   * unrevoked and either active with an unexpired key or rotating within its
+   * previous-key grace deadline.
    *
    * The authentication path looks the key up by prefix (the hash algorithm is
    * not known before the key is found), so revoked and expired rows are
@@ -66,12 +67,22 @@ export class ApiKeyRepository {
    * one — a revoked key never reaches the deliberately expensive hash
    * verification.
    */
-  findActiveByPrefix(prefix: string, now: Date = new Date()): Promise<ApiKey[]> {
+  findAuthenticatableByPrefix(prefix: string, now: Date = new Date()): Promise<ApiKey[]> {
     return this.prisma.apiKey.findMany({
       where: {
         prefix,
         revokedAt: null,
-        OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
+        OR: [
+          {
+            status: 'active',
+            OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
+          },
+          {
+            status: 'rotating',
+            previousKeyExpiresAt: { gt: now },
+            OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
+          },
+        ],
       },
     });
   }
@@ -85,11 +96,39 @@ export class ApiKeyRepository {
     return this.prisma.apiKey.update({ where: { id }, data: { revokedAt: new Date(), status: 'revoked' } });
   }
 
-  markRotating(
+  rotate(
+    organizationId: string,
     id: string,
-    data: { status: string; rotatedAt: Date; expiresAt: Date; replacementId: string },
-  ): Promise<ApiKey> {
-    return this.prisma.apiKey.update({ where: { id }, data });
+    actorId: string,
+    replacement: Prisma.ApiKeyUncheckedCreateInput,
+    rotatedAt: Date,
+    previousKeyExpiresAt: Date,
+  ): Promise<{ previous: ApiKey; replacement: ApiKey } | null> {
+    return this.prisma.$transaction(async (transaction) => {
+      const claimed = await transaction.apiKey.updateMany({
+        where: {
+          id,
+          organizationId,
+          createdById: actorId,
+          status: 'active',
+          revokedAt: null,
+          rotatedAt: null,
+          OR: [{ expiresAt: null }, { expiresAt: { gt: rotatedAt } }],
+        },
+        data: { status: 'rotating', rotatedAt, previousKeyExpiresAt },
+      });
+
+      if (claimed.count !== 1) {
+        return null;
+      }
+
+      const newKey = await transaction.apiKey.create({ data: replacement });
+      const previous = await transaction.apiKey.update({
+        where: { id },
+        data: { replacementId: newKey.id },
+      });
+      return { previous, replacement: newKey };
+    });
   }
 
   update(id: string, data: Prisma.ApiKeyUpdateInput): Promise<ApiKey> {

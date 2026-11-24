@@ -66,6 +66,26 @@ describe('assertValidEnvironment', () => {
     }
   });
 
+  it('defaults the API-key grace period to 24 hours and caps it at 30 days', () => {
+    expect(assertValidEnvironment({ ...REQUIRED_ENV }).API_KEY_ROTATION_GRACE_PERIOD_SECONDS).toBe(86400);
+    expect(
+      assertValidEnvironment({
+        ...REQUIRED_ENV,
+        API_KEY_ROTATION_GRACE_PERIOD_SECONDS: '2592000',
+      }).API_KEY_ROTATION_GRACE_PERIOD_SECONDS,
+    ).toBe(2592000);
+
+    for (const value of ['0', '-1', '2592001', 'invalid']) {
+      const error = validationError({
+        ...REQUIRED_ENV,
+        API_KEY_ROTATION_GRACE_PERIOD_SECONDS: value,
+      });
+      expect(error.issues.map((issue) => issue.key)).toContain(
+        'API_KEY_ROTATION_GRACE_PERIOD_SECONDS',
+      );
+    }
+  });
+
   it('accepts a positive webhook retry limit and rejects zero', () => {
     expect(assertValidEnvironment({ ...REQUIRED_ENV, WEBHOOK_MAX_ATTEMPTS: '3' }).WEBHOOK_MAX_ATTEMPTS).toBe(3);
     const error = validationError({ ...REQUIRED_ENV, WEBHOOK_MAX_ATTEMPTS: '0' });
