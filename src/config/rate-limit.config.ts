@@ -28,6 +28,7 @@ export type SensitiveRouteLimit = {
 /** Default per-credential quota when an API key has no override. */
 export type CredentialRateLimitConfig = {
   perMinute: number;
+  minuteWindowSeconds: number;
   perDay: number;
   dayWindowSeconds: number;
   quotaCacheSeconds: number;
@@ -80,6 +81,7 @@ export const rateLimitConfig = registerAs('rateLimit', (): RateLimitConfig => {
     },
     credential: {
       perMinute: env.RATE_LIMIT_CREDENTIAL_PER_MINUTE,
+      minuteWindowSeconds: env.RATE_LIMIT_CREDENTIAL_MINUTE_WINDOW_SECONDS,
       perDay: env.RATE_LIMIT_CREDENTIAL_PER_DAY,
       dayWindowSeconds: env.RATE_LIMIT_CREDENTIAL_DAY_WINDOW_SECONDS,
       quotaCacheSeconds: env.RATE_LIMIT_CREDENTIAL_QUOTA_CACHE_SECONDS,

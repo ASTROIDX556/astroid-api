@@ -72,6 +72,24 @@ describe('assertValidEnvironment', () => {
     expect(error.issues.map((issue) => issue.key)).toContain('WEBHOOK_MAX_ATTEMPTS');
   });
 
+  it('defaults the credential minute window to 60 seconds and validates overrides', () => {
+    expect(assertValidEnvironment({ ...REQUIRED_ENV }).RATE_LIMIT_CREDENTIAL_MINUTE_WINDOW_SECONDS).toBe(60);
+    expect(
+      assertValidEnvironment({
+        ...REQUIRED_ENV,
+        RATE_LIMIT_CREDENTIAL_MINUTE_WINDOW_SECONDS: '30',
+      }).RATE_LIMIT_CREDENTIAL_MINUTE_WINDOW_SECONDS,
+    ).toBe(30);
+
+    const error = validationError({
+      ...REQUIRED_ENV,
+      RATE_LIMIT_CREDENTIAL_MINUTE_WINDOW_SECONDS: '0',
+    });
+    expect(error.issues.map((issue) => issue.key)).toContain(
+      'RATE_LIMIT_CREDENTIAL_MINUTE_WINDOW_SECONDS',
+    );
+  });
+
   it('validates the shutdown grace period at startup, together with the other problems', () => {
     const error = validationError({
       ...REQUIRED_ENV,

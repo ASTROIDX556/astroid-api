@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { Redis } from 'ioredis';
 import { CredentialQuota } from './credential-quota';
 import {
@@ -31,7 +32,10 @@ export interface CredentialRateLimitDecision {
  * requests, replicas and process restarts.
  */
 export class RedisCredentialRateLimitStore {
-  constructor(private readonly redis: Redis) {}
+  constructor(
+    private readonly redis: Redis,
+    private readonly testClock?: () => number,
+  ) {}
 
   /** True when the client can serve commands right now without queueing. */
   get isReady(): boolean {
@@ -52,6 +56,8 @@ export class RedisCredentialRateLimitStore {
       windows.minuteWindowMs,
       quota.perDay,
       windows.dayWindowMs,
+      randomUUID(),
+      this.testClock?.() ?? 0,
     )) as CredentialRateLimitScriptResult;
 
     const [allowed, limit, remaining, resetAt, retryAfter, minuteHits, dayHits] = result;

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { ExecutionContext, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { Reflector } from '@nestjs/core';
 import { Redis } from 'ioredis';
 
 import { CredentialRateLimitGuard } from './credential-rate-limit.guard';
@@ -10,6 +11,8 @@ import { CREDENTIAL_RATE_LIMIT_SCRIPT } from '../throttler/scripts/credential-ra
 import { DomainException } from '../exceptions/domain.exception';
 import { ErrorCode } from '../constants/error-codes';
 import { RateLimitConfig } from '../../config/rate-limit.config';
+import { HealthController } from '../../modules/health/health.controller';
+import { MetricsController } from '../../modules/metrics/metrics.controller';
 
 type EvalArgs = [script: string, numKeys: number, ...args: Array<string | number>];
 
@@ -25,6 +28,7 @@ const RATE_LIMIT: RateLimitConfig = {
   },
   credential: {
     perMinute: 120,
+    minuteWindowSeconds: 60,
     perDay: 10_000,
     dayWindowSeconds: 86_400,
     quotaCacheSeconds: 60,
@@ -70,6 +74,7 @@ function prepare(
     redis?: ReturnType<typeof makeRedis>;
     exempt?: boolean;
     type?: string;
+    config?: RateLimitConfig;
   } = {},
 ) {
   const redis = opts.redis ?? makeRedis();
@@ -78,7 +83,7 @@ function prepare(
       key === SKIP_CREDENTIAL_RATE_LIMIT_KEY ? opts.exempt : undefined,
     ),
   };
-  const config = { getOrThrow: () => RATE_LIMIT } as unknown as ConfigService;
+  const config = { getOrThrow: () => opts.config ?? RATE_LIMIT } as unknown as ConfigService;
   const quotaCache = new CredentialQuotaCache(config, redis as unknown as Redis);
   const guard = new CredentialRateLimitGuard(
     reflector as never,
@@ -169,6 +174,19 @@ describe('CredentialRateLimitGuard', () => {
 
       const [, , , , perMinute, minuteWindow, perDay, dayWindow] = redis.eval.mock.calls[0] as EvalArgs;
       expect([perMinute, minuteWindow, perDay, dayWindow]).toEqual([120, 60_000, 10_000, 86_400_000]);
+    });
+
+    it('uses the configured minute window', async () => {
+      const { guard, redis, context } = prepare({
+        config: {
+          ...RATE_LIMIT,
+          credential: { ...RATE_LIMIT.credential, minuteWindowSeconds: 30 },
+        },
+      });
+
+      await guard.canActivate(context);
+
+      expect((redis.eval.mock.calls[0] as EvalArgs)[5]).toBe(30_000);
     });
 
     it('honours per-key minute and day overrides and caches them briefly', async () => {
@@ -287,15 +305,52 @@ describe('CredentialRateLimitGuard', () => {
       expect(redis.eval).not.toHaveBeenCalled();
     });
 
+    it.each([
+      ['liveness', HealthController, HealthController.prototype.live],
+      ['readiness', HealthController, HealthController.prototype.ready],
+      ['metrics', MetricsController, MetricsController.prototype.scrape],
+    ])('exempts the real %s route metadata', async (_name, controller, handler) => {
+      const redis = makeRedis();
+      const config = { getOrThrow: () => RATE_LIMIT } as unknown as ConfigService;
+      const guard = new CredentialRateLimitGuard(
+        new Reflector(),
+        config,
+        redis as unknown as Redis,
+        new CredentialQuotaCache(config, redis as unknown as Redis),
+      );
+      const context = {
+        getType: () => 'http',
+        getHandler: () => handler,
+        getClass: () => controller,
+        switchToHttp: () => ({
+          getRequest: () => ({ ip: '203.0.113.7', headers: {} }),
+          getResponse: () => ({ setHeader: vi.fn() }),
+        }),
+      } as unknown as ExecutionContext;
+
+      await expect(guard.canActivate(context)).resolves.toBe(true);
+      expect(redis.eval).not.toHaveBeenCalled();
+    });
+
     it('fails open with a warning when Redis is unreachable', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-01-01T00:00:15.000Z'));
       const redis = makeRedis(undefined, new Error('connect ECONNREFUSED 127.0.0.1:6379'));
       const { guard, response, context } = prepare({ redis });
 
-      await expect(guard.canActivate(context)).resolves.toBe(true);
-      expect(response.setHeader).not.toHaveBeenCalled();
-      expect(Logger.prototype.warn).toHaveBeenCalledWith(
-        expect.stringContaining('allowing request (fails open)'),
-      );
+      try {
+        await expect(guard.canActivate(context)).resolves.toBe(true);
+        expect(headers(response)).toEqual({
+          'X-RateLimit-Limit': 120,
+          'X-RateLimit-Remaining': 120,
+          'X-RateLimit-Reset': Math.ceil(new Date('2026-01-01T00:01:15.000Z').getTime() / 1000),
+        });
+        expect(Logger.prototype.warn).toHaveBeenCalledWith(
+          expect.stringContaining('allowing request (fails open)'),
+        );
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('fails open when the Redis client is not ready', async () => {
@@ -317,7 +372,8 @@ describe('CredentialRateLimitGuard', () => {
       const [script] = redis.eval.mock.calls[0] as EvalArgs;
       expect(script).toBe(CREDENTIAL_RATE_LIMIT_SCRIPT);
       expect(script).toContain("redis.call('TIME')");
-      expect(script).toContain('PEXPIREAT');
+      expect(script).toContain("redis.call('ZREMRANGEBYSCORE'");
+      expect(script).toContain("redis.call('ZADD'");
     });
   });
 });
