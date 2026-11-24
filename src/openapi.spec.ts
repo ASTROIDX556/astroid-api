@@ -191,6 +191,13 @@ const INTERNAL_ROUTES: AllowlistedRoute[] = [
     // Diagnostic probe returning raw Horizon and Soroban connectivity checks.
     reason: 'Internal Stellar connectivity diagnostic returning raw network and node status',
   },
+  {
+    method: 'GET',
+    path: '/api/v1/operations/queues',
+    // Queue observability endpoint excluded from OpenAPI to avoid circular dependency
+    // with BullMQ Queue types during schema generation.
+    reason: 'Queue observability endpoint excluded from OpenAPI document to avoid circular dependency with BullMQ types',
+  },
 ];
 
 /**

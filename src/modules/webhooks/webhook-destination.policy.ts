@@ -189,6 +189,7 @@ export interface WebhookRequestOptions {
 
 export interface WebhookResponse {
   status: number;
+  headers: Record<string, string | string[] | undefined>;
 }
 
 export interface WebhookDestinationClient {
@@ -239,7 +240,11 @@ function requestPinnedHttps(
           response.resume();
           if (settled) return;
           settled = true;
-          resolve({ status: response.statusCode ?? 0 });
+          const responseHeaders: Record<string, string | string[] | undefined> = {};
+          for (const [key, value] of Object.entries(response.headers)) {
+            responseHeaders[key.toLowerCase()] = value;
+          }
+          resolve({ status: response.statusCode ?? 0, headers: responseHeaders });
         },
       );
       const timeout = setTimeout(() => request.destroy(new Error('Webhook request timed out')), remainingMs);

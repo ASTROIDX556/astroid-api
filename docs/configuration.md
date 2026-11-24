@@ -225,6 +225,13 @@ Webhook retries use BullMQ exponential backoff with 20% jitter. Permanent
 redirect and 4xx responses stop retrying; HTTP 408, 429, 5xx, and network or
 timeout failures are retried up to the configured attempt limit.
 
+### Queue observability
+
+| Variable                                  | Default | Description |
+| ----------------------------------------- | ------- | ----------- |
+| `QUEUE_OBSERVABILITY_ENABLED`             | `false` | Enables the queue observability endpoint (`/api/v1/queues/observability`). |
+| `QUEUE_OBSERVABILITY_MAX_FAILED_JOBS`     | `10` | Maximum number of failed jobs to return per queue; bounded to 20. |
+
 ### Webhook ingress
 
 | Variable | Default | Description |
