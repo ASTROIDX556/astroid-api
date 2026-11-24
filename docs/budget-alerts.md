@@ -8,12 +8,16 @@ Global thresholds are percentages of a budget's limit:
 BUDGET_ALERT_THRESHOLDS=80,100
 ```
 
-Defaults are `80` and `100`. Entries are parsed as positive integers, sorted and
-de-duplicated; at least one valid threshold is required.
+Defaults are `80` and `100`. Entries are parsed as integers between 1 and 100,
+sorted and de-duplicated; at least one valid threshold is required.
 
 A budget can override the global list with its `alertThresholds` column
 (`Int[]`, empty means "use the global list"). Example: a budget with
-`alertThresholds = [50, 90]` alerts at 50% and 90% only.
+`alertThresholds = [50, 90]` alerts at 50% and 90% only. The override is set
+through the API (`POST /budgets`, `PATCH /budgets/:id`) as `alertThresholds` and
+is validated at DTO time: whole numbers, strictly ascending, each in `1..100`,
+and at most 20 entries. An invalid list is rejected with a standard validation
+`400` before any budget row is written.
 
 ## Evaluation
 

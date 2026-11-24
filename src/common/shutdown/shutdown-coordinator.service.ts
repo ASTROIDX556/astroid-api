@@ -79,6 +79,8 @@ export class ShutdownCoordinator implements OnApplicationBootstrap, BeforeApplic
   private readonly gracePeriodMs: number;
   private readonly resources: ShutdownResource[] = [];
   private readonly workers = new Set<Worker>();
+  /** Queues by name, used to name still-active jobs when the drain times out. */
+  private readonly queues = new Map<string, Queue>();
 
   private app?: INestApplication;
   private shuttingDown = false;
@@ -118,6 +120,7 @@ export class ShutdownCoordinator implements OnApplicationBootstrap, BeforeApplic
         }
       } else if (instance instanceof Queue) {
         const queue = instance;
+        this.queues.set(queue.name, queue);
         this.register({ name: `queue:${queue.name}`, phase: 'queues', close: () => queue.close() });
       }
     }
@@ -239,12 +242,16 @@ export class ShutdownCoordinator implements OnApplicationBootstrap, BeforeApplic
         const startedAt = Date.now();
         try {
           if ((await settleBy(worker.pause(), deadline)) === 'timeout') {
+            // Name the jobs still running so the operator can find them; the
+            // payloads themselves are never logged.
+            const active = await this.activeJobIds(worker.name);
+            const suffix = active.length > 0 ? ` (active jobs: ${active.join(', ')})` : '';
             this.logger.error(
               `Worker "${worker.name}": active jobs did not finish within the ${this.gracePeriodMs}ms ` +
-                'grace period; forcing close. Interrupted jobs will be retried after their lock expires',
+                `grace period; forcing close${suffix}. Interrupted jobs will be retried after their lock expires`,
             );
             await settleWithin(worker.close(true), ShutdownCoordinator.RESOURCE_CLOSE_TIMEOUT_MS);
-            return `worker "${worker.name}": grace period expired with jobs in progress`;
+            return `worker "${worker.name}": grace period expired with jobs in progress${suffix}`;
           }
           if (
             (await settleWithin(worker.close(), ShutdownCoordinator.RESOURCE_CLOSE_TIMEOUT_MS)) ===
@@ -263,6 +270,26 @@ export class ShutdownCoordinator implements OnApplicationBootstrap, BeforeApplic
       }),
     );
     return results.filter((failure): failure is string => failure !== null);
+  }
+
+  /**
+   * Ids of the jobs still in progress on a worker's queue, capped so a large
+   * backlog cannot flood the log. Read through the queue registered under the
+   * same name (BullMQ's `Worker` exposes no active-job list); best-effort, so a
+   * queue that cannot answer yields an empty list.
+   */
+  private async activeJobIds(workerName: string, limit = 20): Promise<string[]> {
+    const queue = this.queues.get(workerName);
+    if (!queue || typeof queue.getActive !== 'function') return [];
+    try {
+      const jobs = await queue.getActive();
+      return jobs
+        .slice(0, limit)
+        .map((job) => job.id)
+        .filter((id): id is string => typeof id === 'string' && id.length > 0);
+    } catch {
+      return [];
+    }
   }
 
   /** Runs Nest's lifecycle hooks (which close registered resources). */
