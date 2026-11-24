@@ -22,6 +22,14 @@ export { DEFAULT_JOB_OPTIONS } from './queue-policy';
         removeOnFail: { age: 7 * 24 * 3_600, count: 5_000 },
       },
     }),
+    BullModule.registerQueue({
+      name: Queues.ApprovalSweep,
+      defaultJobOptions: {
+        attempts: 3,
+        removeOnComplete: { count: 100 },
+        removeOnFail: { count: 100 },
+      },
+    }),
   ],
   providers: [DlqProcessor],
   exports: [BullModule, DlqProcessor],

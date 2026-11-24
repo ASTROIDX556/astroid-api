@@ -99,7 +99,7 @@ describe('TransactionService status transitions under write conflicts', () => {
   };
   let stellar: { submitPayment: ReturnType<typeof vi.fn> };
   let eventBus: { emit: ReturnType<typeof vi.fn> };
-  let budgets: { consume: ReturnType<typeof vi.fn> };
+  let budgets: { consume: ReturnType<typeof vi.fn>; release: ReturnType<typeof vi.fn> };
 
   /**
    * Builds a TransactionService around a real retrying transaction manager
@@ -107,6 +107,11 @@ describe('TransactionService status transitions under write conflicts', () => {
    */
   function buildService(failures: number) {
     const { service: txManager, $transaction } = conflictPrismaService(failures);
+    // execute() reads the linked approval proposal (if any) before submitting.
+    const findProposal = vi.fn().mockResolvedValue(null);
+    const prisma = {
+      proposal: { findUnique: findProposal },
+    } as unknown as PrismaService;
 
     const service = new TransactionService(
       repository as unknown as TransactionRepository,
@@ -119,12 +124,12 @@ describe('TransactionService status transitions under write conflicts', () => {
       budgets as unknown as BudgetService,
       stellar as unknown as StellarService,
       eventBus as unknown as EventBusService,
-      {} as unknown as PrismaService,
+      prisma,
       {} as unknown as SpendingLimitService,
       txManager,
     );
 
-    return { service, $transaction };
+    return { service, $transaction, findProposal };
   }
 
   beforeEach(() => {
@@ -146,10 +151,43 @@ describe('TransactionService status transitions under write conflicts', () => {
       }),
     };
     eventBus = { emit: vi.fn().mockResolvedValue(undefined) };
-    budgets = { consume: vi.fn().mockResolvedValue(undefined) };
+    budgets = { consume: vi.fn().mockResolvedValue(undefined), release: vi.fn().mockResolvedValue(undefined) };
   });
 
   describe('cancel()', () => {
+    it('releases the budget reservation of a cancelled transaction', async () => {
+      const { service } = buildService(0);
+      const row = { ...makeRow(TransactionStatus.PENDING), budgetReservationId: 'res_1' };
+      repository.findById.mockResolvedValue(row);
+      repository.update.mockResolvedValue({ ...row, status: TransactionStatus.CANCELLED });
+
+      await service.cancel('org_1', 'user_1', 'tx_1');
+
+      expect(budgets.release).toHaveBeenCalledWith('res_1');
+    });
+
+    it('does not fail the cancel when releasing the reservation fails', async () => {
+      const { service } = buildService(0);
+      const row = { ...makeRow(TransactionStatus.PENDING), budgetReservationId: 'res_1' };
+      repository.findById.mockResolvedValue(row);
+      repository.update.mockResolvedValue({ ...row, status: TransactionStatus.CANCELLED });
+      budgets.release.mockRejectedValue(new Error('db down'));
+
+      await expect(service.cancel('org_1', 'user_1', 'tx_1')).resolves.toMatchObject({
+        status: TransactionStatus.CANCELLED,
+      });
+      expect(eventBus.emit).toHaveBeenCalledTimes(1);
+    });
+
+    it('skips the release for a transaction without a reservation', async () => {
+      const { service } = buildService(0);
+      repository.findById.mockResolvedValue(makeRow(TransactionStatus.DRAFT));
+
+      await service.cancel('org_1', 'user_1', 'tx_1');
+
+      expect(budgets.release).not.toHaveBeenCalled();
+    });
+
     it('replays a serialization conflict and cancels on the retry', async () => {
       const { service, $transaction } = buildService(1);
       repository.findById.mockResolvedValue(makeRow(TransactionStatus.DRAFT));
@@ -279,6 +317,36 @@ describe('TransactionService status transitions under write conflicts', () => {
       expect(repository.update).not.toHaveBeenCalled();
       expect(stellar.submitPayment).not.toHaveBeenCalled();
       expect(eventBus.emit).not.toHaveBeenCalled();
+    });
+
+    it('refuses to submit a transaction whose approval proposal has expired', async () => {
+      const { service, $transaction, findProposal } = buildService(0);
+      repository.findById.mockResolvedValue(makeRow(TransactionStatus.PENDING));
+      findProposal.mockResolvedValue({ id: 'proposal_1', status: 'EXPIRED' });
+
+      const error = await service
+        .execute('org_1', 'tx_1', 'user_1')
+        .catch((caught: unknown) => caught);
+
+      expect(error).toMatchObject({ code: 'PROPOSAL_EXPIRED' });
+      expect((error as { getStatus: () => number }).getStatus()).toBe(409);
+      // The expired proposal is rejected before any status write or submission.
+      expect($transaction).not.toHaveBeenCalled();
+      expect(repository.update).not.toHaveBeenCalled();
+      expect(stellar.submitPayment).not.toHaveBeenCalled();
+    });
+
+    it('submits a transaction whose approval proposal is approved', async () => {
+      const { service, findProposal } = buildService(0);
+      repository.findById
+        .mockResolvedValueOnce(makeRow(TransactionStatus.PENDING))
+        .mockResolvedValueOnce(makeRow(TransactionStatus.PENDING));
+      findProposal.mockResolvedValue({ id: 'proposal_1', status: 'APPROVED' });
+
+      const executed = await service.execute('org_1', 'tx_1', 'user_1');
+
+      expect(executed.status).toBe(TransactionStatus.COMPLETED);
+      expect(stellar.submitPayment).toHaveBeenCalledTimes(1);
     });
 
     it('fast-fails without opening a transaction when the row is already executed', async () => {

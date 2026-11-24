@@ -18,6 +18,7 @@ import { redisConfig } from '../../config/redis.config';
 import { WebhookConfig } from '../../config/webhook.config';
 import { MetricsModule } from '../metrics/metrics.module';
 import { IdempotencyModule } from '../../common/idempotency/idempotency.module';
+import { EncryptionModule } from '../../common/encryption/encryption.module';
 import { WebhookSignatureGuard } from '../../common/guards/webhook-signature.guard';
 import { SlidingWindowThrottlerGuard } from '../../common/guards/sliding-window-throttler.guard';
 import { WebhookDestinationPolicy } from './webhook-destination.policy';
@@ -52,6 +53,7 @@ import { WebhookDestinationPolicy } from './webhook-destination.policy';
     }),
     MetricsModule,
     IdempotencyModule,
+    EncryptionModule,
   ],
   controllers: [WebhookController, WebhookIngressController],
   providers: [

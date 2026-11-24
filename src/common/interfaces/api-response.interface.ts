@@ -10,14 +10,12 @@ export interface ApiMeta {
 }
 
 export interface PaginationMeta extends ApiMeta {
-  /** Zero-based row offset of the first item in `data`. */
-  offset: number;
   page: number;
-  limit: number;
+  pageSize: number;
   total: number;
   totalPages: number;
-  hasNext: boolean;
-  hasPrev: boolean;
+  hasNextPage: boolean;
+  hasPreviousPage: boolean;
 }
 
 export interface CursorPaginationMeta extends ApiMeta {

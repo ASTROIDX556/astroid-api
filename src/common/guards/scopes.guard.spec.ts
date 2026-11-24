@@ -12,32 +12,15 @@ import { ForbiddenException, UnauthorizedException } from '../exceptions/domain.
 describe('matchScope', () => {
   /** [granted, required, expected] */
   const matrix: Array<[string, string, boolean]> = [
-    // Global wildcards
-    ['*', 'transactions:write', true],
-    ['admin', 'wallets:read', true],
-    ['*', 'anything', true],
     // Exact
-    ['transactions:write', 'transactions:write', true],
-    ['transactions:read', 'transactions:write', false],
-    ['wallets:read', 'transactions:read', false],
-    // Resource wildcard
-    ['transactions:*', 'transactions:write', true],
-    ['transactions:*', 'transactions:read', true],
-    ['transactions:*', 'wallets:read', false],
-    ['transactions:*', 'transactions', true],
-    // Nested permissions inherit from a resource wildcard...
-    ['transactions:*', 'transactions:write:bulk', true],
-    // ...but a wildcard is only honoured at the action position
-    ['transactions:write:*', 'transactions:write:bulk', false],
-    ['transactions:write', 'transactions:write:bulk', false],
-    ['*:write', 'transactions:write', false],
-    // A bare resource grants nothing
-    ['transactions', 'transactions:read', false],
-    // Case-sensitive, and no prefix collisions
-    ['Transactions:*', 'transactions:read', false],
-    ['ADMIN', 'wallets:read', false],
-    ['trans:*', 'transactions:read', false],
-    ['', 'transactions:read', false],
+    ['read', 'read', true],
+    ['transactions:execute', 'transactions:execute', true],
+    ['transactions:execute', 'webhooks:manage', false],
+    ['admin', 'read', false],
+    ['*', 'read', false],
+    ['transactions:*', 'transactions:execute', false],
+    ['transactions:write', 'transactions:execute', false],
+    ['', 'read', false],
   ];
 
   it.each(matrix)('granted %j, required %j -> %s', (granted, required, expected) => {
@@ -45,11 +28,11 @@ describe('matchScope', () => {
   });
 });
 
-@RequireScopes('transactions:read')
+@RequireScopes('read')
 class TransactionsController {
   inheritsClass() {}
 
-  @Scopes('transactions:write', 'wallets:read')
+  @Scopes('transactions:execute', 'webhooks:manage')
   requiresTwo() {}
 
   @RequiredScopes()
@@ -61,7 +44,7 @@ class TransactionsController {
 
 @Public()
 class PublicController {
-  @RequireScopes('transactions:write')
+  @RequireScopes('write')
   scopedButPublic() {}
 }
 
@@ -84,7 +67,7 @@ function context(
   cls: new () => object,
   handler: string,
   principal?: AuthenticatedUser,
-  apiKey?: { permissions?: string[] },
+  apiKey?: { scopes?: string[] },
 ): ExecutionContext {
   const target = cls.prototype as Record<string, () => void>;
   return {
@@ -130,7 +113,7 @@ describe('ScopesGuard', () => {
     it('rejects an expired API key (auth layer attached no principal) even if its scopes arrive', () => {
       expect(() =>
         guard.canActivate(
-          context(TransactionsController, 'inheritsClass', undefined, { permissions: ['*'] }),
+          context(TransactionsController, 'inheritsClass', undefined, { scopes: ['read'] }),
         ),
       ).toThrow(UnauthorizedException);
     });
@@ -168,10 +151,9 @@ describe('ScopesGuard', () => {
   });
 
   describe('scope sources', () => {
-    it.each<[string, AuthenticatedUser, { permissions?: string[] } | undefined]>([
-      ['user.scopes', user({ scopes: ['transactions:read'] }), undefined],
-      ['user.permissions', user({ permissions: ['transactions:read'] }), undefined],
-      ['request.apiKey.permissions', user(), { permissions: ['transactions:read'] }],
+    it.each<[string, AuthenticatedUser, { scopes?: string[] } | undefined]>([
+      ['user.scopes', user({ scopes: ['read'] }), undefined],
+      ['request.apiKey.scopes', user(), { scopes: ['read'] }],
     ])('accepts a scope granted via %s', (_source, principal, apiKey) => {
       expect(
         guard.canActivate(context(TransactionsController, 'inheritsClass', principal, apiKey)),
@@ -181,16 +163,23 @@ describe('ScopesGuard', () => {
     it('combines scopes from every source to satisfy a multi-scope route', () => {
       expect(
         guard.canActivate(
-          context(TransactionsController, 'requiresTwo', user({ scopes: ['transactions:write'] }), {
-            permissions: ['wallets:read'],
+          context(TransactionsController, 'requiresTwo', user({ scopes: ['transactions:execute'] }), {
+            scopes: ['webhooks:manage'],
           }),
         ),
       ).toBe(true);
     });
 
-    it('tolerates an API-key request object without a permissions list', () => {
+    it('does not treat legacy permissions as scopes', () => {
       expect(() =>
-        guard.canActivate(context(TransactionsController, 'inheritsClass', user(), {})),
+        guard.canActivate(
+          context(
+            TransactionsController,
+            'inheritsClass',
+            user({ permissions: ['admin'] }),
+            { scopes: [] },
+          ),
+        ),
       ).toThrow(ForbiddenException);
     });
   });
@@ -199,35 +188,35 @@ describe('ScopesGuard', () => {
     it('lists only the missing scopes in the 403 message', () => {
       expect(() =>
         guard.canActivate(
-          context(TransactionsController, 'requiresTwo', user({ scopes: ['wallets:read'] })),
+          context(TransactionsController, 'requiresTwo', user({ scopes: ['read'] })),
         ),
-      ).toThrow('Missing required scope(s): transactions:write');
+      ).toThrow('Missing required scope(s): transactions:execute');
     });
 
     it('lists every missing scope when none are held', () => {
       expect(() =>
         guard.canActivate(context(TransactionsController, 'requiresTwo', user({ isApiKey: true }))),
-      ).toThrow('Missing required scope(s): transactions:write, wallets:read');
+      ).toThrow('Missing required scope(s): transactions:execute, webhooks:manage');
     });
 
-    it('honours wildcard grants on a multi-scope route', () => {
+    it('accepts each required scope on a multi-scope route', () => {
       expect(
         guard.canActivate(
           context(
             TransactionsController,
             'requiresTwo',
-            user({ isApiKey: true, scopes: ['transactions:*', 'wallets:*'] }),
+            user({ isApiKey: true, scopes: ['transactions:execute', 'webhooks:manage'] }),
           ),
         ),
       ).toBe(true);
     });
 
-    it('does not let a resource wildcard leak into another resource', () => {
+    it('rejects a partial grant on a multi-scope route', () => {
       expect(() =>
         guard.canActivate(
-          context(TransactionsController, 'requiresTwo', user({ scopes: ['transactions:*'] })),
+          context(TransactionsController, 'requiresTwo', user({ scopes: ['transactions:execute'] })),
         ),
-      ).toThrow('Missing required scope(s): wallets:read');
+      ).toThrow('Missing required scope(s): webhooks:manage');
     });
   });
 });

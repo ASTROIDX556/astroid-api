@@ -11,6 +11,9 @@ export const RecipientRule: RiskRule = {
   evaluate({ input, config }: RiskRuleContext): RiskFactorScore {
     const weight = config.weights?.unknownRecipient ?? RecipientRule.defaultWeight;
     return {
+      code: 'unknownRecipient',
+      description: input.knownRecipient ? 'Known recipient' : 'Recipient never paid before',
+      value: input.knownRecipient,
       factor: 'unknownRecipient',
       weight,
       contribution: input.knownRecipient ? 0 : weight,

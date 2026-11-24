@@ -88,8 +88,8 @@ describe('WebhooksProcessor', () => {
 
       const body = Buffer.from(options.body);
       const timestamp = options.headers['x-astroid-timestamp'];
-      expect(options.headers['x-astroid-signature']).toMatch(/^v1=[0-9a-f]{64}$/);
-      expect(verifyWebhookSignature(WEBHOOK_SECRET, timestamp, EVENT_ID, body, options.headers['x-astroid-signature'])).toBe(true);
+      expect(options.headers['x-astroid-signature']).toMatch(/^t=\d+,v1=[0-9a-f]{64}$/);
+      expect(verifyWebhookSignature(WEBHOOK_SECRET, timestamp, body, options.headers['x-astroid-signature'])).toBe(true);
       expect(job.data).not.toHaveProperty('secret');
     });
 

@@ -65,6 +65,36 @@ describe('WebhookService signing-secret lifecycle', () => {
     expect(fetched).not.toHaveProperty('secret');
   });
 
+  it('masks the signing secret in every endpoint read DTO', async () => {
+    const secret = 'whsec_secret-in-list';
+    // The repository projects WebhookRepository.SAFE_SELECT, which never reads
+    // the secret back out; simulate that projection here.
+    const { secret: _omitted, ...safeItem } = record('wh-1', secret);
+    const findManyAndCount = vi.fn(async () => ({ items: [safeItem], total: 1 }));
+    const findById = vi.fn(async (organizationId: string, id: string) =>
+      organizationId === 'org-1' && id === 'wh-1' ? record('wh-1', secret) : null,
+    );
+    const service = new WebhookService(
+      { findManyAndCount, findById } as unknown as WebhookRepository,
+      { validate: vi.fn().mockResolvedValue({}) } as never,
+    );
+
+    const listed = await service.list('org-1', {
+      offset: 0,
+      page: 1,
+      limit: 10,
+      sort: 'createdAt',
+      order: 'desc',
+    });
+    const fetched = await service.get('org-1', 'wh-1');
+
+    // Read DTOs (list items and single fetch) never expose the secret.
+    for (const dto of [...listed.items, fetched]) {
+      expect(JSON.stringify(dto)).not.toContain(secret);
+      expect(dto).not.toHaveProperty('secret');
+    }
+  });
+
   it('rejects blocked destinations on create and update with a safe validation error', async () => {
     const repository = {
       create: vi.fn(),

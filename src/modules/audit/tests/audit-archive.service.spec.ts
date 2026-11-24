@@ -23,7 +23,7 @@ function auditRow(overrides: Partial<ArchivableAuditLog> = {}): ArchivableAuditL
     device: null,
     requestId: null,
     sourceEventId: null,
-    previousHash: 'prev-hash',
+    prevHash: 'prev-hash',
     hash: 'hash-1',
     createdAt: new Date(NOW.getTime() - 40 * 86_400_000),
     ...overrides,

@@ -26,7 +26,7 @@ class TestProtectedController {
   }
 
   @Post('transactions')
-  @RequireScopes('transactions:write')
+  @RequireScopes('transactions:execute')
   createTransaction(@CurrentUser() user: AuthenticatedUser) {
     return { status: 'created', keyId: user.apiKeyId ?? user.id };
   }
@@ -136,7 +136,8 @@ describe('API Key Authentication with Scoped Permissions (Integration)', () => {
       name: 'Write Key',
       prefix: 'ak_live_validk',
       hashedKey: sha256(validKey),
-      permissions: ['transactions:write'],
+      permissions: [],
+      scopes: ['transactions:execute'],
       allowedIps: [],
     });
 
@@ -150,14 +151,15 @@ describe('API Key Authentication with Scoped Permissions (Integration)', () => {
     expect(canScope).toBe(true);
   });
 
-  it('allows access to scoped route when API key has wildcard scope', async () => {
+  it('denies access to scoped route when API key has an invalid wildcard scope', async () => {
     apiKeyService.verify.mockResolvedValue({
       id: 'key-102',
       organizationId: orgId,
       name: 'Wildcard Key',
       prefix: 'ak_live_validk',
       hashedKey: sha256(validKey),
-      permissions: ['transactions:*'],
+      permissions: [],
+      scopes: ['transactions:*'],
       allowedIps: [],
     });
 
@@ -165,8 +167,7 @@ describe('API Key Authentication with Scoped Permissions (Integration)', () => {
     const context = createExecutionContext({ 'x-api-key': validKey }, handler);
 
     await jwtAuthGuard.canActivate(context);
-    const canScope = scopesGuard.canActivate(context);
-    expect(canScope).toBe(true);
+    expect(() => scopesGuard.canActivate(context)).toThrow(/Insufficient API key permissions/);
   });
 
   it('denies access with 403 Forbidden when API key is missing required scope', async () => {
@@ -176,7 +177,8 @@ describe('API Key Authentication with Scoped Permissions (Integration)', () => {
       name: 'Read Only Key',
       prefix: 'ak_live_validk',
       hashedKey: sha256(validKey),
-      permissions: ['transactions:read', 'policies:read'],
+      permissions: ['admin'],
+      scopes: ['read'],
       allowedIps: [],
     });
 
@@ -185,7 +187,7 @@ describe('API Key Authentication with Scoped Permissions (Integration)', () => {
 
     await jwtAuthGuard.canActivate(context);
     expect(() => scopesGuard.canActivate(context)).toThrowError(
-      /Insufficient API key permissions.*transactions:write/,
+      /Insufficient API key permissions.*transactions:execute/,
     );
   });
 
@@ -214,7 +216,7 @@ describe('API Key Authentication with Scoped Permissions (Integration)', () => {
 
     await expect(apiKeyAuthGuard.canActivate(context)).resolves.toBe(true);
     expect(() => scopesGuard.canActivate(context)).toThrowError(
-      /Insufficient API key permissions.*transactions:write/,
+      /Insufficient API key permissions.*transactions:execute/,
     );
   });
 });

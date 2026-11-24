@@ -34,6 +34,7 @@ import {
   WebhookFailureCategory,
 } from './utils/failure-classification';
 import { WebhookAttemptService } from './services/webhook-attempt.service';
+import { EncryptionService } from '../../common/encryption/encryption.service';
 
 /**
  * BullMQ job processor for webhook event delivery with exponential backoff + jitter.
@@ -138,6 +139,7 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
     @Optional() @Inject(ConfigService) private readonly configService?: ConfigService,
     @Optional() eventBusService?: EventBusService,
     @Optional() private readonly deliveryAttempts?: WebhookAttemptService,
+    @Optional() private readonly encryptionService?: EncryptionService,
   ) {
     super();
     this.circuit = compatibilityService && 'beforeAttempt' in compatibilityService
@@ -234,7 +236,15 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
       select: { secret: true, url: true, enabled: true },
     });
     if (!webhook?.secret) throw new PermanentJobError('Webhook signing secret is unavailable');
-    return { secret: webhook.secret, url: webhook.url };
+    let secret = webhook.secret;
+    if (this.encryptionService?.isEncrypted(secret)) {
+      try {
+        secret = this.encryptionService.decrypt(secret);
+      } catch {
+        throw new PermanentJobError('Webhook signing secret is invalid or corrupted');
+      }
+    }
+    return { secret, url: webhook.url };
   }
 
   async process(job: Job<WebhookJobData>): Promise<WebhookJobResult> {
@@ -288,7 +298,7 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
         const timestamp = Math.floor(Date.now() / 1000).toString();
         const subscription = await this.resolveSubscription(webhookId, organizationId);
         endpoint = subscription.url;
-        const signature = signWebhookPayload(subscription.secret, timestamp, eventId, body);
+        const signature = signWebhookPayload(subscription.secret, timestamp, body);
 
         const response = await this.destinationPolicy.post(endpoint, {
           headers: {

@@ -4,6 +4,7 @@ import {
   Agent,
   AgentStatus,
   Prisma,
+  ProposalStatus,
   RiskBand,
   Transaction,
   TransactionStatus,
@@ -17,6 +18,7 @@ import { TransactionsValidator } from './transactions.validator';
 import { WalletService, toNetworkName } from '../wallets/wallet.service';
 import { PolicyService } from '../policies/policy.service';
 import { RiskAggregatorService } from '../risk/risk-aggregator.service';
+import { RiskAggregation } from '../risk/risk.types';
 import { BudgetService } from '../budgets/budget.service';
 import { StellarService } from '../stellar/stellar.service';
 import { AgentService } from '../agents/agent.service';
@@ -27,19 +29,21 @@ import {
   ConflictException,
   NotFoundException,
 } from '../../common/exceptions/domain.exception';
-import { CursorPaginated } from '../../common/interfaces/api-response.interface';
-import { CursorPaginationQuery, decodeCursor, encodeCursor } from '../../common/pagination/cursor-pagination';
+import { CursorPaginated, Paginated } from '../../common/interfaces/api-response.interface';
+import { decodeCursor, encodeCursor } from '../../common/pagination/cursor-pagination';
 import { EventBusService } from '../../events/event-bus.service';
 import { DomainEventName } from '../../events/event-names';
 import { PrismaService } from '../../database/prisma.service';
 import { PrismaTransactionService } from '../../database/prisma-transaction.service';
 import { idempotencyConfig, IdempotencyConfig } from '../../config/idempotency.config';
+import { ApprovalExpiryQueue } from '../../queues/approval-expiry.queue';
 import { IdempotencyService } from '../../common/idempotency/idempotency.service';
 import {
   IDEMPOTENT_DEFAULT_STATUS,
   TRANSACTION_CREATE_ROUTE,
 } from '../../common/idempotency/idempotency.constants';
 import { RequestContext } from '../../common/context/request-context';
+import { buildPaginationMeta, PaginationQuery, toPrismaPagination } from '../../common/helpers/pagination';
 
 /** Statuses that may never leave the execution pipeline once they got there. */
 const EXECUTED_STATUSES: readonly TransactionStatus[] = [
@@ -102,6 +106,7 @@ export class TransactionService {
     @Optional() private readonly transactions?: PrismaTransactionService,
     @Optional() private readonly config?: ConfigService,
     @Optional() private readonly idempotency?: IdempotencyService,
+    @Optional() private readonly approvalExpiry?: ApprovalExpiryQueue,
   ) {}
 
   async create(
@@ -199,88 +204,126 @@ export class TransactionService {
       await this.policies.checkVelocityLimit(organizationId, input.agentId, amount, input.asset, actorId);
     }
 
-    // 2.6. Spending limit evaluation — atomically fetches daily/weekly/monthly
-    //      aggregates and evaluates periodic budget caps. On violation, writes
-    //      an audit log entry and throws PolicyViolationException (HTTP 422).
-    //      Returns the aggregates so we can reuse them in step 3 below.
-    const baseIntent = this.toIntent(organizationId, input, amount);
-    let enrichedIntent = baseIntent;
-    if (input.agentId) {
-      const aggregates = await this.spendingLimits.aggregateSpend(input.agentId, input.asset);
-      enrichedIntent = {
-        ...baseIntent,
-        spentToday: aggregates.spentToday,
-        spentThisWeek: aggregates.spentThisWeek,
-        spentThisMonth: aggregates.spentThisMonth,
-      };
-      // evaluateSpendingLimits uses the enriched intent so periodic limit
-      // checks run against real aggregates — it is a no-op when no periodic
-      // limit policy is configured, so the overhead is minimal.
-      await this.spendingLimits.evaluateSpendingLimits(enrichedIntent, actorId);
-    }
+    // 2.6 – 6. Spend-limit enforcement, full policy evaluation, risk scoring,
+    //       budget headroom and transaction-row persistence. For an agent
+    //       transaction the whole check-then-create section runs inside an
+    //       agent-scoped distributed lock so two concurrent submissions cannot
+    //       both read a stale rolling-window aggregate and both pass (see
+    //       SpendingLimitService.withSpendEnforcementLock). The freshly created
+    //       DRAFT row is counted by the aggregate, so the next serialised caller
+    //       sees it and is denied if it would breach the window.
+    const enforceAndCreate = async (): Promise<{
+      transaction: Transaction;
+      assessment: RiskAggregation;
+      requiresApproval: boolean;
+      budgetReservationId: string | undefined;
+    }> => {
+      const baseIntent = this.toIntent(organizationId, input, amount);
+      let enrichedIntent = baseIntent;
+      if (input.agentId) {
+        const aggregates = await this.spendingLimits.aggregateSpend(input.agentId, input.asset);
+        enrichedIntent = {
+          ...baseIntent,
+          spentToday: aggregates.spentToday,
+          spentThisWeek: aggregates.spentThisWeek,
+          spentThisMonth: aggregates.spentThisMonth,
+        };
+        // Evaluate the rolling-window budget caps against the real aggregates.
+        // No-op when no periodic limit policy is configured; throws
+        // PolicyViolationException (HTTP 422) on violation.
+        await this.spendingLimits.evaluateSpendingLimits(enrichedIntent, actorId);
+      }
 
-    // 3. Full policy evaluation — evaluates all rule types (maxAmount, assets,
-    //    recipients, time windows, emergency lock, periodic limits) with real
-    //    spend aggregates already embedded in the intent.
-    const policyResult = await this.policies.evaluateIntent(enrichedIntent, actorId);
-    if (!policyResult.passed) {
-      throw new DomainException(
-        ErrorCode.POLICY_VIOLATION,
-        'Transaction blocked by one or more policies',
-        policyResult.violations,
-      );
-    }
+      // 3. Full policy evaluation — evaluates all rule types (maxAmount, assets,
+      //    recipients, time windows, emergency lock, periodic limits) with real
+      //    spend aggregates already embedded in the intent.
+      const policyResult = await this.policies.evaluateIntent(enrichedIntent, actorId);
+      if (!policyResult.passed) {
+        throw new DomainException(
+          ErrorCode.POLICY_VIOLATION,
+          'Transaction blocked by one or more policies',
+          policyResult.violations,
+        );
+      }
 
-    // 4. Risk scoring — the aggregator combines the velocity, destination
-    //    reputation and amount-anomaly signals into the composite score.
-    const assessment = await this.risk.assess({
-      organizationId,
-      walletId: wallet.id,
-      recipientAddress: input.recipientAddress,
-      amount,
-      asset: input.asset,
-      walletAgeDays: this.walletAgeDays(wallet),
-      policyViolations: policyResult.violations.length,
-      hourUtc: new Date().getUTCHours(),
-    });
+      // 4. Risk scoring — the aggregator combines the velocity, destination
+      //    reputation and amount-anomaly signals into the composite score.
+      const assessment = await this.risk.assess({
+        organizationId,
+        walletId: wallet.id,
+        recipientAddress: input.recipientAddress,
+        amount,
+        asset: input.asset,
+        walletAgeDays: this.walletAgeDays(wallet),
+        policyViolations: policyResult.violations.length,
+        hourUtc: new Date().getUTCHours(),
+      });
 
-    // 5. Budget headroom (no mutation yet).
-    if (input.budgetId) {
-      await this.budgets.assertWithinBudget(organizationId, input.budgetId, amount);
-    }
+      // 5. Atomic budget reservation — replaces the read-then-write assertWithinBudget.
+      // The conditional UPDATE guarantees the balance can never go negative under
+      // concurrency. If the budget is exceeded the caller gets a typed
+      // BudgetExceededException (HTTP 422) rather than a 500.
+      let budgetReservationId: string | undefined;
+      if (input.budgetId) {
+        const reservation = await this.budgets.reserveAtomic(organizationId, input.budgetId, amount);
+        budgetReservationId = reservation.id;
+      }
 
-    const requiresApproval = policyResult.requiresApproval || assessment.requiresApproval;
+      const requiresApproval = policyResult.requiresApproval || assessment.requiresApproval;
 
-    // 6. Persist the transaction row.
-    const createTransactionRow = () => this.repository.create({
-      organization: { connect: { id: organizationId } },
-      wallet: { connect: { id: wallet.id } },
-      ...(input.agentId ? { agent: { connect: { id: input.agentId } } } : {}),
-      ...(policyResult.matchedPolicyId
-        ? { policy: { connect: { id: policyResult.matchedPolicyId } } }
-        : {}),
-      ...(input.budgetId ? { budget: { connect: { id: input.budgetId } } } : {}),
-      asset: input.asset,
-      amount: new Decimal(input.amount),
-      senderAddress: wallet.stellarAddress,
-      recipientAddress: input.recipientAddress,
-      memo: memoValue,
-      purpose: input.purpose,
-      status: TransactionStatus.DRAFT,
-      riskScore: assessment.score,
-      riskBand: assessment.band,
-      requiresApproval,
-      metadata: input.metadata as Prisma.InputJsonValue,
-    });
-    const transaction = input.agentId && typeof this.budgets.withAgentBudgetLimit === 'function'
-      ? await this.budgets.withAgentBudgetLimit(
-          organizationId,
-          input.agentId,
-          input.asset,
-          amount,
-          createTransactionRow,
-        )
-      : await createTransactionRow();
+      // 6. Persist the transaction row.
+      const createTransactionRow = () => this.repository.create({
+        organization: { connect: { id: organizationId } },
+        wallet: { connect: { id: wallet.id } },
+        ...(input.agentId ? { agent: { connect: { id: input.agentId } } } : {}),
+        ...(policyResult.matchedPolicyId
+          ? { policy: { connect: { id: policyResult.matchedPolicyId } } }
+          : {}),
+        ...(input.budgetId ? { budget: { connect: { id: input.budgetId } } } : {}),
+        ...(budgetReservationId
+          ? { budgetReservation: { connect: { id: budgetReservationId } } }
+          : {}),
+        asset: input.asset,
+        amount: new Decimal(input.amount),
+        senderAddress: wallet.stellarAddress,
+        recipientAddress: input.recipientAddress,
+        memo: memoValue,
+        purpose: input.purpose,
+        status: TransactionStatus.DRAFT,
+        riskScore: assessment.score,
+        riskBand: assessment.band,
+        requiresApproval,
+        metadata: input.metadata as Prisma.InputJsonValue,
+      });
+      let transaction: Transaction;
+      try {
+        transaction = input.agentId && typeof this.budgets.withAgentBudgetLimit === 'function'
+          ? await this.budgets.withAgentBudgetLimit(
+              organizationId,
+              input.agentId,
+              input.asset,
+              amount,
+              createTransactionRow,
+            )
+          : await createTransactionRow();
+      } catch (error) {
+        // The reservation is already taken, but the submission was rejected
+        // (e.g. the agent budget check) or the row could not be persisted.
+        // Nothing will ever settle or release it through the transaction, so
+        // return the held amount now (idempotent, best effort).
+        await this.releaseReservation(budgetReservationId);
+        throw error;
+      }
+
+      return { transaction, assessment, requiresApproval, budgetReservationId: budgetReservationId as string | undefined };
+    };
+
+    const result = input.agentId
+      ? await this.spendingLimits.withSpendEnforcementLock(input.agentId, enforceAndCreate)
+      : await enforceAndCreate();
+
+    const { transaction, assessment, requiresApproval } = result;
+
     await onTransactionCreated?.(transaction);
 
     // 6.1. Persist the risk assessment against the transaction and emit the
@@ -295,7 +338,12 @@ export class TransactionService {
 
     // 7. Branch: approval proposal, or immediate execution.
     if (requiresApproval) {
-      const proposal = await this.createProposal(organizationId, transaction, assessment.band);
+      const proposal = await this.createProposal(
+        organizationId,
+        transaction,
+        assessment.band,
+        input.approvalExpiresInHours,
+      );
       await this.repository.update(transaction.id, { status: TransactionStatus.PENDING });
       return {
         transaction: { ...transaction, status: TransactionStatus.PENDING },
@@ -319,6 +367,26 @@ export class TransactionService {
     if (EXECUTED_STATUSES.includes(tx.status)) {
       throw new ConflictException(`Transaction '${transactionId}' has already been executed`);
     }
+
+    // An approval-gated transaction is only executable while its proposal is
+    // APPROVED. Checking the proposal *status* — not merely the existence of an
+    // approval record — keeps an EXPIRED (or otherwise terminal) proposal from
+    // being submitted by a stale or racing caller. ApprovalService moves the
+    // proposal to APPROVED before calling execute(); auto-executable
+    // transactions have no proposal at all.
+    const proposal = await this.prisma.proposal.findUnique({
+      where: { transactionId },
+      select: { id: true, status: true },
+    });
+    if (proposal && proposal.status !== ProposalStatus.APPROVED) {
+      throw new DomainException(
+        proposal.status === ProposalStatus.EXPIRED
+          ? ErrorCode.PROPOSAL_EXPIRED
+          : ErrorCode.PROPOSAL_NOT_PENDING,
+        `Transaction '${transactionId}' cannot be executed while its approval proposal is '${proposal.status}'`,
+      );
+    }
+
     const wallet = await this.wallets.getOrThrow(organizationId, tx.walletId);
     this.assertWalletSpendable(wallet);
 
@@ -368,7 +436,19 @@ export class TransactionService {
       });
 
       if (result.successful && tx.budgetId) {
-        await this.budgets.consume(organizationId, tx.budgetId, Number(tx.amount));
+        // Settle the atomic reservation so spent reflects the actual on-chain
+        // amount. Falls back to the legacy consume path when no reservationId
+        // is recorded (older transactions created before this change).
+        if (tx.budgetReservationId) {
+          await this.budgets.settle(organizationId, tx.budgetReservationId, Number(tx.amount));
+        } else {
+          await this.budgets.consume(organizationId, tx.budgetId, Number(tx.amount));
+        }
+      }
+      if (!result.successful) {
+        // The network rejected the payment without throwing: no money moved,
+        // so the hold is returned exactly as on a thrown submission failure.
+        await this.releaseReservation(tx.budgetReservationId);
       }
 
       await this.eventBus.emit(
@@ -384,6 +464,14 @@ export class TransactionService {
         `Transaction ${tx.id} failed to submit: ${(error as Error).message}`,
       );
       await this.repository.update(tx.id, { status: TransactionStatus.FAILED });
+      // Release the atomic reservation so the budget headroom is restored.
+      if (tx.budgetReservationId) {
+        await this.budgets.release(tx.budgetReservationId).catch((releaseErr: unknown) => {
+          this.logger.warn(
+            `Could not release budget reservation ${tx.budgetReservationId}: ${(releaseErr as Error).message}`,
+          );
+        });
+      }
       await this.eventBus.emit(
         DomainEventName.TransactionFailed,
         { transactionId: tx.id, reason: (error as Error).message },
@@ -424,7 +512,7 @@ export class TransactionService {
     };
   }
 
-  async list(organizationId: string, query: CursorPaginationQuery & { search?: string; filter?: string }) {
+  async list(organizationId: string, query: PaginationQuery & { cursor?: string; status?: string; search?: string; filter?: string }) {
     const where: Prisma.TransactionWhereInput = { organizationId, deletedAt: null };
     if (query.search) {
       where.OR = [
@@ -433,14 +521,27 @@ export class TransactionService {
         { stellarHash: { contains: query.search, mode: 'insensitive' } },
       ];
     }
-    if (query.filter) {
-      where.status = query.filter as TransactionStatus;
+    const status = query.status ?? query.filter;
+    if (status) where.status = status as TransactionStatus;
+    if (query.cursor) {
+      const cursorLimit = query.limit ?? 20;
+      const rows = await this.repository.findCursorPage(
+        where,
+        decodeCursor(query.cursor),
+        cursorLimit + 1,
+      );
+      const hasMore = rows.length > cursorLimit;
+      const items = hasMore ? rows.slice(0, cursorLimit) : rows;
+      const last = items[items.length - 1];
+      return new CursorPaginated(items, {
+        limit: cursorLimit,
+        hasMore,
+        nextCursor: hasMore && last ? encodeCursor(last) : null,
+      });
     }
-    const rows = await this.repository.findCursorPage(where, query.cursor ? decodeCursor(query.cursor) : undefined, query.limit + 1);
-    const hasMore = rows.length > query.limit;
-    const items = hasMore ? rows.slice(0, query.limit) : rows;
-    const last = items[items.length - 1];
-    return new CursorPaginated(items, { limit: query.limit, hasMore, nextCursor: hasMore && last ? encodeCursor(last) : null });
+    const pagination = toPrismaPagination(query, ['createdAt', 'amount', 'status']);
+    const { items, total } = await this.repository.findManyAndCount(where, pagination);
+    return new Paginated(items, buildPaginationMeta(total, query));
   }
 
   async getOrThrow(organizationId: string, id: string): Promise<Transaction> {
@@ -472,6 +573,9 @@ export class TransactionService {
         isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
       },
     );
+    // A cancelled transaction will never spend: return its held budget.
+    // Release is idempotent, so a retried cancel or a racing expiry is safe.
+    await this.releaseReservation(cancelled.budgetReservationId);
     await this.eventBus.emit(
       DomainEventName.TransactionCancelled,
       { transactionId: id },
@@ -481,6 +585,22 @@ export class TransactionService {
   }
 
   // ── internals ──────────────────────────────────────────────────────────
+
+  /**
+   * Returns a held budget reservation (best effort, idempotent). Shared by
+   * cancellation, manual rejection and approval expiry so every terminal
+   * non-spend outcome frees budget the same way.
+   */
+  async releaseReservation(reservationId: string | null | undefined): Promise<void> {
+    if (!reservationId) return;
+    try {
+      await this.budgets.release(reservationId);
+    } catch (error) {
+      this.logger.warn(
+        `Could not release budget reservation ${reservationId}: ${(error as Error).message}`,
+      );
+    }
+  }
 
   /** Resolves and validates the sender wallet + agent before any evaluation. */
   private async preflight(
@@ -540,8 +660,16 @@ export class TransactionService {
   }
 
   /** Creates the approval Proposal row directly (avoids a circular module dep). */
-  private async createProposal(organizationId: string, tx: Transaction, band: RiskBand) {
+  private async createProposal(
+    organizationId: string,
+    tx: Transaction,
+    band: RiskBand,
+    approvalExpiresInHours?: number,
+  ) {
     const dualApproval = band === RiskBand.HIGH || band === RiskBand.CRITICAL;
+    const configuredTtl = this.config?.get<number>('approval.ttlHours') ?? 72;
+    const ttlHours = approvalExpiresInHours ?? configuredTtl;
+    const expiresAt = new Date(Date.now() + ttlHours * 3_600_000);
     const proposal = await this.prisma.proposal.create({
       data: {
         organizationId,
@@ -551,9 +679,10 @@ export class TransactionService {
         approvalType: dualApproval ? 'DUAL' : 'SINGLE',
         requiredApprovals: dualApproval ? 2 : 1,
         status: 'PENDING',
-        expiresAt: new Date(Date.now() + 72 * 3_600_000),
+        expiresAt,
       },
     });
+    await this.approvalExpiry?.schedule({ proposalId: proposal.id, organizationId, expiresAt });
     await this.eventBus.emit(
       DomainEventName.ProposalCreated,
       { proposalId: proposal.id, transactionId: tx.id, requiredApprovals: proposal.requiredApprovals },

@@ -11,17 +11,25 @@ import {
   SwaggerModule,
 } from '@nestjs/swagger';
 import { OpenAPIObject } from '@nestjs/swagger/dist/interfaces/open-api-spec.interface';
+import { DECORATORS } from '@nestjs/swagger/dist/constants';
 import { Public } from '../decorators/public.decorator';
 import {
   RegisteredRoute,
   findDanglingRefs,
   findDuplicateRoutes,
-  findOperationsMissingSecurity,
+  findMissingDeclaredSchemas,
+  findMissingRequestSchemas,
+  findOperationsWithUntypedRequestBody,
+  findOperationsWithoutResponses,
+  findOperationsWithoutSuccessEnvelope,
   findOperationsWithoutSuccessSchema,
+  findRouteDocumentationGaps,
   findStaleAllowlistEntries,
-  findUndocumentedRoutes,
+  findStaleClientErrorExemptions,
   findUnservedOperations,
+  RouteCheck,
   listRegisteredRoutes,
+  routeHandlers,
   routeKey,
   toOpenApiPath,
 } from './openapi-coverage';
@@ -46,12 +54,39 @@ const ok = (schema: object = { type: 'object' }) => ({
   '200': { description: 'ok', content: { 'application/json': { schema } } },
 });
 
-const route = (method: string, path: string, isPublic = false): RegisteredRoute => ({
+const route = (
+  method: string,
+  path: string,
+  isPublic = false,
+  acceptsBody = false,
+): RegisteredRoute => ({
   method,
   path,
   handler: `Fixture.${method.toLowerCase()}${path.replace(/\W+/g, '_')}`,
   isPublic,
+  acceptsBody,
 });
+
+/** A minimal documented operation that passes every per-route check. */
+const complete = (extra: object = {}) => ({
+  summary: 'Does a thing',
+  tags: ['fixture'],
+  responses: { ...ok(), '400': { description: 'bad request' } },
+  security: [{ 'access-token': [] }],
+  ...extra,
+});
+
+/** The messages of one kind of gap, as the docs:check tests assert them. */
+function gapsOf(
+  check: RouteCheck,
+  routes: RegisteredRoute[],
+  document: OpenAPIObject,
+  options?: Parameters<typeof findRouteDocumentationGaps>[2],
+): string[] {
+  return findRouteDocumentationGaps(routes, document, options)
+    .filter((gap) => gap.check === check)
+    .map((gap) => gap.message);
+}
 
 describe('OpenAPI coverage checks on deliberately broken fixtures', () => {
   it('converts Express path parameters to OpenAPI placeholders', () => {
@@ -60,25 +95,118 @@ describe('OpenAPI coverage checks on deliberately broken fixtures', () => {
     expect(toOpenApiPath('/')).toBe('/');
   });
 
-  it('names a registered route missing from the document by method and path', () => {
-    const findings = findUndocumentedRoutes(
-      [route('GET', '/api/v1/agents'), route('DELETE', '/api/v1/agents/{id}')],
-      doc({ '/api/v1/agents': { get: { responses: ok() } } }),
-    );
+  it('names a registered route whose path is missing from the document', () => {
+    const routes = [route('GET', '/api/v1/agents'), route('DELETE', '/api/v1/agents/{id}')];
+    const document = doc({ '/api/v1/agents': { get: complete() } });
 
-    expect(findings).toEqual([
-      'DELETE /api/v1/agents/{id} (Fixture.delete_api_v1_agents_id_) is not in the OpenAPI document',
+    expect(gapsOf('path', routes, document)).toEqual([
+      'Fixture.delete_api_v1_agents_id_ (DELETE /api/v1/agents/{id}): path /api/v1/agents/{id} is missing from the OpenAPI document',
+    ]);
+    expect(gapsOf('method', routes, document)).toEqual([]);
+  });
+
+  it('names a route whose path is documented under another method only', () => {
+    const routes = [route('POST', '/api/v1/agents')];
+    const document = doc({ '/api/v1/agents': { get: complete() } });
+
+    expect(gapsOf('method', routes, document)).toEqual([
+      'Fixture.post_api_v1_agents (POST /api/v1/agents): method POST is not documented on /api/v1/agents',
+    ]);
+    expect(gapsOf('path', routes, document)).toEqual([]);
+    // No operation exists, so no further check reports the route.
+    expect(findRouteDocumentationGaps(routes, document)).toHaveLength(1);
+  });
+
+  it('names an operation without a summary or without a tag', () => {
+    const routes = [route('GET', '/api/v1/a'), route('GET', '/api/v1/b'), route('GET', '/api/v1/c')];
+    const document = doc({
+      '/api/v1/a': { get: complete({ summary: '  ' }) },
+      '/api/v1/b': { get: complete({ tags: [] }) },
+      '/api/v1/c': { get: complete({ tags: undefined, summary: undefined }) },
+    });
+
+    expect(gapsOf('summary', routes, document)).toEqual([
+      'Fixture.get_api_v1_a (GET /api/v1/a): missing operation summary (@ApiOperation({ summary }))',
+      'Fixture.get_api_v1_c (GET /api/v1/c): missing operation summary (@ApiOperation({ summary }))',
+    ]);
+    expect(gapsOf('tags', routes, document)).toEqual([
+      'Fixture.get_api_v1_b (GET /api/v1/b): missing tag (@ApiTags)',
+      'Fixture.get_api_v1_c (GET /api/v1/c): missing tag (@ApiTags)',
     ]);
   });
 
-  it('treats the same path under another method as undocumented', () => {
-    const findings = findUndocumentedRoutes(
-      [route('POST', '/api/v1/agents')],
-      doc({ '/api/v1/agents': { get: { responses: ok() } } }),
+  it('requires a request body schema only where the handler takes a @Body()', () => {
+    const routes = [
+      route('POST', '/api/v1/agents', false, true),
+      route('PATCH', '/api/v1/agents/{id}', false, true),
+      route('DELETE', '/api/v1/agents/{id}', false, true),
+      route('POST', '/api/v1/agents/{id}/pause'),
+    ];
+    const document = doc(
+      {
+        '/api/v1/agents': { post: complete() },
+        '/api/v1/agents/{id}': {
+          patch: complete({ requestBody: { content: { 'application/json': { schema: {} } } } }),
+          delete: complete({
+            requestBody: { content: { 'application/json': { schema: { $ref: '#/components/schemas/X' } } } },
+          }),
+        },
+        '/api/v1/agents/{id}/pause': { post: complete() },
+      },
+      { X: { type: 'object' } },
     );
 
-    expect(findings).toHaveLength(1);
-    expect(findings[0]).toMatch(/^POST \/api\/v1\/agents /);
+    expect(gapsOf('requestBody', routes, document)).toEqual([
+      'Fixture.patch_api_v1_agents_id_ (PATCH /api/v1/agents/{id}): takes a @Body() but documents no request body schema',
+      'Fixture.post_api_v1_agents (POST /api/v1/agents): takes a @Body() but documents no request body schema',
+    ]);
+  });
+
+  it('requires a 4xx response, not just any error response, unless the route is exempt', () => {
+    const routes = [
+      route('GET', '/api/v1/a'),
+      route('GET', '/api/v1/b'),
+      route('GET', '/api/v1/c'),
+      route('GET', '/health/live', true),
+    ];
+    const document = doc({
+      '/api/v1/a': { get: complete({ responses: { ...ok(), '500': { description: 'boom' } } }) },
+      '/api/v1/b': { get: complete({ responses: { ...ok(), '4XX': { description: 'client error' } } }) },
+      '/api/v1/c': { get: complete({ responses: { ...ok(), '429': { description: 'slow down' } } }) },
+      '/health/live': { get: complete({ responses: ok(), security: undefined }) },
+    });
+    const noClientErrorRoutes = [{ method: 'GET', path: '/health/live', reason: 'always 200' }];
+
+    expect(gapsOf('clientError', routes, document)).toEqual([
+      'Fixture.get_api_v1_a (GET /api/v1/a): missing 4xx error response',
+      'Fixture.get_health_live (GET /health/live): missing 4xx error response',
+    ]);
+    expect(gapsOf('clientError', routes, document, { noClientErrorRoutes })).toEqual([
+      'Fixture.get_api_v1_a (GET /api/v1/a): missing 4xx error response',
+    ]);
+  });
+
+  it('flags a 4xx exemption that has no reason, no route, no operation, or is no longer needed', () => {
+    const routes = [route('GET', '/health/live', true), route('GET', '/api/v1/a'), route('GET', '/metrics', true)];
+    const document = doc({
+      '/health/live': { get: complete({ responses: ok() }) },
+      '/api/v1/a': { get: complete() },
+    });
+
+    expect(
+      findStaleClientErrorExemptions(routes, document, [
+        { method: 'GET', path: '/health/live', reason: 'always 200' },
+        { method: 'GET', path: '/api/v1/a', reason: 'stale: now documents a 400' },
+        { method: 'GET', path: '/metrics', reason: 'stale: not documented' },
+        { method: 'GET', path: '/gone', reason: 'stale: route removed' },
+        { method: 'GET', path: '/health/live', reason: '' },
+      ]),
+    ).toEqual([
+      'GET /api/v1/a is exempt from the 4xx check but documents a 4xx; remove the entry',
+      'GET /gone is exempt from the 4xx check but no route serves it',
+      'GET /health/live is exempt from the 4xx check without a reason',
+      'GET /metrics is exempt from the 4xx check but is not documented',
+    ]);
   });
 
   it('accepts an allowlisted route and flags an entry that no longer applies', () => {
@@ -91,7 +219,7 @@ describe('OpenAPI coverage checks on deliberately broken fixtures', () => {
       { method: 'GET', path: '/metrics', reason: ' ' },
     ];
 
-    expect(findUndocumentedRoutes(routes, document, allowlist)).toEqual([]);
+    expect(gapsOf('path', routes, document, { allowlist })).toEqual([]);
     expect(findStaleAllowlistEntries(routes, document, allowlist)).toEqual([
       'GET /api/v1/agents is allowlisted but is documented; remove the entry',
       'GET /metrics is allowlisted without a reason',
@@ -135,26 +263,144 @@ describe('OpenAPI coverage checks on deliberately broken fixtures', () => {
     ]);
   });
 
-  it('names an authenticated operation without a security scheme, or with an undefined one', () => {
-    const findings = findOperationsMissingSecurity(
-      [
-        route('GET', '/api/v1/a'),
-        route('GET', '/api/v1/b'),
-        route('GET', '/api/v1/c'),
-        route('GET', '/api/v1/public', true),
-      ],
-      doc({
-        '/api/v1/a': { get: { responses: ok() } },
-        '/api/v1/b': { get: { responses: ok(), security: [{ 'session-cookie': [] }] } },
-        '/api/v1/c': { get: { responses: ok(), security: [{ 'access-token': [] }] } },
-        '/api/v1/public': { get: { responses: ok() } },
-      }),
+  it('names a request body without content, without a schema, or with an untyped schema', () => {
+    const findings = findOperationsWithUntypedRequestBody(
+      doc(
+        {
+          '/api/v1/a': {
+            post: {
+              requestBody: {
+                content: { 'application/json': { schema: { $ref: '#/components/schemas/CreateA' } } },
+              },
+              responses: ok(),
+            },
+          },
+          '/api/v1/b': {
+            post: {
+              requestBody: { content: { 'application/json': { schema: {} } } },
+              responses: ok(),
+            },
+          },
+          '/api/v1/c': {
+            post: { requestBody: { content: {} }, responses: ok() },
+          },
+          '/api/v1/d': {
+            get: { responses: ok() },
+          },
+        },
+        { CreateA: { type: 'object' } },
+      ),
     );
 
     expect(findings).toEqual([
-      'GET /api/v1/a requires authentication but declares no security scheme',
-      "GET /api/v1/b declares the undefined security scheme 'session-cookie'",
+      'POST /api/v1/b (application/json) documents an untyped request body schema',
+      'POST /api/v1/c documents a request body without content',
     ]);
+  });
+
+
+  it('names the handler whose operation has no response', () => {
+    const document = doc({
+      '/api/v1/a': { get: { summary: 'Has a summary', responses: ok() } },
+      '/api/v1/c': { get: { summary: 'No responses', responses: {} } },
+    });
+    const handlers = new Map([['GET /api/v1/c', 'GammaController.list']]);
+
+    expect(findOperationsWithoutResponses(document, handlers)).toEqual([
+      'GET /api/v1/c (GammaController.list) documents no response',
+    ]);
+  });
+
+  it('names a body-accepting route whose operation has no named DTO schema', () => {
+    const routes = [
+      route('POST', '/api/v1/agents', false, true),
+      route('POST', '/api/v1/webhooks/receive', true, true),
+    ];
+    const document = doc({ '/api/v1/agents': { post: { responses: ok() } } });
+
+    expect(findMissingRequestSchemas(routes, document, [], routeHandlers(routes))).toEqual([
+      'POST /api/v1/agents (Fixture.post_api_v1_agents) declares a request body with no DTO schema in components.schemas',
+    ]);
+    expect(
+      findMissingRequestSchemas(routes, document, [
+        { method: 'POST', path: '/api/v1/agents', reason: 'fixture' },
+      ]),
+    ).toEqual([]);
+  });
+
+  it('names the handler whose declared DTO schema is absent from the operation', () => {
+    class CreateThingDto {}
+    const handler = () => undefined;
+    Reflect.defineMetadata(
+      DECORATORS.API_PARAMETERS,
+      [{ in: 'body', type: CreateThingDto }],
+      handler,
+    );
+    const routes: RegisteredRoute[] = [
+      {
+        ...route('POST', '/api/v1/things'),
+        acceptsBody: true,
+        handlerFunction: handler,
+      },
+    ];
+    const document = doc({ '/api/v1/things': { post: { responses: ok() } } });
+
+    expect(findMissingDeclaredSchemas(routes, document, routeHandlers(routes))).toEqual([
+      'POST /api/v1/things (Fixture.post_api_v1_things) declares #/components/schemas/CreateThingDto but it is missing from the operation',
+    ]);
+  });
+
+  it('names a guarded operation without a security scheme, or with an undefined one', () => {
+    const routes = [
+      route('GET', '/api/v1/a'),
+      route('GET', '/api/v1/b'),
+      route('GET', '/api/v1/c'),
+      route('GET', '/api/v1/public', true),
+    ];
+    const document = doc({
+      '/api/v1/a': { get: complete({ security: undefined }) },
+      '/api/v1/b': { get: complete({ security: [{ 'session-cookie': [] }] }) },
+      '/api/v1/c': { get: complete() },
+      '/api/v1/public': { get: complete({ security: undefined }) },
+    });
+
+    expect(gapsOf('security', routes, document)).toEqual([
+      'Fixture.get_api_v1_a (GET /api/v1/a): is guarded but declares no security requirement (@ApiBearerAuth / @ApiSecurity)',
+      "Fixture.get_api_v1_b (GET /api/v1/b): declares the undefined security scheme 'session-cookie'",
+    ]);
+  });
+
+  it('accepts security inherited from the document for guarded routes', () => {
+    const routes = [route('GET', '/api/v1/a')];
+    const document: OpenAPIObject = {
+      ...doc({ '/api/v1/a': { get: complete({ security: undefined }) } }),
+      security: [{ 'access-token': [] }],
+    };
+
+    expect(gapsOf('security', routes, document)).toEqual([]);
+  });
+
+  it('names a @Public() route that declares a security requirement, directly or inherited', () => {
+    const routes = [route('POST', '/api/v1/auth/login', true), route('GET', '/health/ready', true)];
+    const document = doc({
+      '/api/v1/auth/login': { post: complete() },
+      '/health/ready': { get: complete({ security: undefined }) },
+    });
+
+    expect(gapsOf('publicSecurity', routes, document)).toEqual([
+      "Fixture.post_api_v1_auth_login (POST /api/v1/auth/login): is @Public() but declares the security requirement 'access-token'",
+    ]);
+    expect(gapsOf('publicSecurity', routes, { ...document, security: [{ 'api-key': [] }] })).toEqual([
+      "Fixture.get_health_ready (GET /health/ready): is @Public() but declares the security requirement 'api-key'",
+      "Fixture.post_api_v1_auth_login (POST /api/v1/auth/login): is @Public() but declares the security requirement 'access-token'",
+    ]);
+    // An explicit empty override (`security: []`) opts a public route out of a document-wide requirement.
+    expect(
+      gapsOf('publicSecurity', [routes[1]], {
+        ...doc({ '/health/ready': { get: complete({ security: [] }) } }),
+        security: [{ 'api-key': [] }],
+      }),
+    ).toEqual([]);
   });
 
   it('names where a dangling $ref appears, in an operation or in a schema', () => {
@@ -190,7 +436,9 @@ describe('OpenAPI coverage checks on deliberately broken fixtures', () => {
       {
         '/api/v1/a': {
           get: {
-            responses: ok({ $ref: '#/components/schemas/A' }),
+            summary: 'A',
+            tags: ['fixture'],
+            responses: { ...ok({ $ref: '#/components/schemas/A' }), '404': { description: 'missing' } },
             security: [{ 'access-token': [] }],
           },
         },
@@ -198,10 +446,10 @@ describe('OpenAPI coverage checks on deliberately broken fixtures', () => {
       { A: { type: 'object' } },
     );
 
-    expect(findUndocumentedRoutes(routes, document)).toEqual([]);
+    expect(findRouteDocumentationGaps(routes, document)).toEqual([]);
     expect(findUnservedOperations(routes, document)).toEqual([]);
     expect(findOperationsWithoutSuccessSchema(document)).toEqual([]);
-    expect(findOperationsMissingSecurity(routes, document)).toEqual([]);
+    expect(findOperationsWithUntypedRequestBody(document)).toEqual([]);
     expect(findDanglingRefs(document)).toEqual([]);
   });
 });
@@ -292,9 +540,9 @@ describe('OpenAPI coverage against a live Nest application with a temporary undo
     expect(routes.find((r) => r.path === '/api/v1/documented/{id}')?.isPublic).toBe(false);
   });
 
-  it('fails on the temporary undocumented route and names it', () => {
-    expect(findUndocumentedRoutes(routes, document)).toEqual([
-      'POST /api/v1/scratch/undocumented (ScratchController.undocumented) is not in the OpenAPI document',
+  it('fails on the temporary undocumented route and names its controller and handler', () => {
+    expect(gapsOf('path', routes, document)).toEqual([
+      'ScratchController.undocumented (POST /api/v1/scratch/undocumented): path /api/v1/scratch/undocumented is missing from the OpenAPI document',
     ]);
   });
 
@@ -302,15 +550,20 @@ describe('OpenAPI coverage against a live Nest application with a temporary undo
     const allowlist = [
       { method: 'POST', path: '/api/v1/scratch/undocumented', reason: 'fixture' },
     ];
-    expect(findUndocumentedRoutes(routes, document, allowlist)).toEqual([]);
+    expect(gapsOf('path', routes, document, { allowlist })).toEqual([]);
     expect(findStaleAllowlistEntries(routes, document, allowlist)).toEqual([]);
   });
 
-  it('names the authenticated route that declares no security scheme', () => {
-    expect(findOperationsMissingSecurity(routes, document)).toEqual([
-      'GET /api/v1/scratch/twice requires authentication but declares no security scheme',
-      'GET /api/v1/scratch/unsecured requires authentication but declares no security scheme',
+  it('names the guarded route that declares no security scheme', () => {
+    expect(gapsOf('security', routes, document)).toEqual([
+      'ScratchController.twice (GET /api/v1/scratch/twice): is guarded but declares no security requirement (@ApiBearerAuth / @ApiSecurity)',
+      'ScratchController.twice (GET /api/v1/scratch/twice): is guarded but declares no security requirement (@ApiBearerAuth / @ApiSecurity)',
+      'ScratchController.unsecured (GET /api/v1/scratch/unsecured): is guarded but declares no security requirement (@ApiBearerAuth / @ApiSecurity)',
     ]);
+  });
+
+  it('accepts the @Public() route that declares no security scheme', () => {
+    expect(gapsOf('publicSecurity', routes, document)).toEqual([]);
   });
 
   it('names the route registered twice', () => {
@@ -319,7 +572,91 @@ describe('OpenAPI coverage against a live Nest application with a temporary undo
     ]);
   });
 
-  it('finds every documented operation served, prefix exclusion included', () => {
-    expect(findUnservedOperations(routes, document)).toEqual([]);
+  it('finds operations without success envelope and names them', () => {
+    const documentWithoutEnvelope = doc({
+      '/api/v1/raw': {
+        get: {
+          summary: 'Raw route',
+          responses: {
+            '200': {
+              description: 'ok',
+              content: { 'application/json': { schema: { type: 'object' } } },
+            },
+          },
+        },
+      },
+      '/api/v1/enveloped': {
+        get: {
+          summary: 'Enveloped route',
+          responses: {
+            '200': {
+              description: 'ok',
+              content: {
+                'application/json': {
+                  schema: {
+                    allOf: [{ $ref: '#/components/schemas/ApiEnvelopeDto' }],
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    });
+
+    const findings = findOperationsWithoutSuccessEnvelope(documentWithoutEnvelope);
+    expect(findings).toEqual([
+      'GET /api/v1/raw does not declare a success response using the { success, data, meta, requestId } envelope',
+    ]);
+  });
+
+  it('allows exclusions from the envelope check when explicitly listed', () => {
+    const documentWithRaw = doc({
+      '/api/v1/health': {
+        get: {
+          summary: 'Raw health',
+          responses: {
+            '200': {
+              description: 'ok',
+              content: { 'application/json': { schema: { type: 'object' } } },
+            },
+          },
+        },
+      },
+    });
+
+    expect(
+      findOperationsWithoutSuccessEnvelope(documentWithRaw, new Map(), ['/api/v1/health']),
+    ).toEqual([]);
+  });
+
+  it('accepts schemas declaring the four envelope properties directly', () => {
+    const documentDirectEnvelope = doc({
+      '/api/v1/direct': {
+        get: {
+          summary: 'Direct envelope',
+          responses: {
+            '200': {
+              description: 'ok',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      success: { type: 'boolean' },
+                      data: { type: 'object' },
+                      meta: { type: 'object' },
+                      requestId: { type: 'string' },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    });
+
+    expect(findOperationsWithoutSuccessEnvelope(documentDirectEnvelope)).toEqual([]);
   });
 });

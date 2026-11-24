@@ -50,6 +50,16 @@ export class PolicyService {
     return this.spendingPolicyService.getOrThrow(organizationId, id);
   }
 
+  /**
+   * Read endpoint: the used and remaining spend for the daily, weekly and
+   * monthly UTC windows for an agent/asset, derived from its enabled
+   * spending-limit policies and real transaction history. Delegates to
+   * {@link SpendingPolicyService.getSpendAllowance}.
+   */
+  getSpendAllowance(organizationId: string, agentId: string, asset: string) {
+    return this.spendingPolicyService.getSpendAllowance(organizationId, agentId, asset);
+  }
+
   async update(organizationId: string, actorId: string, id: string, input: UpdatePolicyInput) {
     const policy = await this.spendingPolicyService.update(organizationId, id, input);
     await this.eventBus.emit(
@@ -74,12 +84,16 @@ export class PolicyService {
    * Evaluates an intent against all applicable stored policies. Emits a
    * PolicyEvaluated event (and PolicyViolated on failure) for the ledger.
    * Also persists an audit log entry for compliance tracking.
+   *
+   * Fallback semantics: when no policies apply to the intent (or none are configured
+   * for the organization/agent), evaluation explicitly falls through to the documented
+   * default: allow with 0 violations and unconstrained spend (`passed: true`).
    */
   async evaluateIntent(
     intent: TransactionIntent,
     actorId?: string,
   ): Promise<PolicyEvaluationResult> {
-    const policies = await this.spendingPolicyService.listActiveForEvaluation(
+    const policies = await this.spendingPolicyService.findApplicableForEvaluation(
       intent.organizationId,
       intent.agentId,
     );
@@ -144,7 +158,7 @@ export class PolicyService {
       spentThisMonth: input.spentThisMonth,
       ...(transfers ? { transfers } : {}),
     };
-    const policies = await this.spendingPolicyService.listActiveForEvaluation(organizationId, input.agentId);
+    const policies = await this.spendingPolicyService.findApplicableForEvaluation(organizationId, input.agentId);
     const result = await this.evaluateAgainstPolicies(intent, policies);
     return {
       passed: result.passed,

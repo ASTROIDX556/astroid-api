@@ -4,6 +4,7 @@ import { IdempotencyService } from './idempotency.service';
 import { PrismaService } from '../../database/prisma.service';
 import { RequestContext, RequestContextData } from '../context/request-context';
 import {
+  IDEMPOTENT_REPLAY,
   IDEMPOTENT_REPLAY_REQUEST_ID,
   IDEMPOTENT_REPLAY_STATUS,
 } from './idempotency.constants';
@@ -22,6 +23,7 @@ function createPrisma() {
 
   const matchesIdentity = (row: IdempotencyRecord, where: Record<string, unknown>) =>
     (typeof where.principalId !== 'string' || row.principalId === where.principalId) &&
+    (typeof where.scope !== 'string' || row.scope === where.scope) &&
     (typeof where.route !== 'string' || row.route === where.route) &&
     (typeof where.keyHash !== 'string' || row.keyHash === where.keyHash);
 
@@ -47,7 +49,7 @@ function createPrisma() {
         create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
           const duplicate = [...rows.values()].some(
             (row) =>
-              row.principalId === data.principalId &&
+              row.scope === data.scope &&
               row.route === data.route &&
               row.keyHash === data.keyHash,
           );
@@ -55,6 +57,7 @@ function createPrisma() {
           const row: IdempotencyRecord = {
             id: `idem_${(sequence += 1)}`,
             principalId: data.principalId as string,
+            scope: (data.scope as string | undefined) ?? (data.principalId as string),
             route: data.route as string,
             keyHash: data.keyHash as string,
             requestHash: data.requestHash as string,
@@ -72,7 +75,7 @@ function createPrisma() {
         }),
         findUnique: vi.fn(async ({ where }: { where: Record<string, unknown> }) => {
           if (typeof where.id === 'string') return rows.get(where.id) ?? null;
-          const identity = where.principalId_route_keyHash as Record<string, unknown>;
+          const identity = where.scope_route_keyHash as Record<string, unknown>;
           return (
             [...rows.values()].find((row) => matchesIdentity(row, identity)) ?? null
           );
@@ -186,6 +189,23 @@ describe('IdempotencyService', () => {
     });
   });
 
+  it('marks the request context as a replay so the envelope carries idempotentReplay', async () => {
+    const { record } = await service.reserve(reserveInput());
+    await service.complete({
+      recordId: record.id,
+      statusCode: 201,
+      body: { ok: true },
+      requestId: 'req-original',
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+    const replayed = await service.reserve(reserveInput());
+
+    await RequestContext.run(requestContext('req-duplicate'), async () => {
+      service.replay<{ ok: boolean }>(service.completedResponse(replayed.record)!);
+      expect(RequestContext.getData(IDEMPOTENT_REPLAY)).toBe(true);
+    });
+  });
+
   it('scopes the same key independently by route', async () => {
     await service.reserve(reserveInput());
     const other = await service.reserve(reserveInput({ route: OTHER_ROUTE }));
@@ -199,6 +219,16 @@ describe('IdempotencyService', () => {
     const other = await service.reserve(reserveInput({ principalId: 'user_2' }));
 
     expect(other.created).toBe(true);
+    expect(store.rows.size).toBe(2);
+  });
+
+  it('scopes the same key to distinct credential namespaces', async () => {
+    const first = await service.reserve(reserveInput({ scope: 'user:same-id' }));
+    const second = await service.reserve(reserveInput({ scope: 'apikey:same-id' }));
+
+    expect(first.record.scope).toBe('user:same-id');
+    expect(second.record.scope).toBe('apikey:same-id');
+    expect(second.created).toBe(true);
     expect(store.rows.size).toBe(2);
   });
 

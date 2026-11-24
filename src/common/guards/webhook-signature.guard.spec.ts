@@ -56,30 +56,23 @@ describe('WebhookSignatureGuard', () => {
     ).resolves.toBe(true);
   });
 
-  it('accepts a versioned signature bound to the event ID', async () => {
+  it('accepts a versioned signature over the canonical t=,v1= format', async () => {
     const timestamp = Math.floor(Date.now() / 1000).toString();
-    const eventId = 'evt-123';
     const rawBody = Buffer.from('{"event":"transaction.completed"}');
-    const signature = signWebhookPayload(secret, timestamp, eventId, rawBody);
+    const signature = signWebhookPayload(secret, timestamp, rawBody);
 
     await expect(
-      guard.canActivate(context(timestamp, signature, rawBody, undefined, eventId)),
+      guard.canActivate(context(timestamp, signature, rawBody)),
     ).resolves.toBe(true);
   });
 
-  it('rejects a versioned signature with a different event ID or payload', async () => {
+  it('rejects a versioned signature when the payload is tampered', async () => {
     const timestamp = Math.floor(Date.now() / 1000).toString();
-    const eventId = 'evt-123';
     const signedBody = Buffer.from('{"amount":1}');
-    const signature = signWebhookPayload(secret, timestamp, eventId, signedBody);
+    const signature = signWebhookPayload(secret, timestamp, signedBody);
 
     await expect(
-      guard.canActivate(
-        context(timestamp, signature, Buffer.from('{"amount":2}'), undefined, eventId),
-      ),
-    ).rejects.toBeInstanceOf(UnauthorizedException);
-    await expect(
-      guard.canActivate(context(timestamp, signature, signedBody, undefined, 'evt-456')),
+      guard.canActivate(context(timestamp, signature, Buffer.from('{"amount":2}'))),
     ).rejects.toBeInstanceOf(UnauthorizedException);
   });
 

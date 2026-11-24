@@ -48,6 +48,7 @@ export interface DomainEventMap {
   'budget.exceeded': PayloadTypes.BudgetExceededPayload;
   'budget.warning': PayloadTypes.BudgetWarningPayload;
   'budget.threshold_reached': PayloadTypes.BudgetThresholdReachedPayload;
+  'budget.period_rollover': PayloadTypes.BudgetPeriodRolloverPayload;
 
   // Proposal / Approval
   'proposal.created': PayloadTypes.ProposalCreatedPayload;
@@ -70,6 +71,9 @@ export interface DomainEventMap {
 
   // Audit
   'audit.recorded': PayloadTypes.AuditRecordedPayload;
+
+  // Session / refresh-token reuse
+  'session.family_revoked': PayloadTypes.SessionFamilyRevokedPayload;
 
   // Webhook delivery / circuit breaker
   'webhook.circuit_opened': PayloadTypes.WebhookCircuitOpenedPayload;

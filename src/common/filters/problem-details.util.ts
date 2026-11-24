@@ -1,10 +1,10 @@
 import { HttpException, HttpStatus } from '@nestjs/common';
 import { STATUS_CODES } from 'http';
 import { Request, Response } from 'express';
-import { Prisma } from '@prisma/client';
 import { v7 as uuidv7 } from 'uuid';
 import { ERROR_TITLE, ErrorCode, problemTypeFor } from '../constants/error-codes';
 import { DomainException } from '../exceptions/domain.exception';
+import { isPrismaClientError, mapPrismaError } from '../exceptions/prisma-error.mapper';
 import { PROBLEM_JSON_CONTENT_TYPE, ProblemDetails } from '../interfaces/api-response.interface';
 import { REQUEST_ID_HEADER } from '../constants/headers';
 import { RequestContext } from '../context/request-context';
@@ -106,13 +106,7 @@ export function resolveError(exception: unknown): ResolvedError {
     };
   }
 
-  if (
-    exception instanceof Prisma.PrismaClientKnownRequestError ||
-    exception instanceof Prisma.PrismaClientValidationError ||
-    exception instanceof Prisma.PrismaClientUnknownRequestError ||
-    exception instanceof Prisma.PrismaClientRustPanicError ||
-    exception instanceof Prisma.PrismaClientInitializationError
-  ) {
+  if (isPrismaClientError(exception)) {
     return resolvePrisma(exception);
   }
 
@@ -169,66 +163,26 @@ function resolveHttp(exception: HttpException): ResolvedError {
   };
 }
 
+/**
+ * Reduces a Prisma client error to a {@link ResolvedError} through the shared
+ * {@link mapPrismaError} mapper, so HTTP responses and worker logs agree on
+ * the mapping. A unique-constraint conflict carries the conflicting field
+ * names in `details.fields` when Prisma reports them.
+ */
 export function resolvePrisma(exception: unknown): ResolvedError {
-  if (exception instanceof Prisma.PrismaClientKnownRequestError) {
-    if (exception.code === 'P2025') {
-      return {
-        status: HttpStatus.NOT_FOUND,
-        code: ErrorCode.NOT_FOUND,
-        detail: 'Resource not found',
-      };
-    }
-    if (exception.code === 'P2002') {
-      const target = exception.meta?.target;
-      let field = '';
-      if (Array.isArray(target) && target.length > 0) {
-        field = target.join(', ');
-      } else if (typeof target === 'string') {
-        field = target;
-      }
-      const detail = field
-        ? `A resource with this ${field} already exists`
-        : 'A resource with these unique attributes already exists';
-      return {
-        status: HttpStatus.CONFLICT,
-        code: ErrorCode.CONFLICT,
-        detail,
-      };
-    }
-    if (exception.code === 'P2003') {
-      return {
-        status: HttpStatus.CONFLICT,
-        code: ErrorCode.CONFLICT,
-        detail:
-          'Foreign key constraint failed: referenced resource does not exist or has dependent records',
-      };
-    }
-    if (exception.code === 'P2000') {
-      return {
-        status: HttpStatus.UNPROCESSABLE_ENTITY,
-        code: ErrorCode.VALIDATION_ERROR,
-        detail: 'Provided value exceeds maximum allowed length for field',
-      };
-    }
+  const mapped = mapPrismaError(exception);
+  if (!mapped) {
     return {
       status: HttpStatus.INTERNAL_SERVER_ERROR,
       code: ErrorCode.INTERNAL_ERROR,
       detail: 'An unexpected database error occurred',
     };
   }
-
-  if (exception instanceof Prisma.PrismaClientValidationError) {
-    return {
-      status: HttpStatus.BAD_REQUEST,
-      code: ErrorCode.BAD_REQUEST,
-      detail: 'Invalid database query or input data',
-    };
-  }
-
   return {
-    status: HttpStatus.INTERNAL_SERVER_ERROR,
-    code: ErrorCode.INTERNAL_ERROR,
-    detail: 'An unexpected database error occurred',
+    status: mapped.status,
+    code: mapped.code,
+    detail: mapped.message,
+    ...(mapped.fields ? { details: { fields: mapped.fields } } : {}),
   };
 }
 

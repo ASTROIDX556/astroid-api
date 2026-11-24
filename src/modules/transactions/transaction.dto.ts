@@ -54,6 +54,7 @@ export const createTransactionSchema = z
     memoType: stellarMemoTypeSchema.optional(),
     memoValue: z.string().optional(),
     purpose: z.string().max(280).optional(),
+    approvalExpiresInHours: z.number().int().positive().max(720).optional(),
     metadata: z.record(jsonValueSchema).default({}),
   })
   .strict()
@@ -174,6 +175,7 @@ export const simulateTransactionSchema = z
     memoType: stellarMemoTypeSchema.optional(),
     memoValue: z.string().optional(),
     purpose: z.string().max(280).optional(),
+    approvalExpiresInHours: z.number().int().positive().max(720).optional(),
     metadata: z.record(jsonValueSchema).default({}),
   })
   .strict()
@@ -206,8 +208,11 @@ export class CreateTransactionDto {
   @ApiProperty({ example: '125.5000000', description: 'Amount to transfer, with up to 7 decimals' })
   amount!: string;
 
-  @ApiProperty({ example: 'GB...', description: 'Stellar address the funds are sent to' })
+  @ApiPropertyOptional({ example: 'GB...', description: 'Stellar address the funds are sent to' })
   recipientAddress!: string;
+
+  @ApiPropertyOptional({ description: 'Optional approval expiration override in hours (default: 72)' })
+  approvalExpiresInHours?: number;
 
   @ApiPropertyOptional({
     description: 'Memo text (legacy format, max 28 bytes UTF-8)',

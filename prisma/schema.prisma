@@ -107,6 +107,20 @@ enum BudgetPeriod {
   YEARLY
 }
 
+// Carry-over applied when a budget period is closed by the scheduled rollover.
+// NONE is the default so existing budgets keep their reset-to-zero behaviour.
+enum BudgetCarryOverRule {
+  NONE
+  UNUSED
+  OVERSPEND
+  NET
+}
+
+enum BudgetPeriodStatus {
+  OPEN
+  CLOSED
+}
+
 enum TransactionStatus {
   DRAFT
   PENDING
@@ -200,6 +214,8 @@ model Organization {
   wallets              Wallet[]
   policies             Policy[]
   budgets              Budget[]
+  budgetPeriodRecords  BudgetPeriodRecord[]
+  budgetReservations   BudgetReservation[]
   transactions         Transaction[]
   auditLogs            AuditLog[]
   apiKeys              ApiKey[]
@@ -374,6 +390,16 @@ model Budget {
   spent          Decimal      @default(0) @db.Decimal(30, 7)
   period         BudgetPeriod @default(MONTHLY)
   periodStart    DateTime     @default(now())
+  // End of the current fixed period; null for ONE_TIME budgets.
+  periodEnd      DateTime?
+  // Immutable first period anchor: month-end clamping is always relative to it.
+  periodAnchor   DateTime?
+  // Number of completed periods since periodAnchor.
+  periodIndex    Int          @default(0)
+  // IANA timezone used for period boundaries (e.g. Africa/Lagos).
+  timezone       String       @default("UTC")
+  // Amount transferred into the next period when one elapses.
+  carryOverRule  BudgetCarryOverRule @default(NONE)
   rollover       Boolean      @default(false)
   enabled        Boolean      @default(true)
   // Per-budget override of the percentage thresholds that emit budget alerts.
@@ -389,12 +415,85 @@ model Budget {
   agent        Agent?        @relation(fields: [agentId], references: [id])
   transactions Transaction[]
   budgetAlerts BudgetAlert[]
+  periodRecords BudgetPeriodRecord[]
+  reservations BudgetReservation[]
 
   @@index([organizationId])
   @@index([parentBudgetId])
   @@index([agentId])
   @@index([organizationId, createdAt])
   @@map("budgets")
+}
+
+// Immutable history of a budget's fixed periods. The unique (budgetId,
+// periodStart) key makes the scheduled rollover idempotent, while the CLOSED
+// rows keep the final spend snapshot needed for audits and carry-over.
+model BudgetPeriodRecord {
+  id             String              @id @default(uuid(7))
+  budgetId       String
+  organizationId String
+  periodStart    DateTime
+  periodEnd      DateTime
+  status         BudgetPeriodStatus  @default(OPEN)
+  // Spend captured when the period was closed; null while still open.
+  finalSpent     Decimal?            @db.Decimal(30, 7)
+  // Amount carried into this period by its opening rollover.
+  openingBalance Decimal             @default(0) @db.Decimal(30, 7)
+  carryOverRule  BudgetCarryOverRule @default(NONE)
+  closedAt       DateTime?
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+
+  budget       Budget       @relation(fields: [budgetId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([budgetId, periodStart])
+  @@index([organizationId, periodEnd])
+  @@index([status, periodEnd])
+  @@map("budget_periods")
+}
+
+// ---------------------------------------------------------------------------
+// 7. Transaction
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// 6b. Budget reservation
+// ---------------------------------------------------------------------------
+
+// Lifecycle of an atomic budget reservation.
+enum ReservationStatus {
+  PENDING   // Amount is held; transaction not yet settled.
+  SETTLED   // Transaction completed; spent adjusted to actual amount.
+  RELEASED  // Transaction failed or cancelled; held amount returned.
+}
+
+// An atomic hold on a portion of a budget's remaining balance. The reservation
+// is created before the transaction executes, so concurrent requests cannot
+// both observe the same remaining headroom. Settlement adjusts the held amount
+// to the actual amount; release returns it in full.
+model BudgetReservation {
+  id             String            @id @default(uuid(7))
+  budgetId       String
+  organizationId String
+  amount         Decimal           @db.Decimal(30, 7)
+  settledAmount  Decimal?          @db.Decimal(30, 7)
+  status         ReservationStatus @default(PENDING)
+  // Start of the budget period the hold was taken in. Settling or releasing
+  // only adjusts `spent` while the budget is still in that period; after a
+  // rollover the hold belongs to the closed period's snapshot and the new
+  // period's spend is never touched. Null for holds created before this column.
+  periodStart    DateTime?
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  budget       Budget        @relation(fields: [budgetId], references: [id], onDelete: Cascade)
+  organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  transactions Transaction[]
+
+  @@index([budgetId, status])
+  @@index([organizationId, createdAt])
+  @@map("budget_reservations")
 }
 
 // ---------------------------------------------------------------------------
@@ -408,6 +507,8 @@ model Transaction {
   agentId           String?
   policyId          String?
   budgetId          String?
+  // Tracks the atomic budget reservation that guarded this transaction.
+  budgetReservationId String?
   asset             String            @default("XLM")
   amount            Decimal           @db.Decimal(30, 7)
   senderAddress     String?
@@ -431,6 +532,7 @@ model Transaction {
   agent         Agent?         @relation(fields: [agentId], references: [id])
   policy        Policy?        @relation(fields: [policyId], references: [id])
   budget        Budget?        @relation(fields: [budgetId], references: [id])
+  budgetReservation BudgetReservation? @relation(fields: [budgetReservationId], references: [id])
   proposal      Proposal?
   memoryRecords MemoryRecord[]
 
@@ -448,6 +550,7 @@ model Transaction {
   @@index([agentId, createdAt])
   @@index([organizationId, status, createdAt])
   @@index([agentId, status, createdAt])
+  @@index([budgetReservationId])
   @@map("transactions")
 }
 
@@ -483,6 +586,9 @@ model TransactionIdempotencyRecord {
 model IdempotencyRecord {
   id             String            @id @default(uuid(7))
   principalId    String
+  // Credential namespace the key belongs to, e.g. "user:<id>" or "apikey:<id>".
+  // Included in the unique constraint so different credentials may reuse a key.
+  scope          String            @default("")
   // Normalised route identity, e.g. "POST /api/v1/transactions".
   route          String
   keyHash        String
@@ -499,7 +605,7 @@ model IdempotencyRecord {
   updatedAt      DateTime          @updatedAt
   expiresAt      DateTime
 
-  @@unique([principalId, route, keyHash])
+  @@unique([scope, route, keyHash])
   @@index([expiresAt])
   @@index([transactionId])
   @@map("idempotency_records")
@@ -556,6 +662,7 @@ model Proposal {
   @@index([createdAt])
   @@index([organizationId, createdAt])
   @@index([organizationId, status, createdAt])
+  @@index([status, expiresAt])
   @@map("proposals")
 }
 
@@ -569,6 +676,7 @@ model Approval {
   userId     String
   decision   ApprovalDecision
   comment    String?
+  expiresAt  DateTime?
   createdAt  DateTime         @default(now())
 
   proposal Proposal @relation(fields: [proposalId], references: [id], onDelete: Cascade)
@@ -577,6 +685,7 @@ model Approval {
   @@index([proposalId])
   @@index([userId])
   @@index([createdAt])
+  @@index([expiresAt])
   @@unique([proposalId, userId])
   @@map("approvals")
 }
@@ -601,8 +710,11 @@ model AuditLog {
   // `x-correlation-id`). Not part of the hash chain — it's correlation
   // metadata, not tamper-evident content.
   requestId      String?
+  // Derived result of the audited operation (SUCCESS / FAILURE), stored as a
+  // first-class column so clients can filter on it without scanning JSON.
+  outcome        String?
   sourceEventId  String?  @unique
-  previousHash   String?  // SHA-256 hash of the preceding audit log entry
+  prevHash       String?  // Previous organization-scoped audit-chain hash; GENESIS starts a new chain
   hash           String?  // SHA-256 hash of this entry (links to previous)
   createdAt      DateTime @default(now())
 
@@ -614,6 +726,12 @@ model AuditLog {
   @@index([entity, entityId])
   @@index([createdAt])
   @@index([organizationId, createdAt])
+  @@index([organizationId, createdAt, id])
+  @@index([organizationId, entity, entityId, createdAt, id])
+  @@index([organizationId, userId, createdAt, id])
+  @@index([organizationId, action, createdAt, id])
+  @@index([organizationId, entity, createdAt, id])
+  @@index([organizationId, outcome, createdAt])
   @@index([requestId])
   @@map("audit_logs")
 }
@@ -656,13 +774,20 @@ model ApiKey {
   createdById    String?
   name           String
   prefix         String
+  lastFour       String?
+  status         String    @default("active")
   hashedKey      String    @unique
   permissions    String[]  @default([])
   scopes         String[]  @default(["read"])
   allowedIps     String[]  @default([])
+  // Per-key requests-per-minute override for the API rate limiter. Null keeps
+  // the organization's configured tier limit.
+  rateLimitPerMinute Int?
   lastUsedAt     DateTime?
   expiresAt      DateTime?
   revokedAt      DateTime?
+  rotatedAt      DateTime?
+  replacementId  String?
   createdAt      DateTime  @default(now())
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
@@ -809,22 +934,37 @@ model WebhookCircuitState {
 // ---------------------------------------------------------------------------
 
 model Session {
-  id               String    @id @default(uuid(7))
-  userId           String
-  device           String?
-  browser          String?
-  ipAddress        String?
-  location         String?
-  refreshTokenHash String    @unique
-  lastActivityAt   DateTime  @default(now())
-  expiresAt        DateTime
-  revokedAt        DateTime?
-  createdAt        DateTime  @default(now())
+  id                String    @id @default(uuid(7))
+  userId            String
+  device            String?
+  browser           String?
+  ipAddress         String?
+  location          String?
+  refreshTokenHash  String    @unique
+  // Token-family reuse detection (refresh-token rotation).
+  //
+  // `familyId` persists across rotations: every session minted during a
+  // rotation inherits the family of the session it replaces, so presenting
+  // any token of the family revokes them all on reuse.
+  //
+  // `consumedAt` is set atomically when the refresh token is rotated
+  // (conditional update), so a replayed token is detectable.
+  //
+  // `replacedByTokenId` records, on the replaced session, the id of the
+  // session that replaced it.
+  familyId          String
+  consumedAt        DateTime?
+  replacedByTokenId String?
+  lastActivityAt    DateTime  @default(now())
+  expiresAt         DateTime
+  revokedAt         DateTime?
+  createdAt         DateTime  @default(now())
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
   @@index([expiresAt])
+  @@index([familyId])
   @@map("sessions")
 }
 

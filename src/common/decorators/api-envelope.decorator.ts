@@ -24,6 +24,16 @@ export class CursorPaginationMetaDto {
   @ApiPropertyOptional({ example: 'eyJ2IjoxLCJjcmVhdGVkQXQiOiIyMDI2LTAxLTAxVDAwOjAwOjAwLjAwMFoiLCJpZCI6ImFiYyJ9', nullable: true, type: String, description: 'Opaque cursor for the next page, or null when there are no more results.' }) nextCursor!: string | null;
 }
 
+/** Page pagination fields placed in the shared response envelope's `meta`. */
+export class PaginationMetaDto {
+  @ApiProperty({ example: 1, description: '1-based page number.' }) page!: number;
+  @ApiProperty({ example: 20, description: 'Number of items per page.' }) pageSize!: number;
+  @ApiProperty({ example: 120, description: 'Total number of matching items.' }) total!: number;
+  @ApiProperty({ example: 6, description: 'Number of pages available.' }) totalPages!: number;
+  @ApiProperty({ example: true, description: 'Whether a following page is available.' }) hasNextPage!: boolean;
+  @ApiProperty({ example: false, description: 'Whether a preceding page is available.' }) hasPreviousPage!: boolean;
+}
+
 /** Options for the {@link ApiEnvelope} decorator. */
 export interface ApiEnvelopeOptions {
   /** Document the payload as an array of `model`. */
@@ -78,16 +88,68 @@ export function ApiPaginatedEnvelope<TModel extends Type<unknown>>(
   model: TModel,
   options: Omit<ApiEnvelopeOptions, 'isArray' | 'headers'> = {},
 ) {
-  return ApiEnvelope(model, {
-    ...options,
-    isArray: true,
-    headers: {
-      [TOTAL_COUNT_HEADER]: {
-        description: 'Total number of matching rows',
-        schema: { type: 'integer' },
+  return applyDecorators(
+    ApiExtraModels(ApiEnvelopeDto, PaginationMetaDto, model),
+    ApiResponse({
+      status: options.status ?? 200,
+      description: options.description ?? 'Paginated response',
+      headers: {
+        [TOTAL_COUNT_HEADER]: {
+          description: 'Total number of matching rows',
+          schema: { type: 'integer' },
+        },
       },
-    },
-  });
+      schema: {
+        allOf: [
+          { $ref: getSchemaPath(ApiEnvelopeDto) },
+          {
+            properties: {
+              data: { type: 'array', items: { $ref: getSchemaPath(model) } },
+              meta: { $ref: getSchemaPath(PaginationMetaDto) },
+            },
+          },
+        ],
+      },
+    }),
+  );
+}
+
+/** Documents list endpoints that accept both page and legacy cursor pagination. */
+export function ApiPageOrCursorPaginatedEnvelope<TModel extends Type<unknown>>(
+  model: TModel,
+  options: Omit<ApiEnvelopeOptions, 'isArray'> = {},
+) {
+  return applyDecorators(
+    ApiExtraModels(ApiEnvelopeDto, PaginationMetaDto, CursorPaginationMetaDto, model),
+    ApiResponse({
+      status: options.status ?? 200,
+      description: options.description ?? 'Paginated response',
+      headers: options.headers
+        ? { ...options.headers }
+        : {
+            [TOTAL_COUNT_HEADER]: {
+              description: 'Total number of matching rows',
+              schema: { type: 'integer' },
+            },
+          },
+      schema: {
+        allOf: [
+          { $ref: getSchemaPath(ApiEnvelopeDto) },
+          {
+            properties: {
+              data: { type: 'array', items: { $ref: getSchemaPath(model) } },
+              meta: {
+                oneOf: [
+                  { $ref: getSchemaPath(PaginationMetaDto) },
+                  { $ref: getSchemaPath(CursorPaginationMetaDto) },
+                ],
+              },
+            },
+          },
+        ],
+      },
+    }),
+  );
 }
 
 /** Documents a cursor-paginated list while preserving the standard envelope. */

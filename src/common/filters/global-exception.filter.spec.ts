@@ -199,7 +199,7 @@ describe('GlobalExceptionFilter', () => {
       });
     });
 
-    it('maps P2003 (foreign key constraint) to 409 CONFLICT', () => {
+    it('maps P2003 (foreign key constraint) to 400 BAD_REQUEST', () => {
       const { host, response } = buildHost();
       const error = new Prisma.PrismaClientKnownRequestError('Foreign key constraint failed', {
         code: 'P2003',
@@ -208,10 +208,10 @@ describe('GlobalExceptionFilter', () => {
 
       filter.catch(error, host);
 
-      expect(response.status).toHaveBeenCalledWith(409);
+      expect(response.status).toHaveBeenCalledWith(400);
       expect(renderedBody(response)).toMatchObject({
-        status: 409,
-        code: ErrorCode.CONFLICT,
+        status: 400,
+        code: ErrorCode.BAD_REQUEST,
       });
     });
 
@@ -249,7 +249,9 @@ describe('GlobalExceptionFilter', () => {
   describe('validation failures', () => {
     it('renders ZodValidationException as 400 VALIDATION_ERROR with field-level details', () => {
       const { host, response } = buildHost();
-      const details = [{ path: 'limit', message: 'Number must be less than or equal to 200' }];
+      const details = [
+        { path: 'limit', code: 'too_big', message: 'Number must be less than or equal to 200' },
+      ];
 
       filter.catch(new ZodValidationException('Request validation failed', details), host);
 
@@ -269,7 +271,7 @@ describe('GlobalExceptionFilter', () => {
 
       filter.catch(
         new ValidationException('Request validation failed', [
-          { path: 'email', message: 'Invalid email' },
+          { path: 'email', code: 'invalid_string', message: 'Invalid email' },
         ]),
         host,
       );

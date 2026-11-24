@@ -204,6 +204,8 @@ Create a transaction (runs the full governance pipeline).
 
 **Response:** Transaction object with governance evaluation result
 
+**Budget:** when `budgetId` is set, the amount is reserved atomically against the budget's current period before execution. A reservation that does not fit the remaining balance is refused with `422` and code `BUDGET_EXCEEDED`; the hold is released if the transaction is later rejected, fails or is cancelled (see `docs/budget-period-rollover.md`).
+
 **Idempotency:** send an optional `Idempotency-Key` header (1-128 ASCII
 letters, digits, dots, underscores, tildes or hyphens) to make submission
 replay-safe. A repeat request with the same key and payload returns the original
@@ -429,11 +431,28 @@ Every response includes the selected request ID in the `x-request-id` header and
 ## Audit History (`/audit`)
 
 ### GET `/audit`
-List audit records in reverse chronological order using a stable `(createdAt, id)` keyset.
+List audit records of the authenticated organization in reverse chronological order.
 
-**Query Parameters:** `limit` defaults to 20 and is bounded to 1-100; `cursor` is the opaque `nextCursor` from the previous response; optional `actorId`, `action`, `resourceId`, `from`, and `to` filters apply within the authenticated organization. `from` and `to` are inclusive ISO 8601 timestamps and `from` must not be later than `to`.
+**Ordering:** results are always ordered by `createdAt DESC, id DESC`, in both pagination modes. `id` breaks ties between records that share a timestamp, so rows are never skipped or duplicated across pages.
 
-The response `meta` includes `limit`, `hasNext`, and `nextCursor` (null on the final page). New records inserted after a page is read do not shift subsequent pages.
+**Query Parameters:**
+
+| Parameter | Format | Behaviour |
+|---|---|---|
+| `cursor` | opaque string | `meta.nextCursor` from the previous response; selects keyset pagination |
+| `page` / `offset`, `pageSize` / `limit` | integers | Page mode (default when no `cursor`). Page size defaults to `AUDIT_PAGE_SIZE_DEFAULT` (20) and is bounded by `AUDIT_PAGE_SIZE_MAX` (100) |
+| `actorId` | string, 1-128 chars | Exact match on the acting user id (`userId`) |
+| `action` | string, 1-120 chars | Exact match on the audit action, e.g. `wallet.created` |
+| `resourceType` | string, 1-120 chars | Exact match on the affected entity type (`entity`) |
+| `resourceId` | string, 1-128 chars | Exact match on the affected entity id (`entityId`) |
+| `from` | ISO 8601 date-time | Inclusive lower bound: `createdAt >= from` |
+| `to` | ISO 8601 date-time | Inclusive upper bound: `createdAt <= to` |
+| `outcome` | `SUCCESS` \| `FAILURE` | Exact match on the derived outcome |
+| `search` | string, 1-200 chars | Case-insensitive substring search over `action`, `entity`, `entityId` and `requestId` |
+
+The id and type filters are exact, case-sensitive matches with no partial or fuzzy matching. Filters combine with AND and only narrow the organization-scoped result set; they can never return another organization's records. `from` later than `to`, a malformed timestamp or cursor, and unknown query parameters are rejected with `400` and the standard validation error envelope.
+
+In cursor mode the response `meta` includes `limit`, `hasMore`, and `nextCursor` (null on the final page), and new records inserted after a page is read do not shift subsequent pages. In page mode `meta` contains `page`, `pageSize`, `total`, `totalPages`, `hasNextPage` and `hasPreviousPage`.
 
 **Example:** `GET /audit?limit=20&actorId=user-123&action=wallet.created`
 

@@ -1,5 +1,4 @@
 import { Module } from '@nestjs/common';
-import { ScheduleModule } from '@nestjs/schedule';
 import { TransactionController } from './transaction.controller';
 import { TransactionService } from './transaction.service';
 import { TransactionRepository } from './transaction.repository';
@@ -23,6 +22,7 @@ import { TransactionIdempotencyStore } from './idempotency/transaction-idempoten
 import { IdempotencyInterceptor } from '../../common/interceptors/idempotency.interceptor';
 import { IDEMPOTENCY_STORE } from '../../common/interceptors/idempotency-store';
 import { IdempotencyModule } from '../../common/idempotency/idempotency.module';
+import { ApprovalExpiryQueue } from '../../queues/approval-expiry.queue';
 
 /**
  * Transaction pipeline module. Pulls together wallets, agents, policies, risk
@@ -32,7 +32,6 @@ import { IdempotencyModule } from '../../common/idempotency/idempotency.module';
  */
 @Module({
   imports: [
-    ScheduleModule.forRoot(),
     WalletModule,
     AgentModule,
     PolicyModule,
@@ -49,6 +48,9 @@ import { IdempotencyModule } from '../../common/idempotency/idempotency.module';
         backoff: { type: 'exponential', delay: 2_000 },
       }),
     ),
+    // Approval proposals are created here, so the delayed expiry job is
+    // scheduled from this module (ApprovalModule imports it for cancellation).
+    BullModule.registerQueue({ name: Queues.ApprovalSweep }),
   ],
   controllers: [TransactionController],
   providers: [
@@ -64,7 +66,8 @@ import { IdempotencyModule } from '../../common/idempotency/idempotency.module';
     TransactionIdempotencyStore,
     IdempotencyInterceptor,
     { provide: IDEMPOTENCY_STORE, useExisting: TransactionIdempotencyStore },
+    ApprovalExpiryQueue,
   ],
-  exports: [TransactionService, SorobanSimulationService, StellarSimulationService, GasEstimationService, SpendingLimitService],
+  exports: [TransactionService, ApprovalExpiryQueue, SorobanSimulationService, StellarSimulationService, GasEstimationService, SpendingLimitService],
 })
 export class TransactionModule {}

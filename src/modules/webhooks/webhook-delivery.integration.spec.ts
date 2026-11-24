@@ -94,7 +94,6 @@ describe('webhook delivery integration', () => {
     expect(verifyWebhookSignature(
       secret,
       request.headers['x-astroid-timestamp'],
-      data.eventId,
       request.body,
       request.headers['x-astroid-signature'],
     )).toBe(true);
@@ -161,15 +160,14 @@ describe('webhook delivery integration', () => {
   it('builds the receiver signature from the exact serialized delivery bytes', () => {
     const secret = 'whsec_integration_test_secret';
     const timestamp = '1792430400';
-    const eventId = 'evt-byte-exact';
     const rawBytes = Buffer.from('{ "amount": 25, "unit": "XLM" }');
     const signature = createHmac('sha256', secret)
-      .update(Buffer.concat([Buffer.from(`v1.${timestamp}.${eventId}.`), rawBytes]))
+      .update(Buffer.concat([Buffer.from(`${timestamp}.`), rawBytes]))
       .digest('hex');
 
-    expect(verifyWebhookSignature(secret, timestamp, eventId, rawBytes, `v1=${signature}`)).toBe(true);
+    expect(verifyWebhookSignature(secret, timestamp, rawBytes, `t=${timestamp},v1=${signature}`)).toBe(true);
     expect(
-      verifyWebhookSignature(secret, timestamp, eventId, Buffer.from('{"amount":25,"unit":"XLM"}'), `v1=${signature}`),
+      verifyWebhookSignature(secret, timestamp, Buffer.from('{"amount":25,"unit":"XLM"}'), `t=${timestamp},v1=${signature}`),
     ).toBe(false);
   });
 

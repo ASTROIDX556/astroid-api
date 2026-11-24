@@ -130,6 +130,19 @@ export const policyConfigurationSchema = z
     /** When true, blocks ALL spending (emergency lock / kill switch). */
     emergencyLock: z.boolean().optional(),
     assetLimits: assetLimitsSchema.optional(),
+    /**
+     * Base currency for the policy's limits.
+     *
+     * Mismatch policy (documented choice): a policy without `baseCurrency`
+     * compares limits in the transaction's native asset — no conversion ever
+     * happens, so cross-asset comparisons cannot occur silently. A policy
+     * with `baseCurrency` has its limits denominated in that currency; the
+     * caller (`PolicyService.prepareIntent`) converts the transaction amounts
+     * and accumulated spend via the price oracle, and evaluation fails closed
+     * (`PriceUnavailableException`) when a required quote is unavailable —
+     * a limit is only ever enforced when the price is known, never treated as
+     * zero.
+     */
     baseCurrency: z.string().min(1).max(12).optional(),
   })
   .strict();

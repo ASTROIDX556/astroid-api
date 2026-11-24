@@ -3,6 +3,7 @@ import { Prisma, StellarNetwork, Wallet, WalletStatus } from '@prisma/client';
 import { WalletRepository } from './wallet.repository';
 import { CreateWalletInput, UpdateWalletInput } from './wallet.dto';
 import { StellarService } from '../stellar/stellar.service';
+import { BalanceCacheService } from './services/balance-cache.service';
 import { StellarNetworkName } from '../../integrations/stellar';
 import {
   ConflictException,
@@ -50,6 +51,7 @@ export class WalletService {
   constructor(
     private readonly repository: WalletRepository,
     private readonly stellar: StellarService,
+    private readonly balanceCache: BalanceCacheService,
     private readonly eventBus: EventBusService,
   ) {}
 
@@ -162,10 +164,24 @@ export class WalletService {
     return wallet;
   }
 
+  /**
+   * Live on-chain balances, served cache-aside from Redis.
+   *
+   * The response shape is identical whether the balances came from the cache
+   * or from the RPC. A cache miss (or a Redis outage) falls through to
+   * `StellarService.getBalances`; concurrent misses for the same wallet share a
+   * single upstream call. The key is namespaced by environment + network, and
+   * a terminal transaction event deletes it (see
+   * {@link WalletBalanceInvalidationListener}).
+   */
   async getBalances(organizationId: string, id: string) {
     const wallet = await this.getOrThrow(organizationId, id);
     const network = toNetworkName(wallet.network);
-    const balances = await this.stellar.getBalances(wallet.stellarAddress, network);
+    const balances = await this.balanceCache.getOrLoad(
+      wallet.stellarAddress,
+      network,
+      () => this.stellar.getBalances(wallet.stellarAddress, network),
+    );
     await this.eventBus.emit(
       DomainEventName.WalletBalanceUpdated,
       { walletId: id, balanceCount: balances.length },
@@ -175,8 +191,11 @@ export class WalletService {
   }
 
   async remove(organizationId: string, actorId: string, id: string) {
-    await this.getOrThrow(organizationId, id);
+    const wallet = await this.getOrThrow(organizationId, id);
     await this.repository.softDelete(id);
+    // Archiving is a balance-affecting operation: drop the cached snapshot so a
+    // later re-import of the same address starts from a live read.
+    await this.balanceCache.invalidate(wallet.stellarAddress, toNetworkName(wallet.network));
     await this.eventBus.emit(
       DomainEventName.WalletArchived,
       { walletId: id },

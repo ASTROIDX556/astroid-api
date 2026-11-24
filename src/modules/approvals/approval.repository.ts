@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { Approval, Prisma, ProposalStatus } from '@prisma/client';
+import { Approval, Prisma, Proposal, ProposalStatus, Transaction } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { PrismaPagination } from '../../common/helpers/pagination';
 
@@ -41,6 +41,22 @@ export class ApprovalRepository {
   }
 
   /**
+   * Finds pending proposals whose expiresAt timestamp is in the past,
+   * bounded by the batch limit for safe streaming sweep execution.
+   */
+  findExpiredPending(now: Date, limit: number) {
+    return this.prisma.proposal.findMany({
+      where: {
+        status: ProposalStatus.PENDING,
+        expiresAt: { lte: now },
+      },
+      take: limit,
+      include: { transaction: true, approvals: true },
+      orderBy: { expiresAt: 'asc' },
+    });
+  }
+
+  /**
    * Compare-and-set status transition. The database is the concurrency arbiter:
    * at most one caller observing `from` can win this mutation.
    */
@@ -50,5 +66,52 @@ export class ApprovalRepository {
       data: { status: to },
     });
     return result.count === 1;
+  }
+
+  /**
+   * Pending proposals whose `expiresAt` has already passed, oldest first.
+   * Used by the sweeper that moves stale approvals to their terminal state.
+   */
+  findExpiring(
+    now: Date,
+    limit: number,
+  ): Promise<Array<Proposal & { transaction: Transaction | null }>> {
+    return this.prisma.proposal.findMany({
+      where: { status: ProposalStatus.PENDING, expiresAt: { lte: now } },
+      orderBy: { expiresAt: 'asc' },
+      take: limit,
+      include: { transaction: true },
+    });
+  }
+
+  /**
+   * Conditional `PENDING -> EXPIRED` transition. The `status` predicate makes
+   * the write race safe: a proposal approved (or rejected) concurrently no
+   * longer matches, so it is never both approved and expired.
+   *
+   * @returns the number of rows changed — 1 when this call won the race, 0 when
+   * another writer already moved the proposal out of `PENDING`.
+   */
+  async expireIfPending(id: string): Promise<number> {
+    const result = await this.prisma.proposal.updateMany({
+      where: { id, status: ProposalStatus.PENDING },
+      data: { status: ProposalStatus.EXPIRED },
+    });
+    return result.count;
+  }
+
+  /**
+   * Conditional transition out of `PENDING` for the decision path, so a
+   * decision that loses a race against the sweeper cannot re-open a terminal
+   * proposal.
+   *
+   * @returns the number of rows changed (1 when the caller won, 0 otherwise).
+   */
+  async transitionFromPending(id: string, status: ProposalStatus): Promise<number> {
+    const result = await this.prisma.proposal.updateMany({
+      where: { id, status: ProposalStatus.PENDING },
+      data: { status },
+    });
+    return result.count;
   }
 }

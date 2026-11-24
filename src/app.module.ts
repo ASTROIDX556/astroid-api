@@ -16,6 +16,7 @@ import { ShutdownModule } from './common/shutdown/shutdown.module';
 import { REDIS_CLIENT } from './common/locks/locks.constants';
 import { EncryptionModule } from './common/encryption/encryption.module';
 import { RequestIdMiddleware } from './middleware/request-id.middleware';
+import { CorrelationIdMiddleware } from './common/middleware/correlation-id.middleware';
 import { StructuredRequestLoggingMiddleware } from './middleware/structured-request-logging.middleware';
 import { RawBodyMiddleware } from './common/middleware/raw-body.middleware';
 import { createPinoHttpOptions } from './common/logging/pino-http.options';
@@ -29,6 +30,7 @@ import { ResponseInterceptor } from './common/interceptors/response.interceptor'
 import { AuditInterceptor } from './common/interceptors/audit.interceptor';
 import { GlobalExceptionFilter } from './common/filters/global-exception.filter';
 import { PrismaExceptionFilter } from './common/filters/prisma-exception.filter';
+import { ZodValidationExceptionFilter } from './common/filters/zod-validation-exception.filter';
 import { AgentPolicyGuard } from './modules/policies/guards/agent-policy.guard';
 
 import { AuthModule } from './modules/auth/auth.module';
@@ -39,6 +41,7 @@ import { WalletReconciliationModule } from './modules/wallets/wallet-reconciliat
 import { PolicyModule } from './modules/policies/policy.module';
 import { RiskModule } from './modules/risk/risk.module';
 import { BudgetModule } from './modules/budgets/budget.module';
+import { BudgetRolloverModule } from './modules/budgets/budget-rollover.module';
 import { TransactionModule } from './modules/transactions/transaction.module';
 import { ApprovalModule } from './modules/approvals/approval.module';
 import { AnalyticsModule } from './modules/analytics/analytics.module';
@@ -120,6 +123,7 @@ import { RequestIdInterceptor } from './common/interceptors/request-id.intercept
     PolicyModule,
     RiskModule,
     BudgetModule,
+    BudgetRolloverModule,
     TransactionModule,
     ApprovalModule,
     AnalyticsModule,
@@ -151,12 +155,15 @@ import { RequestIdInterceptor } from './common/interceptors/request-id.intercept
     { provide: APP_INTERCEPTOR, useClass: StructuredAuditInterceptor },
     { provide: APP_INTERCEPTOR, useClass: MetricsInterceptor },
     { provide: APP_FILTER, useClass: GlobalExceptionFilter },
+    { provide: APP_FILTER, useClass: ZodValidationExceptionFilter },
     { provide: APP_FILTER, useClass: PrismaExceptionFilter },
   ],
 })
 export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer): void {
-    consumer.apply(RequestIdMiddleware, StructuredRequestLoggingMiddleware).forRoutes('*');
+    consumer
+      .apply(CorrelationIdMiddleware, RequestIdMiddleware, StructuredRequestLoggingMiddleware)
+      .forRoutes('*');
     consumer.apply(RawBodyMiddleware).forRoutes({
       path: 'webhooks/receive',
       method: RequestMethod.POST,
