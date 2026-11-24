@@ -15,6 +15,7 @@ export class MockSorobanClient implements SorobanClient {
 
   private readonly defaultResult: SorobanSimulationResult = {
     success: true,
+    latestLedger: 1,
     minResourceFee: '100000',
     cost: {
       cpuInstructions: 200_000,
@@ -62,5 +63,9 @@ export class MockSorobanClient implements SorobanClient {
     } catch {
       return this.defaultResult;
     }
+  }
+
+  async getLatestLedger(): Promise<number> {
+    return 1;
   }
 }

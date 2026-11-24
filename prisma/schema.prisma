@@ -522,6 +522,11 @@ model Transaction {
   stellarHash       String?
   confirmationCount Int               @default(0)
   gasEstimate       Decimal?          @db.Decimal(30, 7)
+  simulatedAt       DateTime?
+  minResourceFee    Decimal?          @db.Decimal(30, 0)
+  footprintSummary  Json?
+  simulationErrorCode    String?
+  simulationErrorMessage String?
   metadata          Json              @default("{}")
   createdAt         DateTime          @default(now())
   updatedAt         DateTime          @updatedAt
