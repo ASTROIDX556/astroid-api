@@ -25,9 +25,7 @@ import { AuthRepository } from './auth.repository';
 
 /**
  * Grace window after a session's refresh token is consumed during which a
- * replayed (already-rotated) token is treated as a benign race — rejected
- * with 401 without revoking the family. Presenting the token after the grace
- * window is reuse: the whole family is revoked (see `refresh`).
+ * replayed token is treated as a concurrent duplicate rather than reuse.
  */
 export const REFRESH_REUSE_GRACE_MS = 5 * 60_000;
 
@@ -204,8 +202,7 @@ export class AuthService {
     }
 
     // Reuse detection: presenting an already-consumed token is reuse once the
-    // grace window has passed — revoke the family before responding so a
-    // race cannot leave a valid token behind.
+    // grace window has passed.
     if (session.consumedAt) {
       const withinGrace = Date.now() - session.consumedAt.getTime() <= REFRESH_REUSE_GRACE_MS;
       if (!withinGrace) {
@@ -231,13 +228,12 @@ export class AuthService {
     if (
       session.revokedAt ||
       session.expiresAt.getTime() + SESSION_EXPIRY_SKEW_MS < Date.now() ||
-      session.refreshTokenHash !== presentedHash
+      session.refreshTokenHash !== presentedHash ||
+      session.user.status !== UserStatus.ACTIVE
     ) {
       throw new UnauthorizedException('Session is no longer valid', ErrorCode.SESSION_REVOKED);
     }
 
-    // Atomically consume the presented token; a zero-count result means a
-    // concurrent refresh won — a race, not reuse.
     const consumed = await this.sessionRepository.consumeRefreshToken(session.id, presentedHash);
     if (!consumed) {
       throw new UnauthorizedException('Session is no longer valid', ErrorCode.SESSION_REVOKED);
@@ -273,6 +269,10 @@ export class AuthService {
    * Redis so in-flight JWTs are rejected before they naturally expire.
    */
   async logout(sessionId: string): Promise<{ success: true }> {
+    const session = await this.prisma.session.findUnique({ where: { id: sessionId } });
+    if (session?.familyId) {
+      await this.sessionRepository.revokeFamily(session.familyId);
+    }
     await this.prisma.session
       .update({ where: { id: sessionId }, data: { revokedAt: new Date() } })
       .catch(() => undefined);

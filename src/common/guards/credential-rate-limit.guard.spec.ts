@@ -87,7 +87,11 @@ function prepare(
     quotaCache,
   );
   const response = { setHeader: vi.fn() };
-  const request = opts.request ?? { ip: '203.0.113.7', headers: {} };
+  const request = opts.request ?? {
+    ip: '203.0.113.7',
+    headers: {},
+    apiKey: { id: 'key-1' },
+  };
   const context = buildContext(request, response);
   if (opts.type) {
     (context as unknown as { getType: () => string }).getType = () => opts.type as string;
@@ -122,26 +126,22 @@ describe('CredentialRateLimitGuard', () => {
       expect(dayKey).toBe('astroid:rate-limit:credential:apikey:key-1:day');
     });
 
-    it('falls back to the JWT user when no API key was presented', async () => {
+    it('bypasses JWT-authenticated requests instead of throttling dashboard traffic', async () => {
       const { guard, redis, context } = prepare({
         request: { ip: '203.0.113.7', headers: {}, user: { id: 'user-1', sub: 'user-1' } },
       });
 
-      await guard.canActivate(context);
-
-      expect((redis.eval.mock.calls[0] as EvalArgs)[2]).toBe(
-        'astroid:rate-limit:credential:user:user-1:minute',
-      );
+      await expect(guard.canActivate(context)).resolves.toBe(true);
+      expect(redis.eval).not.toHaveBeenCalled();
     });
 
-    it('falls back to the client IP for anonymous callers', async () => {
-      const { guard, redis, context } = prepare();
+    it('falls back to the client IP for anonymous public routes', async () => {
+      const { guard, redis, context } = prepare({
+        request: { ip: '203.0.113.7', headers: {} },
+      });
 
-      await guard.canActivate(context);
-
-      expect((redis.eval.mock.calls[0] as EvalArgs)[2]).toBe(
-        'astroid:rate-limit:credential:ip:203.0.113.7:minute',
-      );
+      await expect(guard.canActivate(context)).resolves.toBe(true);
+      expect(redis.eval).toHaveBeenCalledTimes(1);
     });
 
     it('uses the API key id carried by an API-key JWT principal', async () => {
@@ -232,6 +232,9 @@ describe('CredentialRateLimitGuard', () => {
         'X-RateLimit-Limit': 120,
         'X-RateLimit-Remaining': 119,
         'X-RateLimit-Reset': 60,
+        'RateLimit-Limit': 120,
+        'RateLimit-Remaining': 119,
+        'RateLimit-Reset': 60,
       });
     });
 

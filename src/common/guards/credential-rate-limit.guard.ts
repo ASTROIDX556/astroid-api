@@ -89,6 +89,12 @@ export class CredentialRateLimitGuard implements CanActivate {
     const request = http.getRequest<CredentialRequest>();
     const response = http.getResponse<Response>();
     const credentialId = this.credentialId(request);
+    // Authenticated JWT/dashboard traffic is not part of the API-key quota.
+    // Anonymous/public routes retain the existing IP fallback quota.
+    const user = request.user;
+    if (user?.isApiKey === false || (user && !user.isApiKey)) {
+      return true;
+    }
     const identity = credentialId
       ? `apikey:${credentialId}`
       : this.userIdentity(request) ?? `ip:${this.clientIp(request)}`;
@@ -110,6 +116,9 @@ export class CredentialRateLimitGuard implements CanActivate {
     response.setHeader(RATE_LIMIT_LIMIT_HEADER, decision.limit);
     response.setHeader(RATE_LIMIT_REMAINING_HEADER, decision.remaining);
     response.setHeader(RATE_LIMIT_RESET_HEADER, Math.ceil(decision.resetAt / 1000));
+    response.setHeader('RateLimit-Limit', decision.limit);
+    response.setHeader('RateLimit-Remaining', decision.remaining);
+    response.setHeader('RateLimit-Reset', Math.ceil(decision.resetAt / 1000));
 
     if (!decision.allowed) {
       const retryAfterSeconds = Math.max(1, Math.ceil(decision.retryAfterMs / 1000));
