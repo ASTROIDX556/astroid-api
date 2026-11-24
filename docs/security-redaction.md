@@ -4,7 +4,22 @@
 
 The policy redacts authorization and cookie values, passwords, passphrases, access/refresh tokens, API keys (`apiKey`, `api_key`, `x-api-key`), private/secret keys, webhook signing secrets, signatures, passkey challenges, credentials, Stellar seeds, Idempotency-Key values, and common credential-shaped text. Header keys are matched case-insensitively after normalising `-`, `_` and spaces, so `Authorization`, `authorization` and `X-Api-Key` are all covered. Add future sensitive field names to `SENSITIVE_FIELDS` or add narrowly scoped free-text patterns to `SENSITIVE_TEXT_PATTERNS`; avoid domain-specific copies of the key list.
 
-Redacted values use `[REDACTED]`. The sanitizer does not mutate input, detects cycles, retains useful error name/message/stack and attached context, and caps recursion depth, collection size, and string length. Correlation IDs, record IDs, status codes, and public Stellar addresses remain available.
+Redacted values use `[REDACTED]`. The sanitizer does not mutate input, detects cycles, retains useful error name/message/stack and attached context, and caps recursion depth (8), collection size, and string length. Correlation IDs, record IDs, status codes, and public Stellar addresses remain available.
+
+### Configuring extra field names
+
+The built-in list covers the platform's own credentials. A deployment can add
+application-specific field names without a code change:
+
+```
+LOG_REDACT_FIELDS=accountNumber,payoutDetails
+```
+
+Each entry is matched like the defaults — case-insensitive, ignoring `_`, `-`
+and spaces, as a substring of the key. The list is validated with the rest of
+the environment at boot and applied before the logger is constructed, so it also
+covers every log line written during startup. An empty value (the default) keeps
+the built-in list only.
 
 ## Where redaction is applied
 
@@ -31,6 +46,7 @@ Redaction is configured once, at the logger, in `src/common/logging/pino-http.op
 Fields such as `requestId`, `method`, `path`, `statusCode` and `durationMs` are not matched and stay readable.
 
 ## Request bodies are never logged
+
 
 `autoLogging` is disabled and the request logging middleware
 (`src/middleware/structured-request-logging.middleware.ts`) writes an explicit

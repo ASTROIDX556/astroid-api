@@ -1,4 +1,4 @@
-import { Controller, Get, Req, Res, HttpStatus } from '@nestjs/common';
+import { Controller, Get, Optional, Req, Res, HttpStatus } from '@nestjs/common';
 import { ApiExcludeEndpoint, ApiExtraModels, ApiOperation, ApiResponse, ApiTags, getSchemaPath } from '@nestjs/swagger';
 import { HealthIndicatorResult } from '@nestjs/terminus';
 import { SkipThrottle } from '@nestjs/throttler';
@@ -15,6 +15,7 @@ import { RedisHealthIndicator } from './indicators/redis.health';
 import { StellarHealthIndicator } from './indicators/stellar.health';
 import { DatabaseMigrationHealthIndicator } from './indicators/database-migration.health';
 import { QueueHealthIndicator } from './indicators/queue.health';
+import { ShutdownCoordinator } from '../../common/shutdown/shutdown-coordinator.service';
 import {
   DependencyProbeDto,
   HealthStatusDto,
@@ -69,6 +70,9 @@ export class HealthController {
     private readonly stellarIndicator: StellarHealthIndicator,
     private readonly migrationIndicator: DatabaseMigrationHealthIndicator,
     private readonly queueIndicator: QueueHealthIndicator,
+    // Global infrastructure: present in the running app, absent in unit tests
+    // that construct the controller directly.
+    @Optional() private readonly shutdown?: ShutdownCoordinator,
   ) {}
 
   @Get('live')
@@ -115,6 +119,12 @@ export class HealthController {
     },
   })
   async ready(@Req() req: Request, @Res() res: Response) {
+    // Flip to not-ready as soon as shutdown starts, before probing anything, so
+    // load balancers stop routing new traffic during the drain.
+    if (this.shutdown?.isShuttingDown) {
+      return sendProbe(req, res, HttpStatus.SERVICE_UNAVAILABLE, shuttingDown(['database', 'cache', 'queue']));
+    }
+
     const [database, cache, queue] = await Promise.all([
       this.dbIndicator.check('database'),
       this.redisIndicator.checkHealth(),
@@ -160,6 +170,10 @@ export class HealthController {
     type: HealthStatusDto,
   })
   async getReadiness(@Res() res: Response) {
+    if (this.shutdown?.isShuttingDown) {
+      return res.status(HttpStatus.SERVICE_UNAVAILABLE).json(shuttingDown(['database', 'redis', 'stellar', 'migrations']));
+    }
+
     // The database indicator is a Terminus health indicator, so it reports
     // `{ database: { status, ...details } }`; unwrap it to the same flat shape
     // the other dependencies use.
@@ -261,6 +275,22 @@ export class HealthController {
   async check(@Res() res: Response) {
     return this.getReadiness(res);
   }
+}
+
+/**
+ * Readiness payload while the process is shutting down: every dependency is
+ * reported `down` because no new work is accepted, and `reason` names the cause
+ * so an operator is not left guessing which probe failed.
+ */
+function shuttingDown(dependencies: readonly string[]) {
+  const timestamp = new Date().toISOString();
+  const service = { status: 'down', latencyMs: 0, timestamp, error: 'unavailable' } as const;
+  return {
+    status: 'down' as const,
+    timestamp,
+    reason: 'shutting_down' as const,
+    services: Object.fromEntries(dependencies.map((name) => [name, { ...service }])),
+  };
 }
 
 /**
