@@ -11,6 +11,7 @@ import { RedisHealthIndicator } from './indicators/redis.health';
 import { StellarHealthIndicator } from './indicators/stellar.health';
 import { DatabaseMigrationHealthIndicator } from './indicators/database-migration.health';
 import { QueueHealthIndicator } from './indicators/queue.health';
+import { ShutdownCoordinator } from '../../common/shutdown/shutdown-coordinator.service';
 
 describe('HealthController', () => {
   let controller: HealthController;
@@ -140,6 +141,36 @@ describe('HealthController', () => {
         meta: {},
         requestId: 'req-health-1',
       });
+    });
+
+    it('answers 503 not-ready as soon as shutdown starts, without probing any dependency', async () => {
+      const closing = new HealthController(
+        dbHealth as unknown as PrismaHealthIndicator,
+        redisHealth as unknown as RedisHealthIndicator,
+        stellarHealth as unknown as StellarHealthIndicator,
+        migrationHealth as unknown as DatabaseMigrationHealthIndicator,
+        queueHealth as unknown as QueueHealthIndicator,
+        { isShuttingDown: true } as unknown as ShutdownCoordinator,
+      );
+
+      await closing.ready(req as Request, res as Response);
+
+      expect(res.status).toHaveBeenCalledWith(503);
+      expect(body()).toMatchObject({
+        success: false,
+        data: {
+          status: 'down',
+          reason: 'shutting_down',
+          services: {
+            database: { status: 'down', error: 'unavailable' },
+            cache: { status: 'down', error: 'unavailable' },
+            queue: { status: 'down', error: 'unavailable' },
+          },
+        },
+      });
+      expect(dbHealth.check).not.toHaveBeenCalled();
+      expect(redisHealth.checkHealth).not.toHaveBeenCalled();
+      expect(queueHealth.checkHealth).not.toHaveBeenCalled();
     });
 
     it('returns 503 when only the queue connection is down', async () => {
@@ -664,6 +695,34 @@ describe('HealthController', () => {
         }),
       }),
     );
+  });
+
+  it('reports every diagnostic dependency down while shutting down', async () => {
+    const closing = new HealthController(
+      dbHealth as unknown as PrismaHealthIndicator,
+      redisHealth as unknown as RedisHealthIndicator,
+      stellarHealth as unknown as StellarHealthIndicator,
+      migrationHealth as unknown as DatabaseMigrationHealthIndicator,
+      queueHealth as unknown as QueueHealthIndicator,
+      { isShuttingDown: true } as unknown as ShutdownCoordinator,
+    );
+
+    await closing.getReadiness(res as Response);
+
+    expect(res.status).toHaveBeenCalledWith(503);
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: 'down',
+        reason: 'shutting_down',
+        services: {
+          database: expect.objectContaining({ status: 'down' }),
+          redis: expect.objectContaining({ status: 'down' }),
+          stellar: expect.objectContaining({ status: 'down' }),
+          migrations: expect.objectContaining({ status: 'down' }),
+        },
+      }),
+    );
+    expect(stellarHealth.checkHealth).not.toHaveBeenCalled();
   });
 
   it('serves the same payload from the default health route', async () => {

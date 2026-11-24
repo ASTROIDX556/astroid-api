@@ -73,6 +73,7 @@ are rejected:
 | `API_PREFIX`   | `api/v1`      | Global route prefix.                                                 |
 | `LOG_LEVEL`    | `info`        | One of `fatal`, `error`, `warn`, `info`, `debug`, `trace`, `silent`. |
 | `CORS_ORIGINS` | `*`           | Comma-separated list of allowed origins.                             |
+| `LOG_REDACT_FIELDS` | _(empty)_ | Extra field names to redact from structured logs, on top of the built-in list (see `docs/security-redaction.md`). Comma-separated; case-insensitive, `_`/`-`/spaces ignored. |
 
 ### Database
 
@@ -297,7 +298,7 @@ deliveries of a failing endpoint instead of hammering it.
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `BUDGET_ALERT_THRESHOLDS` | `80,100` | Comma-separated budget-utilisation percentages that emit a `budget.threshold_reached` event once per budget period. A budget's own `alertThresholds` overrides this list. |
+| `BUDGET_ALERT_THRESHOLDS` | `80,100` | Comma-separated budget-utilisation percentages (integers 1-100) that emit a `budget.threshold_reached` event once per budget period. A budget's own `alertThresholds` (strictly ascending, 1-100) overrides this list. |
 | `BUDGET_ROLLOVER_ENABLED` | `true` | Register the repeatable budget period rollover job at boot. |
 | `BUDGET_ROLLOVER_INTERVAL_MINUTES` | `1` | Cadence of the repeatable rollover job. |
 | `BUDGET_ROLLOVER_BATCH_SIZE` | `100` | Budgets loaded per page (1–1000). |

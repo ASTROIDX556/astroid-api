@@ -13,6 +13,18 @@ export const appEnvSchema = z.object({
   API_PREFIX: z.string().default('api/v1'),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
   CORS_ORIGINS: z.string().default('*'),
+  // Extra field names to redact from structured logs and error reports, on top
+  // of the built-in list in src/common/helpers/audit-sanitizer.ts. Comma
+  // separated; matching is case-insensitive and ignores `_`, `-` and spaces.
+  LOG_REDACT_FIELDS: z
+    .string()
+    .default('')
+    .transform((value) =>
+      value
+        .split(',')
+        .map((field) => field.trim())
+        .filter((field) => field.length > 0),
+    ),
 });
 
 export const databaseEnvSchema = z.object({
@@ -285,18 +297,20 @@ export const budgetAlertEnvSchema = z.object({
     .string()
     .default('80,100')
     .transform((value) =>
-      Array.from(
-        new Set(
-          value
-            .split(',')
-            .map((part) => Number(part.trim()))
-            .filter((threshold) => Number.isInteger(threshold) && threshold > 0 && threshold <= 1_000),
-        ),
-      ).sort((a, b) => a - b),
+      value
+        .split(',')
+        .map((part) => part.trim())
+        .filter((part) => part.length > 0),
     )
-    .refine((thresholds) => thresholds.length > 0, {
-      message: 'must contain at least one positive integer threshold',
-    }),
+    .refine((parts) => parts.length > 0, {
+      message: 'must contain at least one threshold',
+    })
+    .refine(
+      (parts) =>
+        parts.every((part) => /^\d+$/.test(part) && Number(part) >= 1 && Number(part) <= 100),
+      { message: 'must be comma-separated whole percentages between 1 and 100' },
+    )
+    .transform((parts) => Array.from(new Set(parts.map(Number))).sort((a, b) => a - b)),
 });
 
 export const throttleEnvSchema = z.object({
