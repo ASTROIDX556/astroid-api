@@ -291,6 +291,10 @@ deliveries of a failing endpoint instead of hammering it.
 | `RATE_LIMIT_WEBHOOK_CREATE_WINDOW_SECONDS` | `3600` | Window of the webhook creation limit. |
 | `RATE_LIMIT_WEBHOOK_ROTATE_MAX` | `10` | `POST /webhooks/:id/rotate-secret` requests per API key or user per window. |
 | `RATE_LIMIT_WEBHOOK_ROTATE_WINDOW_SECONDS` | `3600` | Window of the webhook secret rotation limit. |
+| `RATE_LIMIT_CREDENTIAL_PER_MINUTE` | `120` | Default requests per minute per verified API key (falls back to user, then IP). Overridden by a key's `rateLimitPerMinute`. |
+| `RATE_LIMIT_CREDENTIAL_PER_DAY` | `10000` | Default requests per day per credential. Overridden by a key's `rateLimitPerDay`. |
+| `RATE_LIMIT_CREDENTIAL_DAY_WINDOW_SECONDS` | `86400` | Length of the per-credential day window. |
+| `RATE_LIMIT_CREDENTIAL_QUOTA_CACHE_SECONDS` | `60` | How long per-key quota overrides stay cached in Redis. |
 
 ### Budgets
 

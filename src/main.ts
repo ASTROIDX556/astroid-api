@@ -8,7 +8,13 @@ import { Request, Response, NextFunction } from 'express';
 import { AppModule } from './app.module';
 import { ShutdownCoordinator } from './common/shutdown/shutdown-coordinator.service';
 import { AppConfig } from './config/app.config';
-import { TOTAL_COUNT_HEADER } from './common/constants/headers';
+import {
+  RATE_LIMIT_LIMIT_HEADER,
+  RATE_LIMIT_REMAINING_HEADER,
+  RATE_LIMIT_RESET_HEADER,
+  RETRY_AFTER_HEADER,
+  TOTAL_COUNT_HEADER,
+} from './common/constants/headers';
 import { GLOBAL_PREFIX_EXCLUDED_ROUTES } from './common/constants/global-prefix';
 import { buildSwaggerConfig } from './common/openapi/swagger-config';
 import { assertValidEnvironment, EnvironmentValidationError } from './config/env.validation';
@@ -79,7 +85,13 @@ async function bootstrap() {
   app.enableCors({
     origin: appConfig.corsOrigins,
     credentials: true,
-    exposedHeaders: [TOTAL_COUNT_HEADER],
+    exposedHeaders: [
+      TOTAL_COUNT_HEADER,
+      RATE_LIMIT_LIMIT_HEADER,
+      RATE_LIMIT_REMAINING_HEADER,
+      RATE_LIMIT_RESET_HEADER,
+      RETRY_AFTER_HEADER,
+    ],
   });
 
   // Global validation pipe (transforms + validates DTOs)

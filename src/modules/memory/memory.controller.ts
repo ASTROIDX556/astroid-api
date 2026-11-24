@@ -2,7 +2,6 @@ import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
 import {
   ApiOperation,
   ApiTags,
-  ApiBearerAuth,
   ApiParam,
   ApiBody,
   ApiQuery,
@@ -18,10 +17,12 @@ import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 import { PaginationQuery, paginationQuerySchema } from '../../common/helpers/pagination';
 import { ApiPaginationQuery } from '../../common/decorators/api-pagination-query.decorator';
 import { MemoryRecordDto } from './memory.dto';
+import { ApiAuthenticated } from '../../common/decorators/api-authenticated.decorator';
 
 @ApiTags('memory')
-@ApiBearerAuth('access-token')
+@ApiAuthenticated()
 @Controller('memory')
+@ApiErrorResponses({ unauthorized: true, forbidden: true, tooManyRequests: true, serverError: true })
 export class MemoryController {
   constructor(private readonly memoryService: MemoryService) {}
 

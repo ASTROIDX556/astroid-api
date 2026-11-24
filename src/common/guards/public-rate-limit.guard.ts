@@ -22,10 +22,18 @@ import { PublicRateLimitConfig, RateLimitConfig } from '../../config/rate-limit.
 import { AppConfig } from '../../config/app.config';
 import { getClientIp } from '../../utils/ip.util';
 import { extractApiKeyFromRequest } from '../helpers/extract-api-key';
+import {
+  RATE_LIMIT_LIMIT_HEADER,
+  RATE_LIMIT_REMAINING_HEADER,
+  RATE_LIMIT_RESET_HEADER,
+  RETRY_AFTER_HEADER,
+} from '../constants/headers';
 
-export const RATE_LIMIT_LIMIT_HEADER = 'X-RateLimit-Limit';
-export const RATE_LIMIT_REMAINING_HEADER = 'X-RateLimit-Remaining';
-export const RATE_LIMIT_RESET_HEADER = 'X-RateLimit-Reset';
+export {
+  RATE_LIMIT_LIMIT_HEADER,
+  RATE_LIMIT_REMAINING_HEADER,
+  RATE_LIMIT_RESET_HEADER,
+} from '../constants/headers';
 
 /** Outcome of evaluating one request against the public rate limiter. */
 export interface PublicRateLimitResult {
@@ -112,7 +120,7 @@ export class PublicRateLimitGuard implements CanActivate {
     if (!result.allowed) {
       const now = Date.now();
       const retryAfterSeconds = Math.max(1, Math.ceil((result.resetAt - now) / 1000));
-      response.setHeader('Retry-After', retryAfterSeconds);
+      response.setHeader(RETRY_AFTER_HEADER, retryAfterSeconds);
       throw new DomainException(
         ErrorCode.RATE_LIMITED,
         'Too many requests from this IP address. Please retry later.',

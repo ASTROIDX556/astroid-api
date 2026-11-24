@@ -6,6 +6,7 @@ import { Request, Response } from 'express';
 import { Public } from '../../common/decorators/public.decorator';
 import { SkipAudit } from '../../common/decorators/skip-audit.decorator';
 import { SkipPublicRateLimit } from '../../common/decorators/skip-public-rate-limit.decorator';
+import { SkipCredentialRateLimit } from '../../common/decorators/skip-credential-rate-limit.decorator';
 import { ApiEnvelope, ApiEnvelopeDto } from '../../common/decorators/api-envelope.decorator';
 import { REQUEST_ID_HEADER } from '../../common/constants/headers';
 import { ApiMeta } from '../../common/interfaces/api-response.interface';
@@ -59,6 +60,7 @@ interface ReadinessServiceReport {
 @Public()
 @SkipAudit()
 @SkipPublicRateLimit()
+@SkipCredentialRateLimit()
 @SkipThrottle({ api: true, auth: true })
 @ApiExtraModels(ApiEnvelopeDto, ReadinessDto, DependencyProbeDto)
 export class HealthController {
