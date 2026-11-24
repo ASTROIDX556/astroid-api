@@ -249,3 +249,42 @@ describe('configuration documentation', () => {
     }
   });
 });
+
+describe('log redaction and budget alert configuration', () => {
+  it('parses LOG_REDACT_FIELDS into a trimmed, non-empty list', () => {
+    const env = assertValidEnvironment({
+      ...REQUIRED_ENV,
+      LOG_REDACT_FIELDS: ' accountNumber, payoutDetails ,, ',
+    });
+
+    expect(env.LOG_REDACT_FIELDS).toEqual(['accountNumber', 'payoutDetails']);
+  });
+
+  it('defaults LOG_REDACT_FIELDS to an empty list', () => {
+    expect(assertValidEnvironment(REQUIRED_ENV).LOG_REDACT_FIELDS).toEqual([]);
+  });
+
+  it('sorts and de-duplicates budget alert thresholds', () => {
+    const env = assertValidEnvironment({
+      ...REQUIRED_ENV,
+      BUDGET_ALERT_THRESHOLDS: '100, 80, 80',
+    });
+
+    expect(env.BUDGET_ALERT_THRESHOLDS).toEqual([80, 100]);
+  });
+
+  it('rejects a budget threshold above 100 instead of silently dropping it', () => {
+    const error = validationError({ ...REQUIRED_ENV, BUDGET_ALERT_THRESHOLDS: '80,150' });
+
+    expect(error.issues.map((issue) => issue.key)).toContain('BUDGET_ALERT_THRESHOLDS');
+  });
+
+  it('rejects a non-integer or zero budget threshold', () => {
+    expect(
+      validationError({ ...REQUIRED_ENV, BUDGET_ALERT_THRESHOLDS: '0' }).issues.map((i) => i.key),
+    ).toContain('BUDGET_ALERT_THRESHOLDS');
+    expect(
+      validationError({ ...REQUIRED_ENV, BUDGET_ALERT_THRESHOLDS: '79.5' }).issues.map((i) => i.key),
+    ).toContain('BUDGET_ALERT_THRESHOLDS');
+  });
+});

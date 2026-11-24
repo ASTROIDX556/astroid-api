@@ -71,6 +71,7 @@ export class BudgetService {
       carryOverRule: input.carryOverRule,
       rollover: input.rollover,
       enabled: input.enabled,
+      ...(input.alertThresholds !== undefined ? { alertThresholds: input.alertThresholds } : {}),
     });
     await this.eventBus.emit(
       DomainEventName.BudgetCreated,
@@ -149,6 +150,9 @@ export class BudgetService {
     }
     if (input.limitAmount !== undefined) {
       data.limitAmount = new Decimal(input.limitAmount);
+    }
+    if (input.alertThresholds !== undefined) {
+      data.alertThresholds = input.alertThresholds;
     }
     const budget = await this.repository.update(id, data);
     await this.eventBus.emit(

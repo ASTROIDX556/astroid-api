@@ -2,7 +2,7 @@
  * Sensitive field keys that must never appear in audit-logged payloads.
  * Scrubbed recursively from any object or nested structure.
  */
-const SENSITIVE_FIELDS = [
+const DEFAULT_SENSITIVE_FIELDS = [
   'password',
   'passphrase',
   'passkey',
@@ -22,6 +22,13 @@ const SENSITIVE_FIELDS = [
   // and ``idempotency_key`` after key normalisation.
   'idempotencykey',
 ];
+
+/**
+ * Application-specific field names added through `LOG_REDACT_FIELDS`. Replaced
+ * (never mutated) by {@link configureSensitiveFields} at boot, so tests and
+ * callers see either the defaults or the configured list, never a mixture.
+ */
+let additionalSensitiveFields: readonly string[] = [];
 
 export const REDACTED = '[REDACTED]';
 const MAX_DEPTH = 8;
@@ -91,7 +98,21 @@ function isBinaryLike(value: string): boolean {
 
 export function isSensitiveField(key: string): boolean {
   const normalized = key.toLowerCase().replace(/[_\s-]/g, '');
-  return SENSITIVE_FIELDS.some((fragment) => normalized.includes(fragment));
+  return [...DEFAULT_SENSITIVE_FIELDS, ...additionalSensitiveFields].some((fragment) =>
+    normalized.includes(fragment),
+  );
+}
+
+/**
+ * Adds deployment-specific sensitive field names (from `LOG_REDACT_FIELDS`) on
+ * top of the built-in list, for keys this codebase does not know about. Names
+ * are matched like the defaults: case-insensitive, ignoring `_`, `-` and
+ * spaces, as substrings. Passing an empty list restores the defaults.
+ */
+export function configureSensitiveFields(fields: readonly string[]): void {
+  additionalSensitiveFields = fields
+    .map((field) => field.trim().toLowerCase().replace(/[_\s-]/g, ''))
+    .filter((field) => field.length > 0);
 }
 
 export function sanitizeAuditPayload<T>(data: T): T {
