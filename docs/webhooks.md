@@ -156,6 +156,49 @@ app.post('/api/webhooks/astroid', (req: Request & { rawBody?: Buffer }, res: Res
 });
 ```
 
+### curl and OpenSSL (manual verification)
+
+Save the exact raw body from the delivery to `body.json` and copy its
+`X-Astroid-Signature` header below. This checks the five-minute replay window
+and recomputes the HMAC over the original bytes:
+
+```bash
+export WEBHOOK_SECRET='whsec_...'
+SIGNATURE_HEADER='t=1700000000,v1=<64-character-hex-digest>'
+TIMESTAMP="${SIGNATURE_HEADER#t=}"
+TIMESTAMP="${TIMESTAMP%%,*}"
+RECEIVED="${SIGNATURE_HEADER#*,v1=}"
+NOW="$(date +%s)"
+AGE="$((NOW - TIMESTAMP))"
+
+if [ "$AGE" -lt -300 ] || [ "$AGE" -gt 300 ]; then
+  echo 'timestamp outside the 5-minute replay window' >&2
+  exit 1
+fi
+
+EXPECTED="$(
+  { printf '%s.' "$TIMESTAMP"; cat body.json; } |
+    openssl dgst -sha256 -hmac "$WEBHOOK_SECRET" -hex |
+    awk '{print $NF}'
+)"
+if [ "$EXPECTED" != "$RECEIVED" ]; then
+  echo 'signature mismatch' >&2
+  exit 1
+fi
+echo 'signature valid'
+
+# Optionally replay the captured request to a local verification listener.
+curl --fail-with-body --request POST 'http://localhost:3000/api/webhooks/astroid' \
+  --header "X-Astroid-Signature: $SIGNATURE_HEADER" \
+  --header 'X-Astroid-Event: transaction.completed' \
+  --header 'Content-Type: application/json' \
+  --data-binary @body.json
+```
+
+The shell comparison is for manual inspection only. Production consumers must
+use a timing-safe digest comparison, as in the Node example above, and should
+also prevent duplicate event IDs from being processed more than once.
+
 ---
 
 ### Python (FastAPI)

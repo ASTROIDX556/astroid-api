@@ -386,6 +386,66 @@ describe('WebhooksProcessor', () => {
   });
 
   describe('retry lifecycle', () => {
+    it('re-signs each retry with a fresh timestamp and the same serialized body', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-11-24T15:00:00.000Z'));
+      fetchSpy.mockResolvedValue({ ok: true, status: 200, text: () => Promise.resolve('OK') });
+
+      try {
+        await processor.process(createMockJob({ attemptsMade: 0 } as Partial<Job<WebhookJobData>>));
+        const firstOptions = fetchSpy.mock.calls[0][1];
+        const firstTimestamp = firstOptions.headers['x-astroid-timestamp'];
+        const firstBody = Buffer.from(firstOptions.body);
+
+        vi.advanceTimersByTime(1_000);
+        await processor.process(createMockJob({ attemptsMade: 1 } as Partial<Job<WebhookJobData>>));
+        const retryOptions = fetchSpy.mock.calls[1][1];
+        const retryTimestamp = retryOptions.headers['x-astroid-timestamp'];
+        const retryBody = Buffer.from(retryOptions.body);
+
+        expect(retryTimestamp).not.toBe(firstTimestamp);
+        expect(retryBody).toEqual(firstBody);
+        expect(
+          verifyWebhookSignature(
+            WEBHOOK_SECRET,
+            firstTimestamp,
+            firstBody,
+            firstOptions.headers['x-astroid-signature'],
+          ),
+        ).toBe(true);
+        expect(
+          verifyWebhookSignature(
+            WEBHOOK_SECRET,
+            retryTimestamp,
+            retryBody,
+            retryOptions.headers['x-astroid-signature'],
+          ),
+        ).toBe(true);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('does not persist or log the signing secret or signature', async () => {
+      const upsert = vi.fn().mockResolvedValue({});
+      mockPrisma.webhookDelivery = { upsert };
+      const debug = vi.spyOn(processor['logger'], 'debug').mockImplementation(() => undefined);
+      const warn = vi.spyOn(processor['logger'], 'warn').mockImplementation(() => undefined);
+      const error = vi.spyOn(processor['logger'], 'error').mockImplementation(() => undefined);
+      fetchSpy.mockResolvedValue({ ok: true, status: 200, text: () => Promise.resolve('OK') });
+
+      await processor.process(createMockJob());
+
+      const signature = fetchSpy.mock.calls[0][1].headers['x-astroid-signature'];
+      const persisted = JSON.stringify(upsert.mock.calls[0][0]);
+      const logged = [debug, warn, error].flatMap((spy) => spy.mock.calls).flat().join(' ');
+
+      expect(persisted).not.toContain(WEBHOOK_SECRET);
+      expect(persisted).not.toContain(signature);
+      expect(logged).not.toContain(WEBHOOK_SECRET);
+      expect(logged).not.toContain(signature);
+    });
+
     it('marks the delivery RETRYING while attempts remain and FAILED on the last attempt', async () => {
       const upsert = vi.fn().mockResolvedValue({});
       mockPrisma.webhookDelivery = { upsert };
