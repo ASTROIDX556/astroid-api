@@ -11,6 +11,23 @@ import { createWebhookBackoffStrategy } from '../utils/backoff.util';
 /** BullMQ job name used for every outbound webhook delivery. */
 export const WEBHOOK_JOB_NAME = 'webhook-delivery';
 
+/**
+ * Deterministic BullMQ job id for one (event, subscription) pair.
+ *
+ * The id is what makes delivery deduplication work: BullMQ ignores an `add`
+ * whose id already exists in the queue (waiting, active, delayed, failed or
+ * retained-completed), so the same event can never be delivered twice — and in
+ * particular never twice **concurrently** — to the same subscription.
+ *
+ * Both parts are URI-encoded and joined with `|`, a character
+ * `encodeURIComponent` never emits unescaped, so the id is unambiguous even
+ * when either id contains a separator-like character. The result also never
+ * contains `:`, which BullMQ rejects in custom job ids.
+ */
+export function buildWebhookJobId(eventId: string, webhookId: string): string {
+  return `${WEBHOOK_JOB_NAME}-${encodeURIComponent(eventId)}|${encodeURIComponent(webhookId)}`;
+}
+
 /** Default total delivery attempts (1 initial + 4 retries). */
 export const WEBHOOK_MAX_ATTEMPTS = 5;
 

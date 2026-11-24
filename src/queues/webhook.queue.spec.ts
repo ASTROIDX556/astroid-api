@@ -5,6 +5,7 @@ import { Queues } from './queues.constants';
 import {
   WEBHOOK_DEAD_LETTER_QUEUE,
   WEBHOOK_JOB_NAME,
+  buildWebhookJobId,
   createWebhookJobOptions,
   createWebhookQueueOptions,
   webhookJobOptionsFor,
@@ -195,5 +196,34 @@ describe('webhook queue configuration', () => {
 
   it('uses a single well-known job name for every delivery', () => {
     expect(WEBHOOK_JOB_NAME).toBe('webhook-delivery');
+  });
+
+  describe('deterministic delivery job ids', () => {
+    it('derives the same id for the same event and subscription', () => {
+      expect(buildWebhookJobId('evt-1', 'wh-1')).toBe(buildWebhookJobId('evt-1', 'wh-1'));
+    });
+
+    it('never reuses an id across different events or subscriptions', () => {
+      const ids = new Set([
+        buildWebhookJobId('evt-1', 'wh-1'),
+        buildWebhookJobId('evt-2', 'wh-1'),
+        buildWebhookJobId('evt-1', 'wh-2'),
+      ]);
+
+      expect(ids.size).toBe(3);
+    });
+
+    it('keeps event/subscription pairs unambiguous', () => {
+      // A naive `event-webhook` join would collapse these two pairs into one id
+      // and silently drop a delivery.
+      expect(buildWebhookJobId('a-b', 'c')).not.toBe(buildWebhookJobId('a', 'b-c'));
+    });
+
+    it('produces an id BullMQ accepts (no colon) even for colon-bearing values', () => {
+      const id = buildWebhookJobId('evt:1', 'wh:1');
+
+      expect(id).not.toContain(':');
+      expect(buildWebhookJobId('evt:1', 'wh:1')).toBe(id);
+    });
   });
 });
