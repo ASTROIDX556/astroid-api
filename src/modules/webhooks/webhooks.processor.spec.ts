@@ -44,7 +44,7 @@ describe('WebhooksProcessor', () => {
     fetchSpy = vi.fn();
     vi.stubGlobal('fetch', fetchSpy);
     const destinationPolicy = {
-      post: async (url: string, options: { headers: Record<string, string>; body: Buffer; timeoutMs: number }) => {
+      post: async (url: string, options: { headers: Record<string, string>; body: Buffer; timeoutMs: number; signal?: AbortSignal }) => {
         const response = await fetch(url, {
           method: 'POST',
           headers: options.headers,

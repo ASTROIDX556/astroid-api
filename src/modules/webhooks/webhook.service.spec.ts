@@ -60,14 +60,14 @@ describe('Webhook signing & delivery', () => {
     const URL = 'https://example.com/webhook';
     const EVENT_ID = 'evt-123';
     let destinationPolicy: {
-      post: (url: string, options: { headers: Record<string, string>; body: Buffer; timeoutMs: number }) => Promise<{ status: number; headers: Record<string, string | string[] | undefined> }>;
+      post: (url: string, options: { headers: Record<string, string>; body: Buffer; timeoutMs: number; signal?: AbortSignal }) => Promise<{ status: number; headers: Record<string, string | string[] | undefined> }>;
     };
 
     beforeEach(() => {
       fetchSpy = vi.fn();
       vi.stubGlobal('fetch', fetchSpy);
       destinationPolicy = {
-        post: async (url: string, options: { headers: Record<string, string>; body: Buffer; timeoutMs: number }) => {
+        post: async (url: string, options: { headers: Record<string, string>; body: Buffer; timeoutMs: number; signal?: AbortSignal }) => {
           const response = await fetch(url, {
             method: 'POST',
             headers: options.headers,
