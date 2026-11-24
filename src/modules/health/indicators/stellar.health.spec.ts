@@ -126,6 +126,50 @@ describe('StellarHealthIndicator', () => {
     expect(elapsed).toBeLessThan(1_000);
   });
 
+  describe('checkSorobanRpcHealth', () => {
+    it('probes only the Soroban RPC endpoint', async () => {
+      const fetchSpy = vi.spyOn(global, 'fetch').mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ result: { status: 'healthy', latestLedger: 99 } }),
+      } as unknown as Response);
+
+      const report = await indicator.checkSorobanRpcHealth();
+
+      expect(report.status).toBe('up');
+      expect(report.ledgerSequence).toBe(99);
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      const [url, init] = fetchSpy.mock.calls[0];
+      expect(String(url)).toBe('https://soroban-testnet.stellar.org');
+      expect(JSON.parse(String(init?.body))).toMatchObject({ method: 'getHealth' });
+    });
+
+    it('reports an unreachable RPC as down without throwing', async () => {
+      vi.spyOn(global, 'fetch').mockRejectedValue(new Error('connect ECONNREFUSED'));
+
+      const report = await indicator.checkSorobanRpcHealth();
+
+      expect(report.status).toBe('down');
+      expect(report.error).toContain('ECONNREFUSED');
+    });
+
+    it('reports a probe that exhausted its budget as a timeout down result', async () => {
+      vi.spyOn(global, 'fetch').mockImplementation(
+        (_url: RequestInfo | URL, init?: RequestInit) =>
+          new Promise((_resolve, reject) => {
+            init?.signal?.addEventListener('abort', () =>
+              reject(new Error('The operation was aborted')),
+            );
+          }),
+      );
+
+      const report = await indicator.checkSorobanRpcHealth(20);
+
+      expect(report.status).toBe('down');
+      expect(report.error).toContain('timed out');
+    });
+  });
+
   it('falls back to the default budget when a non-positive timeout is given', async () => {
     vi.spyOn(global, 'fetch').mockImplementation((url: RequestInfo | URL) => {
       if (String(url).includes('horizon')) {

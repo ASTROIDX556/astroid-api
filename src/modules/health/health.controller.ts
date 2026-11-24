@@ -97,8 +97,8 @@ export class HealthController {
   @ApiOperation({
     summary: 'Readiness probe',
     description:
-      'Probes the critical dependencies (database, cache and the BullMQ queue connection) in ' +
-      'parallel, each bounded by a timeout. Returns 200 when every dependency is up and 503 when any is down, with ' +
+      'Probes the critical dependencies (database, cache, the BullMQ queue connection and the ' +
+      'Soroban RPC) in parallel, each bounded by a timeout. Returns 200 when every dependency is up and 503 when any is down, with ' +
       'per-dependency status and latency under `data.services`. A failure is reported as ' +
       '`timeout` or `unavailable` only; driver messages stay in the server log.',
   })
@@ -122,19 +122,28 @@ export class HealthController {
     // Flip to not-ready as soon as shutdown starts, before probing anything, so
     // load balancers stop routing new traffic during the drain.
     if (this.shutdown?.isShuttingDown) {
-      return sendProbe(req, res, HttpStatus.SERVICE_UNAVAILABLE, shuttingDown(['database', 'cache', 'queue']));
+      return sendProbe(
+        req,
+        res,
+        HttpStatus.SERVICE_UNAVAILABLE,
+        shuttingDown(['database', 'cache', 'queue', 'soroban']),
+      );
     }
 
-    const [database, cache, queue] = await Promise.all([
+    const [database, cache, queue, soroban] = await Promise.all([
       this.dbIndicator.check('database'),
       this.redisIndicator.checkHealth(),
       this.queueIndicator.checkHealth(),
+      // Only the Soroban RPC is critical: Horizon is not probed here, so a
+      // Horizon outage cannot take the API out of rotation.
+      this.stellarIndicator.checkSorobanRpcHealth(),
     ]);
 
     const services = {
       database: toProbe(unwrap(database, 'database')),
       cache: toProbe(cache),
       queue: toProbe(queue),
+      soroban: toProbe(soroban),
     };
 
     const isReady = Object.values(services).every((s) => s.status === 'up');

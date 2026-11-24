@@ -41,7 +41,7 @@ describe('Health probes over HTTP', () => {
 
   const dbIndicator = { check: vi.fn() };
   const redisIndicator = { checkHealth: vi.fn() };
-  const stellarIndicator = { checkHealth: vi.fn() };
+  const stellarIndicator = { checkHealth: vi.fn(), checkSorobanRpcHealth: vi.fn() };
   const queueIndicator = { checkHealth: vi.fn() };
 
   const databaseUp = () => ({
@@ -95,6 +95,9 @@ describe('Health probes over HTTP', () => {
     dbIndicator.check.mockReset().mockResolvedValue(databaseUp());
     redisIndicator.checkHealth.mockReset().mockResolvedValue(cacheUp());
     queueIndicator.checkHealth.mockReset().mockResolvedValue(cacheUp());
+    stellarIndicator.checkSorobanRpcHealth
+      .mockReset()
+      .mockResolvedValue({ status: 'up', latencyMs: 40, url: 'https://soroban' });
   });
 
   it('serves GET /health/live without credentials and outside the API prefix', async () => {
@@ -121,9 +124,37 @@ describe('Health probes over HTTP', () => {
           database: { status: 'up', latencyMs: 3 },
           cache: { status: 'up', latencyMs: 1 },
           queue: { status: 'up', latencyMs: 1 },
+          soroban: { status: 'up', latencyMs: 40 },
         },
       },
     });
+  });
+
+  it('answers GET /health/ready with 503 when the Soroban RPC is down', async () => {
+    stellarIndicator.checkSorobanRpcHealth.mockResolvedValue({
+      status: 'down',
+      latencyMs: 2000,
+      url: 'https://soroban.internal',
+      error: 'Soroban RPC health check timed out after 2000ms',
+    });
+
+    const res = await fetch(`${baseUrl}/health/ready`);
+    const text = await res.text();
+
+    expect(res.status).toBe(503);
+    expect(JSON.parse(text)).toMatchObject({
+      success: false,
+      data: {
+        status: 'down',
+        services: {
+          database: { status: 'up' },
+          cache: { status: 'up' },
+          queue: { status: 'up' },
+          soroban: { status: 'down', error: 'timeout' },
+        },
+      },
+    });
+    expect(text).not.toMatch(/soroban\.internal|https:/);
   });
 
   it('answers GET /health/ready with 503 when only the queue connection is down', async () => {
