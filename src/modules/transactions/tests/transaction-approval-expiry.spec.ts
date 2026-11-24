@@ -22,6 +22,7 @@ function buildService(ttlHours: number | undefined) {
       prisma,
       {},
       undefined,
+      undefined,
       config as unknown as ConfigService,
       undefined,
       approvalExpiry as unknown as ApprovalExpiryQueue,
