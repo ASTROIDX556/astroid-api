@@ -9,6 +9,7 @@ from `src/main.ts`:
 
 | Step | What happens | Bound |
 | --- | --- | --- |
+| 0. Readiness | `GET /health/ready` answers 503 `reason: "shutting_down"` immediately, so load balancers stop routing new traffic. | None |
 | 1. HTTP | The server stops accepting connections. Idle keep-alive connections are closed and in-flight responses carry `Connection: close`. | Grace period |
 | 2. Workers | Every BullMQ worker is paused (no new jobs are fetched) and its active jobs finish, then the worker is closed. | Grace period (shared with step 1) |
 | 3. Lifecycle hooks | `app.close()` runs Nest's `onModuleDestroy` / `beforeApplicationShutdown` / `onApplicationShutdown` hooks, so every provider releases what it owns. | 15s |
@@ -23,9 +24,10 @@ run when a module is closed outside a signal, for example in tests.
 
 - `0`: everything drained and closed.
 - `1`: the grace period expired with requests or jobs still in progress, or a
-  resource failed to close. The logs name the step and resource that failed.
-  They include resource names and timings only, never job payloads or
-  connection strings.
+  resource failed to close. The logs name the step and resource that failed;
+  when jobs are still active they include the worker name and up to 20 job ids.
+  They include resource and job identifiers and timings only, never job
+  payloads or connection strings.
 
 When the grace period expires, remaining HTTP connections are destroyed and
 busy workers are force-closed. The interrupted jobs' locks lapse, and BullMQ's

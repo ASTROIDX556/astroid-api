@@ -13,13 +13,16 @@ import { GLOBAL_PREFIX_EXCLUDED_ROUTES } from './common/constants/global-prefix'
 import { buildSwaggerConfig } from './common/openapi/swagger-config';
 import { assertValidEnvironment, EnvironmentValidationError } from './config/env.validation';
 import { PrismaService } from './database/prisma.service';
+import { configureSensitiveFields } from './common/helpers/audit-sanitizer';
 
 async function bootstrap() {
   // Fail fast on missing or malformed configuration, before any module is
   // constructed or any connection is opened. `.env` has already been merged
   // into `process.env` at this point: `ConfigModule.forRoot` loads it when
   // `AppModule` is imported.
-  assertValidEnvironment(process.env);
+  const environment = assertValidEnvironment(process.env);
+  // Deployment-specific redaction keys, applied before the logger is built.
+  configureSensitiveFields(environment.LOG_REDACT_FIELDS);
 
   // `NestFactory.create` awaits every module's `onModuleInit`, and
   // `PrismaService.onModuleInit` connects and then unconditionally validates
