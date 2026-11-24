@@ -2,7 +2,6 @@ import { Body, Controller, Delete, Get, Param, Post, Query } from '@nestjs/commo
 import {
   ApiOperation,
   ApiTags,
-  ApiBearerAuth,
   ApiParam,
   ApiBody,
 } from '@nestjs/swagger';
@@ -32,10 +31,12 @@ import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 import { AuthenticatedUser } from '../../common/interfaces/authenticated-user.interface';
 import { PaginationQuery, paginationQuerySchema } from '../../common/helpers/pagination';
 import { ApiPaginationQuery } from '../../common/decorators/api-pagination-query.decorator';
+import { ApiAuthenticated } from '../../common/decorators/api-authenticated.decorator';
 
 @ApiTags('developer')
-@ApiBearerAuth('access-token')
+@ApiAuthenticated()
 @Controller('developer/api-keys')
+@ApiErrorResponses({ unauthorized: true, forbidden: true, tooManyRequests: true, serverError: true })
 export class ApiKeyController {
   constructor(private readonly apiKeyService: ApiKeyService) {}
 

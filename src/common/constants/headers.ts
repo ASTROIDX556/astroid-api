@@ -15,3 +15,7 @@ export const IDEMPOTENT_REPLAY_HEADER = 'idempotent-replay';
 export const IDEMPOTENCY_REPLAYED_HEADER = 'idempotency-replayed';
 /** Total number of rows matching a list request, set on every paginated response. */
 export const TOTAL_COUNT_HEADER = 'x-total-count';
+export const RATE_LIMIT_LIMIT_HEADER = 'X-RateLimit-Limit';
+export const RATE_LIMIT_REMAINING_HEADER = 'X-RateLimit-Remaining';
+export const RATE_LIMIT_RESET_HEADER = 'X-RateLimit-Reset';
+export const RETRY_AFTER_HEADER = 'Retry-After';

@@ -1,17 +1,90 @@
 # Rate Limiting
 
-The API protects itself with three independent rate limiters. Every limiter
+The API protects itself with several independent rate limiters. Every limiter
 keeps its counters in Redis, so the limits hold across all replicas of the
 service.
 
 | Limiter | Scope | Where it is applied |
 | --- | --- | --- |
 | `AstroidThrottlerGuard` | Per API key → per user → per organization → per IP | Every route (global guard) |
+| `CredentialRateLimitGuard` | Per verified API key → per user → per IP, minute **and** day quota | Every route except health/readiness and `/metrics` (global guard) |
 | `AgentThrottlerGuard` | Per acting agent → per organization → per API key → per IP | Agent-facing controllers |
 | `SlidingWindowThrottlerGuard` | Per acting agent → per API key → per organization → per IP | Transaction submission, agent commands, webhook ingress |
-| `PublicRateLimiterGuard` | Per IP (and API key when present) | Unauthenticated routes |
+| `PublicRateLimitGuard` | Per IP (and API key when present) | Unauthenticated routes |
 | `AgentRateLimiterGuard` | Per agent, with the limit taken from the agent metadata | `POST /agents/:id/execute` |
 | `SensitiveRateLimitGuard` | Per route, then per client IP or per API key / user | Login, refresh, API-key creation, webhook creation and secret rotation |
+
+## Per-credential quota
+
+`CredentialRateLimitGuard` is a global guard registered **after** authentication,
+so the counter is keyed by the identity the authentication guards verified:
+
+1. the API key id (`apikey:<id>`) — never the raw key or an unverified header,
+2. the JWT subject (`user:<id>`),
+3. the client IP (`ip:<address>`), honouring `x-forwarded-for` only when
+   `PUBLIC_RATE_LIMIT_TRUST_PROXY` is enabled.
+
+Every request is measured against **two fixed windows at once**: requests per
+minute and requests per day. A request is counted only when it fits in both;
+rejected requests consume nothing.
+
+| Budget | Default | Variable | Per-key override |
+| --- | --- | --- | --- |
+| Requests per minute | `120` | `RATE_LIMIT_CREDENTIAL_PER_MINUTE` | `rateLimitPerMinute` |
+| Requests per day | `10000` | `RATE_LIMIT_CREDENTIAL_PER_DAY` | `rateLimitPerDay` |
+| Length of the day window | `86400` s | `RATE_LIMIT_CREDENTIAL_DAY_WINDOW_SECONDS` | — |
+
+Overrides are set when the key is created (`POST /developer/api-keys`), copied to
+the replacement on rotation, and cached in Redis for
+`RATE_LIMIT_CREDENTIAL_QUOTA_CACHE_SECONDS` (default `60`) so a request that
+carries only a credential id does not need a database read. A missing or
+malformed override keeps the configured default.
+
+### Counting
+
+The check is a single Lua script
+(`src/common/throttler/scripts/credential-rate-limit.lua.ts`) executed with
+`EVAL`, so reading and incrementing both counters is atomic: 50 concurrent
+requests against a budget of 10 let exactly 10 through, on any number of
+replicas.
+
+- The clock is read with Redis `TIME` inside the script, so app-server clock
+  skew cannot move a window.
+- Windows are aligned to absolute epoch multiples (`floor(now / window) *
+  window`), so every replica agrees on the current bucket without coordination
+  and the day window rolls over at UTC midnight.
+- Counters expire with `PEXPIREAT` at the absolute window end, which stays
+  correct for very long windows (a 30-day window is simply a larger multiple).
+- Counters and their deadlines live in Redis, not in process memory, so a
+  restart of the API — or of a replica — does not reset anyone's budget.
+
+### Responses
+
+Every response carries the quota of the window **closest to exhaustion**
+(measured as the fraction of its budget still available):
+
+- `X-RateLimit-Limit` — budget of that window,
+- `X-RateLimit-Remaining` — requests left in it,
+- `X-RateLimit-Reset` — Unix seconds at which it rolls over.
+
+Exceeding either window answers **HTTP 429** (`RATE_LIMITED`) with the standard
+problem-details body (`details.limit`, `details.retryAfterSeconds`,
+`details.resetAt`) and a `Retry-After` header holding the seconds until a retry
+could succeed — the latest reset of the exhausted windows, so a spent day
+budget is not advertised as retryable in a minute. All four headers are exposed
+to browser clients through CORS.
+
+### Exemptions and failure policy
+
+Health, readiness and the Prometheus scrape endpoint are exempt through
+`@SkipCredentialRateLimit()`: probes must answer even when their caller is out
+of quota. A revoked or expired key is rejected by authentication with 401
+**before** this guard runs, so it never consumes quota.
+
+If Redis is not `ready` or the check fails, the guard **fails open**: the
+request is allowed and a warning is logged. General traffic should not turn a
+cache outage into an API outage; the credential-issuing routes keep their
+stricter fail-closed policy in `SensitiveRateLimitGuard`.
 
 ## Sensitive routes
 
@@ -146,6 +219,10 @@ allowance and every other key are unchanged, and the value never leaves the
 database — the Redis counter is still keyed by `apikey:<id>`. Null (the
 default) keeps the tier limit.
 
+The same value, together with `rateLimitPerDay`, also overrides the
+[per-credential quota](#per-credential-quota) enforced by
+`CredentialRateLimitGuard`.
+
 ## Configuration
 
 | Variable | Default | Meaning |
@@ -153,11 +230,17 @@ default) keeps the tier limit.
 | `RATE_LIMIT_MAX_REQUESTS` | `120` | Default limit for routes without an explicit `@SlidingWindowLimit`. |
 | `RATE_LIMIT_WINDOW_SECONDS` | `60` | Default window length. |
 | `THROTTLE_API_LIMIT` | `120` | Steady-state limit of the `api` tier. |
-| `THROTTLE_API_BURST_LIMIT` | `10` | Burst limit of the `api` tier. |
+| `THROTTLE_API_BURST` | `10` | Burst limit of the `api` tier. |
 | `THROTTLE_AUTH_LIMIT` | `10` | Steady-state limit of the `auth` tier. |
-| `THROTTLE_AUTH_BURST_LIMIT` | `3` | Burst limit of the `auth` tier. |
+| `THROTTLE_AUTH_BURST` | `3` | Burst limit of the `auth` tier. |
 | `THROTTLE_AGENT_LIMIT` | `300` | Steady-state limit of the `agent` tier. |
+| `THROTTLE_WEBHOOK_LIMIT` | `30` | Steady-state limit of the `webhook` tier. |
+| `THROTTLE_WEBHOOK_BURST` | `5` | Burst limit of the `webhook` tier. |
 | `THROTTLE_TTL` | `60` | Window of the tier throttlers. |
+| `RATE_LIMIT_CREDENTIAL_PER_MINUTE` | `120` | Default per-credential requests per minute. |
+| `RATE_LIMIT_CREDENTIAL_PER_DAY` | `10000` | Default per-credential requests per day. |
+| `RATE_LIMIT_CREDENTIAL_DAY_WINDOW_SECONDS` | `86400` | Length of the per-credential day window. |
+| `RATE_LIMIT_CREDENTIAL_QUOTA_CACHE_SECONDS` | `60` | How long per-key quota overrides stay cached in Redis. |
 | `PUBLIC_RATE_LIMIT_MAX_REQUESTS` | `60` | Limit of the public IP limiter. |
 | `PUBLIC_RATE_LIMIT_WINDOW_SECONDS` | `60` | Window of the public IP limiter. |
 | `RATE_LIMIT_LOGIN_MAX` / `RATE_LIMIT_LOGIN_WINDOW_SECONDS` | `5` / `60` | Login limit per client IP. |
@@ -188,3 +271,14 @@ caches it in Redis for five minutes.
 - `src/common/guards/sensitive-route-rate-limit.http.spec.ts` — requests past
   the limit over HTTP (429, `Retry-After`, problem details) and the 503 and
   fail-open behaviour while Redis is down.
+- `src/common/guards/credential-rate-limit.guard.spec.ts` — identity resolution,
+  per-key overrides and their cache, the quota headers, both exhausted windows,
+  the exemptions and the fail-open policy.
+- `src/common/guards/credential-rate-limit.http.spec.ts` — the same contract over
+  real HTTP, including the problem-details body, per-credential isolation, the
+  readiness exemption and revoked keys.
+- `src/common/throttler/credential-rate-limit.redis.integration.spec.ts` — runs
+  against a real Redis when `REDIS_URL` is set: 50 concurrent requests against a
+  budget of 10, rejected requests consuming nothing, counters surviving a client
+  restart, the independent day window, epoch-aligned buckets and the expiry of a
+  30-day window.

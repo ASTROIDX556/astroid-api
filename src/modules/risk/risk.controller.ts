@@ -2,7 +2,6 @@ import { Body, Controller, Post } from '@nestjs/common';
 import {
   ApiOperation,
   ApiTags,
-  ApiBearerAuth,
   ApiBody,
 } from '@nestjs/swagger';
 import { ApiErrorResponses } from '../../common/decorators/api-error-responses.decorator';
@@ -12,10 +11,12 @@ import { assessRiskSchema, AssessRiskInput, AssessRiskDto } from './risk.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 import { RiskAssessmentDto } from './risk.dto';
+import { ApiAuthenticated } from '../../common/decorators/api-authenticated.decorator';
 
 @ApiTags('risk')
-@ApiBearerAuth('access-token')
+@ApiAuthenticated()
 @Controller('risk')
+@ApiErrorResponses({ unauthorized: true, forbidden: true, tooManyRequests: true, serverError: true })
 export class RiskController {
   constructor(private readonly riskService: RiskService) {}
 

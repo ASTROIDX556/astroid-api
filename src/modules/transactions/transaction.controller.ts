@@ -11,7 +11,6 @@ import {
 import {
   ApiOperation,
   ApiTags,
-  ApiBearerAuth,
   ApiParam,
   ApiBody,
   ApiQuery,
@@ -51,11 +50,13 @@ import {
 import { PaginationQuery, paginationQuerySchema } from '../../common/helpers/pagination';
 import { ApiPaginationQuery } from '../../common/decorators/api-pagination-query.decorator';
 import { ApiPageOrCursorPaginatedEnvelope } from '../../common/decorators/api-envelope.decorator';
+import { ApiAuthenticated } from '../../common/decorators/api-authenticated.decorator';
 
 @ApiTags('transactions')
-@ApiBearerAuth('access-token')
+@ApiAuthenticated()
 @UseGuards(AgentThrottlerGuard)
 @Controller('transactions')
+@ApiErrorResponses({ unauthorized: true, forbidden: true, tooManyRequests: true, serverError: true })
 export class TransactionController {
   constructor(private readonly transactionService: TransactionService) {}
 

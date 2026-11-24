@@ -2,7 +2,6 @@ import { Body, Controller, Get, Post } from '@nestjs/common';
 import {
   ApiOperation,
   ApiTags,
-  ApiBearerAuth,
   ApiBody,
 } from '@nestjs/swagger';
 import { ApiErrorResponses } from '../../common/decorators/api-error-responses.decorator';
@@ -12,13 +11,15 @@ import { AiService } from './ai.service';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 import { AiBriefingDto, ChatMessageDto, AiChatResponseDto, ChatRequestDto } from './ai.dto';
+import { ApiAuthenticated } from '../../common/decorators/api-authenticated.decorator';
 
 const chatSchema = z.object({ message: z.string().min(1).max(2000) });
 type ChatInput = z.infer<typeof chatSchema>;
 
 @ApiTags('ai')
-@ApiBearerAuth('access-token')
+@ApiAuthenticated()
 @Controller('ai')
+@ApiErrorResponses({ unauthorized: true, forbidden: true, tooManyRequests: true, serverError: true })
 export class AiController {
   constructor(private readonly aiService: AiService) {}
 

@@ -2,7 +2,6 @@ import { Controller, Get, Param, Query, Res } from '@nestjs/common';
 import {
   ApiOperation,
   ApiTags,
-  ApiBearerAuth,
   ApiParam,
   ApiQuery,
   ApiProduces,
@@ -40,12 +39,14 @@ import {
   auditResourceIdParamSchema,
   auditTimelineQuerySchema,
 } from './audit-timeline.dto';
+import { ApiAuthenticated } from '../../common/decorators/api-authenticated.decorator';
 
 /** Read-only access to the append-only audit trail. Restricted to auditors/admins. */
 @ApiTags('audit')
-@ApiBearerAuth('access-token')
+@ApiAuthenticated()
 @Controller('audit')
 @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.AUDITOR)
+@ApiErrorResponses({ unauthorized: true, forbidden: true, tooManyRequests: true, serverError: true })
 export class AuditController {
   constructor(
     private readonly auditService: AuditService,

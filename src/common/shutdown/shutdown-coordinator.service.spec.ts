@@ -43,6 +43,7 @@ describe('ShutdownCoordinator', () => {
     close: ReturnType<typeof vi.fn>;
   };
   let queueClose: ReturnType<typeof vi.fn>;
+  let queueActive: ReturnType<typeof vi.fn>;
   let errorLog: ReturnType<typeof vi.spyOn>;
 
   const resource = (name: string, phase: ShutdownPhase, close?: () => Promise<void>) =>
@@ -94,8 +95,10 @@ describe('ShutdownCoordinator', () => {
     queueClose = vi.fn(async () => {
       events.push('queues:queue:webhooks');
     });
+    queueActive = vi.fn(async () => [] as Array<{ id?: string }>);
     Object.defineProperty(queue, 'name', { value: 'webhooks' });
     Object.defineProperty(queue, 'close', { value: queueClose });
+    Object.defineProperty(queue, 'getActive', { value: queueActive });
 
     providers = [
       { instance: host },
@@ -207,6 +210,20 @@ describe('ShutdownCoordinator', () => {
       expect.stringContaining(
         'Worker "webhooks": active jobs did not finish within the 1000ms grace period',
       ),
+    );
+  });
+
+  it('logs the ids of the jobs still active when the grace period expires', async () => {
+    vi.useFakeTimers();
+    worker.pause.mockReturnValue(new Promise(() => undefined));
+    queueActive.mockResolvedValue([{ id: 'job-1' }, { id: 'job-2' }, { id: undefined }]);
+
+    const result = coordinator.shutdown('SIGTERM');
+    await vi.advanceTimersByTimeAsync(GRACE_MS);
+
+    await expect(result).resolves.toBe(1);
+    expect(errorLog).toHaveBeenCalledWith(
+      expect.stringContaining('active jobs: job-1, job-2'),
     );
   });
 

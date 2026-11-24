@@ -1,7 +1,39 @@
-import { describe, expect, it } from 'vitest';
-import { REDACTED, sanitizeAuditPayload, sanitizeLogArguments } from './audit-sanitizer';
+import { afterEach, describe, expect, it } from 'vitest';
+import {
+  configureSensitiveFields,
+  REDACTED,
+  sanitizeAuditPayload,
+  sanitizeLogArguments,
+} from './audit-sanitizer';
+
+afterEach(() => {
+  configureSensitiveFields([]);
+});
 
 describe('sanitizeAuditPayload', () => {
+  it('redacts deployment-specific field names added through LOG_REDACT_FIELDS', () => {
+    configureSensitiveFields(['accountNumber', 'Payout_Details']);
+
+    const out = sanitizeAuditPayload({
+      accountNumber: '1234567890',
+      payoutDetails: { iban: 'DE89370400440532013000' },
+      safe: 'ok',
+    });
+
+    expect(out).toEqual({ accountNumber: REDACTED, payoutDetails: REDACTED, safe: 'ok' });
+    // The built-in list keeps working alongside the configured one.
+    expect(sanitizeAuditPayload({ password: 'hunter2' })).toEqual({ password: REDACTED });
+  });
+
+  it('restores the built-in list when configured with no extra fields', () => {
+    configureSensitiveFields(['accountNumber']);
+    configureSensitiveFields([]);
+
+    expect(sanitizeAuditPayload({ accountNumber: '1234567890' })).toEqual({
+      accountNumber: '1234567890',
+    });
+  });
+
   it('leaves non-object primitives untouched', () => {
     expect(sanitizeAuditPayload('hello')).toBe('hello');
     expect(sanitizeAuditPayload(42)).toBe(42);
