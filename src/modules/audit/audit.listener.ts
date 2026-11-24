@@ -1,16 +1,16 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
+import { Prisma } from '@prisma/client';
 import { AuditService } from './audit.service';
 import { DomainEventEnvelope } from '../../events/domain-event.types';
-import { isAuditEventPayload } from '../../events/audit-event.types';
+import { DomainEventName } from '../../events/event-names';
+import { RequestContext } from '../../common/context/request-context';
+
+const MAX_AUDIT_EVENT_BYTES = 16_384;
+import { DOMAIN_EVENT_ENVELOPE } from '../../events/domain-event.types';
 
 /**
  * Subscribes to every domain event (wildcard) and appends an audit-log row.
- * Governance mutations emit a typed audit payload (see `src/events/audit-event.types.ts`);
- * those are persisted with their own action, resource, before/after snapshots
- * and request id. Any other domain event still gets a generic audit row so no
- * event is silently dropped from the trail.
- *
  * Decoupled by design: a failure here must never affect the originating
  * transaction, so errors are swallowed and logged.
  */
@@ -20,29 +20,54 @@ export class AuditListener {
 
   constructor(private readonly auditService: AuditService) {}
 
-  @OnEvent('**')
+  @OnEvent(DOMAIN_EVENT_ENVELOPE)
   async handleDomainEvent(envelope: DomainEventEnvelope): Promise<void> {
-    if (!envelope?.organizationId) {
+    if (!envelope?.eventId) {
+      return;
+    }
+    // `audit.recorded` events are materialized by the dedicated
+    // `AuditRecordedListener`, which knows how to keep the semantic action.
+    if (envelope.name === DomainEventName.AuditRecorded) {
       return;
     }
     try {
-      const audit = isAuditEventPayload(envelope.payload) ? envelope.payload : undefined;
+      const requestContext = RequestContext.getStore();
+      const organizationId = envelope.organizationId ?? requestContext?.principal?.organizationId;
+      if (!organizationId) {
+        return;
+      }
+      const correlationId = envelope.correlationId ?? requestContext?.identity.correlationId;
+      const value = {
+        eventId: envelope.eventId,
+        occurredAt: envelope.occurredAt.toISOString(),
+        correlationId: correlationId ?? null,
+        success: envelope.name !== 'policy.violated' && !envelope.name.endsWith('.failed'),
+        payload: envelope.payload,
+      };
+      const serialized = JSON.stringify(value);
+      const newValue = Buffer.byteLength(serialized, 'utf8') > MAX_AUDIT_EVENT_BYTES
+        ? {
+            eventId: envelope.eventId,
+            truncated: true,
+            originalBytes: Buffer.byteLength(serialized, 'utf8'),
+            preview: serialized.slice(0, MAX_AUDIT_EVENT_BYTES),
+          }
+        : value;
+
       await this.auditService.record({
-        organizationId: envelope.organizationId,
-        userId: envelope.actorId ?? null,
-        action: audit?.action ?? envelope.name,
-        entity: audit?.resourceType ?? envelope.aggregateType,
-        entityId: audit?.resourceId ?? envelope.aggregateId ?? null,
-        oldValue: audit?.before ?? undefined,
-        newValue: audit
-          ? (audit.after ?? { summary: audit.summary })
-          : (envelope.payload as object),
-        requestId: audit?.requestId ?? envelope.requestId ?? null,
+        organizationId,
+        userId: envelope.actorId ?? requestContext?.principal?.userId ?? null,
+        action: envelope.name,
+        entity: envelope.aggregateType,
+        entityId: envelope.aggregateId ?? null,
+        newValue: newValue as Prisma.InputJsonValue,
+        sourceEventId: envelope.eventId,
+        requestId: correlationId ?? requestContext?.identity.requestId ?? null,
+        ipAddress: requestContext?.identity.ip ?? null,
+        createdAt: envelope.occurredAt,
       });
     } catch (error) {
-      this.logger.error(
-        `Failed to write audit log for '${envelope.name}': ${(error as Error).message}`,
-      );
+      this.logger.error(`Failed to write audit log for '${envelope.name}': ${(error as Error).message}`);
     }
   }
 }

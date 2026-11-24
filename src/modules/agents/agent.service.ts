@@ -4,27 +4,67 @@ import { AgentRepository } from './agent.repository';
 import { AssignWalletInput, CreateAgentInput, UpdateAgentInput } from './agent.dto';
 import { ConflictException, NotFoundException } from '../../common/exceptions/domain.exception';
 import {
-  cursorWhere,
-  paginatePage,
+  buildPaginationMeta,
   PaginationQuery,
   toPrismaPagination,
-} from '../../common/pagination';
+} from '../../common/helpers/pagination';
+import { Paginated } from '../../common/interfaces/api-response.interface';
 import { EventBusService } from '../../events/event-bus.service';
 import { DomainEventName } from '../../events/event-names';
+import { EncryptionService } from '../../common/encryption/encryption.service';
 
+const SORTABLE = ['createdAt', 'name', 'role', 'status'];
 
 /**
  * Manages the lifecycle of autonomous agents: registration, updates, status
  * transitions (pause/reactivate/suspend) and primary-wallet assignment.
+ * Automatically encrypts sensitive agent private keys, credentials, and API secrets
+ * before database persistence, and decrypts on retrieval.
  */
 @Injectable()
 export class AgentService {
   constructor(
     private readonly repository: AgentRepository,
     private readonly eventBus: EventBusService,
+    private readonly encryptionService: EncryptionService,
   ) {}
 
+  /** Encrypts any sensitive fields inside agent metadata. */
+  encryptAgentMetadata(metadata: Record<string, unknown>): Record<string, unknown> {
+    return this.encryptionService.transformSensitiveFields(metadata, 'encrypt');
+  }
+
+  /** Decrypts encrypted sensitive fields inside agent metadata. */
+  decryptAgentMetadata(
+    metadata: Record<string, unknown> | Prisma.JsonValue,
+  ): Record<string, unknown> {
+    if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
+      return {};
+    }
+    return this.encryptionService.transformSensitiveFields(
+      metadata as Record<string, unknown>,
+      'decrypt',
+    );
+  }
+
+  /** Transforms an Agent record by decrypting its sensitive metadata fields. */
+  decryptAgent<T extends Agent | null>(agent: T): T {
+    if (!agent) {
+      return agent;
+    }
+    return {
+      ...agent,
+      metadata: this.decryptAgentMetadata(agent.metadata) as Prisma.JsonValue,
+    };
+  }
+
   async create(organizationId: string, actorId: string, input: CreateAgentInput) {
+    await this.assertHandleIsFree(organizationId, input.name);
+
+    const encryptedMetadata = this.encryptAgentMetadata(
+      this.buildMetadata(input.metadata, input.publicKey),
+    );
+
     const agent = await this.repository.create({
       organization: { connect: { id: organizationId } },
       name: input.name,
@@ -33,14 +73,46 @@ export class AgentService {
       model: input.model,
       role: input.role,
       capabilities: input.capabilities,
-      metadata: input.metadata as Prisma.InputJsonValue,
+      metadata: encryptedMetadata as Prisma.InputJsonValue,
     });
+
     await this.eventBus.emit(
       DomainEventName.AgentRegistered,
       { agentId: agent.id, name: agent.name, role: agent.role },
       { organizationId, actorId, aggregateType: 'agent', aggregateId: agent.id },
     );
-    return agent;
+
+    return this.decryptAgent(agent);
+  }
+
+  /**
+   * Rejects a duplicate agent handle with a structured conflict error instead
+   * of letting two agents share the same name inside an organization.
+   */
+  private async assertHandleIsFree(
+    organizationId: string,
+    name: string,
+    excludeId?: string,
+  ): Promise<void> {
+    const existing = await this.repository.findByNameInOrg(organizationId, name, excludeId);
+    if (existing) {
+      throw new ConflictException(`An agent named '${name}' already exists in this organization`);
+    }
+  }
+
+  /**
+   * Merges the caller supplied metadata with the validated Stellar public key.
+   * The public key has no dedicated column, so it is persisted as metadata.
+   */
+  private buildMetadata(
+    metadata: Record<string, unknown> | undefined,
+    publicKey: string | undefined,
+  ): Record<string, unknown> {
+    const merged: Record<string, unknown> = { ...(metadata ?? {}) };
+    if (publicKey) {
+      merged.stellarPublicKey = publicKey;
+    }
+    return merged;
   }
 
   async list(organizationId: string, query: PaginationQuery) {
@@ -51,12 +123,10 @@ export class AgentService {
     if (query.filter) {
       where.status = query.filter as AgentStatus;
     }
-    const pagination = toPrismaPagination(query);
-    const { items, total } = await this.repository.findManyAndCount(
-      { ...where, ...cursorWhere(query.cursor) },
-      pagination,
-    );
-    return paginatePage(items, total, query);
+    const pagination = toPrismaPagination(query, SORTABLE);
+    const { items, total } = await this.repository.findManyAndCount(where, pagination);
+    const decryptedItems = items.map((agent) => this.decryptAgent(agent));
+    return new Paginated(decryptedItems, buildPaginationMeta(total, query));
   }
 
   async getOrThrow(organizationId: string, id: string): Promise<Agent> {
@@ -64,11 +134,16 @@ export class AgentService {
     if (!agent) {
       throw new NotFoundException('Agent', id);
     }
-    return agent;
+    return this.decryptAgent(agent);
   }
 
   async update(organizationId: string, actorId: string, id: string, input: UpdateAgentInput) {
-    await this.getOrThrow(organizationId, id);
+    const current = await this.getOrThrow(organizationId, id);
+
+    if (input.name !== undefined) {
+      await this.assertHandleIsFree(organizationId, input.name, id);
+    }
+
     const data: Prisma.AgentUpdateInput = {
       name: input.name,
       description: input.description,
@@ -77,8 +152,11 @@ export class AgentService {
       role: input.role,
       capabilities: input.capabilities,
     };
-    if (input.metadata) {
-      data.metadata = input.metadata as Prisma.InputJsonValue;
+    if (input.metadata || input.publicKey !== undefined) {
+      const base =
+        input.metadata ?? ((current.metadata as unknown as Record<string, unknown>) ?? {});
+      const metadata = this.buildMetadata(base, input.publicKey);
+      data.metadata = this.encryptAgentMetadata(metadata) as Prisma.InputJsonValue;
     }
     const agent = await this.repository.update(id, data);
     await this.eventBus.emit(
@@ -86,7 +164,7 @@ export class AgentService {
       { agentId: id },
       { organizationId, actorId, aggregateType: 'agent', aggregateId: id },
     );
-    return agent;
+    return this.decryptAgent(agent);
   }
 
   /** Transitions an agent's status, emitting the matching lifecycle event. */
@@ -102,7 +180,7 @@ export class AgentService {
       { agentId: id, status },
       { organizationId, actorId, aggregateType: 'agent', aggregateId: id },
     );
-    return agent;
+    return this.decryptAgent(agent);
   }
 
   async remove(organizationId: string, actorId: string, id: string) {
@@ -139,6 +217,6 @@ export class AgentService {
       { agentId: id, walletId: input.walletId },
       { organizationId, actorId, aggregateType: 'agent', aggregateId: id },
     );
-    return agent;
+    return this.decryptAgent(agent);
   }
 }

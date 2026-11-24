@@ -1,0 +1,16 @@
+-- CreateIndex
+-- Agent spend windows used by the transaction pipeline:
+-- `WHERE "agentId" = $1 AND "status" IN (...) AND "createdAt" >= $2`
+-- (SpendingLimitService.aggregateSpend, RollingWindowBudgetService,
+-- SpendingPolicyRepository.sumSpentInWindow). The transaction table is the
+-- largest ledger in the system and these aggregates run on every payment, so
+-- the (agentId, status) and (agentId, createdAt) indexes alone force a bitmap
+-- merge or a scan of one dimension. This composite index serves the equality
+-- columns and the trailing time range from a single index.
+--
+-- Built CONCURRENTLY so writes are never blocked. Postgres forbids that inside
+-- a transaction, and Prisma runs a multi-statement migration as one, so this
+-- file must contain exactly this one statement. Prisma records the migration
+-- once, so re-applying it is a no-op; the paired down.sql restores the state
+-- needed to apply it again.
+CREATE INDEX CONCURRENTLY "transactions_agentId_status_createdAt_idx" ON "transactions"("agentId", "status", "createdAt");

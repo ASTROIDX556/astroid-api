@@ -1,26 +1,39 @@
 import { Module } from '@nestjs/common';
 import { BullModule } from '@nestjs/bullmq';
+import { ConfigService } from '@nestjs/config';
 import { WebhookController } from './webhook.controller';
+import { WebhookIngressController } from './webhook-ingress.controller';
+import { WebhookIngressService } from './webhook-ingress.service';
 import { WebhookService } from './webhook.service';
 import { WebhookRepository } from './webhook.repository';
 import { WebhookDispatcher } from './webhook.dispatcher';
 import { WebhookDeliveryService } from './services/webhook-delivery.service';
-import { WebhookWorker } from './workers/webhook.worker';
-import { WebhookRetryPolicy } from './webhook-retry.policy';
+import { WebhookAuditService } from './services/webhook-audit.service';
+import { WebhookAttemptService } from './services/webhook-attempt.service';
+import { WebhookCircuitService } from './services/webhook-circuit.service';
+import { WebhooksProcessor } from './webhooks.processor';
+import { createWebhookQueueOptions } from '../../queues/webhook.queue';
 import { Queues } from '../../queues/queues.constants';
 import { redisConfig } from '../../config/redis.config';
-import {
-  WEBHOOK_BACKOFF_TYPE,
-  loadWebhookRetrySettings,
-} from '../../config/webhook.config';
-
-const retrySettings = loadWebhookRetrySettings();
+import { WebhookConfig } from '../../config/webhook.config';
+import { MetricsModule } from '../metrics/metrics.module';
+import { IdempotencyModule } from '../../common/idempotency/idempotency.module';
+import { EncryptionModule } from '../../common/encryption/encryption.module';
+import { WebhookSignatureGuard } from '../../common/guards/webhook-signature.guard';
+import { SlidingWindowThrottlerGuard } from '../../common/guards/sliding-window-throttler.guard';
+import { WebhookDestinationPolicy } from './webhook-destination.policy';
 
 /**
- * Webhooks module. The dispatcher listens to domain events and queues
- * the curated WEBHOOK_EVENTS set to subscribed external endpoints via BullMQ.
- * Deliveries retry with a capped, jittered backoff and are dead-lettered onto
- * `Queues.WebhookDeadLetter` once they fail permanently (#550).
+ * Webhooks module. The dispatcher listens to domain events and queues the
+ * curated WEBHOOK_EVENTS set to subscribed external endpoints via BullMQ.
+ *
+ * Retry policy (attempts, exponential backoff with jitter and a maximum
+ * delay) and the dead-letter routing live in `@queues/webhook.queue`, so the
+ * API and the worker can never drift apart. The queue is registered from the
+ * resolved configuration, so the operator's values apply. `WebhookAuditService`
+ * records deliveries that exhaust their retries in the compliance audit trail,
+ * and `WebhookCircuitService` pauses the deliveries of an endpoint that keeps
+ * failing.
  */
 @Module({
   imports: [
@@ -32,35 +45,30 @@ const retrySettings = loadWebhookRetrySettings();
         db: redisConfig().db,
       },
     }),
-    BullModule.registerQueue({
+    BullModule.registerQueueAsync({
       name: Queues.Webhooks,
-      defaultJobOptions: {
-        attempts: retrySettings.maxAttempts,
-        backoff: { type: WEBHOOK_BACKOFF_TYPE },
-        removeOnComplete: { count: 1000 },
-        removeOnFail: { age: 24 * 3600 },
-      },
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) =>
+        createWebhookQueueOptions(config.getOrThrow<WebhookConfig>('webhook')),
     }),
-    BullModule.registerQueue({
-      name: Queues.WebhookDeadLetter,
-      defaultJobOptions: {
-        attempts: 1,
-        removeOnComplete: { count: 1000 },
-        removeOnFail: { age: 7 * 24 * 3600 },
-      },
-    }),
+    MetricsModule,
+    IdempotencyModule,
+    EncryptionModule,
   ],
-  controllers: [WebhookController],
+  controllers: [WebhookController, WebhookIngressController],
   providers: [
     WebhookService,
+    WebhookDestinationPolicy,
     WebhookRepository,
     WebhookDispatcher,
     WebhookDeliveryService,
-    WebhookWorker,
-    {
-      provide: WebhookRetryPolicy,
-      useFactory: () => new WebhookRetryPolicy(loadWebhookRetrySettings()),
-    },
+    WebhookAuditService,
+    WebhookAttemptService,
+    WebhookCircuitService,
+    WebhooksProcessor,
+    WebhookIngressService,
+    WebhookSignatureGuard,
+    SlidingWindowThrottlerGuard,
   ],
   exports: [WebhookService],
 })

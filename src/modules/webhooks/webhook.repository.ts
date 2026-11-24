@@ -1,7 +1,8 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma, Webhook } from '@prisma/client';
+import { CursorPayload } from '../../common/pagination/cursor-pagination';
 import { PrismaService } from '../../database/prisma.service';
-import { PrismaPagination } from '../../common/pagination';
+import { PrismaPagination } from '../../common/helpers/pagination';
 
 /**
  * Persistence for Webhook rows. The `secret` column is never selected into list
@@ -33,37 +34,6 @@ export class WebhookRepository {
     return { items, total };
   }
 
-  /** Delivery log for an organization, including permanently failed (DLQ) rows. */
-  async findDeliveriesAndCount(
-    where: Prisma.WebhookDeliveryWhereInput,
-    pagination: PrismaPagination,
-  ) {
-    const [items, total] = await this.prisma.$transaction([
-      this.prisma.webhookDelivery.findMany({
-        where,
-        ...pagination,
-        // The stored payload can be large; the log exposes attempt metadata only.
-        select: {
-          id: true,
-          webhookId: true,
-          eventName: true,
-          eventId: true,
-          status: true,
-          attempts: true,
-          lastError: true,
-          lastStatusCode: true,
-          lastAttemptAt: true,
-          nextAttemptAt: true,
-          deadLetteredAt: true,
-          createdAt: true,
-          updatedAt: true,
-        },
-      }),
-      this.prisma.webhookDelivery.count({ where }),
-    ]);
-    return { items, total };
-  }
-
   findById(organizationId: string, id: string): Promise<Webhook | null> {
     return this.prisma.webhook.findFirst({ where: { id, organizationId } });
   }
@@ -81,5 +51,10 @@ export class WebhookRepository {
 
   delete(id: string): Promise<Webhook> {
     return this.prisma.webhook.delete({ where: { id } });
+  }
+
+  findDeliveryPage(organizationId: string, cursor: CursorPayload | undefined, take: number) {
+    const cursorWhere: Prisma.WebhookDeliveryWhereInput | undefined = cursor ? { OR: [{ createdAt: { lt: cursor.createdAt } }, { createdAt: cursor.createdAt, id: { lt: cursor.id } }] } : undefined;
+    return this.prisma.webhookDelivery.findMany({ where: cursorWhere ? { AND: [{ organizationId }, cursorWhere] } : { organizationId }, take, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }] });
   }
 }

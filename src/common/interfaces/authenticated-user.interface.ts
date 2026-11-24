@@ -1,28 +1,36 @@
 import { UserRole } from '@prisma/client';
 
-/** The authenticated principal attached to each request by the JWT strategy. */
+/** The authenticated principal attached to each request by JWT or API key strategies. */
 export interface AuthenticatedUser {
   id: string;
+  sub?: string;
   organizationId: string;
-  email: string;
+  email?: string;
   role: UserRole;
+  tier?: string;
   sessionId?: string;
+  apiKeyId?: string;
+  createdById?: string | null;
+  scopes?: string[];
+  permissions?: string[];
+  isApiKey?: boolean;
 }
 
-/**
- * The principal attached to the request when it is authenticated with an API
- * key. Scope checks read only from this object; the guard never re-parses the
- * presented credential.
- */
+/** The authenticated principal attached to each request when authenticated with an API key. */
 export interface AuthenticatedApiKey {
   id: string;
+  keyId: string;
+  apiKeyId?: string;
   organizationId: string;
+  createdById?: string | null;
   name: string;
   prefix: string;
-  scopes: string[];
   permissions: string[];
-  revokedAt?: Date | null;
-  expiresAt?: Date | null;
+  scopes: string[];
+  allowedIps: string[];
+  isApiKey: true;
+  role: UserRole;
+  email?: string;
 }
 
 /** Shape of the JWT access-token payload. */
@@ -39,3 +47,4 @@ export interface JwtRefreshPayload {
   sub: string;
   sessionId: string;
 }
+

@@ -11,14 +11,54 @@ export const appEnvSchema = z.object({
   APP_NAME: z.string().default('astroid-api'),
   PORT: z.coerce.number().int().positive().default(3000),
   API_PREFIX: z.string().default('api/v1'),
-  LOG_LEVEL: z
-    .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'])
-    .default('info'),
+  LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
   CORS_ORIGINS: z.string().default('*'),
+  // Extra field names to redact from structured logs and error reports, on top
+  // of the built-in list in src/common/helpers/audit-sanitizer.ts. Comma
+  // separated; matching is case-insensitive and ignores `_`, `-` and spaces.
+  LOG_REDACT_FIELDS: z
+    .string()
+    .default('')
+    .transform((value) =>
+      value
+        .split(',')
+        .map((field) => field.trim())
+        .filter((field) => field.length > 0),
+    ),
 });
 
 export const databaseEnvSchema = z.object({
   DATABASE_URL: z.string().min(1, 'DATABASE_URL is required'),
+  // Connection pool sizing — applied as Prisma `connection_limit` URL params.
+  DATABASE_CONNECTION_LIMIT: z.coerce.number().int().positive().default(10),
+  // Worker pool stays small: background jobs must never starve API traffic.
+  DATABASE_WORKER_CONNECTION_LIMIT: z.coerce.number().int().positive().default(3),
+  // How long a query waits for a free connection before failing fast (ms).
+  // 0 waits indefinitely (Prisma `pool_timeout` semantics).
+  DATABASE_POOL_TIMEOUT_MS: z.coerce.number().int().nonnegative().default(5000),
+  // Client-side guard: fails the promise fast when a query exceeds this (ms).
+  // 0 disables the client-side race (server-side statement_timeout still applies).
+  DATABASE_QUERY_TIMEOUT_MS: z.coerce.number().int().nonnegative().default(5000),
+  // Server-side `statement_timeout` (ms) — Postgres aborts the runaway query so
+  // the pooled connection is actually released. 0 disables the guard.
+  DATABASE_STATEMENT_TIMEOUT_MS: z.coerce.number().int().nonnegative().default(10000),
+  // Extended client-side timeout for the dedicated worker pool (ms). Long-running
+  // worker transactions (rollups, outbox drains) must not be killed by the API
+  // guard; 0 disables the worker guard entirely.
+  DATABASE_WORKER_QUERY_TIMEOUT_MS: z.coerce.number().int().nonnegative().default(60000),
+  // Boot-time migration status check: `strict` aborts startup on pending or
+  // failed migrations, `warn` only logs, `off` skips it. When unset, production
+  // is strict and every other environment warns.
+  DATABASE_MIGRATION_CHECK: z.enum(['strict', 'warn', 'off']).optional(),
+  // Location of the Prisma migrations folder the check compares against.
+  // Defaults to `<cwd>/prisma/migrations`.
+  DATABASE_MIGRATIONS_DIR: z.string().min(1).optional(),
+  // Slow query logging threshold (ms). Queries exceeding this emit a warn log.
+  DATABASE_SLOW_QUERY_THRESHOLD_MS: z.coerce.number().int().positive().default(250),
+  DATABASE_CONNECT_RETRY_ATTEMPTS: z.coerce.number().int().positive().max(10).default(5),
+  DATABASE_CONNECT_RETRY_DELAY_MS: z.coerce.number().int().positive().max(60000).default(1000),
+  DATABASE_MIGRATION_CHECK_ENABLED: z.coerce.boolean().default(true),
+  DATABASE_MIGRATION_CHECK_MODE: z.enum(['halt', 'warn']).default('halt'),
 });
 
 export const redisEnvSchema = z.object({
@@ -26,6 +66,19 @@ export const redisEnvSchema = z.object({
   REDIS_PORT: z.coerce.number().int().positive().default(6379),
   REDIS_PASSWORD: z.string().optional().default(''),
   REDIS_DB: z.coerce.number().int().nonnegative().default(0),
+});
+
+export const balanceCacheEnvSchema = z.object({
+  // Seconds a cached Stellar balance may be served before it is re-read from
+  // the RPC. Keep it short: a confirmed transaction deletes the key, so the TTL
+  // only bounds the staleness window when an invalidation is missed.
+  BALANCE_CACHE_TTL: z.coerce.number().int().min(1).max(3600).default(30),
+  // Namespace of the cache entries. Two deployments (staging, production, …)
+  // that share a Redis instance never share a balance entry.
+  BALANCE_CACHE_ENV: z.string().min(1).default(process.env.NODE_ENV ?? 'development'),
+  // Native XLM balance below which a wallet is reported as low. Read by the
+  // balance cache watcher on every refresh.
+  LOW_XLM_THRESHOLD: z.coerce.number().nonnegative().default(10),
 });
 
 export const authEnvSchema = z.object({
@@ -36,6 +89,7 @@ export const authEnvSchema = z.object({
   PASSKEY_RP_ID: z.string().default('localhost'),
   PASSKEY_RP_NAME: z.string().default('Astroid'),
   PASSKEY_ORIGIN: z.string().default('http://localhost:3001'),
+  API_KEY_ROTATION_GRACE_PERIOD_SECONDS: z.coerce.number().int().positive().default(86400),
 });
 
 export const stellarEnvSchema = z.object({
@@ -47,7 +101,82 @@ export const stellarEnvSchema = z.object({
     .enum(['true', 'false'])
     .default('true')
     .transform((value) => value === 'true'),
+  // Percentage added on top of a simulated gas limit so transactions still fit
+  // when network congestion pushes real usage above the simulation estimate.
+  STELLAR_GAS_SAFETY_BUFFER_PERCENT: z.coerce.number().min(0).max(100).default(25),
+  // Network block gas limit (Soroban CPU instructions per transaction). No
+  // estimate is ever allowed to exceed this ceiling.
+  STELLAR_MAX_GAS_LIMIT: z.coerce.number().int().positive().default(100_000_000),
+  // Static gas limit used when simulation fails or omits a gas estimate.
+  STELLAR_FALLBACK_GAS_LIMIT: z.coerce.number().int().positive().default(1_000_000),
+  // Static fee limit, in stroops, used alongside the fallback gas limit.
+  STELLAR_FALLBACK_FEE_STROOPS: z.coerce.number().int().nonnegative().default(100_000),
+  STELLAR_ANCHOR_ASSETS: z.string().default(''),
+  // Soroban RPC resilience (see src/integrations/stellar/soroban.client.ts).
+  // Per-attempt timeout for an outbound Soroban RPC call.
+  STELLAR_SOROBAN_RPC_TIMEOUT_MS: z.coerce.number().int().positive().max(60_000).default(5_000),
+  // Total attempts per call, including the first. Only timeouts, connection
+  // errors, 5xx and 429 are retried.
+  STELLAR_SOROBAN_RPC_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(3).default(3),
+  // Base and maximum delay of the jittered exponential backoff between attempts.
+  STELLAR_SOROBAN_RPC_RETRY_BASE_DELAY_MS: z.coerce.number().int().positive().default(250),
+  STELLAR_SOROBAN_RPC_RETRY_MAX_DELAY_MS: z.coerce.number().int().positive().default(2_000),
+  // Consecutive failed attempts that open the circuit breaker.
+  STELLAR_SOROBAN_RPC_CIRCUIT_FAILURE_THRESHOLD: z.coerce.number().int().positive().default(5),
+  // How long the circuit stays open before a single half-open probe.
+  STELLAR_SOROBAN_RPC_CIRCUIT_COOLDOWN_MS: z.coerce.number().int().positive().default(30_000),
 });
+
+export const priceOracleEnvSchema = z.object({
+  PRICE_ORACLE_ENABLED: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
+  PRICE_ORACLE_URL: z.string().default(''),
+  PRICE_ORACLE_API_KEY: z.string().default(''),
+  PRICE_ORACLE_TIMEOUT_MS: z.coerce.number().int().positive().max(30_000).default(3_000),
+  PRICE_ORACLE_MAX_AGE_MS: z.coerce.number().int().positive().max(86_400_000).default(300_000),
+  PRICE_ORACLE_STATIC_PRICES: z.string().default(''),
+});
+
+/** Page-size bounds for audit log cursor listing and resource timelines. */
+export const auditPaginationEnvSchemaBase = z.object({
+  AUDIT_PAGE_SIZE_DEFAULT: z.coerce.number().int().min(1).max(1000).default(20),
+  AUDIT_PAGE_SIZE_MAX: z.coerce.number().int().min(1).max(1000).default(100),
+});
+
+function validateAuditPaginationRange(
+  env: { AUDIT_PAGE_SIZE_DEFAULT: number; AUDIT_PAGE_SIZE_MAX: number },
+  ctx: z.RefinementCtx,
+): void {
+  if (env.AUDIT_PAGE_SIZE_DEFAULT > env.AUDIT_PAGE_SIZE_MAX) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['AUDIT_PAGE_SIZE_DEFAULT'],
+      message: `must be less than or equal to AUDIT_PAGE_SIZE_MAX (${env.AUDIT_PAGE_SIZE_MAX})`,
+    });
+  }
+}
+
+/** Standalone schema used by the audit DTOs to read the configured bounds. */
+export const auditPaginationEnvSchema = auditPaginationEnvSchemaBase.superRefine(validateAuditPaginationRange);
+
+export const auditEnvSchemaBase = z.object({
+    AUDIT_ARCHIVE_ENABLED: z.enum(['true', 'false']).default('true').transform((value) => value === 'true'),
+    AUDIT_ARCHIVE_RETENTION_DAYS: z.coerce.number().int().positive().max(3650).default(30),
+    AUDIT_ARCHIVE_BATCH_SIZE: z.coerce.number().int().positive().max(5_000).default(500),
+    AUDIT_ARCHIVE_MAX_BATCHES: z.coerce.number().int().positive().max(1_000).default(20),
+    AUDIT_RETENTION_DAYS: z.coerce.number().int().positive().max(3650).default(90),
+    ...auditPaginationEnvSchemaBase.shape,
+});
+
+export const auditEnvSchema = auditEnvSchemaBase.superRefine((env, ctx) => {
+    if (env.AUDIT_ARCHIVE_RETENTION_DAYS >= env.AUDIT_RETENTION_DAYS) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['AUDIT_ARCHIVE_RETENTION_DAYS'],
+        message: `must be lower than AUDIT_RETENTION_DAYS (${env.AUDIT_RETENTION_DAYS}) so records are archived before they are deleted`,
+      });
+    }
+    validateAuditPaginationRange(env, ctx);
+  });
 
 export const storageEnvSchema = z.object({
   STORAGE_ENDPOINT: z.string().default('http://localhost:9000'),
@@ -57,28 +186,214 @@ export const storageEnvSchema = z.object({
   STORAGE_SECRET_KEY: z.string().default('astroid-secret'),
 });
 
+export const idempotencyEnvSchema = z.object({
+  // Name of the HTTP header carrying the idempotency key. Some proxies reserve
+  // the default name, so deployments may override it without code changes.
+  IDEMPOTENCY_HEADER_NAME: z
+    .string()
+    .trim()
+    .regex(/^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/)
+    .default('Idempotency-Key'),
+  // How long a completed idempotency record stays replayable. After this window
+  // the key is ignored and a fresh request is processed and stored.
+  IDEMPOTENCY_KEY_TTL_HOURS: z.coerce.number().int().positive().max(720).default(24),
+  // How long a duplicate request waits for the in-flight original to finish
+  // before giving up with 409. 0 returns the conflict immediately.
+  IDEMPOTENCY_WAIT_TIMEOUT_MS: z.coerce.number().int().nonnegative().max(60_000).default(5_000),
+  // Poll interval while waiting for an in-flight duplicate request (ms).
+  IDEMPOTENCY_POLL_INTERVAL_MS: z.coerce.number().int().positive().max(5_000).default(100),
+});
+
+export const walletReconciliationEnvSchema = z.object({
+  // Enables the repeatable wallet reconciliation job at boot. The job can
+  // still be triggered on demand when this is false.
+  WALLET_RECONCILIATION_ENABLED: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((value) => value === 'true'),
+  // How often the repeatable reconciliation job runs (minutes).
+  WALLET_RECONCILIATION_INTERVAL_MINUTES: z.coerce.number().int().min(1).max(1_440).default(15),
+  // Wallets reconciled in parallel within a single run.
+  WALLET_RECONCILIATION_CONCURRENCY: z.coerce.number().int().min(1).max(32).default(5),
+  // Native (XLM) balance delta above which a drift event is emitted. The
+  // default (one stroop) reports any real change and ignores rounding noise.
+  WALLET_BALANCE_DRIFT_THRESHOLD: z.coerce.number().nonnegative().max(1_000_000_000).default(0.0000001),
+});
+
+export const approvalEnvSchema = z.object({
+  APPROVAL_TTL_HOURS: z.coerce.number().int().positive().default(72),
+  APPROVAL_SWEEP_INTERVAL_MS: z.coerce.number().int().positive().default(60000),
+  APPROVAL_SWEEP_BATCH_SIZE: z.coerce.number().int().positive().default(100),
+});
+
 export const queueEnvSchema = z.object({
   QUEUE_PREFIX: z.string().default('astroid'),
   QUEUE_CONCURRENCY: z.coerce.number().int().positive().default(5),
+  WEBHOOK_DELIVERY_MAX_ATTEMPTS: z.coerce.number().int().positive().max(25).default(5),
+  WEBHOOK_RETRY_DELAY_MS: z.coerce.number().int().positive().max(300_000).default(2_000),
+  WEBHOOK_HTTP_TIMEOUT_MS: z.coerce.number().int().positive().max(120_000).default(5_000),
+  WEBHOOK_FAILED_JOB_RETENTION_SECONDS: z.coerce.number().int().positive().max(2_592_000).default(86_400),
+  WEBHOOK_DEAD_LETTER_RETENTION_SECONDS: z.coerce.number().int().positive().max(2_592_000).default(604_800),
+  /** Enable the queue observability endpoint (off by default). */
+  QUEUE_OBSERVABILITY_ENABLED: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
+  /** Maximum failed jobs to return per queue (capped at 20). */
+  QUEUE_OBSERVABILITY_MAX_FAILED_JOBS: z.coerce.number().int().min(1).max(20).default(10),
 });
 
+/**
+ * Outbound webhook delivery configuration: the retry policy of the BullMQ
+ * queue and the circuit breaker that protects a failing endpoint.
+ *
+ * The backoff is exponential (`WEBHOOK_BACKOFF_BASE_DELAY_MS` doubling per
+ * attempt) and capped by `WEBHOOK_BACKOFF_MAX_DELAY_MS` so a retry is never
+ * scheduled further away than the cap. The circuit breaker opens after
+ * `WEBHOOK_CIRCUIT_FAILURE_THRESHOLD` consecutive failed attempts against the
+ * same endpoint and stays open for `WEBHOOK_CIRCUIT_COOLDOWN_MS`.
+ */
 export const webhookEnvSchema = z.object({
-  /** Total delivery attempts before a delivery is dead-lettered. */
-  WEBHOOK_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(20).default(6),
-  /** Per-attempt HTTP timeout for the outbound webhook call. */
-  WEBHOOK_TIMEOUT_MS: z.coerce.number().int().positive().default(5_000),
-  /** Fraction of each backoff step applied as +/- jitter. */
-  WEBHOOK_BACKOFF_JITTER_RATIO: z.coerce.number().min(0).max(0.5).default(0.2),
-  /** Comma-separated backoff schedule in milliseconds, one step per retry. */
-  WEBHOOK_BACKOFF_DELAYS_MS: z
+  WEBHOOK_INGRESS_SECRET: z.string().min(32).optional(),
+  // Total delivery attempts (1 initial + retries) before a webhook is dead-lettered.
+  WEBHOOK_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(20).default(5),
+  // Base delay in milliseconds for the exponential backoff between attempts.
+  WEBHOOK_BACKOFF_BASE_DELAY_MS: z.coerce.number().int().min(100).max(600_000).default(2_000),
+  // Upper bound for a single backoff delay (ms).
+  WEBHOOK_BACKOFF_MAX_DELAY_MS: z.coerce.number().int().min(100).max(3_600_000).default(60_000),
+  // Timeout of a single delivery request (ms).
+  WEBHOOK_REQUEST_TIMEOUT_MS: z.coerce.number().int().min(100).max(120_000).default(5_000),
+  // Enables the per-endpoint circuit breaker.
+  WEBHOOK_CIRCUIT_ENABLED: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((value) => value === 'true'),
+  // Consecutive failed attempts against one endpoint before the circuit opens.
+  WEBHOOK_CIRCUIT_FAILURE_THRESHOLD: z.coerce.number().int().min(1).max(100).default(5),
+  // How long the circuit stays open before a probe delivery is allowed (ms).
+  WEBHOOK_CIRCUIT_COOLDOWN_MS: z.coerce.number().int().min(1_000).max(86_400_000).default(300_000),
+});
+
+export const budgetRolloverEnvSchema = z.object({
+  // Enables the repeatable budget period rollover job at boot.
+  BUDGET_ROLLOVER_ENABLED: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((value) => value === 'true'),
+  // Cadence of the repeatable BullMQ job (minutes). Every tick only touches
+  // budgets whose period end is already in the past.
+  BUDGET_ROLLOVER_INTERVAL_MINUTES: z.coerce.number().int().min(1).max(1_440).default(1),
+  // Budgets loaded per page. Pages are processed one at a time so a large
+  // number of budgets never occupies more than this many rows in memory.
+  BUDGET_ROLLOVER_BATCH_SIZE: z.coerce.number().int().min(1).max(1_000).default(100),
+  // Upper bound on pages per run; the next scheduled tick picks up the rest.
+  BUDGET_ROLLOVER_MAX_BATCHES: z.coerce.number().int().min(1).max(1_000).default(20),
+});
+
+export const budgetAlertEnvSchema = z.object({
+  // Comma-separated percentage thresholds (e.g. "80,100") at which a budget
+  // spend emits an alert. Sorted ascending and de-duplicated after parsing.
+  BUDGET_ALERT_THRESHOLDS: z
     .string()
-    .default('30000,60000,300000,900000,1800000'),
+    .default('80,100')
+    .transform((value) =>
+      value
+        .split(',')
+        .map((part) => part.trim())
+        .filter((part) => part.length > 0),
+    )
+    .refine((parts) => parts.length > 0, {
+      message: 'must contain at least one threshold',
+    })
+    .refine(
+      (parts) =>
+        parts.every((part) => /^\d+$/.test(part) && Number(part) >= 1 && Number(part) <= 100),
+      { message: 'must be comma-separated whole percentages between 1 and 100' },
+    )
+    .transform((parts) => Array.from(new Set(parts.map(Number))).sort((a, b) => a - b)),
 });
 
 export const throttleEnvSchema = z.object({
   THROTTLE_AUTH_LIMIT: z.coerce.number().int().positive().default(10),
   THROTTLE_API_LIMIT: z.coerce.number().int().positive().default(120),
+  /** Requests allowed per window for traffic identified as an autonomous agent. */
+  THROTTLE_AGENT_LIMIT: z.coerce.number().int().positive().default(300),
+  THROTTLE_WEBHOOK_LIMIT: z.coerce.number().int().positive().default(30),
   THROTTLE_TTL: z.coerce.number().int().positive().default(60),
+  // Short-term burst allowance per tier (requests per second). A burst window
+  // is intentionally kept very short (1 s) so spikes don't exhaust the full
+  // steady-state quota. Set to 0 to disable burst enforcement.
+  THROTTLE_API_BURST: z.coerce.number().int().nonnegative().default(10),
+  THROTTLE_AUTH_BURST: z.coerce.number().int().nonnegative().default(3),
+  THROTTLE_WEBHOOK_BURST: z.coerce.number().int().nonnegative().default(5),
+});
+
+export const rateLimitEnvSchema = z.object({
+  // Sliding-window size, in seconds, for the Redis-backed rate limiter guard.
+  RATE_LIMIT_WINDOW_SECONDS: z.coerce.number().int().positive().default(60),
+  // Max requests allowed per client within the sliding window.
+  RATE_LIMIT_MAX_REQUESTS: z.coerce.number().int().positive().default(120),
+  // IP-based limiter for unauthenticated routes (@Public() or under
+  // `<API_PREFIX>/public/`), shared across replicas via Redis.
+  PUBLIC_RATE_LIMIT_ENABLED: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((value) => value === 'true'),
+  PUBLIC_RATE_LIMIT_MAX_REQUESTS: z.coerce.number().int().positive().default(60),
+  PUBLIC_RATE_LIMIT_WINDOW_SECONDS: z.coerce.number().int().positive().default(60),
+  // Only enable behind a trusted reverse proxy: the client IP is then read from
+  // the first X-Forwarded-For entry, which clients can otherwise spoof.
+  PUBLIC_RATE_LIMIT_TRUST_PROXY: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
+  // Comma-separated extra identifiers folded into the public bucket key next to
+  // the client IP (`ip`, `apiKey`). Entries are parsed leniently by
+  // `rate-limit.config.ts`; unknown ones are ignored.
+  PUBLIC_RATE_LIMIT_CLIENT_IDENTIFIERS: z.string().default(''),
+  // Per-route limits of the sensitive-route limiter (`@SensitiveRateLimit`). Each
+  // pair is requests allowed per sliding window of that many seconds, counted per
+  // route and per caller (the client IP before login, the principal after it).
+  RATE_LIMIT_LOGIN_MAX: z.coerce.number().int().positive().default(5),
+  RATE_LIMIT_LOGIN_WINDOW_SECONDS: z.coerce.number().int().positive().default(60),
+  RATE_LIMIT_REFRESH_MAX: z.coerce.number().int().positive().default(30),
+  RATE_LIMIT_REFRESH_WINDOW_SECONDS: z.coerce.number().int().positive().default(60),
+  RATE_LIMIT_API_KEY_CREATE_MAX: z.coerce.number().int().positive().default(10),
+  RATE_LIMIT_API_KEY_CREATE_WINDOW_SECONDS: z.coerce.number().int().positive().default(3600),
+  RATE_LIMIT_WEBHOOK_CREATE_MAX: z.coerce.number().int().positive().default(20),
+  RATE_LIMIT_WEBHOOK_CREATE_WINDOW_SECONDS: z.coerce.number().int().positive().default(3600),
+  RATE_LIMIT_WEBHOOK_ROTATE_MAX: z.coerce.number().int().positive().default(10),
+  RATE_LIMIT_WEBHOOK_ROTATE_WINDOW_SECONDS: z.coerce.number().int().positive().default(3600),
+  RATE_LIMIT_CREDENTIAL_PER_MINUTE: z.coerce.number().int().positive().default(120),
+  RATE_LIMIT_CREDENTIAL_PER_DAY: z.coerce.number().int().positive().default(10000),
+  RATE_LIMIT_CREDENTIAL_DAY_WINDOW_SECONDS: z.coerce.number().int().positive().default(86400),
+  RATE_LIMIT_CREDENTIAL_QUOTA_CACHE_SECONDS: z.coerce.number().int().positive().default(60),
+});
+
+export const healthEnvSchema = z.object({
+  // Readiness reports pending Prisma migrations. Set to `false` to skip that
+  // check, e.g. in local development against a scratch database.
+  HEALTH_CHECK_MIGRATIONS_ENABLED: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((value) => value === 'true'),
+});
+
+export const metricsEnvSchema = z.object({
+  // Comma-separated CIDR ranges permitted to scrape /metrics. Defaults to
+  // loopback + RFC1918 private ranges so the endpoint is internal-only unless
+  // explicitly opened up (e.g. for a Prometheus server outside the VPC).
+  METRICS_ALLOWED_IPS: z
+    .string()
+    .default('127.0.0.1/32,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16'),
+});
+
+export const shutdownEnvSchema = z.object({
+  // How long in-flight HTTP requests and BullMQ jobs may run after SIGTERM /
+  // SIGINT before they are forcibly terminated (ms). Keep this plus ~10s of
+  // resource-close headroom below the orchestrator's kill deadline (Kubernetes
+  // terminationGracePeriodSeconds defaults to 30s).
+  SHUTDOWN_GRACE_PERIOD_MS: z.coerce.number().int().positive().default(20_000),
 });
 
 export const aiEnvSchema = z.object({
@@ -89,14 +404,172 @@ export const aiEnvSchema = z.object({
 });
 
 /**
+ * Publicly known development default for `ENCRYPTION_KEY`. Convenient locally,
+ * but anything encrypted with it is readable by anyone with the source code, so
+ * {@link environmentSchema} rejects it in production.
+ */
+export const INSECURE_DEFAULT_ENCRYPTION_KEY =
+  '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+
+export const encryptionEnvSchema = z.object({
+  // Legacy alias accepted as a fallback when ENCRYPTION_KEY is unset.
+  ENCRYPTION_MASTER_KEY: z.string().optional(),
+  ENCRYPTION_KEY: z
+    .string()
+    .default(INSECURE_DEFAULT_ENCRYPTION_KEY)
+    .refine(
+      (key) => {
+        if (!key) return false;
+        if (/^[0-9a-fA-F]{64}$/.test(key)) return true;
+        if (Buffer.byteLength(key, 'utf8') === 32) return true;
+        try {
+          const buf = Buffer.from(key, 'base64');
+          if (buf.length === 32) return true;
+        } catch {
+          return false;
+        }
+        return false;
+      },
+      { message: 'ENCRYPTION_KEY must be a 32-byte (256-bit) key (64 hex characters or 32 bytes)' },
+    ),
+  ENCRYPTION_ALGORITHM: z.string().default('aes-256-gcm'),
+});
+
+/**
+ * The complete configuration contract: every environment variable the API reads,
+ * composed from the per-slice schemas above so there is a single source of truth.
+ * Validated once at boot by {@link assertValidEnvironment}, before any module is
+ * constructed, so every problem is reported together instead of one slice at a
+ * time from deep inside Nest's module initialization.
+ *
+ * Production additionally rejects insecure-but-valid values that are fine for
+ * local development.
+ */
+export const environmentSchema = z
+  .object({
+    ...appEnvSchema.shape,
+    ...databaseEnvSchema.shape,
+    ...redisEnvSchema.shape,
+    ...balanceCacheEnvSchema.shape,
+    ...authEnvSchema.shape,
+    ...stellarEnvSchema.shape,
+    ...storageEnvSchema.shape,
+    ...priceOracleEnvSchema.shape,
+    ...auditEnvSchemaBase.shape,
+    ...queueEnvSchema.shape,
+    ...idempotencyEnvSchema.shape,
+    ...walletReconciliationEnvSchema.shape,
+    ...approvalEnvSchema.shape,
+    ...webhookEnvSchema.shape,
+    ...budgetAlertEnvSchema.shape,
+    ...budgetRolloverEnvSchema.shape,
+    ...throttleEnvSchema.shape,
+    ...rateLimitEnvSchema.shape,
+    ...metricsEnvSchema.shape,
+    ...shutdownEnvSchema.shape,
+    ...healthEnvSchema.shape,
+    ...aiEnvSchema.shape,
+    ...encryptionEnvSchema.shape,
+  })
+  .superRefine((env, ctx) => {
+    if (env.AUDIT_ARCHIVE_RETENTION_DAYS >= env.AUDIT_RETENTION_DAYS) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['AUDIT_ARCHIVE_RETENTION_DAYS'],
+        message: `must be lower than AUDIT_RETENTION_DAYS (${env.AUDIT_RETENTION_DAYS}) so records are archived before they are deleted`,
+      });
+    }
+    validateAuditPaginationRange(env, ctx);
+    if (env.NODE_ENV !== 'production') {
+      return;
+    }
+
+    if (env.ENCRYPTION_KEY === INSECURE_DEFAULT_ENCRYPTION_KEY) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['ENCRYPTION_KEY'],
+        message:
+          'must be set to a unique secret in production; the built-in development default is publicly known',
+      });
+    }
+
+    if (env.JWT_ACCESS_SECRET === env.JWT_REFRESH_SECRET) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['JWT_REFRESH_SECRET'],
+        message: 'must differ from JWT_ACCESS_SECRET in production',
+      });
+    }
+  });
+
+export type Environment = z.infer<typeof environmentSchema>;
+
+/** A single failing configuration key, safe to log (never contains the value). */
+export interface EnvironmentIssue {
+  key: string;
+  message: string;
+}
+
+/**
+ * Thrown when the environment does not satisfy {@link environmentSchema}. The
+ * message lists every failing variable so an operator can fix them all in one
+ * pass; it never includes the offending values, which may be secrets.
+ */
+export class EnvironmentValidationError extends Error {
+  constructor(readonly issues: EnvironmentIssue[]) {
+    super(
+      [
+        `Invalid environment configuration (${issues.length} problem${issues.length === 1 ? '' : 's'}):`,
+        ...issues.map((issue) => `  - ${issue.key}: ${issue.message}`),
+        'Fix the variables above (see .env.example and docs/configuration.md) and restart.',
+      ].join('\n'),
+    );
+    this.name = 'EnvironmentValidationError';
+  }
+}
+
+/**
+ * Converts a Zod issue into a value-free message. Zod's defaults can echo the
+ * received value (e.g. for enums), which must never reach logs for secrets.
+ */
+function describeIssue(issue: z.ZodIssue): string {
+  switch (issue.code) {
+    case z.ZodIssueCode.invalid_type:
+      return issue.received === 'undefined'
+        ? 'is required but was not set'
+        : `must be a valid ${issue.expected}`;
+    case z.ZodIssueCode.invalid_enum_value:
+      return `must be one of: ${issue.options.join(', ')}`;
+    default:
+      return issue.message;
+  }
+}
+
+/**
+ * Validates the full process environment against {@link environmentSchema} and
+ * returns the parsed configuration (defaults applied, transforms resolved).
+ *
+ * @throws EnvironmentValidationError listing every failing variable.
+ */
+export function assertValidEnvironment(env: NodeJS.ProcessEnv): Environment {
+  const result = environmentSchema.safeParse(env);
+  if (!result.success) {
+    throw new EnvironmentValidationError(
+      result.error.issues.map((issue) => ({
+        key: issue.path.join('.') || '(root)',
+        message: describeIssue(issue),
+      })),
+    );
+  }
+  return result.data;
+}
+
+/**
  * Validates a slice of the environment against a schema, throwing a readable
  * error that lists every failing variable. Returns the schema's OUTPUT type
  * (defaults applied, transforms resolved).
  */
-export function validateEnv<T extends z.ZodTypeAny>(
-  schema: T,
-  env: NodeJS.ProcessEnv,
-): z.infer<T> {
+export function validateEnv<T extends z.ZodTypeAny>(schema: T, env: NodeJS.ProcessEnv): z.infer<T> {
   const result = schema.safeParse(env);
   if (!result.success) {
     const issues = result.error.issues

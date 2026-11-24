@@ -1,4 +1,8 @@
 import { Module } from '@nestjs/common';
+import { BullModule } from '@nestjs/bullmq';
+import { Queues } from './queues.constants';
+import { DlqProcessor } from './dlq.processor';
+export { DEFAULT_JOB_OPTIONS } from './queue-policy';
 
 /**
  * Central queue plumbing. The BullMQ connections and named queues are provisioned
@@ -9,8 +13,26 @@ import { Module } from '@nestjs/common';
  * below are the public surface every worker uses.
  */
 @Module({
-  providers: [],
-  exports: [],
+  imports: [
+    BullModule.registerQueue({
+      name: Queues.DeadLetter,
+      defaultJobOptions: {
+        attempts: 1,
+        removeOnComplete: { count: 5_000 },
+        removeOnFail: { age: 7 * 24 * 3_600, count: 5_000 },
+      },
+    }),
+    BullModule.registerQueue({
+      name: Queues.ApprovalSweep,
+      defaultJobOptions: {
+        attempts: 3,
+        removeOnComplete: { count: 100 },
+        removeOnFail: { count: 100 },
+      },
+    }),
+  ],
+  providers: [DlqProcessor],
+  exports: [BullModule, DlqProcessor],
 })
 export class QueueModule {}
 
@@ -21,12 +43,7 @@ export const QueueTokens = {
   StellarSync: Symbol.for('queue:stellar-sync'),
   Analytics: Symbol.for('queue:analytics'),
   Reports: Symbol.for('queue:reports'),
-} as const;
-
-/** Default job options for every queue: bounded retries with backoff. */
-export const DEFAULT_JOB_OPTIONS = {
-  attempts: 3,
-  backoff: { type: 'exponential' as const, delay: 1_000 },
-  removeOnComplete: { count: 1_000 },
-  removeOnFail: { age: 24 * 3_600 },
+  Transactions: Symbol.for('queue:transactions'),
+  RiskAnalysis: Symbol.for('queue:risk-analysis'),
+  DeadLetter: Symbol.for('queue:dead-letter'),
 } as const;

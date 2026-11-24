@@ -4,12 +4,13 @@ import { MemoryRepository } from './memory.repository';
 import { CreateMemoryInput } from './memory.dto';
 import { NotFoundException } from '../../common/exceptions/domain.exception';
 import {
-  cursorWhere,
-  paginatePage,
+  buildPaginationMeta,
   PaginationQuery,
   toPrismaPagination,
-} from '../../common/pagination';
+} from '../../common/helpers/pagination';
+import { Paginated } from '../../common/interfaces/api-response.interface';
 
+const SORTABLE = ['createdAt', 'risk'];
 
 /**
  * The financial memory: an append-only record of what an agent did and *why*.
@@ -48,12 +49,9 @@ export class MemoryService {
       // Filter by agentId when provided.
       where.agentId = query.filter;
     }
-    const pagination = toPrismaPagination(query);
-    const { items, total } = await this.repository.findManyAndCount(
-      { ...where, ...cursorWhere(query.cursor) },
-      pagination,
-    );
-    return paginatePage(items, total, query);
+    const pagination = toPrismaPagination(query, SORTABLE);
+    const { items, total } = await this.repository.findManyAndCount(where, pagination);
+    return new Paginated(items, buildPaginationMeta(total, query));
   }
 
   async getOrThrow(organizationId: string, id: string) {

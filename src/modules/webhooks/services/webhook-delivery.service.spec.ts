@@ -1,7 +1,9 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { ConfigService } from '@nestjs/config';
 import { WebhookDeliveryService } from './webhook-delivery.service';
 import { Queue } from 'bullmq';
 import { WebhookJobData } from '../types/webhook-job.types';
+import { DEFAULT_WEBHOOK_CONFIG } from '../../../config/webhook.config';
 
 describe('WebhookDeliveryService', () => {
   let service: WebhookDeliveryService;
@@ -11,14 +13,16 @@ describe('WebhookDeliveryService', () => {
     mockQueue = {
       add: vi.fn().mockResolvedValue({ id: 'job-1' }),
     } as unknown as Queue<WebhookJobData>;
-    service = new WebhookDeliveryService(mockQueue);
+    const config = {
+      getOrThrow: vi.fn().mockReturnValue(DEFAULT_WEBHOOK_CONFIG),
+    } as unknown as ConfigService;
+    service = new WebhookDeliveryService(mockQueue, config);
   });
 
   const createJobData = (overrides: Partial<WebhookJobData> = {}): WebhookJobData => ({
     webhookId: 'webhook-1',
     organizationId: 'org-1',
     url: 'https://example.com/webhook',
-    secret: 'secret-key',
     eventName: 'transaction.created',
     payload: { id: 'txn-1' },
     eventId: 'event-1',
@@ -31,13 +35,23 @@ describe('WebhookDeliveryService', () => {
 
     expect(mockQueue.add).toHaveBeenCalledWith(
       'webhook-delivery',
-      jobData,
-      {
-        attempts: 6,
-        backoff: { type: 'astroid-webhook-backoff' },
+      expect.objectContaining({
+        ...jobData,
+        metadata: {
+          requestId: expect.any(String),
+          correlationId: expect.any(String),
+          traceId: expect.any(String),
+        },
+      }),
+      expect.objectContaining({
+        attempts: 5,
+        backoff: {
+          type: 'custom',
+          delay: 2000,
+        },
         removeOnComplete: { count: 1000 },
-        removeOnFail: { age: 24 * 3600 },
-      },
+        removeOnFail: { age: 24 * 3600, count: 5_000 },
+      }),
     );
   });
 
@@ -47,7 +61,7 @@ describe('WebhookDeliveryService', () => {
 
     expect(mockQueue.add).toHaveBeenCalledWith(
       'webhook-delivery',
-      jobData,
+      expect.objectContaining({ ...jobData, metadata: expect.objectContaining({ requestId: expect.any(String) }) }),
       expect.any(Object),
     );
   });
@@ -58,7 +72,7 @@ describe('WebhookDeliveryService', () => {
 
     expect(mockQueue.add).toHaveBeenCalledWith(
       'webhook-delivery',
-      jobData,
+      expect.objectContaining({ ...jobData, metadata: expect.objectContaining({ requestId: expect.any(String) }) }),
       expect.any(Object),
     );
   });
@@ -70,7 +84,7 @@ describe('WebhookDeliveryService', () => {
 
     expect(mockQueue.add).toHaveBeenCalledWith(
       'webhook-delivery',
-      jobData,
+      expect.objectContaining({ ...jobData, metadata: expect.objectContaining({ requestId: expect.any(String) }) }),
       expect.any(Object),
     );
   });
@@ -83,20 +97,25 @@ describe('WebhookDeliveryService', () => {
     await expect(service.queueDelivery(jobData)).rejects.toThrow('Redis connection failed');
   });
 
-  it('uses the worker-registered capped backoff schedule', async () => {
+  it('configures the custom backoff strategy with 2000ms base delay', async () => {
     const jobData = createJobData();
     await service.queueDelivery(jobData);
 
     const callArgs = vi.mocked(mockQueue.add).mock.calls[0];
-    expect(callArgs?.[2]?.backoff).toEqual({ type: 'astroid-webhook-backoff' });
+    // The `custom` type is what makes BullMQ use the registered jittered and
+    // capped backoff strategy.
+    expect(callArgs?.[2]?.backoff).toEqual({
+      type: 'custom',
+      delay: 2000,
+    });
   });
 
-  it('configures the default 6 attempts', async () => {
+  it('configures 5 retry attempts', async () => {
     const jobData = createJobData();
     await service.queueDelivery(jobData);
 
     const callArgs = vi.mocked(mockQueue.add).mock.calls[0];
-    expect(callArgs?.[2]?.attempts).toBe(6);
+    expect(callArgs?.[2]?.attempts).toBe(5);
   });
 
   it('configures job removal after 1000 completed jobs', async () => {
@@ -112,7 +131,16 @@ describe('WebhookDeliveryService', () => {
     await service.queueDelivery(jobData);
 
     const callArgs = vi.mocked(mockQueue.add).mock.calls[0];
-    expect(callArgs?.[2]?.removeOnFail).toEqual({ age: 24 * 3600 });
+    expect(callArgs?.[2]?.removeOnFail).toEqual({ age: 24 * 3600, count: 5_000 });
+  });
+
+  it('does not include the subscriber URL in queue logs', async () => {
+    const logger = { debug: vi.fn(), error: vi.fn() };
+    Object.assign(service, { logger });
+
+    await service.queueDelivery(createJobData({ url: 'https://example.com/hook?token=secret-value' }));
+
+    expect(logger.debug.mock.calls.flat().join(' ')).not.toContain('secret-value');
   });
 
   it('handles queueing multiple webhooks sequentially', async () => {

@@ -1,11 +1,111 @@
 import { z } from 'zod';
 
+export const assetLimitSchema = z.object({
+  maxAmount: z.number().nonnegative().optional(),
+  minAmount: z.number().nonnegative().optional(),
+  dailyLimit: z.number().nonnegative().optional(),
+  weeklyLimit: z.number().nonnegative().optional(),
+  monthlyLimit: z.number().nonnegative().optional(),
+}).strict();
+export const assetLimitsSchema = z.record(z.string().min(1).max(12), assetLimitSchema);
+
+/**
+ * The window a velocity rule is measured over.
+ */
+export const policyVelocityWindowSchema = z.enum(['minute', 'hour', 'day', 'week', 'month']);
+export type PolicyVelocityWindow = z.infer<typeof policyVelocityWindowSchema>;
+
+/**
+ * A time window expressed in local time. `timezone` is an IANA identifier
+ * (e.g. `Europe/Lisbon`); when it is omitted the window is interpreted in UTC.
+ */
+export const policyTimeWindowSchema = z
+  .object({
+    startHour: z.number().int().min(0).max(23),
+    endHour: z.number().int().min(1).max(24),
+    days: z.array(z.number().int().min(0).max(6)).optional(),
+    timezone: z.string().min(1).max(64).optional(),
+  })
+  .strict();
+
+/**
+ * Velocity rule: caps how many transactions may be executed inside a rolling
+ * window, independently of the amount they move.
+ */
+export const policyVelocitySchema = z
+  .object({
+    maxTransactions: z.number().int().positive(),
+    window: policyVelocityWindowSchema,
+  })
+  .strict();
+
+/** Fields a rule condition can be evaluated against. */
+export const policyRuleFieldSchema = z.enum([
+  'amount',
+  'asset',
+  'recipientAddress',
+  'agentId',
+  'hourOfDay',
+  'dayOfWeek',
+  'transactionCount',
+]);
+export type PolicyRuleField = z.infer<typeof policyRuleFieldSchema>;
+
+/** Comparison operators supported by a rule condition. */
+export const policyRuleOperatorSchema = z.enum([
+  'eq',
+  'neq',
+  'gt',
+  'gte',
+  'lt',
+  'lte',
+  'in',
+  'notIn',
+]);
+export type PolicyRuleOperator = z.infer<typeof policyRuleOperatorSchema>;
+
+/** A single condition inside a rule group. */
+export const policyRuleConditionSchema = z
+  .object({
+    field: policyRuleFieldSchema,
+    operator: policyRuleOperatorSchema,
+    value: z.union([z.string(), z.number(), z.boolean(), z.array(z.string())]),
+  })
+  .strict();
+
+/**
+ * A group of conditions that are combined with `AND` (all must hold) or `OR`
+ * (at least one must hold). A group that does not hold produces a violation.
+ */
+export const policyRuleGroupSchema = z
+  .object({
+    id: z.string().min(1).max(64).optional(),
+    logic: z.enum(['AND', 'OR']).default('AND'),
+    conditions: z.array(policyRuleConditionSchema).min(1).max(20),
+  })
+  .strict()
+  .refine(
+    (group) =>
+      group.conditions.every((condition) =>
+        condition.operator === 'in' || condition.operator === 'notIn'
+          ? Array.isArray(condition.value)
+          : !Array.isArray(condition.value),
+      ),
+    {
+      message:
+        'Conditions using the in/notIn operators require an array value; every other operator requires a scalar value',
+    },
+  );
+
+export type PolicyRuleCondition = z.infer<typeof policyRuleConditionSchema>;
+export type PolicyRuleGroup = z.infer<typeof policyRuleGroupSchema>;
+
 /**
  * The JSONB `configuration` shape stored on a Policy. A single flexible object
  * lets us support many policy types (max/min amount, asset allow/block,
- * recipient allow/block, periodic budgets, time windows, approval) without
- * schema migrations. All fields are optional; the engine only enforces those
- * that are present.
+ * recipient allow/block, periodic budgets, time windows, velocity limits,
+ * multi-condition rule groups, approval) without schema migrations. All fields
+ * are optional; the engine only enforces those that are present.
  */
 export const policyConfigurationSchema = z
   .object({
@@ -18,19 +118,32 @@ export const policyConfigurationSchema = z
     dailyLimit: z.number().nonnegative().optional(),
     weeklyLimit: z.number().nonnegative().optional(),
     monthlyLimit: z.number().nonnegative().optional(),
-    /** Allowed hour-of-day window in UTC, inclusive start, exclusive end (0-24). */
-    timeWindow: z
-      .object({
-        startHour: z.number().int().min(0).max(23),
-        endHour: z.number().int().min(1).max(24),
-        days: z.array(z.number().int().min(0).max(6)).optional(),
-      })
-      .optional(),
+    /** Allowed hour-of-day window, inclusive start, exclusive end (0-24). */
+    timeWindow: policyTimeWindowSchema.optional(),
+    /** Caps the number of transactions executed inside a rolling window. */
+    velocity: policyVelocitySchema.optional(),
+    /** Multi-condition rule groups evaluated together. */
+    rules: z.array(policyRuleGroupSchema).optional(),
     requiresApproval: z.boolean().optional(),
     /** Any transaction at or above this amount forces an approval proposal. */
     approvalThreshold: z.number().nonnegative().optional(),
     /** When true, blocks ALL spending (emergency lock / kill switch). */
     emergencyLock: z.boolean().optional(),
+    assetLimits: assetLimitsSchema.optional(),
+    /**
+     * Base currency for the policy's limits.
+     *
+     * Mismatch policy (documented choice): a policy without `baseCurrency`
+     * compares limits in the transaction's native asset — no conversion ever
+     * happens, so cross-asset comparisons cannot occur silently. A policy
+     * with `baseCurrency` has its limits denominated in that currency; the
+     * caller (`PolicyService.prepareIntent`) converts the transaction amounts
+     * and accumulated spend via the price oracle, and evaluation fails closed
+     * (`PriceUnavailableException`) when a required quote is unavailable —
+     * a limit is only ever enforced when the price is known, never treated as
+     * zero.
+     */
+    baseCurrency: z.string().min(1).max(12).optional(),
   })
   .strict();
 
@@ -49,13 +162,8 @@ export const policyConfigurationSchemaStrict = z
     dailyLimit: z.number().positive().optional(),
     weeklyLimit: z.number().positive().optional(),
     monthlyLimit: z.number().positive().optional(),
-    /** Allowed hour-of-day window in UTC, inclusive start, exclusive end (0-24). */
-    timeWindow: z
-      .object({
-        startHour: z.number().int().min(0).max(23),
-        endHour: z.number().int().min(1).max(24),
-        days: z.array(z.number().int().min(0).max(6)).optional(),
-      })
+    /** Allowed hour-of-day window, inclusive start, exclusive end (0-24). */
+    timeWindow: policyTimeWindowSchema
       .refine(
         (data) => !data.days || data.days.length > 0,
         { message: 'timeWindow.days must not be empty when provided' },
@@ -65,6 +173,10 @@ export const policyConfigurationSchemaStrict = z
         { message: 'timeWindow.startHour must be less than timeWindow.endHour' },
       )
       .optional(),
+    /** Caps the number of transactions executed inside a rolling window. */
+    velocity: policyVelocitySchema.optional(),
+    /** Multi-condition rule groups evaluated together. */
+    rules: z.array(policyRuleGroupSchema).max(20).optional(),
     requiresApproval: z.boolean().optional(),
     /** Any transaction at or above this amount forces an approval proposal. */
     approvalThreshold: z.number().nonnegative().optional(),
@@ -80,7 +192,7 @@ export const policyConfigurationSchemaStrict = z
       }
       return true;
     },
-    { message: 'limits.maxAmount must be greater than limits.minAmount when both are specified' },
+    { message: 'maxAmount must be greater than minAmount when both are specified' },
   )
   .refine(
     (data) => {
@@ -120,6 +232,9 @@ export const policyConfigurationSchemaStrict = z
   );
 
 export type PolicyConfiguration = z.infer<typeof policyConfigurationSchema>;
+export type AssetLimitConfiguration = z.infer<typeof assetLimitSchema>;
+export interface AssetTransfer { asset: string; amount: number; recipientAddress?: string }
+export interface SpendPeriods { spentToday: number; spentThisWeek: number; spentThisMonth: number }
 
 /** The transaction intent evaluated against policies. */
 export interface TransactionIntent {
@@ -135,6 +250,21 @@ export interface TransactionIntent {
   spentToday?: number;
   spentThisWeek?: number;
   spentThisMonth?: number;
+  /**
+   * Number of transactions already executed inside the velocity window. Used
+   * by the velocity rule to cap transaction frequency independently of the
+   * amount they move.
+   */
+  transactionCount?: number;
+  /**
+   * Number of transactions already executed per velocity window. Preferred
+   * over {@link TransactionIntent.transactionCount} when a policy declares
+   * more than one velocity window.
+   */
+  transactionCounts?: Partial<Record<PolicyVelocityWindow, number>>;
+  transfers?: AssetTransfer[];
+  spentByAsset?: Record<string, SpendPeriods>;
+  limitCurrency?: string;
 }
 
 export interface PolicyViolation {
@@ -142,6 +272,7 @@ export interface PolicyViolation {
   policyName: string;
   code: string;
   message: string;
+  asset?: string;
 }
 
 export interface PolicyEvaluationResult {

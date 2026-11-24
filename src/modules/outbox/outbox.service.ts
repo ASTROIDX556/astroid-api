@@ -3,6 +3,7 @@ import { PrismaClient } from '@prisma/client';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { Cron, CronExpression } from '@nestjs/schedule';
+import { buildJobOptions } from '../../queues/queue-policy';
 
 interface OutboxEvent {
   id: string;
@@ -42,14 +43,9 @@ export class OutboxService {
 
       for (const event of pendingEvents) {
         try {
-          await this.outboxQueue.add(event.eventType, event.payload, {
+          await this.outboxQueue.add(event.eventType, event.payload, buildJobOptions({
             jobId: `outbox-${event.id}`,
-            attempts: 3,
-            backoff: {
-              type: 'exponential',
-              delay: 1000,
-            }
-          });
+          }));
 
           await this.prisma.outboxEvent.update({
             where: { id: event.id },

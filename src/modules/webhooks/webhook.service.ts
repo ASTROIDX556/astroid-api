@@ -1,20 +1,21 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, Optional } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { WebhookRepository } from './webhook.repository';
-import {
-  CreateWebhookInput,
-  ListDeliveriesQuery,
-  UpdateWebhookInput,
-} from './webhook.dto';
+import { CreateWebhookInput, UpdateWebhookInput } from './webhook.dto';
 import { NotFoundException } from '../../common/exceptions/domain.exception';
 import {
-  cursorWhere,
-  paginatePage,
+  buildPaginationMeta,
   PaginationQuery,
   toPrismaPagination,
-} from '../../common/pagination';
+} from '../../common/helpers/pagination';
+import { Paginated } from '../../common/interfaces/api-response.interface';
+import { CursorPaginated } from '../../common/interfaces/api-response.interface';
+import { CursorPaginationQuery, decodeCursor, encodeCursor } from '../../common/pagination/cursor-pagination';
 import { generateToken } from '../../utils/crypto.util';
+import { WebhookDestinationPolicy, WebhookDestinationError } from './webhook-destination.policy';
+import { EncryptionService } from '../../common/encryption/encryption.service';
 
+const SORTABLE = ['createdAt', 'url'];
 
 /** Strips the signing secret from a webhook before returning it to a client. */
 function redact<T extends { secret?: string }>(webhook: T): Omit<T, 'secret'> {
@@ -29,14 +30,20 @@ function redact<T extends { secret?: string }>(webhook: T): Omit<T, 'secret'> {
  */
 @Injectable()
 export class WebhookService {
-  constructor(private readonly repository: WebhookRepository) {}
+  constructor(
+    private readonly repository: WebhookRepository,
+    private readonly destinationPolicy: WebhookDestinationPolicy,
+    @Optional() private readonly encryptionService?: EncryptionService,
+  ) {}
 
   async create(organizationId: string, input: CreateWebhookInput) {
+    await this.validateDestination(input.url);
     const secret = `whsec_${generateToken(24)}`;
+    const storedSecret = this.encryptionService ? this.encryptionService.encrypt(secret) : secret;
     const webhook = await this.repository.create({
       organizationId,
       url: input.url,
-      secret,
+      secret: storedSecret,
       events: input.events,
       enabled: input.enabled,
     });
@@ -49,32 +56,17 @@ export class WebhookService {
     if (query.search) {
       where.url = { contains: query.search, mode: 'insensitive' };
     }
-    const pagination = toPrismaPagination(query);
-    const { items, total } = await this.repository.findManyAndCount(
-      { ...where, ...cursorWhere(query.cursor) },
-      pagination,
-    );
-    return paginatePage(items, total, query);
+    const pagination = toPrismaPagination(query, SORTABLE);
+    const { items, total } = await this.repository.findManyAndCount(where, pagination);
+    return new Paginated(items, buildPaginationMeta(total, query));
   }
 
-  /**
-   * Lists delivery attempts for the organization. Filter by `webhookId` and/or
-   * `status`; `status=FAILED_PERMANENTLY` is the dead-letter view (#550).
-   */
-  async listDeliveries(organizationId: string, query: ListDeliveriesQuery) {
-    const where: Prisma.WebhookDeliveryWhereInput = { organizationId };
-    if (query.webhookId) {
-      where.webhookId = query.webhookId;
-    }
-    if (query.status) {
-      where.status = query.status;
-    }
-    const pagination = toPrismaPagination(query);
-    const { items, total } = await this.repository.findDeliveriesAndCount(
-      { ...where, ...cursorWhere(query.cursor) },
-      pagination,
-    );
-    return paginatePage(items, total, query);
+  async listDeliveries(organizationId: string, query: CursorPaginationQuery) {
+    const rows = await this.repository.findDeliveryPage(organizationId, query.cursor ? decodeCursor(query.cursor) : undefined, query.limit + 1);
+    const hasMore = rows.length > query.limit;
+    const items = hasMore ? rows.slice(0, query.limit) : rows;
+    const last = items[items.length - 1];
+    return new CursorPaginated(items, { limit: query.limit, hasMore, nextCursor: hasMore && last ? encodeCursor(last) : null });
   }
 
   async getOrThrow(organizationId: string, id: string) {
@@ -91,6 +83,7 @@ export class WebhookService {
 
   async update(organizationId: string, id: string, input: UpdateWebhookInput) {
     await this.getOrThrow(organizationId, id);
+    if (input.url) await this.validateDestination(input.url);
     const webhook = await this.repository.update(id, {
       url: input.url,
       events: input.events,
@@ -103,7 +96,8 @@ export class WebhookService {
   async rotateSecret(organizationId: string, id: string) {
     await this.getOrThrow(organizationId, id);
     const secret = `whsec_${generateToken(24)}`;
-    const webhook = await this.repository.update(id, { secret });
+    const storedSecret = this.encryptionService ? this.encryptionService.encrypt(secret) : secret;
+    const webhook = await this.repository.update(id, { secret: storedSecret });
     return { ...redact(webhook), secret };
   }
 
@@ -111,5 +105,16 @@ export class WebhookService {
     await this.getOrThrow(organizationId, id);
     await this.repository.delete(id);
     return { id, deleted: true };
+  }
+
+  private async validateDestination(url: string): Promise<void> {
+    try {
+      await this.destinationPolicy.validate(url);
+    } catch (error) {
+      if (error instanceof WebhookDestinationError) {
+        throw new BadRequestException(error.message);
+      }
+      throw new BadRequestException('Webhook destination is not allowed');
+    }
   }
 }

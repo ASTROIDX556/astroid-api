@@ -1,51 +1,39 @@
-import { Injectable } from '@nestjs/common';
-import { ApiKey, Prisma } from '@prisma/client';
+import { Inject, Injectable, Optional } from '@nestjs/common';
+import { ConfigType } from '@nestjs/config';
+import { Prisma } from '@prisma/client';
 import { ApiKeyRepository } from './api-key.repository';
-import { CreateApiKeyInput, UpdateApiKeyInput } from './api-key.dto';
+import { CreateApiKeyInput, RotateApiKeyInput } from './api-key.dto';
+import { ConflictException, NotFoundException } from '../../common/exceptions/domain.exception';
 import {
-  ConflictException,
-  DomainException,
-  NotFoundException,
-} from '../../common/exceptions/domain.exception';
-import { ErrorCode } from '../../common/constants/error-codes';
-import {
-  API_KEY_SCOPE_VALUES,
-  isApiKeyScope,
-} from '../../common/constants/api-key-scopes';
-import {
-  cursorWhere,
-  paginatePage,
+  buildPaginationMeta,
   PaginationQuery,
   toPrismaPagination,
-} from '../../common/pagination';
-import { generateApiKey, sha256 } from '../../utils/crypto.util';
-import { EventBusService } from '../../events/event-bus.service';
-import { DomainEventName } from '../../events/event-names';
-import {
-  apiKeyCreatedAudit,
-  apiKeyRevokedAudit,
-  apiKeyRotatedAudit,
-  apiKeyUpdatedAudit,
-} from './events/api-key-audit.events';
+} from '../../common/helpers/pagination';
+import { Paginated } from '../../common/interfaces/api-response.interface';
+import { generateApiKey, safeEqual, verifyArgon2, sha256 } from '../../utils/crypto.util';
+import { DEFAULT_API_KEY_SCOPES } from '../../common/constants/scopes';
+import { authConfig } from '../../config/auth.config';
+import { AuditService } from '../audit/audit.service';
+
+const SORTABLE = ['createdAt', 'name', 'lastUsedAt'];
 
 /**
  * Issues and manages programmatic API keys. The raw secret is generated, shown
- * to the caller exactly once, and only its SHA-256 hash is persisted. Keys can
- * never be recovered — only regenerated.
- *
- * Scopes are validated against the canonical list before persistence; unknown
- * values are rejected with a 400 that enumerates the allowed set (#539).
+ * to the caller exactly once, and only its Argon2id hash is persisted. Keys can
+ * never be recovered — only regenerated. Legacy SHA-256 hashes are supported for
+ * backward compatibility during migration.
  */
 @Injectable()
 export class ApiKeyService {
   constructor(
     private readonly repository: ApiKeyRepository,
-    private readonly eventBus: EventBusService,
+    @Optional() private readonly auditService?: AuditService,
+    @Optional() @Inject(authConfig.KEY) private readonly authConfiguration?: ConfigType<typeof authConfig>,
   ) {}
 
   async create(organizationId: string, actorId: string, input: CreateApiKeyInput) {
-    const scopes = this.validateScopes(input.scopes);
-    const { raw, prefix, hashedKey } = generateApiKey('live');
+    const { raw, prefix, hashedKey } = await generateApiKey('live');
+    const lastFour = raw.slice(-4);
     const expiresAt = input.expiresInDays
       ? new Date(Date.now() + input.expiresInDays * 86_400_000)
       : null;
@@ -55,18 +43,15 @@ export class ApiKeyService {
       createdById: actorId,
       name: input.name,
       prefix,
+      lastFour,
+      status: 'active',
       hashedKey,
+      scopes: input.scopes ?? [...DEFAULT_API_KEY_SCOPES],
       permissions: input.permissions,
-      scopes,
       allowedIps: input.allowedIps || [],
+      rateLimitPerMinute: input.rateLimitPerMinute ?? null,
+      rateLimitPerDay: input.rateLimitPerDay ?? null,
       expiresAt,
-    });
-
-    await this.eventBus.emit(DomainEventName.ApiKeyCreated, apiKeyCreatedAudit(apiKey), {
-      organizationId,
-      actorId,
-      aggregateType: 'api_key',
-      aggregateId: apiKey.id,
     });
 
     // The raw key is returned ONCE here and never stored or logged.
@@ -74,8 +59,11 @@ export class ApiKeyService {
       id: apiKey.id,
       name: apiKey.name,
       prefix: apiKey.prefix,
+      lastFour: apiKey.lastFour ?? lastFour,
       scopes: apiKey.scopes,
       permissions: apiKey.permissions,
+      rateLimitPerMinute: apiKey.rateLimitPerMinute,
+      rateLimitPerDay: apiKey.rateLimitPerDay,
       expiresAt: apiKey.expiresAt,
       key: raw,
     };
@@ -86,122 +74,190 @@ export class ApiKeyService {
     if (query.search) {
       where.name = { contains: query.search, mode: 'insensitive' };
     }
-    const pagination = toPrismaPagination(query);
-    const { items, total } = await this.repository.findManyAndCount(
-      { ...where, ...cursorWhere(query.cursor) },
-      pagination,
-    );
-    return paginatePage(items, total, query);
+    const pagination = toPrismaPagination(query, SORTABLE);
+    const { items, total } = await this.repository.findManyAndCount(where, pagination);
+    return new Paginated(items, buildPaginationMeta(total, query));
   }
 
-  /** Updates mutable key metadata. The secret itself is never editable. */
-  async update(organizationId: string, actorId: string, id: string, input: UpdateApiKeyInput) {
-    const existing = await this.getOrThrow(organizationId, id);
-    if (existing.revokedAt) {
-      throw new ConflictException('API key is revoked and can no longer be updated');
-    }
-
-    const data: Prisma.ApiKeyUpdateInput = {};
-    if (input.name !== undefined) {
-      data.name = input.name;
-    }
-    if (input.allowedIps !== undefined) {
-      data.allowedIps = input.allowedIps;
-    }
-    if (input.scopes !== undefined) {
-      data.scopes = { set: this.validateScopes(input.scopes) };
-    }
-
-    const updated = await this.repository.update(id, data);
-    await this.eventBus.emit(
-      DomainEventName.ApiKeyUpdated,
-      apiKeyUpdatedAudit(updated, existing),
-      { organizationId, actorId, aggregateType: 'api_key', aggregateId: id },
-    );
-    return this.redact(updated);
-  }
-
-  /**
-   * Rotates the secret while preserving the key's scopes, permissions, IP
-   * allow-list and expiry. The new raw secret is returned exactly once.
-   */
-  async rotate(organizationId: string, actorId: string, id: string) {
-    const existing = await this.getOrThrow(organizationId, id);
-    if (existing.revokedAt) {
-      throw new ConflictException('API key is revoked and can no longer be rotated');
-    }
-
-    const { raw, prefix, hashedKey } = generateApiKey('live');
-    const updated = await this.repository.update(id, {
-      prefix,
-      hashedKey,
-      lastUsedAt: null,
-    });
-
-    await this.eventBus.emit(
-      DomainEventName.ApiKeyRotated,
-      apiKeyRotatedAudit(updated, existing),
-      { organizationId, actorId, aggregateType: 'api_key', aggregateId: id },
-    );
-
-    return { ...this.redact(updated), key: raw };
-  }
-
-  async revoke(organizationId: string, actorId: string, id: string) {
-    const key = await this.getOrThrow(organizationId, id);
-    if (key.revokedAt) {
-      throw new ConflictException('API key is already revoked');
-    }
-    const revoked = await this.repository.revoke(id);
-    await this.eventBus.emit(DomainEventName.ApiKeyRevoked, apiKeyRevokedAudit(revoked), {
-      organizationId,
-      actorId,
-      aggregateType: 'api_key',
-      aggregateId: id,
-    });
-    return { id, revoked: true };
-  }
-
-  /**
-   * Verifies a presented raw key: matches by hash, checks it is neither revoked
-   * nor expired, and updates lastUsedAt. Returns the owning key or null.
-   */
-  async verify(rawKey: string) {
-    const key = await this.repository.findByHash(sha256(rawKey));
-    if (!key || key.revokedAt) {
-      return null;
-    }
-    if (key.expiresAt && key.expiresAt.getTime() < Date.now()) {
-      return null;
-    }
-    await this.repository.touchLastUsed(key.id);
-    return key;
-  }
-
-  private async getOrThrow(organizationId: string, id: string): Promise<ApiKey> {
+  async rotate(
+    organizationId: string,
+    actorId: string,
+    id: string,
+    input?: RotateApiKeyInput,
+  ) {
     const key = await this.repository.findById(organizationId, id);
     if (!key) {
       throw new NotFoundException('ApiKey', id);
     }
-    return key;
-  }
-
-  /** Rejects unknown scope strings with the full allowed set in the error. */
-  private validateScopes(scopes: string[]): string[] {
-    const unknown = scopes.filter((scope) => !isApiKeyScope(scope));
-    if (unknown.length > 0) {
-      throw new DomainException(
-        ErrorCode.BAD_REQUEST,
-        `Unknown API key scope(s): ${unknown.join(', ')}`,
-        { unknown, allowed: API_KEY_SCOPE_VALUES },
-      );
+    if (key.revokedAt || key.status === 'revoked') {
+      throw new ConflictException('API key is already revoked');
     }
-    return Array.from(new Set(scopes)).sort();
+    if (key.status === 'rotating' || key.rotatedAt) {
+      throw new ConflictException('API key is already being rotated');
+    }
+    if (key.expiresAt && key.expiresAt.getTime() <= Date.now()) {
+      throw new ConflictException('API key is expired');
+    }
+
+    const defaultGrace = this.authConfiguration?.apiKeyRotationGracePeriodSeconds ?? 86400;
+    const gracePeriodSeconds = input?.gracePeriodSeconds ?? defaultGrace;
+    const graceExpiresAt = new Date(Date.now() + gracePeriodSeconds * 1000);
+    const previousKeyExpiresAt =
+      key.expiresAt && key.expiresAt.getTime() < graceExpiresAt.getTime()
+        ? key.expiresAt
+        : graceExpiresAt;
+
+    const { raw, prefix, hashedKey } = await generateApiKey('live');
+    const lastFour = raw.slice(-4);
+    const newExpiresAt = input?.expiresInDays
+      ? new Date(Date.now() + input.expiresInDays * 86_400_000)
+      : null;
+
+    const newApiKey = await this.repository.create({
+      organizationId,
+      createdById: actorId,
+      name: key.name,
+      prefix,
+      lastFour,
+      status: 'active',
+      hashedKey,
+      scopes: key.scopes,
+      permissions: key.permissions,
+      allowedIps: key.allowedIps,
+      rateLimitPerMinute: key.rateLimitPerMinute,
+      rateLimitPerDay: key.rateLimitPerDay,
+      expiresAt: newExpiresAt,
+    });
+
+    await this.repository.markRotating(key.id, {
+      status: 'rotating',
+      rotatedAt: new Date(),
+      expiresAt: previousKeyExpiresAt,
+      replacementId: newApiKey.id,
+    });
+
+    if (this.auditService) {
+      try {
+        await this.auditService.record({
+          organizationId,
+          userId: actorId,
+          action: 'API_KEY_ROTATED',
+          entity: 'ApiKey',
+          entityId: key.id,
+          oldValue: {
+            keyId: key.id,
+            prefix: key.prefix,
+            status: 'rotating',
+            expiresAt: previousKeyExpiresAt,
+          },
+          newValue: {
+            keyId: newApiKey.id,
+            prefix: newApiKey.prefix,
+            status: 'active',
+          },
+        });
+      } catch {
+        // audit log failure should not break rotation
+      }
+    }
+
+    return {
+      id: newApiKey.id,
+      name: newApiKey.name,
+      prefix: newApiKey.prefix,
+      lastFour: newApiKey.lastFour ?? lastFour,
+      scopes: newApiKey.scopes,
+      permissions: newApiKey.permissions,
+      expiresAt: newApiKey.expiresAt,
+      key: raw,
+      previousKeyId: key.id,
+      previousKeyExpiresAt,
+    };
   }
 
-  /** Drops the hash before a key record leaves the service. */
-  private redact(key: ApiKey): Omit<ApiKey, 'hashedKey'> {
-    const { hashedKey: _hashedKey, ...safe } = key;
-    return safe;
+  async revoke(organizationId: string, id: string, actorId?: string) {
+    const key = await this.repository.findById(organizationId, id);
+    if (!key) {
+      throw new NotFoundException('ApiKey', id);
+    }
+    if (key.revokedAt || key.status === 'revoked') {
+      throw new ConflictException('API key is already revoked');
+    }
+    await this.repository.revoke(id);
+
+    if (this.auditService && actorId) {
+      try {
+        await this.auditService.record({
+          organizationId,
+          userId: actorId,
+          action: 'API_KEY_REVOKED',
+          entity: 'ApiKey',
+          entityId: key.id,
+          oldValue: { keyId: key.id, prefix: key.prefix },
+          newValue: { revoked: true, revokedAt: new Date() },
+        });
+      } catch {
+        // gracefully continue
+      }
+    }
+
+    return { id, revoked: true };
+  }
+
+  /**
+   * Verifies a presented raw key: matches by Argon2 hash (with SHA-256 fallback for legacy keys),
+   * checks it is neither revoked nor expired, and updates lastUsedAt. Returns the owning key or null.
+   */
+  async verify(rawKey: string) {
+    if (!rawKey || typeof rawKey !== 'string' || rawKey.trim().length === 0) {
+      return null;
+    }
+    
+    const trimmedKey = rawKey.trim();
+    
+    // The hash algorithm is not known before the key is found, so candidates are
+    // looked up by their public prefix. Revoked and expired rows are excluded
+    // by the repository, and re-checked below so a stale cache can never let a
+    // dead key through.
+    const keys = await this.repository.findActiveByPrefix(trimmedKey.slice(0, 14));
+    
+    for (const key of keys) {
+      if (key.revokedAt) {
+        continue;
+      }
+      if (key.expiresAt && key.expiresAt.getTime() < Date.now()) {
+        continue;
+      }
+      
+      // Try Argon2 verification first (new keys). Argon2id verification is a
+      // constant-time comparison of the derived hash against the stored one.
+      const isValidArgon2 = await verifyArgon2(key.hashedKey, trimmedKey);
+      if (isValidArgon2) {
+        await this.touchLastUsed(key.id);
+        return key;
+      }
+      
+      // Fallback to SHA-256 for legacy keys (backward compatibility). The
+      // comparison is constant-time as well, so a legacy key is never
+      // distinguishable from a wrong one by response timing.
+      if (safeEqual(key.hashedKey, sha256(trimmedKey))) {
+        await this.touchLastUsed(key.id);
+        return key;
+      }
+    }
+    
+    return null;
+  }
+
+  /**
+   * Records that a key was just used. A failure to persist the timestamp must
+   * never turn a valid authentication into a rejection, so it is swallowed.
+   */
+  private async touchLastUsed(id: string): Promise<void> {
+    try {
+      await this.repository.touchLastUsed(id);
+    } catch {
+      // Gracefully continue even if updating lastUsedAt encounters an error
+    }
   }
 }

@@ -128,9 +128,17 @@ describe('PolicyEngine', () => {
     expect(result.passed).toBe(true);
   });
 
-  it('ignores disabled policies', () => {
+  it('fails closed when an applicable policy is disabled', () => {
     const result = engine.evaluate(baseIntent, [
-      policy({ enabled: false, configuration: { maxAmount: 1 } }),
+      policy({ id: 'p1', enabled: false, configuration: { maxAmount: 1 } }),
+    ]);
+    expect(result.passed).toBe(false);
+    expect(result.violations[0].code).toBe('POLICY_DISABLED');
+  });
+
+  it('still allows when the disabled policy applies to another agent', () => {
+    const result = engine.evaluate(baseIntent, [
+      policy({ id: 'p1', agentId: 'other-agent', enabled: false, configuration: { maxAmount: 1 } }),
     ]);
     expect(result.passed).toBe(true);
   });
@@ -152,8 +160,7 @@ describe('PolicyEngine', () => {
   });
 });
 
-describe('PolicyEngine temporary overrides (issue #21)', () => {
-  const engine = new PolicyEngine();
+describe('PolicyEngine temporary overrides (issue #21)', () => {  const engine = new PolicyEngine();
 
   it('enforces the override limit while an override is active', () => {
     const at = new Date('2026-08-01T12:00:00Z');
@@ -194,5 +201,408 @@ describe('PolicyEngine temporary overrides (issue #21)', () => {
     });
     expect(engine.evaluate({ ...baseIntent, amount: 50, at }, [p]).passed).toBe(true);
     expect(engine.evaluate({ ...baseIntent, amount: 200, at }, [p]).passed).toBe(false);
+  });
+});
+
+describe('PolicyEngine velocity rules (issue #404)', () => {
+  const engine = new PolicyEngine();
+
+  it('allows a transaction while the velocity budget is not exhausted', () => {
+    const result = engine.evaluate(
+      { ...baseIntent, transactionCount: 2 },
+      [policy({ configuration: { velocity: { maxTransactions: 5, window: 'hour' } } })],
+    );
+    expect(result.passed).toBe(true);
+  });
+
+  it('flags a transaction once the velocity limit is reached', () => {
+    const result = engine.evaluate(
+      { ...baseIntent, transactionCount: 5 },
+      [policy({ configuration: { velocity: { maxTransactions: 5, window: 'hour' } } })],
+    );
+    expect(result.passed).toBe(false);
+    expect(result.violations[0].code).toBe('VELOCITY_LIMIT_EXCEEDED');
+  });
+
+  it('prefers the per-window count when several velocity windows are declared', () => {
+    const result = engine.evaluate(
+      {
+        ...baseIntent,
+        transactionCount: 0,
+        transactionCounts: { hour: 10, day: 1 },
+      },
+      [policy({ configuration: { velocity: { maxTransactions: 5, window: 'hour' } } })],
+    );
+    expect(result.violations[0].code).toBe('VELOCITY_LIMIT_EXCEEDED');
+  });
+
+  it('ignores the velocity rule when no count is available', () => {
+    const result = engine.evaluate(
+      baseIntent,
+      [policy({ configuration: { velocity: { maxTransactions: 1, window: 'day' } } })],
+    );
+    expect(result.passed).toBe(true);
+  });
+});
+
+describe('PolicyEngine multi-condition rule groups (issue #404)', () => {
+  const engine = new PolicyEngine();
+
+  it('passes when every condition of an AND group holds', () => {
+    const result = engine.evaluate(baseIntent, [
+      policy({
+        configuration: {
+          rules: [
+            {
+              logic: 'AND',
+              conditions: [
+                { field: 'amount', operator: 'lte', value: 500 },
+                { field: 'asset', operator: 'eq', value: 'USDC' },
+              ],
+            },
+          ],
+        },
+      }),
+    ]);
+    expect(result.passed).toBe(true);
+  });
+
+  it('flags a rule group when one of its conditions does not hold', () => {
+    const result = engine.evaluate(baseIntent, [
+      policy({
+        configuration: {
+          rules: [
+            {
+              id: 'spend-guard',
+              logic: 'AND',
+              conditions: [
+                { field: 'amount', operator: 'lte', value: 50 },
+                { field: 'asset', operator: 'eq', value: 'USDC' },
+              ],
+            },
+          ],
+        },
+      }),
+    ]);
+    expect(result.passed).toBe(false);
+    expect(result.violations[0].code).toBe('RULE_GROUP_VIOLATED');
+    expect(result.violations[0].message).toContain('spend-guard');
+    expect(result.violations[0].message).toContain('amount');
+  });
+
+  it('passes an OR group when a single condition holds', () => {
+    const result = engine.evaluate(baseIntent, [
+      policy({
+        configuration: {
+          rules: [
+            {
+              logic: 'OR',
+              conditions: [
+                { field: 'asset', operator: 'eq', value: 'XLM' },
+                { field: 'amount', operator: 'gte', value: 100 },
+              ],
+            },
+          ],
+        },
+      }),
+    ]);
+    expect(result.passed).toBe(true);
+  });
+
+  it('flags an OR group when no condition holds', () => {
+    const result = engine.evaluate(baseIntent, [
+      policy({
+        configuration: {
+          rules: [
+            {
+              logic: 'OR',
+              conditions: [
+                { field: 'asset', operator: 'eq', value: 'XLM' },
+                { field: 'amount', operator: 'gt', value: 1000 },
+              ],
+            },
+          ],
+        },
+      }),
+    ]);
+    expect(result.violations[0].code).toBe('RULE_GROUP_VIOLATED');
+  });
+
+  it('evaluates recipient and agent conditions', () => {
+    const result = engine.evaluate(
+      { ...baseIntent, agentId: 'agent-1' },
+      [
+        policy({
+          configuration: {
+            rules: [
+              {
+                logic: 'AND',
+                conditions: [
+                  { field: 'recipientAddress', operator: 'eq', value: 'GABC' },
+                  { field: 'agentId', operator: 'eq', value: 'agent-1' },
+                ],
+              },
+            ],
+          },
+        }),
+      ],
+    );
+    expect(result.passed).toBe(true);
+  });
+
+  it('supports the in and notIn operators', () => {
+    const allowed = engine.evaluate(baseIntent, [
+      policy({
+        configuration: {
+          rules: [
+            {
+              logic: 'AND',
+              conditions: [{ field: 'asset', operator: 'in', value: ['USDC', 'XLM'] }],
+            },
+          ],
+        },
+      }),
+    ]);
+    expect(allowed.passed).toBe(true);
+
+    const blocked = engine.evaluate(baseIntent, [
+      policy({
+        configuration: {
+          rules: [
+            {
+              logic: 'AND',
+              conditions: [{ field: 'asset', operator: 'notIn', value: ['USDC'] }],
+            },
+          ],
+        },
+      }),
+    ]);
+    expect(blocked.violations[0].code).toBe('RULE_GROUP_VIOLATED');
+  });
+
+  it('evaluates a condition against the transaction count', () => {
+    const result = engine.evaluate(
+      { ...baseIntent, transactionCount: 12 },
+      [
+        policy({
+          configuration: {
+            rules: [
+              {
+                logic: 'AND',
+                conditions: [{ field: 'transactionCount', operator: 'lt', value: 10 }],
+              },
+            ],
+          },
+        }),
+      ],
+    );
+    expect(result.violations[0].code).toBe('RULE_GROUP_VIOLATED');
+  });
+});
+
+describe('PolicyEngine limit boundary semantics', () => {
+  const engine = new PolicyEngine();
+
+  describe('exact-limit allowed, over denied', () => {
+    it('allows a spend equal to the max amount', () => {
+      const result = engine.evaluate({ ...baseIntent, amount: 50 }, [
+        policy({ configuration: { maxAmount: 50 } }),
+      ]);
+      expect(result.passed).toBe(true);
+    });
+
+    it('denies a spend one unit over the max amount', () => {
+      const result = engine.evaluate({ ...baseIntent, amount: 51 }, [
+        policy({ configuration: { maxAmount: 50 } }),
+      ]);
+      expect(result.passed).toBe(false);
+      expect(result.violations[0].code).toBe('MAX_AMOUNT_EXCEEDED');
+    });
+  });
+
+  describe('zero-limit policies deny all', () => {
+    it('denies even a zero-amount spend under a zero maxAmount', () => {
+      const result = engine.evaluate({ ...baseIntent, amount: 0 }, [
+        policy({ configuration: { maxAmount: 0 } }),
+      ]);
+      expect(result.passed).toBe(false);
+      expect(result.violations[0].code).toBe('ZERO_LIMIT_DENIED');
+    });
+
+    it('denies a spend under a zero dailyLimit', () => {
+      const result = engine.evaluate(baseIntent, [
+        policy({ configuration: { dailyLimit: 0 } }),
+      ]);
+      expect(result.passed).toBe(false);
+      expect(result.violations[0].code).toBe('ZERO_LIMIT_DENIED');
+    });
+  });
+
+  describe('period-window boundaries', () => {
+    it('allows a spend equal to the daily limit', () => {
+      const result = engine.evaluate({ ...baseIntent, spentToday: 1000, amount: 0 }, [
+        policy({ configuration: { dailyLimit: 1000 } }),
+      ]);
+      expect(result.passed).toBe(true);
+    });
+
+    it('denies a spend one unit over the daily limit', () => {
+      const result = engine.evaluate({ ...baseIntent, spentToday: 1000, amount: 1 }, [
+        policy({ configuration: { dailyLimit: 1000 } }),
+      ]);
+      expect(result.passed).toBe(false);
+      expect(result.violations[0].code).toBe('DAILY_LIMIT_EXCEEDED');
+    });
+
+    it('allows a spend equal to the weekly limit', () => {
+      const result = engine.evaluate({ ...baseIntent, spentThisWeek: 2000, amount: 0 }, [
+        policy({ configuration: { weeklyLimit: 2000 } }),
+      ]);
+      expect(result.passed).toBe(true);
+    });
+
+    it('denies a spend one unit over the weekly limit', () => {
+      const result = engine.evaluate({ ...baseIntent, spentThisWeek: 2000, amount: 1 }, [
+        policy({ configuration: { weeklyLimit: 2000 } }),
+      ]);
+      expect(result.violations[0].code).toBe('WEEKLY_LIMIT_EXCEEDED');
+    });
+
+    it('allows a spend equal to the monthly limit', () => {
+      const result = engine.evaluate({ ...baseIntent, spentThisMonth: 5000, amount: 0 }, [
+        policy({ configuration: { monthlyLimit: 5000 } }),
+      ]);
+      expect(result.passed).toBe(true);
+    });
+
+    it('denies a spend one unit over the monthly limit', () => {
+      const result = engine.evaluate({ ...baseIntent, spentThisMonth: 5000, amount: 1 }, [
+        policy({ configuration: { monthlyLimit: 5000 } }),
+      ]);
+      expect(result.violations[0].code).toBe('MONTHLY_LIMIT_EXCEEDED');
+    });
+
+    it('names the window and the remaining allowance in the daily violation message', () => {
+      const result = engine.evaluate({ ...baseIntent, spentToday: 300, amount: 250 }, [
+        policy({ configuration: { dailyLimit: 500 } }),
+      ]);
+      expect(result.violations[0].code).toBe('DAILY_LIMIT_EXCEEDED');
+      // Window named ...
+      expect(result.violations[0].message).toContain('daily');
+      // ... and the remaining allowance (500 - 300 = 200) named.
+      expect(result.violations[0].message).toContain('remaining daily allowance 200');
+      // The projected total (300 + 250 = 550) and the limit (500) are present.
+      expect(result.violations[0].message).toContain('550');
+      expect(result.violations[0].message).toContain('limit 500');
+    });
+
+    it('reports a zero remaining allowance when the window is already exhausted', () => {
+      const result = engine.evaluate({ ...baseIntent, spentThisWeek: 2000, amount: 1 }, [
+        policy({ configuration: { weeklyLimit: 2000 } }),
+      ]);
+      expect(result.violations[0].message).toContain('remaining weekly allowance 0');
+    });
+
+    it('suffices the base currency onto the window violation message when set', () => {
+      const result = engine.evaluate(
+        { ...baseIntent, spentToday: 300, amount: 250, limitCurrency: 'USDC' },
+        [policy({ configuration: { dailyLimit: 500 } })],
+      );
+      expect(result.violations[0].message).toContain('remaining daily allowance 200 USDC');
+      expect(result.violations[0].message).toContain('exceeds the daily limit 500 USDC');
+    });
+
+    it('allows fresh spend after a window reset (zero spent this period)', () => {
+      // A zero spent value means the window reset happened and only the new
+      // spend counts.
+      const result = engine.evaluate({ ...baseIntent, spentThisMonth: 0 }, [
+        policy({ configuration: { monthlyLimit: 5000 } }),
+      ]);
+      expect(result.passed).toBe(true);
+    });
+  });
+
+  describe('disabled policies fail closed', () => {
+    it('denies when an applicable policy is disabled', () => {
+      const result = engine.evaluate(baseIntent, [
+        policy({ id: 'p1', enabled: false, configuration: { maxAmount: 50 } }),
+      ]);
+      expect(result.passed).toBe(false);
+      expect(result.violations[0].code).toBe('POLICY_DISABLED');
+    });
+
+    it('still allows when the disabled policy applies to another agent', () => {
+      const result = engine.evaluate(baseIntent, [
+        policy({ id: 'p1', agentId: 'other-agent', enabled: false, configuration: { maxAmount: 1 } }),
+      ]);
+      expect(result.passed).toBe(true);
+    });
+
+    it('includes disabled applicable policies in evaluatedPolicyIds', () => {
+      const result = engine.evaluate(baseIntent, [
+        policy({ id: 'p1', enabled: false, configuration: {} }),
+      ]);
+      expect(result.evaluatedPolicyIds).toContain('p1');
+    });
+  });
+});
+
+describe('PolicyEngine time windows with time zones (issue #404)', () => {
+  const engine = new PolicyEngine();
+
+  it('evaluates the window in the configured time zone', () => {
+    // 20:00 UTC is 15:00 in New York (EST, UTC-5) and 20:00 in Lisbon (WET,
+    // UTC+0 in January) — so the same instant is inside one window and
+    // outside the other.
+    const at = new Date(Date.UTC(2026, 0, 1, 20, 0, 0));
+
+    const inside = engine.evaluate(
+      { ...baseIntent, at },
+      [
+        policy({
+          configuration: { timeWindow: { startHour: 8, endHour: 17, timezone: 'America/New_York' } },
+        }),
+      ],
+    );
+    expect(inside.passed).toBe(true);
+
+    const outside = engine.evaluate(
+      { ...baseIntent, at },
+      [
+        policy({
+          configuration: { timeWindow: { startHour: 9, endHour: 17, timezone: 'Europe/Lisbon' } },
+        }),
+      ],
+    );
+    expect(outside.violations[0].code).toBe('OUTSIDE_TIME_WINDOW');
+  });
+
+  it('falls back to UTC for an unknown time zone', () => {
+    const at = new Date(Date.UTC(2026, 0, 1, 12, 0, 0));
+    const result = engine.evaluate(
+      { ...baseIntent, at },
+      [
+        policy({
+          configuration: { timeWindow: { startHour: 9, endHour: 17, timezone: 'Not/AZone' } },
+        }),
+      ],
+    );
+    expect(result.passed).toBe(true);
+  });
+
+  it('applies the allowed weekdays in the configured time zone', () => {
+    // 2026-01-01 is a Thursday (day 4).
+    const at = new Date(Date.UTC(2026, 0, 1, 12, 0, 0));
+    const result = engine.evaluate(
+      { ...baseIntent, at },
+      [
+        policy({
+          configuration: {
+            timeWindow: { startHour: 9, endHour: 17, days: [1, 2, 3] },
+          },
+        }),
+      ],
+    );
+    expect(result.violations[0].code).toBe('OUTSIDE_TIME_WINDOW');
   });
 });

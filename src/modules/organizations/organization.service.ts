@@ -12,15 +12,16 @@ import {
   NotFoundException,
 } from '../../common/exceptions/domain.exception';
 import {
-  cursorWhere,
-  paginatePage,
+  buildPaginationMeta,
   PaginationQuery,
   toPrismaPagination,
-} from '../../common/pagination';
+} from '../../common/helpers/pagination';
+import { Paginated } from '../../common/interfaces/api-response.interface';
 import { EventBusService } from '../../events/event-bus.service';
 import { DomainEventName } from '../../events/event-names';
 import { PrismaService } from '../../database/prisma.service';
 
+const MEMBER_SORTABLE = ['createdAt', 'name', 'email', 'role', 'status'];
 
 /**
  * Manages the caller's own organization and its members (users). Every query is
@@ -71,12 +72,9 @@ export class OrganizationService {
         { email: { contains: query.search, mode: 'insensitive' } },
       ];
     }
-    const pagination = toPrismaPagination(query);
-    const { items, total } = await this.repository.findMembersAndCount(
-      { ...where, ...cursorWhere(query.cursor) },
-      pagination,
-    );
-    return paginatePage(items, total, query);
+    const pagination = toPrismaPagination(query, MEMBER_SORTABLE);
+    const { items, total } = await this.repository.findMembersAndCount(where, pagination);
+    return new Paginated(items, buildPaginationMeta(total, query));
   }
 
   async inviteMember(organizationId: string, actorId: string, input: InviteMemberInput) {

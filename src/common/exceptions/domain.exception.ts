@@ -30,8 +30,8 @@ export class ValidationException extends DomainException {
 }
 
 export class ConflictException extends DomainException {
-  constructor(message: string) {
-    super(ErrorCode.CONFLICT, message);
+  constructor(message: string, details?: unknown) {
+    super(ErrorCode.CONFLICT, message, details);
   }
 }
 
@@ -42,8 +42,8 @@ export class UnauthorizedException extends DomainException {
 }
 
 export class ForbiddenException extends DomainException {
-  constructor(message = 'Insufficient permissions') {
-    super(ErrorCode.FORBIDDEN, message);
+  constructor(message = 'Insufficient permissions', details?: unknown) {
+    super(ErrorCode.FORBIDDEN, message, details);
   }
 }
 
@@ -77,8 +77,69 @@ export class NotImplementedException extends DomainException {
   }
 }
 
+/**
+ * Thrown when a smart contract rejects an invocation with a revert reason the
+ * API could not map onto a more specific code. The decoded payload — kind,
+ * contract id, error code, selector/signature and the raw revert bytes — is
+ * carried in `details.contractError` (see `contract-revert.decoder.ts`), so
+ * unrecognised failures stay debuggable instead of being flattened to a
+ * generic network error.
+ */
+export class ContractRevertedException extends DomainException {
+  constructor(message: string, details?: unknown) {
+    super(ErrorCode.CONTRACT_REVERTED, message, details);
+  }
+}
+
+/** Thrown when a contract execution panics (e.g. `Panic(uint256)` 0x11 overflow). */
+export class ContractPanicException extends DomainException {
+  constructor(message: string, details?: unknown) {
+    super(ErrorCode.CONTRACT_PANIC, message, details);
+  }
+}
+
+export class InsufficientFundsException extends DomainException {
+  constructor(message: string, details?: unknown) {
+    super(ErrorCode.INSUFFICIENT_FUNDS, message, details);
+  }
+}
+
 export class VelocityLimitExceededException extends DomainException {
   constructor(message: string, details?: unknown) {
     super(ErrorCode.POLICY_VIOLATION, message, details);
+  }
+}
+
+/**
+ * Thrown by a {@link CircuitBreaker} (see `src/common/circuit-breaker`) when
+ * it fails fast because its circuit is OPEN, instead of invoking a degraded
+ * downstream dependency (e.g. Horizon/Soroban RPC). Distinguishable from a
+ * genuine `STELLAR_ERROR` so callers can special-case "try again shortly"
+ * behaviour using `retryAfterMs`.
+ */
+export class CircuitOpenException extends DomainException {
+  constructor(integration: string, retryAfterMs: number) {
+    super(
+      ErrorCode.CIRCUIT_OPEN,
+      `Circuit breaker for '${integration}' is open; failing fast to protect the caller`,
+      { integration, state: 'OPEN', retryAfterMs },
+    );
+  }
+}
+
+/**
+ * Thrown by a distributed lock (see `src/common/locks`) when the lock for a
+ * resource could not be acquired within the allowed attempts — i.e. another
+ * request/process is already mutating the same resource. Maps to a 409 so
+ * clients can treat concurrent state mutations as a transient conflict and
+ * retry (or surface a "please try again" message).
+ */
+export class LockNotAcquiredException extends DomainException {
+  constructor(resource: string, details?: unknown) {
+    super(
+      ErrorCode.LOCK_ACQUISITION_FAILED,
+      `Another request is currently modifying this resource: '${resource}'. Please retry shortly.`,
+      details,
+    );
   }
 }

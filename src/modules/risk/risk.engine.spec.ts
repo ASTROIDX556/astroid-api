@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { RiskBand } from '@prisma/client';
 import { RiskEngine } from './risk.engine';
-import { RiskFactorsInput } from './risk.types';
+import { RiskFactorsInput, RiskRuleContext, RiskRule } from './risk.types';
+import { RISK_FACTOR_DESCRIPTIONS, RiskFactorCode } from './risk.types';
 
 const lowRisk: RiskFactorsInput = {
   amount: 20,
@@ -15,6 +16,8 @@ const lowRisk: RiskFactorsInput = {
 
 describe('RiskEngine', () => {
   const engine = new RiskEngine();
+
+  // ── Built-in rule behaviour ──────────────────────────────────────────────
 
   it('scores a small, known, seasoned transaction as Low', () => {
     const result = engine.assess(lowRisk);
@@ -67,7 +70,131 @@ describe('RiskEngine', () => {
     expect(result.score).toBeGreaterThanOrEqual(0);
   });
 
-  it('maps score thresholds to the correct bands', () => {
+  it('adds weight for suspicious overnight timing', () => {
+    const day = engine.assess({ ...lowRisk, knownRecipient: false, hourUtc: 12 });
+    const night = engine.assess({ ...lowRisk, knownRecipient: false, hourUtc: 2 });
+    expect(night.score).toBeGreaterThan(day.score);
+  });
+
+  // ── Aggregator signals ───────────────────────────────────────────────────
+
+  it('scores the value moved in the velocity window, not only the count', () => {
+    const idle = engine.assess({ ...lowRisk, recentTransactionCount: 1 });
+    const value = engine.assess({
+      ...lowRisk,
+      recentTransactionCount: 1,
+      recentTransactionAmount: 20_000,
+    });
+    expect(value.factors.find((f) => f.factor === 'velocity')?.contribution).toBe(20);
+    expect(value.score).toBeGreaterThan(idle.score);
+  });
+
+  it('raises the score for a destination with a poor payment history', () => {
+    const trusted = engine.assess({ ...lowRisk, destinationPaymentCount: 10 });
+    const faulty = engine.assess({
+      ...lowRisk,
+      destinationPaymentCount: 10,
+      destinationFailureCount: 5,
+    });
+    expect(faulty.score).toBeGreaterThan(trusted.score);
+  });
+
+  it('raises the score for an amount far above the wallet average', () => {
+    const normal = engine.assess({ ...lowRisk, amount: 100, amountBaseline: 100 });
+    const anomalous = engine.assess({ ...lowRisk, amount: 500, amountBaseline: 100 });
+    expect(anomalous.score).toBeGreaterThan(normal.score);
+  });
+
+  it('does not score the signals that have no data', () => {
+    const result = engine.assess(lowRisk);
+    expect(result.factors.find((f) => f.factor === 'amountAnomaly')?.contribution).toBe(0);
+    expect(result.factors.find((f) => f.factor === 'destinationReputation')?.contribution).toBe(0);
+  });
+
+  it('returns a factor breakdown for every rule', () => {
+    const result = engine.assess(lowRisk);
+    expect(result.factors.length).toBe(8);
+    const names = result.factors.map((f) => f.factor);
+    expect(names).toContain('amount');
+    expect(names).toContain('amountAnomaly');
+    expect(names).toContain('unknownRecipient');
+    expect(names).toContain('destinationReputation');
+    expect(names).toContain('velocity');
+    expect(names).toContain('walletAge');
+    expect(names).toContain('policyViolations');
+    expect(names).toContain('suspiciousTiming');
+  });
+
+  it('returns stable factor metadata in deterministic order', () => {
+    const result = engine.assess(lowRisk);
+    expect(result.factors.map((factor) => factor.code)).toEqual([
+      'amount',
+      'amountAnomaly',
+      'unknownRecipient',
+      'destinationReputation',
+      'velocity',
+      'walletAge',
+      'policyViolations',
+      'suspiciousTiming',
+    ]);
+    for (const factor of result.factors) {
+      expect(factor.description).toBeTruthy();
+      expect(factor.description).toBe(factor.detail);
+      expect(['number', 'boolean', 'object'].includes(typeof factor.value)).toBe(true);
+    }
+    expect(result.factors.find((factor) => factor.code === 'amount')).toMatchObject({
+      description: 'Amount 20',
+      value: 20,
+    });
+    expect(result.factors.find((factor) => factor.code === 'unknownRecipient')).toMatchObject({
+      description: 'Known recipient',
+      value: true,
+    });
+    expect(result.factors.find((factor) => factor.code === 'velocity')).toMatchObject({
+      description: '1 recent transactions, 0 total value',
+      value: 1,
+    });
+  });
+
+  it('keeps factor contributions reconciled to the rounded score', () => {
+    const result = engine.assess({
+      amount: 333,
+      asset: 'USDC',
+      knownRecipient: false,
+      recentTransactionCount: 7,
+      walletAgeDays: 41,
+      policyViolations: 1,
+      hourUtc: 2,
+      amountBaseline: 100,
+      destinationPaymentCount: 3,
+      destinationFailureCount: 1,
+    });
+
+    const sum = result.factors.reduce((total, factor) => total + factor.contribution, 0);
+    expect(Math.abs(sum - result.score)).toBeLessThanOrEqual(0.01);
+  });
+
+  it('keeps the existing scalar score and documents every factor code', () => {
+    const result = engine.assess(lowRisk);
+    expect(result.score).toBe(1);
+    expect(Object.keys(RISK_FACTOR_DESCRIPTIONS).sort()).toEqual([
+      'amount',
+      'amountAnomaly',
+      'destinationReputation',
+      'policyViolations',
+      'suspiciousTiming',
+      'unknownRecipient',
+      'velocity',
+      'walletAge',
+    ]);
+    for (const code of Object.keys(RISK_FACTOR_DESCRIPTIONS) as RiskFactorCode[]) {
+      expect(RISK_FACTOR_DESCRIPTIONS[code].length).toBeGreaterThan(0);
+    }
+  });
+
+  // ── Configurable band thresholds ─────────────────────────────────────────
+
+  it('maps score thresholds to the default bands', () => {
     expect(engine.toBand(0)).toBe(RiskBand.LOW);
     expect(engine.toBand(20)).toBe(RiskBand.LOW);
     expect(engine.toBand(21)).toBe(RiskBand.MEDIUM);
@@ -78,9 +205,166 @@ describe('RiskEngine', () => {
     expect(engine.toBand(100)).toBe(RiskBand.CRITICAL);
   });
 
-  it('adds weight for suspicious overnight timing', () => {
-    const day = engine.assess({ ...lowRisk, knownRecipient: false, hourUtc: 12 });
-    const night = engine.assess({ ...lowRisk, knownRecipient: false, hourUtc: 2 });
-    expect(night.score).toBeGreaterThan(day.score);
+  it('respects custom band thresholds from config', () => {
+    const custom = { bandThresholds: { lowMax: 30, medMax: 60, highMax: 90 } };
+    expect(engine.toBand(30, custom)).toBe(RiskBand.LOW);
+    expect(engine.toBand(31, custom)).toBe(RiskBand.MEDIUM);
+    expect(engine.toBand(60, custom)).toBe(RiskBand.MEDIUM);
+    expect(engine.toBand(61, custom)).toBe(RiskBand.HIGH);
+    expect(engine.toBand(90, custom)).toBe(RiskBand.HIGH);
+    expect(engine.toBand(91, custom)).toBe(RiskBand.CRITICAL);
+  });
+
+  // ── Configurable saturation thresholds ───────────────────────────────────
+
+  it('uses config to override amount saturation', () => {
+    const config = { amountSaturation: 100 };
+    // amount=100 with saturation=100 → ratio=1 → full weight (30)
+    const result = engine.assess(
+      { ...lowRisk, amount: 100 },
+      config,
+    );
+    // Should have a high amount contribution
+    const amountFactor = result.factors.find((f) => f.factor === 'amount');
+    expect(amountFactor!.contribution).toBe(30);
+  });
+
+  it('uses config to override velocity saturation', () => {
+    const config = { velocitySaturation: 5 };
+    // 5 recent txns with saturation=5 → ratio=1 → full weight (20)
+    const result = engine.assess(
+      { ...lowRisk, recentTransactionCount: 5 },
+      config,
+    );
+    const velocityFactor = result.factors.find((f) => f.factor === 'velocity');
+    expect(velocityFactor!.contribution).toBe(20);
+  });
+
+  it('uses config to override wallet seasoned days', () => {
+    const config = { walletSeasonedDays: 30 };
+    // 30 days old with seasoned=30 → ratio=1 → contribution=0 (fully seasoned)
+    const result = engine.assess(
+      { ...lowRisk, walletAgeDays: 30 },
+      config,
+    );
+    const walletFactor = result.factors.find((f) => f.factor === 'walletAge');
+    expect(walletFactor!.contribution).toBe(0);
+  });
+
+  it('uses config to override suspicious hour window', () => {
+    const config = { suspiciousHourStart: 6, suspiciousHourEnd: 10 };
+    // hourUtc=7 falls in the custom suspicious window
+    const result = engine.assess(
+      { ...lowRisk, hourUtc: 7 },
+      config,
+    );
+    const timingFactor = result.factors.find((f) => f.factor === 'suspiciousTiming');
+    expect(timingFactor!.contribution).toBe(timingFactor!.weight);
+  });
+
+  // ── Review and block thresholds ──────────────────────────────────────────
+
+  it('flags an assessment at the review threshold for human review', () => {
+    const config = { reviewThreshold: 30 };
+    expect(engine.assess({ ...lowRisk, amount: 100 }, config).requiresApproval).toBe(false);
+    expect(engine.assess({ ...lowRisk, amount: 100 }, { ...config, reviewThreshold: 1 }).requiresApproval).toBe(true);
+  });
+
+  it('blocks auto-execution at the block threshold', () => {
+    const critical = engine.assess({
+      amount: 50_000,
+      asset: 'USDC',
+      knownRecipient: false,
+      recentTransactionCount: 20,
+      walletAgeDays: 0,
+      policyViolations: 3,
+      hourUtc: 2,
+    });
+    expect(critical.score).toBeGreaterThanOrEqual(81);
+    expect(critical.canAutoExecute).toBe(false);
+    expect(critical.requiresApproval).toBe(true);
+  });
+
+  // ── Configurable weights ─────────────────────────────────────────────────
+  it('uses config weights to override default rule weights', () => {
+    const config = { weights: { amount: 50 } };
+    const result = engine.assess(
+      { ...lowRisk, amount: 10_000 },
+      config,
+    );
+    const amountFactor = result.factors.find((f) => f.factor === 'amount');
+    expect(amountFactor!.weight).toBe(50);
+    expect(amountFactor!.contribution).toBe(50);
+  });
+
+  // ── Pluggable rules ─────────────────────────────────────────────────────
+
+  it('accepts custom rules alongside built-in rules', () => {
+    const customRule: RiskRule = {
+      name: 'customFlag',
+      defaultWeight: 10,
+      evaluate({ input }: RiskRuleContext) {
+        return {
+          code: 'amount',
+          description: input.asset === 'SCAM' ? 'Scam asset detected' : 'Normal asset',
+          value: input.asset === 'SCAM',
+          factor: 'customFlag',
+          weight: 10,
+          contribution: input.asset === 'SCAM' ? 10 : 0,
+          detail: input.asset === 'SCAM' ? 'Scam asset detected' : 'Normal asset',
+        };
+      },
+    };
+
+    const result = engine.assess(lowRisk, undefined, [customRule]);
+    expect(result.factors.length).toBe(1);
+    expect(result.factors[0].factor).toBe('customFlag');
+    expect(result.factors[0].contribution).toBe(0);
+  });
+
+  it('custom rules can push score to Critical', () => {
+    const heavyRule: RiskRule = {
+      name: 'heavyPenalty',
+      defaultWeight: 100,
+      evaluate() {
+        return {
+          code: 'amount',
+          description: 'Custom heavy penalty',
+          value: 1,
+          factor: 'heavyPenalty',
+          weight: 100,
+          contribution: 100,
+          detail: 'Automatic critical',
+        };
+      },
+    };
+
+    const result = engine.assess(lowRisk, undefined, [heavyRule]);
+    expect(result.band).toBe(RiskBand.CRITICAL);
+    expect(result.canAutoExecute).toBe(false);
+  });
+
+  it('replaces built-in rules when custom rules array is provided', () => {
+    // Only one rule → only that rule's factor appears
+    const soloRule: RiskRule = {
+      name: 'solo',
+      defaultWeight: 42,
+      evaluate() {
+        return {
+          code: 'amount',
+          description: 'Solo rule',
+          value: 42,
+          factor: 'solo',
+          weight: 42,
+          contribution: 42,
+          detail: 'Solo rule',
+        };
+      },
+    };
+
+    const result = engine.assess(lowRisk, undefined, [soloRule]);
+    expect(result.factors.length).toBe(1);
+    expect(result.factors[0].factor).toBe('solo');
+    expect(result.score).toBe(42);
   });
 });

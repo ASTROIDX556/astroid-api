@@ -23,6 +23,8 @@ export interface SorobanContractEvent {
 export interface SorobanSimulationResult {
   /** Whether the simulation succeeded without error. */
   success: boolean;
+  /** Latest ledger used by the RPC while simulating this transaction. */
+  latestLedger?: number;
   /** The estimated base fee in stroops (as string for precision). */
   minResourceFee: string;
   /** The cost analysis including cpu and memory resources. */
@@ -43,6 +45,14 @@ export interface SorobanSimulationResult {
   error?: {
     code: string;
     message: string;
+    /** Contract that raised the error, when the RPC reports it. */
+    contractId?: string;
+    /**
+     * Raw revert payload (hex, base64 XDR or ABI-encoded bytes) forwarded
+     * verbatim by the RPC. Decoded by `decodeContractRevert` — kept unparsed
+     * here so no information is lost before it reaches the error layer.
+     */
+    data?: string;
   };
   /** Transaction hash from the simulation. */
   transactionHash?: string;
@@ -54,4 +64,6 @@ export interface SorobanClient {
    * Returns fee estimates, footprint data, events, and success/failure status.
    */
   simulateTransaction(options: SorobanSimulationOptions): Promise<SorobanSimulationResult>;
+  /** Returns the latest ledger sequence currently known to the RPC. */
+  getLatestLedger?(): Promise<number>;
 }

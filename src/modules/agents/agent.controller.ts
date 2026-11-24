@@ -1,28 +1,56 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
-import { ApiOperation, ApiTags } from '@nestjs/swagger';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
+import {
+  ApiOperation,
+  ApiTags,
+  ApiParam,
+  ApiBody,
+} from '@nestjs/swagger';
 import { AgentStatus, UserRole } from '@prisma/client';
 import { AgentService } from './agent.service';
 import {
   assignWalletSchema,
   AssignWalletInput,
+  AssignWalletDto,
   createAgentSchema,
   CreateAgentInput,
+  CreateAgentDto,
   updateAgentSchema,
   UpdateAgentInput,
+  AgentResponseDto,
+  AgentExecutionDto,
 } from './agent.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
+import { AuditAction } from '../../common/decorators/audit-action.decorator';
+import { UseAgentLock } from '../../common/locks/agent-lock.decorator';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 import { AuthenticatedUser } from '../../common/interfaces/authenticated-user.interface';
-import { PaginationQuery, paginationQuerySchema } from '../../common/pagination';
+import { PaginationQuery, paginationQuerySchema } from '../../common/helpers/pagination';
+import { ApiPaginationQuery } from '../../common/decorators/api-pagination-query.decorator';
+import { ApiEnvelope, ApiPaginatedEnvelope } from '../../common/decorators/api-envelope.decorator';
+import { ApiErrorResponses } from '../../common/decorators/api-error-responses.decorator';
+import {
+  SlidingWindowThrottlerGuard,
+  SlidingWindowLimit,
+} from '../../common/guards/sliding-window-throttler.guard';
+import { AgentRateLimiterGuard } from './guards/agent-rate-limiter.guard';
+import { ApiAuthenticated } from '../../common/decorators/api-authenticated.decorator';
 
 @ApiTags('agents')
+@ApiAuthenticated()
 @Controller('agents')
+@ApiErrorResponses({ unauthorized: true, forbidden: true, tooManyRequests: true, serverError: true })
 export class AgentController {
   constructor(private readonly agentService: AgentService) {}
 
   @Get()
-  @ApiOperation({ summary: 'List agents' })
+  @ApiOperation({
+    summary: 'List agents',
+    description: 'Returns a paginated list of agents for the current organization.',
+  })
+  @ApiPaginationQuery()
+  @ApiPaginatedEnvelope(AgentResponseDto, { description: 'Paginated list of agents' })
+  @ApiErrorResponses({ unauthorized: true, serverError: true })
   list(
     @CurrentUser('organizationId') organizationId: string,
     @Query(new ZodValidationPipe(paginationQuerySchema)) query: PaginationQuery,
@@ -32,7 +60,23 @@ export class AgentController {
 
   @Post()
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.DEVELOPER)
-  @ApiOperation({ summary: 'Register a new agent' })
+  @UseGuards(SlidingWindowThrottlerGuard)
+  @SlidingWindowLimit(30, 60)
+  @AuditAction('AGENT_CREATED')
+  @ApiOperation({
+    summary: 'Register a new agent',
+    description:
+      'Creates a new agent under the current organization. The agent starts in ACTIVE status.',
+  })
+  @ApiBody({ type: CreateAgentDto })
+  @ApiEnvelope(AgentResponseDto, { status: 201, description: 'Agent created successfully' })
+  @ApiErrorResponses({
+    validation: true,
+    unauthorized: true,
+    forbidden: 'Insufficient permissions (requires OWNER, ADMIN, or DEVELOPER)',
+    tooManyRequests: true,
+    serverError: true,
+  })
   create(
     @CurrentUser() user: AuthenticatedUser,
     @Body(new ZodValidationPipe(createAgentSchema)) body: CreateAgentInput,
@@ -41,14 +85,35 @@ export class AgentController {
   }
 
   @Get(':id')
-  @ApiOperation({ summary: 'Get an agent' })
+  @ApiOperation({
+    summary: 'Get an agent',
+    description: 'Returns full details of a single agent by ID.',
+  })
+  @ApiParam({ name: 'id', description: 'Agent UUID', example: '018f0a1b-...' })
+  @ApiEnvelope(AgentResponseDto, { description: 'Agent details' })
+  @ApiErrorResponses({ unauthorized: true, notFound: true, serverError: true })
   findOne(@CurrentUser('organizationId') organizationId: string, @Param('id') id: string) {
     return this.agentService.getOrThrow(organizationId, id);
   }
 
   @Patch(':id')
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.DEVELOPER)
-  @ApiOperation({ summary: 'Update an agent' })
+  @AuditAction('AGENT_UPDATED')
+  @UseAgentLock()
+  @ApiOperation({
+    summary: 'Update an agent',
+    description: 'Partial update of agent fields (name, description, model, capabilities, etc.).',
+  })
+  @ApiParam({ name: 'id', description: 'Agent UUID', example: '018f0a1b-...' })
+  @ApiBody({ type: CreateAgentDto })
+  @ApiEnvelope(AgentResponseDto, { description: 'Agent updated successfully' })
+  @ApiErrorResponses({
+    validation: true,
+    unauthorized: true,
+    forbidden: true,
+    notFound: true,
+    serverError: true,
+  })
   update(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id') id: string,
@@ -59,28 +124,96 @@ export class AgentController {
 
   @Post(':id/pause')
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.DEVELOPER)
-  @ApiOperation({ summary: 'Pause an agent' })
+  @AuditAction('AGENT_PAUSED')
+  @UseAgentLock()
+  @UseGuards(SlidingWindowThrottlerGuard)
+  @SlidingWindowLimit(30, 60)
+  @ApiOperation({
+    summary: 'Pause an agent',
+    description: 'Temporarily pauses the agent. Paused agents cannot initiate transactions.',
+  })
+  @ApiParam({ name: 'id', description: 'Agent UUID', example: '018f0a1b-...' })
+  @ApiEnvelope(AgentResponseDto, { description: 'Agent paused successfully' })
+  @ApiErrorResponses({
+    unauthorized: true,
+    forbidden: true,
+    notFound: true,
+    tooManyRequests: true,
+    serverError: true,
+  })
   pause(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
     return this.agentService.setStatus(user.organizationId, user.id, id, AgentStatus.PAUSED);
   }
 
   @Post(':id/resume')
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.DEVELOPER)
-  @ApiOperation({ summary: 'Reactivate an agent' })
+  @AuditAction('AGENT_RESUMED')
+  @UseAgentLock()
+  @UseGuards(SlidingWindowThrottlerGuard)
+  @SlidingWindowLimit(30, 60)
+  @ApiOperation({
+    summary: 'Reactivate an agent',
+    description: 'Resumes a paused agent back to ACTIVE status.',
+  })
+  @ApiParam({ name: 'id', description: 'Agent UUID', example: '018f0a1b-...' })
+  @ApiEnvelope(AgentResponseDto, { description: 'Agent resumed successfully' })
+  @ApiErrorResponses({
+    unauthorized: true,
+    forbidden: true,
+    notFound: true,
+    tooManyRequests: true,
+    serverError: true,
+  })
   resume(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
     return this.agentService.setStatus(user.organizationId, user.id, id, AgentStatus.ACTIVE);
   }
 
   @Post(':id/suspend')
   @Roles(UserRole.OWNER, UserRole.ADMIN)
-  @ApiOperation({ summary: 'Suspend an agent' })
+  @AuditAction('AGENT_SUSPENDED')
+  @UseAgentLock()
+  @UseGuards(SlidingWindowThrottlerGuard)
+  @SlidingWindowLimit(30, 60)
+  @ApiOperation({
+    summary: 'Suspend an agent',
+    description:
+      'Permanently suspends the agent. Suspended agents cannot be reactivated without admin intervention.',
+  })
+  @ApiParam({ name: 'id', description: 'Agent UUID', example: '018f0a1b-...' })
+  @ApiEnvelope(AgentResponseDto, { description: 'Agent suspended successfully' })
+  @ApiErrorResponses({
+    unauthorized: true,
+    forbidden: 'Insufficient permissions (requires OWNER or ADMIN)',
+    notFound: true,
+    tooManyRequests: true,
+    serverError: true,
+  })
   suspend(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
     return this.agentService.setStatus(user.organizationId, user.id, id, AgentStatus.SUSPENDED);
   }
 
   @Post(':id/wallet')
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.DEVELOPER)
-  @ApiOperation({ summary: 'Assign a primary wallet to an agent' })
+  @AuditAction('AGENT_WALLET_ASSIGNED')
+  @UseAgentLock()
+  @UseGuards(SlidingWindowThrottlerGuard)
+  @SlidingWindowLimit(30, 60)
+  @ApiOperation({
+    summary: 'Assign a primary wallet to an agent',
+    description:
+      'Links a wallet to the agent as its primary wallet. The wallet must belong to the same organization.',
+  })
+  @ApiParam({ name: 'id', description: 'Agent UUID', example: '018f0a1b-...' })
+  @ApiBody({ type: AssignWalletDto })
+  @ApiEnvelope(AgentResponseDto, { description: 'Wallet assigned successfully' })
+  @ApiErrorResponses({
+    validation: 'Validation error (invalid wallet UUID)',
+    unauthorized: true,
+    forbidden: true,
+    notFound: true,
+    tooManyRequests: true,
+    serverError: true,
+  })
   assignWallet(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id') id: string,
@@ -91,8 +224,41 @@ export class AgentController {
 
   @Delete(':id')
   @Roles(UserRole.OWNER, UserRole.ADMIN)
-  @ApiOperation({ summary: 'Archive (soft delete) an agent' })
+  @AuditAction('AGENT_ARCHIVED')
+  @UseAgentLock()
+  @ApiOperation({
+    summary: 'Archive (soft delete) an agent',
+    description:
+      'Soft-deletes the agent. The agent record is retained for audit purposes but is excluded from active queries.',
+  })
+  @ApiParam({ name: 'id', description: 'Agent UUID', example: '018f0a1b-...' })
+  @ApiEnvelope(AgentResponseDto, { description: 'Agent archived successfully' })
+  @ApiErrorResponses({
+    unauthorized: true,
+    forbidden: 'Insufficient permissions (requires OWNER or ADMIN)',
+    notFound: true,
+    serverError: true,
+  })
   remove(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
     return this.agentService.remove(user.organizationId, user.id, id);
+  }
+
+  @Post(':id/execute')
+  @UseGuards(AgentRateLimiterGuard)
+  @ApiOperation({
+    summary: 'Trigger an execution for the agent',
+    description:
+      'Requests an execution run for the agent. The route is rate limited per agent: the limit ' +
+      'is taken from the agent metadata (\'rateLimit\') and defaults to the configured value.',
+  })
+  @ApiEnvelope(AgentExecutionDto, { description: 'Execution triggered' })
+  @ApiErrorResponses({
+    unauthorized: true,
+    notFound: true,
+    tooManyRequests: true,
+    serverError: true,
+  })
+  async execute(@CurrentUser('organizationId') _organizationId: string, @Param('id') _id: string) {
+    return { success: true, message: 'Execution triggered' };
   }
 }

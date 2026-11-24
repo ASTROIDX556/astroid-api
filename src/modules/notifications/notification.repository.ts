@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { Notification, Prisma } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
-import { PrismaPagination } from '../../common/pagination';
+import { PrismaPagination } from '../../common/helpers/pagination';
 
 /** Persistence for Notification rows. */
 @Injectable()

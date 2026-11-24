@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
-import { PrismaPagination } from '../../common/pagination';
+import { PrismaPagination } from '../../common/helpers/pagination';
 
 /** Persistence for Agent rows. */
 @Injectable()
@@ -15,6 +15,21 @@ export class AgentRepository {
   findById(organizationId: string, id: string) {
     return this.prisma.agent.findFirst({
       where: { id, organizationId, deletedAt: null },
+    });
+  }
+
+  /**
+   * Finds a live agent by its handle (the display name) inside an organization.
+   * Used to reject duplicate handles with a structured conflict error.
+   */
+  findByNameInOrg(organizationId: string, name: string, excludeId?: string) {
+    return this.prisma.agent.findFirst({
+      where: {
+        organizationId,
+        name,
+        deletedAt: null,
+        ...(excludeId ? { id: { not: excludeId } } : {}),
+      },
     });
   }
 
