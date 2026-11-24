@@ -75,7 +75,8 @@ describe('Webhook signing & delivery', () => {
             signal: AbortSignal.timeout(options.timeoutMs),
           });
           const headers: Record<string, string | string[] | undefined> = {};
-          for (const [key, value] of response.headers.entries()) {
+          const responseHeaders = response.headers ?? new Headers();
+          for (const [key, value] of responseHeaders.entries()) {
             headers[key.toLowerCase()] = value;
           }
           return { status: response.status, headers };
@@ -216,7 +217,7 @@ describe('Webhook signing & delivery', () => {
       fetchSpy.mockResolvedValue({
         ok: false,
         status: 302,
-        headers: { get: () => 'http://127.0.0.1/' },
+        headers: new Headers({ location: 'http://127.0.0.1/' }),
       });
       const job = {
         id: 'job-1',

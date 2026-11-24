@@ -47,7 +47,7 @@ export function webhookJobOptionsFor(settings: WebhookConfig): JobsOptions {
       delay: settings.backoffBaseDelayMs,
     },
     removeOnComplete: { count: 1_000 },
-    removeOnFail: { age: 24 * 3_600 },
+    removeOnFail: { age: 24 * 3_600, count: 5_000 },
   });
 }
 
@@ -88,7 +88,7 @@ export function createWebhookJobOptions(config: QueueConfig = queueConfig()): Jo
   return buildJobOptions({
     attempts: config.webhookDeliveryMaxAttempts,
     backoff: { type: 'exponential', delay: config.webhookRetryDelayMs },
-    removeOnFail: { age: config.webhookFailedJobRetentionSeconds },
+    removeOnFail: { age: config.webhookFailedJobRetentionSeconds, count: 5_000 },
   });
 }
 

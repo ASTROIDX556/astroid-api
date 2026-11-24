@@ -52,7 +52,8 @@ describe('WebhooksProcessor', () => {
           signal: AbortSignal.timeout(options.timeoutMs),
         });
         const headers: Record<string, string | string[] | undefined> = {};
-        for (const [key, value] of response.headers.entries()) {
+        const responseHeaders = response.headers ?? new Headers();
+        for (const [key, value] of responseHeaders.entries()) {
           headers[key.toLowerCase()] = value;
         }
         return { status: response.status, headers };

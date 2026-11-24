@@ -22,7 +22,8 @@ const createDestinationPolicy = () => ({
       signal: AbortSignal.timeout(options.timeoutMs),
     });
     const headers: Record<string, string | string[] | undefined> = {};
-    for (const [key, value] of response.headers.entries()) {
+    const responseHeaders = response.headers ?? new Headers();
+    for (const [key, value] of responseHeaders.entries()) {
       headers[key.toLowerCase()] = value;
     }
     return { status: response.status, headers };
@@ -77,7 +78,7 @@ describe('webhook delivery integration', () => {
       typeof webhookJobOptions,
     ];
     expect(name).toBe(WEBHOOK_JOB_NAME);
-    expect(options).toEqual(webhookJobOptions);
+    expect(options).toEqual({ ...webhookJobOptions, group: expect.any(String) });
     expect(options.attempts).toBeGreaterThan(1);
     expect(options.backoff).toEqual(expect.objectContaining({ type: 'exponential' }));
     expect(data).not.toHaveProperty('secret');
