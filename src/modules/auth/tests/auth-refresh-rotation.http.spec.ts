@@ -152,7 +152,6 @@ describe('POST /auth/refresh rotation over HTTP', () => {
 
     expect((await refresh(first.refreshToken)).status).toBe(401);
 
-    // A duplicate submission is a benign race: nothing is revoked or announced.
     expect(emit).not.toHaveBeenCalled();
     expect((await refresh(rotated.refreshToken)).status).toBe(201);
   });
