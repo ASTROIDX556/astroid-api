@@ -35,6 +35,7 @@ import {
   WebhookFailureCategory,
 } from './utils/failure-classification';
 import { WebhookAttemptService } from './services/webhook-attempt.service';
+import { WebhookDeadLetterService } from './services/webhook-dead-letter.service';
 import { EncryptionService } from '../../common/encryption/encryption.service';
 import { parseRetryAfter } from '../../utils/retry-after.util';
 
@@ -142,6 +143,7 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
     @Optional() eventBusService?: EventBusService,
     @Optional() private readonly deliveryAttempts?: WebhookAttemptService,
     @Optional() private readonly encryptionService?: EncryptionService,
+    @Optional() private readonly deadLetter?: WebhookDeadLetterService,
   ) {
     super();
     this.circuit = compatibilityService && 'beforeAttempt' in compatibilityService
@@ -386,6 +388,13 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
               code: responseStatus === undefined ? 'WEBHOOK_CONFIGURATION' : classification.code,
               circuitStatus: 'CLOSED',
             });
+            await this.deadLetter?.recordTerminalFailure(job, {
+              failedReason,
+              attemptsMade: job.attemptsMade + 1,
+              responseStatus,
+              failureCategory: responseStatus === undefined ? WebhookFailureCategory.Permanent : classification.category,
+              failureCode: responseStatus === undefined ? 'WEBHOOK_CONFIGURATION' : classification.code,
+            });
           }
           throw error;
         }
@@ -461,6 +470,15 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
             category: classification.category,
             code: classification.code,
             circuitStatus: 'CLOSED',
+          });
+          // The worker owns the dead-letter entry for an exhausted delivery, so
+          // the record carries the attempt history even after job retention ends.
+          await this.deadLetter?.recordTerminalFailure(job, {
+            failedReason: errorMessage ?? 'unknown error',
+            attemptsMade: job.attemptsMade + 1,
+            responseStatus,
+            failureCategory: classification.category,
+            failureCode: classification.code,
           });
         }
         throw new Error(errorMessage);

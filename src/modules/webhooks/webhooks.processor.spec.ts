@@ -463,6 +463,68 @@ describe('WebhooksProcessor', () => {
     });
   });
 
+  describe('dead-letter integration', () => {
+    const withDeadLetter = (
+      recordTerminalFailure: ReturnType<typeof vi.fn>,
+      status = 503,
+    ) =>
+      new WebhooksProcessor(
+        mockPrisma as never,
+        undefined,
+        undefined,
+        { post: async () => ({ status, headers: {} }) },
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { recordTerminalFailure } as never,
+      );
+
+    it('dead-letters a delivery that exhausts its configured attempts', async () => {
+      const recordTerminalFailure = vi.fn().mockResolvedValue(undefined);
+      fetchSpy.mockResolvedValue({ ok: false, status: 503, text: () => Promise.resolve('nope') });
+
+      const job = createMockJob({ attemptsMade: 4 } as Partial<Job<WebhookJobData>>);
+      await expect(withDeadLetter(recordTerminalFailure).process(job)).rejects.toThrow('HTTP 503');
+
+      expect(recordTerminalFailure).toHaveBeenCalledTimes(1);
+      expect(recordTerminalFailure).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'job-1', data: expect.objectContaining({ eventId: EVENT_ID }) }),
+        expect.objectContaining({
+          failedReason: 'HTTP 503',
+          attemptsMade: 5,
+          responseStatus: 503,
+        }),
+      );
+    });
+
+    it('dead-letters a permanent rejection on the first attempt', async () => {
+      const recordTerminalFailure = vi.fn().mockResolvedValue(undefined);
+      fetchSpy.mockResolvedValue({ ok: false, status: 404, text: () => Promise.resolve('gone') });
+
+      await expect(
+        withDeadLetter(recordTerminalFailure, 404).process(createMockJob()),
+      ).rejects.toThrow(UnrecoverableError);
+
+      expect(recordTerminalFailure).toHaveBeenCalledWith(
+        expect.any(Object),
+        expect.objectContaining({ failedReason: 'HTTP 404', attemptsMade: 1, responseStatus: 404 }),
+      );
+    });
+
+    it('does not dead-letter a delivery that still has retries left', async () => {
+      const recordTerminalFailure = vi.fn().mockResolvedValue(undefined);
+      fetchSpy.mockResolvedValue({ ok: false, status: 503, text: () => Promise.resolve('nope') });
+
+      await expect(
+        withDeadLetter(recordTerminalFailure).process(createMockJob({ attemptsMade: 1 } as Partial<Job<WebhookJobData>>)),
+      ).rejects.toThrow('HTTP 503');
+
+      expect(recordTerminalFailure).not.toHaveBeenCalled();
+    });
+  });
+
   describe('failure logging', () => {
     /** Attaches a fake worker and returns the registered event handlers. */
     async function attachWorker(): Promise<Record<string, (...args: unknown[]) => void>> {

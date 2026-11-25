@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { BullModule } from '@nestjs/bullmq';
 import { ConfigService } from '@nestjs/config';
 import { WebhookController } from './webhook.controller';
+import { WebhookDlqController } from './webhook-dlq.controller';
 import { WebhookIngressController } from './webhook-ingress.controller';
 import { WebhookIngressService } from './webhook-ingress.service';
 import { WebhookService } from './webhook.service';
@@ -10,6 +11,10 @@ import { WebhookDispatcher } from './webhook.dispatcher';
 import { WebhookDeliveryService } from './services/webhook-delivery.service';
 import { WebhookAuditService } from './services/webhook-audit.service';
 import { WebhookAttemptService } from './services/webhook-attempt.service';
+import { WebhookDeadLetterService } from './services/webhook-dead-letter.service';
+import { PrismaWebhookDlqStore } from './services/webhook-dlq.store';
+import { WebhookDlqDispatcher } from './services/webhook-dlq.dispatcher';
+import { WebhookDlqService } from './services/webhook-dlq.service';
 import { WebhookCircuitService } from './services/webhook-circuit.service';
 import { WebhooksProcessor } from './webhooks.processor';
 import { createWebhookQueueOptions } from '../../queues/webhook.queue';
@@ -51,11 +56,14 @@ import { WebhookDestinationPolicy } from './webhook-destination.policy';
       useFactory: (config: ConfigService) =>
         createWebhookQueueOptions(config.getOrThrow<WebhookConfig>('webhook')),
     }),
+    // The delivery worker routes exhausted deliveries onto the shared
+    // dead-letter queue, so this module needs the queue handle too.
+    BullModule.registerQueue({ name: Queues.DeadLetter }),
     MetricsModule,
     IdempotencyModule,
     EncryptionModule,
   ],
-  controllers: [WebhookController, WebhookIngressController],
+  controllers: [WebhookDlqController, WebhookController, WebhookIngressController],
   providers: [
     WebhookService,
     WebhookDestinationPolicy,
@@ -64,6 +72,15 @@ import { WebhookDestinationPolicy } from './webhook-destination.policy';
     WebhookDeliveryService,
     WebhookAuditService,
     WebhookAttemptService,
+    WebhookDeadLetterService,
+    PrismaWebhookDlqStore,
+    WebhookDlqDispatcher,
+    {
+      provide: WebhookDlqService,
+      inject: [PrismaWebhookDlqStore, WebhookDlqDispatcher],
+      useFactory: (store: PrismaWebhookDlqStore, dispatcher: WebhookDlqDispatcher) =>
+        new WebhookDlqService(store, dispatcher),
+    },
     WebhookCircuitService,
     WebhooksProcessor,
     WebhookIngressService,

@@ -252,6 +252,9 @@ describe('QueueFailureListener', () => {
       });
       expect(data.metadata).toMatchObject({ maxAttempts: 3, organizationId: 'org-1', traceId: 'trace-9' });
       expect(opts.removeOnFail).toEqual({ age: 7 * 24 * 3600, count: 5_000 });
+      // A worker that already dead-lettered the job uses this same id, so the
+      // listener's observation never duplicates the entry.
+      expect(opts.jobId).toBe('dlq-webhooks|job-123');
     });
 
     it('scrubs secrets from log and dead-letter metadata', async () => {

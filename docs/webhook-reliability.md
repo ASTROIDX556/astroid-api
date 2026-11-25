@@ -117,46 +117,67 @@ retention is an explicit new delivery, not an accidental duplicate.
 
 ## Dead-letter operations
 
-A delivery that exhausts its attempts is routed to the `dead-letter` queue with
-the original queue, job id and name, the webhook/event identifiers, attempt
-count, failed reason and timestamp. The event payload itself is not duplicated
-into the dead-letter entry — the original failed job and the
-`webhook_delivery_attempts` rows still hold it — which keeps tenant data out of
-a second retention window.
+A delivery that exhausts its attempts — or is rejected permanently — is routed
+to the `dead-letter` queue **by the delivery worker itself**. The entry carries
+the original queue, job id and name, the webhook (subscription) and event
+identifiers, the attempt count, the failure reason and failure code, and a
+snapshot of the append-only attempt history. The event payload itself is not
+duplicated into the dead-letter entry — the original failed job and the
+`webhook_deliveries` / `webhook_delivery_attempts` rows still hold it — which
+keeps tenant data out of a second retention window.
 
-The same terminal failure is also written to the durable `dead_letter` ledger.
+The entry id is derived from the source queue and job id
+(`dlq-<queue>|<jobId>`), so the global queue failure listener — which also
+observes the terminal `failed` event as a fallback for jobs that never reached
+the worker's terminal branch — writes the same entry instead of a duplicate.
 
-**Inspect.** Operators with the `OWNER` or `ADMIN` role can list the ledger,
-optionally restricted to the webhook queue:
+The same terminal failure is also written to the durable `dead_letter` ledger
+and to the webhook audit trail.
+
+**Inspect.** Operators with the `OWNER` or `ADMIN` role can list and inspect
+dead-lettered deliveries (scoped to their organization). The delivery record is
+the registry: status `FAILED` with the failure reason, attempt count, response
+status and the full attempt history.
 
 ```bash
-curl -s "$API/api/v1/admin/dead-letter?queue=webhooks&page=1&limit=20" \
+curl -s "$API/api/v1/admin/webhooks/dead-letters?page=1&limit=20" \
+  -H "Authorization: Bearer $TOKEN"
+
+curl -s "$API/api/v1/admin/webhooks/dead-letters/<deliveryId>" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
-To see the raw BullMQ entries instead, including the retained failed jobs:
+Each attempt row carries the attempt number, outcome (`SUCCEEDED`/`FAILED`),
+HTTP status, failure code, bounded failure message and duration. To look at the
+raw BullMQ entries as well:
 
 ```bash
 redis-cli -n "${REDIS_DB:-0}" --scan --pattern 'bull:dead-letter:*'
 redis-cli -n "${REDIS_DB:-0}" --scan --pattern 'bull:webhooks:webhook-delivery-*'
 ```
 
-**Replay.** Re-drive a failed delivery after the subscriber has been fixed:
+**Replay.** Re-enqueue a dead-lettered delivery after the subscriber has been
+fixed. Replays require the `webhooks:manage` scope, are audited
+(`WEBHOOK_DELIVERY_REPLAYED`) and are recorded in the `dead_letter` ledger.
 
 ```bash
-curl -s -X POST "$API/api/v1/admin/dead-letter/webhooks/<jobId>/retry" \
+curl -s -X POST "$API/api/v1/admin/webhooks/dead-letters/<deliveryId>/replay" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
-The original failed job stays in place for audit; a new job is enqueued with a
-fresh id (`dlq-retry-<jobId>-<timestamp>`), so BullMQ's id deduplication alone
-cannot protect the retry. The re-drive therefore first looks up the
-deterministic delivery id for the same event and subscription and answers
-`409 Conflict` when that delivery is still waiting, delayed or active. Once
-nothing is in flight, the replay is safe and cannot produce two concurrent
-deliveries of one event.
+The replay is an ordinary delivery job — same worker, same signing, same
+jittered retry policy, same dead-letter path if it fails again — with a fresh
+attempt budget and a job id of its own (`webhook-replay-<deliveryId>`), because
+the original failed job still holds the deterministic delivery id.
 
-**Purge.** After review, remove a hopeless failed job:
+Concurrency is protected twice: the deterministic delivery id is looked up and
+the replay answers `409 Conflict` while another delivery of the same event and
+subscription is waiting, delayed or active, and the stable replay job id makes a
+second concurrent replay of one record a no-op. The original failure record is
+left in place for audit.
+
+**Purge.** After review, remove a hopeless failed job with the generic
+operator route:
 
 ```bash
 curl -s -X DELETE "$API/api/v1/admin/dead-letter/webhooks/<jobId>" \
