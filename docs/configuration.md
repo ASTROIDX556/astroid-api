@@ -313,6 +313,13 @@ deliveries of a failing endpoint instead of hammering it.
 | `BUDGET_ROLLOVER_BATCH_SIZE` | `100` | Budgets loaded per page (1–1000). |
 | `BUDGET_ROLLOVER_MAX_BATCHES` | `20` | Maximum pages processed in one run; later ticks pick up the rest. |
 
+### Health probes
+
+| Variable | Default | Description |
+| -------- | ------- | ----------- |
+| `HEALTH_CHECK_TIMEOUT_MS` | `1000` | Per-dependency timeout of `GET /health/ready` (`50`-`10000`). See [health-probes.md](health-probes.md). |
+| `HEALTH_READINESS_CACHE_TTL_MS` | `0` | Reuse a readiness result for this many ms (`0`-`10000`); `0` disables caching. |
+
 ### Metrics
 
 | Variable              | Default                      | Description                                                   |
