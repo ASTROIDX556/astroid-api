@@ -132,6 +132,11 @@ describe('HealthController', () => {
         data: {
           status: 'up',
           timestamp: expect.any(String),
+          checks: [
+            { name: 'database', status: 'up', latencyMs: 5 },
+            { name: 'cache', status: 'up', latencyMs: 2 },
+            { name: 'queue', status: 'up', latencyMs: 1 },
+          ],
           services: {
             database: { status: 'up', latencyMs: 5, timestamp: expect.any(String) },
             cache: { status: 'up', latencyMs: 2, timestamp: expect.any(String) },
@@ -225,6 +230,33 @@ describe('HealthController', () => {
       await controller.ready(req as Request, res as Response);
 
       expect(JSON.stringify(body())).not.toMatch(/ENOTFOUND|redis\.internal/);
+    });
+
+    it('lists every dependency under `checks` with name, status and latency, even when one is down', async () => {
+      redisHealth.checkHealth.mockResolvedValue({
+        status: 'down',
+        latencyMs: 9,
+        timestamp: new Date().toISOString(),
+        error: 'connect ECONNREFUSED 10.1.2.3:6379',
+      });
+
+      await controller.ready(req as Request, res as Response);
+
+      expect(res.status).toHaveBeenCalledWith(503);
+      expect(body().data.checks).toEqual([
+        { name: 'database', status: 'up', latencyMs: 5 },
+        { name: 'cache', status: 'down', latencyMs: 9, error: 'unavailable' },
+        { name: 'queue', status: 'up', latencyMs: 1 },
+      ]);
+      expect(JSON.stringify(body())).not.toMatch(/10.1.2.3|6379|ECONNREFUSED/);
+    });
+
+    it('passes the configured check timeout to each indicator', async () => {
+      await controller.ready(req as Request, res as Response);
+
+      expect(dbHealth.check).toHaveBeenCalledWith('database', 1_000);
+      expect(redisHealth.checkHealth).toHaveBeenCalledWith(1_000);
+      expect(queueHealth.checkHealth).toHaveBeenCalledWith(1_000);
     });
 
     it('returns 503 with success false during a simulated database outage', async () => {
@@ -346,7 +378,7 @@ describe('HealthController', () => {
       vi.useRealTimers();
     });
 
-    it('answers 503 once the 2s timeout fires when the database hangs', async () => {
+    it('answers 503 once the 1s timeout fires when the database hangs', async () => {
       vi.useFakeTimers();
       const hung = new Promise<never>(() => undefined);
       const prisma = { $queryRaw: vi.fn(() => hung) } as unknown as PrismaService;
@@ -360,7 +392,7 @@ describe('HealthController', () => {
       );
 
       const pending = real.ready(req as Request, res as Response);
-      await vi.advanceTimersByTimeAsync(PrismaHealthIndicator.DEFAULT_TIMEOUT_MS);
+      await vi.advanceTimersByTimeAsync(1_000);
       await pending;
 
       expect(res.status).toHaveBeenCalledWith(503);
@@ -370,7 +402,7 @@ describe('HealthController', () => {
       });
     });
 
-    it('answers 503 once the 2s timeout fires when Redis hangs', async () => {
+    it('answers 503 once the 1s timeout fires when Redis hangs', async () => {
       vi.useFakeTimers();
       const prisma = { $queryRaw: vi.fn().mockResolvedValue([{ '?column?': 1 }]) } as unknown as PrismaService;
       const redis = {
@@ -386,7 +418,7 @@ describe('HealthController', () => {
       );
 
       const pending = real.ready(req as Request, res as Response);
-      await vi.advanceTimersByTimeAsync(RedisHealthIndicator.DEFAULT_TIMEOUT_MS);
+      await vi.advanceTimersByTimeAsync(1_000);
       await pending;
 
       expect(res.status).toHaveBeenCalledWith(503);
