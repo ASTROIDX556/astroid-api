@@ -41,7 +41,8 @@ describe('Health probes over HTTP', () => {
 
   const dbIndicator = { check: vi.fn() };
   const redisIndicator = { checkHealth: vi.fn() };
-  const stellarIndicator = { checkHealth: vi.fn() };
+  const stellarIndicator = { checkHealth: vi.fn(), checkSorobanRpcReadiness: vi.fn() };
+  const sorobanUp = () => ({ status: 'up', latencyMs: 40, timestamp: new Date().toISOString() });
   const queueIndicator = { checkHealth: vi.fn() };
 
   const databaseUp = () => ({
@@ -95,6 +96,7 @@ describe('Health probes over HTTP', () => {
     dbIndicator.check.mockReset().mockResolvedValue(databaseUp());
     redisIndicator.checkHealth.mockReset().mockResolvedValue(cacheUp());
     queueIndicator.checkHealth.mockReset().mockResolvedValue(cacheUp());
+    stellarIndicator.checkSorobanRpcReadiness.mockReset().mockResolvedValue(sorobanUp());
   });
 
   it('serves GET /health/live without credentials and outside the API prefix', async () => {
@@ -121,6 +123,7 @@ describe('Health probes over HTTP', () => {
           database: { status: 'up', latencyMs: 3 },
           cache: { status: 'up', latencyMs: 1 },
           queue: { status: 'up', latencyMs: 1 },
+          sorobanRpc: { status: 'up', latencyMs: 40 },
         },
       },
     });
@@ -150,6 +153,32 @@ describe('Health probes over HTTP', () => {
       },
     });
     expect(text).not.toMatch(/ENOTFOUND|redis\.internal/);
+  });
+
+  it('answers GET /health/ready with 503 when the Soroban RPC is unreachable', async () => {
+    stellarIndicator.checkSorobanRpcReadiness.mockResolvedValue({
+      status: 'down',
+      latencyMs: 5000,
+      timestamp: new Date().toISOString(),
+      error: 'The operation was aborted',
+    });
+
+    const res = await fetch(`${baseUrl}/health/ready`);
+    const text = await res.text();
+
+    expect(res.status).toBe(503);
+    expect(JSON.parse(text)).toMatchObject({
+      success: false,
+      data: {
+        status: 'down',
+        services: {
+          database: { status: 'up' },
+          cache: { status: 'up' },
+          sorobanRpc: { status: 'down', error: 'unavailable' },
+        },
+      },
+    });
+    expect(text).not.toContain('The operation was aborted');
   });
 
   it('answers GET /health/ready with 503 and structured detail during a database outage', async () => {

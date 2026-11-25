@@ -17,7 +17,10 @@ describe('HealthController', () => {
   let controller: HealthController;
   let dbHealth: { check: ReturnType<typeof vi.fn> };
   let redisHealth: { checkHealth: ReturnType<typeof vi.fn> };
-  let stellarHealth: { checkHealth: ReturnType<typeof vi.fn> };
+  let stellarHealth: {
+    checkHealth: ReturnType<typeof vi.fn>;
+    checkSorobanRpcReadiness: ReturnType<typeof vi.fn>;
+  };
   let migrationHealth: { isEnabled: boolean; checkHealth: ReturnType<typeof vi.fn> };
   let queueHealth: { checkHealth: ReturnType<typeof vi.fn> };
   let res: Partial<Response>;
@@ -51,6 +54,11 @@ describe('HealthController', () => {
         network: 'testnet',
         horizon: { status: 'up', latencyMs: 50, url: 'https://horizon' },
         sorobanRpc: { status: 'up', latencyMs: 40, url: 'https://soroban' },
+      }),
+      checkSorobanRpcReadiness: vi.fn().mockResolvedValue({
+        status: 'up',
+        latencyMs: 40,
+        timestamp: new Date().toISOString(),
       }),
     };
     migrationHealth = {
@@ -123,7 +131,7 @@ describe('HealthController', () => {
   describe('GET /health/ready', () => {
     const body = () => (res.json as ReturnType<typeof vi.fn>).mock.calls[0][0];
 
-    it('returns 200 with per-dependency status and latency when database, cache and queue are up', async () => {
+    it('returns 200 with per-dependency status and latency when every dependency is up', async () => {
       await controller.ready(req as Request, res as Response);
 
       expect(res.status).toHaveBeenCalledWith(200);
@@ -141,6 +149,7 @@ describe('HealthController', () => {
             database: { status: 'up', latencyMs: 5, timestamp: expect.any(String) },
             cache: { status: 'up', latencyMs: 2, timestamp: expect.any(String) },
             queue: { status: 'up', latencyMs: 1, timestamp: expect.any(String) },
+            sorobanRpc: { status: 'up', latencyMs: 40, timestamp: expect.any(String) },
           },
         },
         meta: {},
@@ -362,14 +371,96 @@ describe('HealthController', () => {
       });
     });
 
-    it('probes only critical dependencies, so an external Stellar outage cannot fail readiness', async () => {
+    it('probes the Soroban RPC but not Horizon or migrations, so a Horizon outage cannot fail readiness', async () => {
       stellarHealth.checkHealth.mockResolvedValue({ status: 'down', timestamp: 'now' });
 
       await controller.ready(req as Request, res as Response);
 
       expect(stellarHealth.checkHealth).not.toHaveBeenCalled();
+      expect(stellarHealth.checkSorobanRpcReadiness).toHaveBeenCalledTimes(1);
       expect(migrationHealth.checkHealth).not.toHaveBeenCalled();
       expect(res.status).toHaveBeenCalledWith(200);
+    });
+
+    it('returns 503 when only the Soroban RPC is down', async () => {
+      stellarHealth.checkSorobanRpcReadiness.mockResolvedValue({
+        status: 'down',
+        latencyMs: 5000,
+        timestamp: new Date().toISOString(),
+        error: 'Soroban RPC health check timed out after 5000ms',
+      });
+
+      await controller.ready(req as Request, res as Response);
+
+      expect(res.status).toHaveBeenCalledWith(503);
+      expect(body()).toMatchObject({
+        success: false,
+        data: {
+          status: 'down',
+          services: {
+            database: { status: 'up' },
+            cache: { status: 'up' },
+            sorobanRpc: { status: 'down', error: 'timeout' },
+          },
+        },
+      });
+    });
+
+    it('returns 503 and names every failing dependency when all checks fail', async () => {
+      dbHealth.check.mockResolvedValue(terminus({ status: 'down', message: 'db unreachable' }));
+      redisHealth.checkHealth.mockResolvedValue({
+        status: 'down',
+        latencyMs: 5,
+        timestamp: new Date().toISOString(),
+        error: 'ECONNREFUSED',
+      });
+      queueHealth.checkHealth.mockResolvedValue({
+        status: 'down',
+        latencyMs: 5,
+        timestamp: new Date().toISOString(),
+        error: 'ECONNREFUSED',
+      });
+      stellarHealth.checkSorobanRpcReadiness.mockResolvedValue({
+        status: 'down',
+        latencyMs: 5,
+        timestamp: new Date().toISOString(),
+        error: 'ECONNREFUSED',
+      });
+
+      await controller.ready(req as Request, res as Response);
+
+      expect(res.status).toHaveBeenCalledWith(503);
+      expect(body()).toMatchObject({
+        success: false,
+        data: {
+          status: 'down',
+          services: {
+            database: { status: 'down' },
+            cache: { status: 'down' },
+            queue: { status: 'down' },
+            sorobanRpc: { status: 'down' },
+          },
+        },
+      });
+    });
+
+    it('never leaks the Soroban RPC endpoint URL or driver error', async () => {
+      stellarHealth.checkSorobanRpcReadiness.mockResolvedValue({
+        status: 'down',
+        latencyMs: 20,
+        timestamp: new Date().toISOString(),
+        error: 'fetch failed for https://soroban-testnet.stellar.org:443',
+      });
+
+      await controller.ready(req as Request, res as Response);
+
+      const serialized = JSON.stringify(body());
+      expect(serialized).not.toContain('soroban-testnet.stellar.org');
+      expect(serialized).not.toContain('fetch failed');
+      expect(body().data.services.sorobanRpc).toMatchObject({
+        status: 'down',
+        error: 'unavailable',
+      });
     });
   });
 

@@ -807,6 +807,10 @@ model ApiKey {
 enum WebhookDeliveryStatus {
   PENDING
   RETRYING
+  // A permanent rejection (4xx/redirect) or an exhausted retry budget. The
+  // delivery is inspectable and can be replayed with
+  // `POST /webhooks/deliveries/:id/replay`.
+  DEAD_LETTER
   FAILED
   DELIVERED
 }

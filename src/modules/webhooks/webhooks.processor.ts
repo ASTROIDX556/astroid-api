@@ -373,7 +373,7 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
               eventName,
               eventId,
               payload,
-              status: 'FAILED',
+              status: 'DEAD_LETTER',
               attempts: job.attemptsMade + 1,
               lastError: failedReason,
               responseStatus,
@@ -397,8 +397,13 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
             eventName,
             eventId,
             payload,
-            status: 'FAILED',
+            status: 'DEAD_LETTER',
             attempts: job.attemptsMade + 1,
+            lastError: errorMessage,
+            responseStatus,
+            failureCategory: WebhookFailureCategory.Permanent,
+            failureCode: 'DESTINATION_REJECTED',
+            lastAttemptAt: new Date(),
           });
           await this.auditTerminalFailure(job, errorMessage);
           throw new PermanentJobError(errorMessage);
@@ -441,7 +446,7 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
           eventName,
           eventId,
           payload,
-          status: isLastAttempt ? 'FAILED' : 'RETRYING',
+          status: isLastAttempt ? 'DEAD_LETTER' : 'RETRYING',
           attempts: job.attemptsMade + 1,
           lastError: errorMessage,
           responseStatus,
@@ -505,7 +510,7 @@ export class WebhooksProcessor extends WorkerHost implements OnModuleDestroy {
     eventName: string;
     eventId: string;
     payload: unknown;
-    status: 'PENDING' | 'RETRYING' | 'FAILED' | 'DELIVERED';
+    status: 'PENDING' | 'RETRYING' | 'DEAD_LETTER' | 'FAILED' | 'DELIVERED';
     attempts: number;
     lastError?: string;
     responseStatus?: number;

@@ -20,7 +20,6 @@ import { ApiErrorResponses } from '../../common/decorators/api-error-responses.d
 import { SensitiveRateLimit } from '../../common/decorators/sensitive-rate-limit.decorator';
 import { ApiCursorPaginatedEnvelope, ApiEnvelope, ApiPaginatedEnvelope } from '../../common/decorators/api-envelope.decorator';
 import { ApiCursorPaginationQuery } from '../../common/decorators/api-cursor-pagination-query.decorator';
-import { cursorPaginationQuerySchema, CursorPaginationQuery } from '../../common/pagination/cursor-pagination';
 import { UserRole } from '@prisma/client';
 import { WebhookService } from './webhook.service';
 import {
@@ -30,6 +29,10 @@ import {
   updateWebhookSchema,
   UpdateWebhookInput,
   WebhookSecretDto,
+  webhookDeliveryQuerySchema,
+  WebhookDeliveryQuery,
+  WebhookDeliveryReplayDto,
+  webhookDeliveryStatuses,
 } from './webhook.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
@@ -73,14 +76,50 @@ export class WebhookController {
   @Get('deliveries')
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.DEVELOPER)
   @RequiredScopes('read')
-  @ApiOperation({ summary: 'List webhook delivery logs', description: 'Returns cursor-paginated webhook delivery history, newest first.' })
+  @ApiOperation({
+    summary: 'List webhook delivery logs',
+    description:
+      'Returns cursor-paginated webhook delivery history, newest first. Filter ' +
+      'with `status=DEAD_LETTER` to inspect deliveries that will not be retried.',
+  })
   @ApiCursorPaginationQuery()
+  @ApiQuery({
+    name: 'status',
+    required: false,
+    enum: webhookDeliveryStatuses,
+    description: 'Only return deliveries in this state',
+  })
   @ApiCursorPaginatedEnvelope(WebhookDeliveryDto, { description: 'Cursor-paginated webhook delivery logs' })
-  @ApiErrorResponses({ unauthorized: true, forbidden: true, validation: 'Invalid cursor or limit', serverError: true })
+  @ApiErrorResponses({ unauthorized: true, forbidden: true, validation: 'Invalid cursor, limit or status', serverError: true })
   listDeliveries(
     @CurrentUser('organizationId') organizationId: string,
-    @Query(new ZodValidationPipe(cursorPaginationQuerySchema)) query: CursorPaginationQuery,
+    @Query(new ZodValidationPipe(webhookDeliveryQuerySchema)) query: WebhookDeliveryQuery,
   ) { return this.webhookService.listDeliveries(organizationId, query); }
+
+  @Post('deliveries/:id/replay')
+  @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.DEVELOPER)
+  @RequiredScopes('webhooks:manage')
+  @AuditAction({ action: 'WEBHOOK_DELIVERY_REPLAYED', entity: 'WebhookDelivery' })
+  @ApiOperation({
+    summary: 'Replay a dead-lettered webhook delivery',
+    description:
+      'Moves a DEAD_LETTER delivery back to PENDING and enqueues exactly one ' +
+      'delivery job. Only dead-lettered deliveries can be replayed; a concurrent ' +
+      'replay of the same delivery is rejected with 409.',
+  })
+  @ApiParam({ name: 'id', description: 'Webhook delivery UUID' })
+  @ApiEnvelope(WebhookDeliveryReplayDto, { description: 'Replay enqueued' })
+  @ApiErrorResponses({
+    unauthorized: true,
+    forbidden: true,
+    notFound: 'Delivery not found in this organization',
+    conflict: 'The delivery is not dead-lettered or is already being replayed',
+    tooManyRequests: true,
+    serverError: true,
+  })
+  replayDelivery(@CurrentUser('organizationId') organizationId: string, @Param('id') id: string) {
+    return this.webhookService.replayDeadLetterDelivery(organizationId, id);
+  }
 
   @Post()
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.DEVELOPER)

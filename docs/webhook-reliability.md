@@ -104,6 +104,34 @@ an append-only row per HTTP attempt containing:
 Attempt persistence is best-effort: it never changes the delivery outcome and
 its failure is only logged.
 
+## Dead-letter inspection and replay
+
+A delivery that will not be retried — a permanent `4xx`/redirect, or every
+attempt of a transient failure — is stored with status `DEAD_LETTER` in
+`webhook_deliveries` (and a copy of the job is routed to the dead-letter queue
+for operators). The delivery row keeps its attempt count, last response,
+failure category and code, so it can be diagnosed without reading Redis.
+
+| Route | Purpose |
+| ----- | ------- |
+| `GET /webhooks/deliveries?status=DEAD_LETTER` | List dead-lettered deliveries, newest first, with cursor pagination (`cursor`, `limit`). `status` also accepts `PENDING`, `RETRYING`, `FAILED` and `DELIVERED`. |
+| `POST /webhooks/deliveries/:id/replay` | Move a `DEAD_LETTER` delivery back to `PENDING` and enqueue exactly one delivery job. |
+
+Both routes are scoped to the caller's organization, require `read` (list) or
+`webhooks:manage` (replay), and answer in the standard
+`{ success, data, meta, requestId }` envelope. Replay semantics:
+
+- A delivery that is not `DEAD_LETTER` is rejected with `409`.
+- The `DEAD_LETTER` → `PENDING` transition is a guarded update, so two
+  concurrent replays of the same delivery produce exactly one job; the loser
+  gets `409`.
+- If enqueueing fails, the delivery is returned to `DEAD_LETTER` instead of
+  being left stranded in `PENDING`.
+- An unknown delivery (or one owned by another organization) returns `404`.
+
+A replayed job runs through the same signing, timeout and retry policy as the
+original delivery; its attempt history continues from the existing count.
+
 ## Backward compatibility
 
 The payload shape, endpoint CRUD API and header names are unchanged; the

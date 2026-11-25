@@ -1,6 +1,22 @@
 import { z } from 'zod';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { cursorPaginationQuerySchema } from '../../common/pagination/cursor-pagination';
 import { validateWebhookUrlSyntax } from './webhook-destination.policy';
+
+/** Delivery states exposed by the list filter and the replay contract. */
+export const webhookDeliveryStatuses = [
+  'PENDING',
+  'RETRYING',
+  'DEAD_LETTER',
+  'FAILED',
+  'DELIVERED',
+] as const;
+
+/** `GET /webhooks/deliveries` query: cursor pagination plus an optional status filter. */
+export const webhookDeliveryQuerySchema = cursorPaginationQuerySchema.extend({
+  status: z.enum(webhookDeliveryStatuses).optional(),
+});
+export type WebhookDeliveryQuery = z.infer<typeof webhookDeliveryQuerySchema>;
 
 const webhookUrlSchema = z.string().url().superRefine((url, context) => {
   try {
@@ -80,7 +96,25 @@ export class WebhookDeliveryDto {
   @ApiProperty({ description: 'Delivery id', format: 'uuid' }) id!: string;
   @ApiProperty({ description: 'Webhook id', format: 'uuid' }) webhookId!: string;
   @ApiProperty({ description: 'Domain event delivered to the webhook.' }) eventName!: string;
-  @ApiProperty({ enum: ['PENDING', 'RETRYING', 'FAILED', 'DELIVERED'], description: 'Latest delivery state.' }) status!: string;
+  @ApiProperty({ enum: webhookDeliveryStatuses, description: 'Latest delivery state.' }) status!: string;
   @ApiProperty({ description: 'Number of delivery attempts.' }) attempts!: number;
   @ApiProperty({ description: 'Creation timestamp' }) createdAt!: string;
+}
+
+/** Result of manually replaying a dead-lettered delivery. */
+export class WebhookDeliveryReplayDto {
+  @ApiProperty({ description: 'Delivery id', format: 'uuid' })
+  id!: string;
+
+  @ApiProperty({ description: 'Webhook id', format: 'uuid' })
+  webhookId!: string;
+
+  @ApiProperty({ description: 'Domain event being replayed' })
+  eventName!: string;
+
+  @ApiProperty({ enum: ['PENDING'], description: 'Delivery state after the replay was enqueued' })
+  status!: string;
+
+  @ApiProperty({ description: 'True when a replay job was enqueued' })
+  replayed!: boolean;
 }

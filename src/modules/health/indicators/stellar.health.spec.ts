@@ -126,6 +126,63 @@ describe('StellarHealthIndicator', () => {
     expect(elapsed).toBeLessThan(1_000);
   });
 
+  describe('checkSorobanRpcReadiness', () => {
+    const healthyRpc = () =>
+      vi.spyOn(global, 'fetch').mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ result: { status: 'healthy', latestLedger: 9 } }),
+      } as unknown as Response);
+
+    it('reports up without exposing the RPC endpoint URL', async () => {
+      healthyRpc();
+
+      const report = await indicator.checkSorobanRpcReadiness();
+
+      expect(report).toMatchObject({ status: 'up', latencyMs: expect.any(Number) });
+      expect(report).not.toHaveProperty('url');
+      expect(JSON.stringify(report)).not.toContain('soroban-testnet');
+    });
+
+    it('reports down when the RPC answers with a non-2xx status', async () => {
+      vi.spyOn(global, 'fetch').mockResolvedValue({
+        ok: false,
+        status: 503,
+        statusText: 'Service Unavailable',
+      } as unknown as Response);
+
+      const report = await indicator.checkSorobanRpcReadiness();
+
+      expect(report.status).toBe('down');
+      expect(report).not.toHaveProperty('url');
+    });
+
+    it('bounds the probe by the configured RPC timeout', async () => {
+      const config = {
+        getOrThrow: () => ({
+          network: 'testnet',
+          sorobanRpcUrl: 'https://soroban-testnet.stellar.org',
+          sorobanRpc: { timeoutMs: 20 },
+        }),
+      } as unknown as ConfigService;
+      const fastIndicator = new StellarHealthIndicator(config);
+      vi.spyOn(global, 'fetch').mockImplementation(
+        (_url: RequestInfo | URL, init?: RequestInit) =>
+          new Promise((_resolve, reject) => {
+            init?.signal?.addEventListener('abort', () =>
+              reject(new Error('The operation was aborted')),
+            );
+          }),
+      );
+
+      const started = Date.now();
+      const report = await fastIndicator.checkSorobanRpcReadiness();
+
+      expect(report.status).toBe('down');
+      expect(Date.now() - started).toBeLessThan(1_000);
+    });
+  });
+
   it('falls back to the default budget when a non-positive timeout is given', async () => {
     vi.spyOn(global, 'fetch').mockImplementation((url: RequestInfo | URL) => {
       if (String(url).includes('horizon')) {

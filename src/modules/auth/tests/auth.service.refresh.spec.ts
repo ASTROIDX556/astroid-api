@@ -73,8 +73,14 @@ describe('AuthService.refresh (reuse detection)', () => {
     };
     jwt = { verifyAsync: vi.fn(), signAsync: vi.fn() };
     eventBus = { emit: vi.fn().mockResolvedValue(undefined) };
-    const tokenBlacklist = { isRefreshTokenRevoked: vi.fn().mockResolvedValue(false) };
-    const verificationCache = { invalidateOnRefreshRotation: vi.fn() };
+    const tokenBlacklist = {
+      isRefreshTokenRevoked: vi.fn().mockResolvedValue(false),
+      revokeSession: vi.fn().mockResolvedValue(undefined),
+    };
+    const verificationCache = {
+      invalidateOnRefreshRotation: vi.fn(),
+      invalidateSessionRevocation: vi.fn(),
+    };
     const config = {
       getOrThrow: vi.fn().mockReturnValue({
         accessSecret: 'test-access-secret-at-least-16',
@@ -132,6 +138,31 @@ describe('AuthService.refresh (reuse detection)', () => {
     });
     // Happy path: no family revocation, no reuse event.
     expect(eventBus.emit).not.toHaveBeenCalled();
+  });
+
+  it('revokes the whole token family on logout', async () => {
+    prisma.session.findUnique.mockResolvedValue({ familyId: 'family-1' });
+    prisma.session.updateMany.mockResolvedValue({ count: 3 });
+    prisma.session.update.mockResolvedValue({});
+
+    await expect(service.logout('session-1')).resolves.toEqual({ success: true });
+
+    expect(prisma.session.updateMany).toHaveBeenCalledWith({
+      where: { familyId: 'family-1', revokedAt: null },
+      data: { revokedAt: expect.any(Date) },
+    });
+    expect(prisma.session.update).toHaveBeenCalledWith({
+      where: { id: 'session-1' },
+      data: { revokedAt: expect.any(Date) },
+    });
+  });
+
+  it('still logs out when the session row cannot be read', async () => {
+    prisma.session.findUnique.mockRejectedValue(new Error('db blip'));
+    prisma.session.update.mockResolvedValue({});
+
+    await expect(service.logout('session-1')).resolves.toEqual({ success: true });
+    expect(prisma.session.updateMany).not.toHaveBeenCalled();
   });
 
   it('revokes the whole family and emits an event when a rotated token is reused (beyond grace)', async () => {

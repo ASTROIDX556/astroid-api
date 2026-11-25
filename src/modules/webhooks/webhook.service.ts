@@ -1,8 +1,14 @@
-import { BadRequestException, Injectable, Optional } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
+import {
+  BadRequestException,
+  Injectable,
+  Optional,
+  ServiceUnavailableException,
+} from '@nestjs/common';
+import { Prisma, WebhookDeliveryStatus } from '@prisma/client';
 import { WebhookRepository } from './webhook.repository';
 import { CreateWebhookInput, UpdateWebhookInput } from './webhook.dto';
-import { NotFoundException } from '../../common/exceptions/domain.exception';
+import { ConflictException, NotFoundException } from '../../common/exceptions/domain.exception';
+import { WebhookDeliveryService } from './services/webhook-delivery.service';
 import {
   buildPaginationMeta,
   PaginationQuery,
@@ -34,6 +40,7 @@ export class WebhookService {
     private readonly repository: WebhookRepository,
     private readonly destinationPolicy: WebhookDestinationPolicy,
     @Optional() private readonly encryptionService?: EncryptionService,
+    @Optional() private readonly deliveryService?: WebhookDeliveryService,
   ) {}
 
   async create(organizationId: string, input: CreateWebhookInput) {
@@ -61,12 +68,70 @@ export class WebhookService {
     return new Paginated(items, buildPaginationMeta(total, query));
   }
 
-  async listDeliveries(organizationId: string, query: CursorPaginationQuery) {
-    const rows = await this.repository.findDeliveryPage(organizationId, query.cursor ? decodeCursor(query.cursor) : undefined, query.limit + 1);
+  async listDeliveries(
+    organizationId: string,
+    query: CursorPaginationQuery & { status?: WebhookDeliveryStatus },
+  ) {
+    const rows = await this.repository.findDeliveryPage(
+      organizationId,
+      query.cursor ? decodeCursor(query.cursor) : undefined,
+      query.limit + 1,
+      query.status,
+    );
     const hasMore = rows.length > query.limit;
     const items = hasMore ? rows.slice(0, query.limit) : rows;
     const last = items[items.length - 1];
     return new CursorPaginated(items, { limit: query.limit, hasMore, nextCursor: hasMore && last ? encodeCursor(last) : null });
+  }
+
+  /**
+   * Re-enqueues a dead-lettered delivery exactly once.
+   *
+   * The transition out of `DEAD_LETTER` is a guarded `updateMany`, so when two
+   * operators replay the same delivery concurrently only one wins the claim and
+   * enqueues a job; the other receives a 409. If enqueueing fails, the delivery
+   * is put back in `DEAD_LETTER` so it stays inspectable and replayable.
+   */
+  async replayDeadLetterDelivery(organizationId: string, id: string) {
+    const delivery = await this.repository.findDeliveryById(organizationId, id);
+    if (!delivery) {
+      throw new NotFoundException('Webhook delivery', id);
+    }
+    if (delivery.status !== WebhookDeliveryStatus.DEAD_LETTER) {
+      throw new ConflictException(
+        `Webhook delivery ${id} is ${delivery.status}; only DEAD_LETTER deliveries can be replayed`,
+      );
+    }
+    if (!this.deliveryService) {
+      throw new ServiceUnavailableException('Webhook delivery queue is not configured');
+    }
+
+    const claimed = await this.repository.claimDeadLetterForReplay(organizationId, id);
+    if (claimed === 0) {
+      throw new ConflictException(`Webhook delivery ${id} is already being replayed`);
+    }
+
+    try {
+      await this.deliveryService.queueDelivery({
+        webhookId: delivery.webhookId,
+        organizationId: delivery.organizationId,
+        url: delivery.webhook.url,
+        eventName: delivery.eventName,
+        eventId: delivery.eventId,
+        payload: delivery.payload,
+      });
+    } catch (error) {
+      await this.repository.restoreDeadLetter(organizationId, id).catch(() => undefined);
+      throw error;
+    }
+
+    return {
+      id: delivery.id,
+      webhookId: delivery.webhookId,
+      eventName: delivery.eventName,
+      status: WebhookDeliveryStatus.PENDING,
+      replayed: true,
+    };
   }
 
   async getOrThrow(organizationId: string, id: string) {

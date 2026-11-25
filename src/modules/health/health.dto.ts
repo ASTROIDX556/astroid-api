@@ -126,6 +126,13 @@ export class ReadinessServicesDto {
     type: DependencyProbeDto,
   })
   queue!: DependencyProbeDto;
+
+  @ApiProperty({
+    description:
+      'Soroban RPC, probed with a cheap `getHealth` call bounded by `STELLAR_SOROBAN_RPC_TIMEOUT_MS`',
+    type: DependencyProbeDto,
+  })
+  sorobanRpc!: DependencyProbeDto;
 }
 
 /** Payload of the readiness probe. */

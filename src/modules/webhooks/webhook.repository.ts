@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { Prisma, Webhook } from '@prisma/client';
+import { Prisma, Webhook, WebhookDelivery, WebhookDeliveryStatus } from '@prisma/client';
 import { CursorPayload } from '../../common/pagination/cursor-pagination';
 import { PrismaService } from '../../database/prisma.service';
 import { PrismaPagination } from '../../common/helpers/pagination';
@@ -53,8 +53,55 @@ export class WebhookRepository {
     return this.prisma.webhook.delete({ where: { id } });
   }
 
-  findDeliveryPage(organizationId: string, cursor: CursorPayload | undefined, take: number) {
-    const cursorWhere: Prisma.WebhookDeliveryWhereInput | undefined = cursor ? { OR: [{ createdAt: { lt: cursor.createdAt } }, { createdAt: cursor.createdAt, id: { lt: cursor.id } }] } : undefined;
-    return this.prisma.webhookDelivery.findMany({ where: cursorWhere ? { AND: [{ organizationId }, cursorWhere] } : { organizationId }, take, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }] });
+  findDeliveryPage(
+    organizationId: string,
+    cursor: CursorPayload | undefined,
+    take: number,
+    status?: WebhookDeliveryStatus,
+  ) {
+    const conditions: Prisma.WebhookDeliveryWhereInput[] = [{ organizationId }];
+    if (status) conditions.push({ status });
+    if (cursor) {
+      conditions.push({
+        OR: [{ createdAt: { lt: cursor.createdAt } }, { createdAt: cursor.createdAt, id: { lt: cursor.id } }],
+      });
+    }
+    return this.prisma.webhookDelivery.findMany({
+      where: conditions.length === 1 ? conditions[0] : { AND: conditions },
+      take,
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+    });
+  }
+
+  /** One delivery, scoped to its organization, with the endpoint URL needed to replay it. */
+  findDeliveryById(
+    organizationId: string,
+    id: string,
+  ): Promise<(WebhookDelivery & { webhook: { url: string } }) | null> {
+    return this.prisma.webhookDelivery.findFirst({
+      where: { id, organizationId },
+      include: { webhook: { select: { url: true } } },
+    });
+  }
+
+  /**
+   * Atomically moves a delivery out of the dead-letter state before a replay is
+   * enqueued. The `status` predicate makes the transition single-winner: two
+   * concurrent replays can never enqueue the same delivery twice.
+   */
+  async claimDeadLetterForReplay(organizationId: string, id: string): Promise<number> {
+    const result = await this.prisma.webhookDelivery.updateMany({
+      where: { id, organizationId, status: WebhookDeliveryStatus.DEAD_LETTER },
+      data: { status: WebhookDeliveryStatus.PENDING, nextRetryAt: null },
+    });
+    return result.count;
+  }
+
+  /** Returns a delivery to the dead-letter state when its replay cannot be queued. */
+  async restoreDeadLetter(organizationId: string, id: string): Promise<void> {
+    await this.prisma.webhookDelivery.updateMany({
+      where: { id, organizationId, status: WebhookDeliveryStatus.PENDING },
+      data: { status: WebhookDeliveryStatus.DEAD_LETTER },
+    });
   }
 }
