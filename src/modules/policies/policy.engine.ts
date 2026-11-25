@@ -1,17 +1,66 @@
 import { Injectable } from '@nestjs/common';
+import { fromStroops, toStroops } from '../../utils/decimal.util';
 import {
   EvaluablePolicy,
   PolicyConfiguration,
   PolicyEvaluationResult,
+  PolicyRuleCondition,
   PolicyViolation,
   TransactionIntent,
 } from './policy.types';
+
+/** Weekday indices, matching `Date.prototype.getUTCDay()`. */
+const WEEKDAY_INDEX: Record<string, number> = {
+  Sun: 0,
+  Mon: 1,
+  Tue: 2,
+  Wed: 3,
+  Thu: 4,
+  Fri: 5,
+  Sat: 6,
+};
+
+/** Local time of an instant, resolved in a specific IANA time zone. */
+interface LocalTime {
+  hour: number;
+  dayOfWeek: number;
+}
 
 /**
  * Pure, deterministic policy evaluation engine. Given a transaction intent and
  * the set of applicable policies, it returns every violation and whether human
  * approval is required. Contains NO I/O — it is trivially unit-testable and is
  * the heart of Astroid's "AI should never spend money freely" guarantee.
+ *
+ * Enforced semantics (documented here so callers can rely on them):
+ *
+ * - **Exact-limit allowed, over-limit denied.** For amount limits: a spend
+ *   equal to the effective maximum passes; anything above it violates
+ *   (`>` comparison). The same holds for the periodic windows
+ *   (daily/weekly/monthly): `spent + amount` equal to the limit passes,
+ *   anything above it violates. Comparisons are computed in integer stroops
+ *   (7-decimal precision) to eliminate floating-point rounding artifacts.
+ * - **Zero-limit policies deny all spending.** When the configured limit is
+ *   0, the transaction is denied — including zero-amount spends — via the
+ *   `ZERO_LIMIT_DENIED` violation.
+ * - **Disabled policies fail closed.** A policy that applies to the intent
+ *   but is `enabled: false` denies the transaction (`POLICY_DISABLED`).
+ *   "Expired" (soft-deleted) policies are excluded upstream by the
+ *   repository's `deletedAt: null` filter; the engine is total over the
+ *   policies it receives.
+ * - **No matching policy: fallback to allow.** When no policies apply to the
+ *   intent (or none exist for the agent), evaluation explicitly falls through
+ *   to the documented default: allow with 0 violations and unconstrained spend.
+ * - **Period windows reset at UTC boundaries.** The window spans for the
+ *   daily/weekly/monthly aggregates are computed by the spending-limit
+ *   service (`SpendingLimitService.windowBounds`); the engine evaluates the
+ *   caller-supplied `spentToday/spentThisWeek/spentThisMonth`.
+ * - **Currency mismatch: conversion is required, never silent.** A policy
+ *   without `baseCurrency` compares limits in the transaction's native
+ *   asset (the "no conversion" case — see `PolicyConfiguration.baseCurrency`).
+ *   A policy with `baseCurrency` has limits denominated in that currency and
+ *   callers must convert the transaction amounts via the price oracle
+ *   (fail closed when a quote is unavailable).
  */
 @Injectable()
 export class PolicyEngine {
@@ -21,22 +70,45 @@ export class PolicyEngine {
    * higher priority). Approval is required if ANY policy demands it.
    */
   evaluate(intent: TransactionIntent, policies: EvaluablePolicy[]): PolicyEvaluationResult {
-    const active = policies
-      .filter((policy) => policy.enabled)
+    const applicable = policies
       .filter((policy) => this.appliesToAgent(policy, intent))
       .sort((a, b) => a.priority - b.priority);
 
-    const violations: PolicyViolation[] = [];
+    // Fail closed: a policy that applies but is disabled denies the spend.
+    const disabled = applicable.filter((policy) => !policy.enabled);
+    const active = applicable.filter((policy) => policy.enabled);
+
+    const violations: PolicyViolation[] = disabled.map((policy) =>
+      this.violation(policy, 'POLICY_DISABLED', 'Policy is disabled and fails closed'),
+    );
     let requiresApproval = false;
     const at = intent.at ?? new Date();
 
     for (const policy of active) {
       const config = policy.configuration;
-      violations.push(...this.checkAmount(policy, config, intent, at));
-      violations.push(...this.checkAssets(policy, config, intent));
-      violations.push(...this.checkRecipients(policy, config, intent));
-      violations.push(...this.checkPeriodicLimits(policy, config, intent));
+      const legs = intent.transfers?.length
+        ? intent.transfers
+        : [{ asset: intent.asset, amount: intent.amount, recipientAddress: intent.recipientAddress }];
+      for (const leg of legs) {
+        const assetCode = leg.asset.split(':', 1)[0].toUpperCase();
+        const assetLimit = config.assetLimits?.[assetCode] ?? config.assetLimits?.[assetCode.toLowerCase()];
+        const legConfig = assetLimit
+          ? { ...config, maxAmount: assetLimit.maxAmount ?? config.maxAmount, minAmount: assetLimit.minAmount ?? config.minAmount }
+          : config;
+        const legIntent = {
+          ...intent,
+          asset: leg.asset,
+          amount: leg.amount,
+          recipientAddress: leg.recipientAddress ?? intent.recipientAddress,
+        };
+        violations.push(...this.checkAmount(policy, legConfig, legIntent, at));
+        violations.push(...this.checkAssets(policy, legConfig, legIntent));
+        violations.push(...this.checkRecipients(policy, legConfig, legIntent));
+        violations.push(...this.checkPeriodicLimits(policy, legConfig, legIntent));
+      }
       violations.push(...this.checkTimeWindow(policy, config, at));
+      violations.push(...this.checkVelocity(policy, config, intent));
+      violations.push(...this.checkRuleGroups(policy, config, intent, at));
       violations.push(...this.checkEmergencyLock(policy, config));
       if (this.demandsApproval(config, intent)) {
         requiresApproval = true;
@@ -47,7 +119,7 @@ export class PolicyEngine {
       passed: violations.length === 0,
       requiresApproval,
       violations,
-      evaluatedPolicyIds: active.map((policy) => policy.id),
+      evaluatedPolicyIds: applicable.map((policy) => policy.id),
       matchedPolicyId: active[0]?.id,
     };
   }
@@ -65,21 +137,33 @@ export class PolicyEngine {
   ): PolicyViolation[] {
     const out: PolicyViolation[] = [];
     const effectiveMax = this.effectiveMaxAmount(policy, config, at);
-    if (effectiveMax !== undefined && intent.amount > effectiveMax) {
+    const violationAsset = intent.transfers?.length ? intent.asset.split(':', 1)[0].toUpperCase() : undefined;
+    const amountStroops = toStroops(intent.amount);
+
+    // Zero-limit semantics: a zero maximum denies every spend (even
+    // zero-amount ones). Otherwise: a spend equal to the limit passes, one
+    // stroop over is denied.
+    if (effectiveMax === 0) {
+      out.push(
+        this.violation(policy, 'ZERO_LIMIT_DENIED', 'Zero-limit policy denies all spending', violationAsset),
+      );
+    } else if (effectiveMax !== undefined && amountStroops > toStroops(effectiveMax)) {
       out.push(
         this.violation(
           policy,
           'MAX_AMOUNT_EXCEEDED',
-          `Amount ${intent.amount} exceeds maximum ${effectiveMax}`,
+          `Amount ${intent.amount}${intent.limitCurrency ? ` ${intent.limitCurrency}` : ''} exceeds maximum ${effectiveMax}${intent.limitCurrency ? ` ${intent.limitCurrency}` : ''}`,
+          violationAsset,
         ),
       );
     }
-    if (config.minAmount !== undefined && intent.amount < config.minAmount) {
+    if (config.minAmount !== undefined && amountStroops < toStroops(config.minAmount)) {
       out.push(
         this.violation(
           policy,
           'MIN_AMOUNT_NOT_MET',
-          `Amount ${intent.amount} is below minimum ${config.minAmount}`,
+          `Amount ${intent.amount}${intent.limitCurrency ? ` ${intent.limitCurrency}` : ''} is below minimum ${config.minAmount}${intent.limitCurrency ? ` ${intent.limitCurrency}` : ''}`,
+          violationAsset,
         ),
       );
     }
@@ -112,12 +196,18 @@ export class PolicyEngine {
     intent: TransactionIntent,
   ): PolicyViolation[] {
     const out: PolicyViolation[] = [];
-    if (config.allowedAssets && !config.allowedAssets.includes(intent.asset)) {
+    if (
+      config.allowedAssets &&
+      !config.allowedAssets.some((allowed) => assetMatches(allowed, intent.asset))
+    ) {
       out.push(
         this.violation(policy, 'ASSET_NOT_ALLOWED', `Asset ${intent.asset} is not in the allow list`),
       );
     }
-    if (config.blockedAssets && config.blockedAssets.includes(intent.asset)) {
+    if (
+      config.blockedAssets &&
+      config.blockedAssets.some((blocked) => assetMatches(blocked, intent.asset))
+    ) {
       out.push(this.violation(policy, 'ASSET_BLOCKED', `Asset ${intent.asset} is blocked`));
     }
     return out;
@@ -129,18 +219,24 @@ export class PolicyEngine {
     intent: TransactionIntent,
   ): PolicyViolation[] {
     const out: PolicyViolation[] = [];
-    const recipient = intent.recipientAddress;
-    if (config.allowedRecipients && !config.allowedRecipients.includes(recipient)) {
-      out.push(
-        this.violation(
-          policy,
-          'RECIPIENT_NOT_ALLOWED',
-          `Recipient ${recipient} is not in the allow list`,
-        ),
-      );
+    const recipient = intent.recipientAddress.trim().toUpperCase();
+    if (config.allowedRecipients) {
+      const allowed = config.allowedRecipients.map((r) => r.trim().toUpperCase());
+      if (!allowed.includes(recipient)) {
+        out.push(
+          this.violation(
+            policy,
+            'RECIPIENT_NOT_ALLOWED',
+            `Recipient ${intent.recipientAddress} is not in the allow list`,
+          ),
+        );
+      }
     }
-    if (config.blockedRecipients && config.blockedRecipients.includes(recipient)) {
-      out.push(this.violation(policy, 'RECIPIENT_BLOCKED', `Recipient ${recipient} is blocked`));
+    if (config.blockedRecipients) {
+      const blocked = config.blockedRecipients.map((r) => r.trim().toUpperCase());
+      if (blocked.includes(recipient)) {
+        out.push(this.violation(policy, 'RECIPIENT_BLOCKED', `Recipient ${intent.recipientAddress} is blocked`));
+      }
     }
     return out;
   }
@@ -156,17 +252,37 @@ export class PolicyEngine {
       [config.weeklyLimit, intent.spentThisWeek, 'WEEKLY_LIMIT_EXCEEDED', 'weekly'],
       [config.monthlyLimit, intent.spentThisMonth, 'MONTHLY_LIMIT_EXCEEDED', 'monthly'],
     ];
+    const amountStroops = toStroops(intent.amount);
+
     for (const [limit, spent, code, label] of checks) {
       if (limit === undefined) {
         continue;
       }
-      const projected = (spent ?? 0) + intent.amount;
-      if (projected > limit) {
+      // Zero-limit semantics: a zero periodic limit denies every spend.
+      if (limit === 0) {
+        out.push(
+          this.violation(policy, 'ZERO_LIMIT_DENIED', `Zero-limit policy denies all spending (limit 0)`),
+        );
+        continue;
+      }
+      const limitStroops = toStroops(limit);
+      const spentStroops = toStroops(spent ?? 0);
+      const projectedStroops = spentStroops + amountStroops;
+
+      // Boundary semantics: a spend equal to the limit is allowed; anything
+      // above it (one stroop over) is denied. The message names the window and
+      // the remaining allowance so a caller can show the client exactly how
+      // much headroom is left before resubmitting a smaller amount.
+      if (projectedStroops > limitStroops) {
+        const remainingStroops = limitStroops > spentStroops ? limitStroops - spentStroops : 0n;
+        const remaining = fromStroops(remainingStroops);
+        const projected = fromStroops(projectedStroops);
+        const currency = intent.limitCurrency ? ` ${intent.limitCurrency}` : '';
         out.push(
           this.violation(
             policy,
             code,
-            `Projected ${label} spend ${projected} exceeds limit ${limit}`,
+            `Projected ${label} spend ${projected}${currency} exceeds the ${label} limit ${limit}${currency}; remaining ${label} allowance ${remaining}${currency}`,
           ),
         );
       }
@@ -182,21 +298,202 @@ export class PolicyEngine {
     if (!config.timeWindow) {
       return [];
     }
-    const { startHour, endHour, days } = config.timeWindow;
-    const hour = at.getUTCHours();
-    const day = at.getUTCDay();
-    const withinHours = hour >= startHour && hour < endHour;
-    const withinDays = !days || days.includes(day);
+    const { startHour, endHour, days, timezone } = config.timeWindow;
+    const local = this.resolveLocalTime(at, timezone);
+    const withinHours = local.hour >= startHour && local.hour < endHour;
+    const withinDays = !days || days.includes(local.dayOfWeek);
     if (!withinHours || !withinDays) {
       return [
         this.violation(
           policy,
           'OUTSIDE_TIME_WINDOW',
-          `Transaction attempted outside the allowed time window (${startHour}:00-${endHour}:00 UTC)`,
+          `Transaction attempted outside the allowed time window (${startHour}:00-${endHour}:00 ${
+            timezone ?? 'UTC'
+          })`,
         ),
       ];
     }
     return [];
+  }
+
+  /**
+   * Enforces the velocity rule: at most `maxTransactions` may be executed
+   * inside the configured rolling window. The window count is supplied by the
+   * caller through `intent.transactionCount`, so the engine stays pure.
+   */
+  private checkVelocity(
+    policy: EvaluablePolicy,
+    config: PolicyConfiguration,
+    intent: TransactionIntent,
+  ): PolicyViolation[] {
+    const velocity = config.velocity;
+    if (!velocity) {
+      return [];
+    }
+
+    const executed =
+      intent.transactionCounts?.[velocity.window] ?? intent.transactionCount ?? 0;
+    if (executed < velocity.maxTransactions) {
+      return [];
+    }
+
+    return [
+      this.violation(
+        policy,
+        'VELOCITY_LIMIT_EXCEEDED',
+        `Transaction count ${executed} reaches the velocity limit of ${velocity.maxTransactions} per ${velocity.window}`,
+      ),
+    ];
+  }
+
+  /**
+   * Evaluates the multi-condition rule groups of a policy. A group holds when
+   * its conditions satisfy the group's logic (`AND` / `OR`); a group that does
+   * not hold produces one violation naming the failed conditions.
+   */
+  private checkRuleGroups(
+    policy: EvaluablePolicy,
+    config: PolicyConfiguration,
+    intent: TransactionIntent,
+    at: Date,
+  ): PolicyViolation[] {
+    const groups = config.rules;
+    if (!groups || groups.length === 0) {
+      return [];
+    }
+
+    const out: PolicyViolation[] = [];
+    for (const group of groups) {
+      const failed = group.conditions.filter(
+        (condition) => !this.evaluateCondition(condition, intent, at),
+      );
+
+      const holds =
+        group.logic === 'OR' ? failed.length < group.conditions.length : failed.length === 0;
+      if (holds) {
+        continue;
+      }
+
+      const label = group.id ?? `rule-${out.length + 1}`;
+      out.push(
+        this.violation(
+          policy,
+          'RULE_GROUP_VIOLATED',
+          `Rule group '${label}' was not satisfied: ${failed
+            .map((condition) => this.describeCondition(condition))
+            .join(', ')}`,
+        ),
+      );
+    }
+    return out;
+  }
+
+  /** Evaluates a single rule condition against the intent. */
+  private evaluateCondition(
+    condition: PolicyRuleCondition,
+    intent: TransactionIntent,
+    at: Date,
+  ): boolean {
+    const actual = this.resolveConditionValue(condition.field, intent, at);
+
+    switch (condition.operator) {
+      case 'eq':
+        if (condition.field === 'amount' && typeof actual === 'number') {
+          return toStroops(actual) === toStroops(Number(condition.value));
+        }
+        return actual === condition.value;
+      case 'neq':
+        if (condition.field === 'amount' && typeof actual === 'number') {
+          return toStroops(actual) !== toStroops(Number(condition.value));
+        }
+        return actual !== condition.value;
+      case 'gt':
+        if (condition.field === 'amount' && typeof actual === 'number') {
+          return toStroops(actual) > toStroops(Number(condition.value));
+        }
+        return typeof actual === 'number' && actual > Number(condition.value);
+      case 'gte':
+        if (condition.field === 'amount' && typeof actual === 'number') {
+          return toStroops(actual) >= toStroops(Number(condition.value));
+        }
+        return typeof actual === 'number' && actual >= Number(condition.value);
+      case 'lt':
+        if (condition.field === 'amount' && typeof actual === 'number') {
+          return toStroops(actual) < toStroops(Number(condition.value));
+        }
+        return typeof actual === 'number' && actual < Number(condition.value);
+      case 'lte':
+        if (condition.field === 'amount' && typeof actual === 'number') {
+          return toStroops(actual) <= toStroops(Number(condition.value));
+        }
+        return typeof actual === 'number' && actual <= Number(condition.value);
+      case 'in':
+        return Array.isArray(condition.value)
+          ? condition.value.includes(String(actual))
+          : false;
+      case 'notIn':
+        return Array.isArray(condition.value)
+          ? !condition.value.includes(String(actual))
+          : false;
+      default:
+        return false;
+    }
+  }
+
+  /** Resolves the value a condition is compared against. */
+  private resolveConditionValue(
+    field: PolicyRuleCondition['field'],
+    intent: TransactionIntent,
+    at: Date,
+  ): string | number | undefined {
+    switch (field) {
+      case 'amount':
+        return intent.amount;
+      case 'asset':
+        return intent.asset;
+      case 'recipientAddress':
+        return intent.recipientAddress;
+      case 'agentId':
+        return intent.agentId;
+      case 'hourOfDay':
+        return this.resolveLocalTime(at).hour;
+      case 'dayOfWeek':
+        return this.resolveLocalTime(at).dayOfWeek;
+      case 'transactionCount':
+        return intent.transactionCount ?? 0;
+      default:
+        return undefined;
+    }
+  }
+
+  /** Human readable description of a condition, used in violation messages. */
+  private describeCondition(condition: PolicyRuleCondition): string {
+    return `${condition.field} ${condition.operator} ${JSON.stringify(condition.value)}`;
+  }
+
+  /**
+   * Resolves the local hour and weekday of an instant. The time zone defaults
+   * to UTC; an unknown zone falls back to UTC rather than failing the check.
+   */
+  private resolveLocalTime(at: Date, timeZone?: string): LocalTime {
+    if (!timeZone) {
+      return { hour: at.getUTCHours(), dayOfWeek: at.getUTCDay() };
+    }
+
+    try {
+      const formatter = new Intl.DateTimeFormat('en-US', {
+        timeZone,
+        hour: '2-digit',
+        hourCycle: 'h23',
+        weekday: 'short',
+      });
+      const parts = formatter.formatToParts(at);
+      const hour = Number(parts.find((part) => part.type === 'hour')?.value ?? 0) % 24;
+      const weekday = parts.find((part) => part.type === 'weekday')?.value ?? 'Sun';
+      return { hour, dayOfWeek: WEEKDAY_INDEX[weekday] ?? 0 };
+    } catch {
+      return { hour: at.getUTCHours(), dayOfWeek: at.getUTCDay() };
+    }
   }
 
   private checkEmergencyLock(
@@ -219,13 +516,36 @@ export class PolicyEngine {
     if (config.requiresApproval) {
       return true;
     }
-    if (config.approvalThreshold !== undefined && intent.amount >= config.approvalThreshold) {
+    if (
+      config.approvalThreshold !== undefined &&
+      toStroops(intent.amount) >= toStroops(config.approvalThreshold)
+    ) {
       return true;
     }
     return false;
   }
 
-  private violation(policy: EvaluablePolicy, code: string, message: string): PolicyViolation {
-    return { policyId: policy.id, policyName: policy.name, code, message };
+  private violation(policy: EvaluablePolicy, code: string, message: string, asset?: string): PolicyViolation {
+    return { policyId: policy.id, policyName: policy.name, code, message, ...(asset ? { asset } : {}) };
   }
+}
+
+/**
+ * Checks whether an intent asset matches a configured asset rule.
+ *
+ * - If `configuredAsset` contains an issuer (`CODE:ISSUER`), the intent must match
+ *   both the asset code and issuer (case-insensitive exact match).
+ * - If `configuredAsset` is a bare code (e.g. `USDC`), the intent's code must match
+ *   (case-insensitive).
+ */
+export function assetMatches(configuredAsset: string, intentAsset: string): boolean {
+  const normConfigured = configuredAsset.trim().toUpperCase();
+  const normIntent = intentAsset.trim().toUpperCase();
+
+  if (normConfigured.includes(':')) {
+    return normConfigured === normIntent;
+  }
+
+  const intentCode = normIntent.split(':', 1)[0];
+  return normConfigured === intentCode;
 }

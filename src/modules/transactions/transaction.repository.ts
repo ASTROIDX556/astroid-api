@@ -2,6 +2,15 @@ import { Injectable } from '@nestjs/common';
 import { Prisma, Transaction } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { PrismaPagination } from '../../common/helpers/pagination';
+import { CursorPayload } from '../../common/pagination/cursor-pagination';
+
+/**
+ * Client accepted by the guarded status-transition reads/writes. Defaults to
+ * the shared {@link PrismaService}; callers running inside a
+ * `PrismaTransactionService` unit of work pass the transactional client so the
+ * check and the update commit — or roll back — together.
+ */
+type TransactionWriteClient = PrismaService | Prisma.TransactionClient;
 
 /** Persistence for Transaction rows plus risk-factor lookups. */
 @Injectable()
@@ -20,33 +29,26 @@ export class TransactionRepository {
     return { items, total };
   }
 
-  findById(organizationId: string, id: string): Promise<Transaction | null> {
-    return this.prisma.transaction.findFirst({
+  findCursorPage(where: Prisma.TransactionWhereInput, cursor: CursorPayload | undefined, take: number) {
+    const cursorWhere: Prisma.TransactionWhereInput | undefined = cursor ? { OR: [{ createdAt: { lt: cursor.createdAt } }, { createdAt: cursor.createdAt, id: { lt: cursor.id } }] } : undefined;
+    return this.prisma.transaction.findMany({ where: cursorWhere ? { AND: [where, cursorWhere] } : where, take, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }] });
+  }
+
+  findById(
+    organizationId: string,
+    id: string,
+    client: TransactionWriteClient = this.prisma,
+  ): Promise<Transaction | null> {
+    return client.transaction.findFirst({
       where: { id, organizationId, deletedAt: null },
     });
   }
 
-  update(id: string, data: Prisma.TransactionUpdateInput): Promise<Transaction> {
-    return this.prisma.transaction.update({ where: { id }, data });
-  }
-
-  /** True when this org has previously paid the given recipient successfully. */
-  async hasPaidRecipient(organizationId: string, recipientAddress: string): Promise<boolean> {
-    const count = await this.prisma.transaction.count({
-      where: {
-        organizationId,
-        recipientAddress,
-        status: { in: ['COMPLETED', 'CONFIRMED', 'SUBMITTED'] },
-      },
-    });
-    return count > 0;
-  }
-
-  /** Number of transactions from a wallet within the trailing `sinceHours`. */
-  recentCountForWallet(walletId: string, sinceHours = 24): Promise<number> {
-    const since = new Date(Date.now() - sinceHours * 3_600_000);
-    return this.prisma.transaction.count({
-      where: { walletId, createdAt: { gte: since } },
-    });
+  update(
+    id: string,
+    data: Prisma.TransactionUpdateInput,
+    client: TransactionWriteClient = this.prisma,
+  ): Promise<Transaction> {
+    return client.transaction.update({ where: { id }, data });
   }
 }

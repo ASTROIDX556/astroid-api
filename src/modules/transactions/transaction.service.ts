@@ -1,8 +1,10 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import {
   Agent,
   AgentStatus,
   Prisma,
+  ProposalStatus,
   RiskBand,
   Transaction,
   TransactionStatus,
@@ -10,34 +12,60 @@ import {
   WalletStatus,
 } from '@prisma/client';
 import { TransactionRepository } from './transaction.repository';
-import { CreateTransactionInput } from './transaction.dto';
+import { SpendingLimitService } from './spending-limit.service';
+import { CreateTransactionInput, SimulateTransactionInput } from './transaction.dto';
 import { TransactionsValidator } from './transactions.validator';
 import { WalletService, toNetworkName } from '../wallets/wallet.service';
 import { PolicyService } from '../policies/policy.service';
-import { RiskService } from '../risk/risk.service';
+import { RiskAggregatorService } from '../risk/risk-aggregator.service';
+import { RiskAggregation } from '../risk/risk.types';
 import { BudgetService } from '../budgets/budget.service';
 import { StellarService } from '../stellar/stellar.service';
 import { AgentService } from '../agents/agent.service';
 import { TransactionIntent } from '../policies/policy.types';
-import { RiskFactorsInput } from '../risk/risk.types';
 import { DomainException } from '../../common/exceptions/domain.exception';
 import { ErrorCode } from '../../common/constants/error-codes';
 import {
   ConflictException,
   NotFoundException,
 } from '../../common/exceptions/domain.exception';
-import {
-  buildPaginationMeta,
-  PaginationQuery,
-  toPrismaPagination,
-} from '../../common/helpers/pagination';
-import { Paginated } from '../../common/interfaces/api-response.interface';
+import { CursorPaginated, Paginated } from '../../common/interfaces/api-response.interface';
+import { decodeCursor, encodeCursor } from '../../common/pagination/cursor-pagination';
 import { EventBusService } from '../../events/event-bus.service';
 import { DomainEventName } from '../../events/event-names';
 import { PrismaService } from '../../database/prisma.service';
+import { PrismaTransactionService } from '../../database/prisma-transaction.service';
+import { idempotencyConfig, IdempotencyConfig } from '../../config/idempotency.config';
+import { ApprovalExpiryQueue } from '../../queues/approval-expiry.queue';
+import { IdempotencyService } from '../../common/idempotency/idempotency.service';
+import {
+  IDEMPOTENT_DEFAULT_STATUS,
+  TRANSACTION_CREATE_ROUTE,
+} from '../../common/idempotency/idempotency.constants';
+import { RequestContext } from '../../common/context/request-context';
+import { buildPaginationMeta, PaginationQuery, toPrismaPagination } from '../../common/helpers/pagination';
+import { TransactionPreflightService } from './services/transaction-preflight.service';
 
-const SORTABLE = ['createdAt', 'amount', 'status', 'riskScore'];
+/** Statuses that may never leave the execution pipeline once they got there. */
+const EXECUTED_STATUSES: readonly TransactionStatus[] = [
+  TransactionStatus.COMPLETED,
+  TransactionStatus.SUBMITTED,
+  TransactionStatus.CONFIRMED,
+];
+
+/** Statuses a cancellation is still allowed to consume. */
+const CANCELLABLE_STATUSES: readonly TransactionStatus[] = [
+  TransactionStatus.DRAFT,
+  TransactionStatus.PENDING,
+];
 const Decimal = Prisma.Decimal;
+
+function normalizeAmount(amount: string): string {
+  const [whole, fraction = ''] = amount.split('.');
+  const normalizedWhole = whole.replace(/^0+(?=\d)/, '');
+  const normalizedFraction = fraction.replace(/0+$/, '');
+  return normalizedFraction ? `${normalizedWhole}.${normalizedFraction}` : normalizedWhole;
+}
 
 /**
  * The heart of Astroid: the transaction pipeline. Every agent-initiated payment
@@ -46,13 +74,20 @@ const Decimal = Prisma.Decimal;
  *   1. resolve + validate the sender wallet (must be ACTIVE / not frozen)
  *   2. resolve + validate the initiating agent (must be ACTIVE)
  *   3. evaluate all applicable policies (may block or require approval)
- *   4. score risk (CRITICAL can never auto-execute)
+ *   4. score risk (the aggregator combines velocity, destination reputation and
+ *      amount anomaly into a composite 0-100 score; scores at or above the
+ *      review threshold require a human approval)
  *   5. check the budget headroom (does not mutate yet)
- *   6. persist the Transaction row
+ *   6. persist the Transaction row and the linked risk assessment
  *   7. if approval is required -> create a Proposal (status PENDING) and stop
  *      else -> execute on-chain immediately
  * Execution is idempotent-ish and also callable by the approvals module once a
  * proposal is approved.
+ *
+ * Callers may pass an Idempotency-Key: the first request for a key reserves a
+ * record, and repeats with the same key/payload either replay the stored result
+ * or wait for the in-flight original. A key reused with a different payload is
+ * rejected with 409. Records expire after the configured retention window.
  */
 @Injectable()
 export class TransactionService {
@@ -63,68 +98,244 @@ export class TransactionService {
     private readonly wallets: WalletService,
     private readonly agents: AgentService,
     private readonly policies: PolicyService,
-    private readonly risk: RiskService,
+    private readonly risk: RiskAggregatorService,
     private readonly budgets: BudgetService,
     private readonly stellar: StellarService,
     private readonly eventBus: EventBusService,
     private readonly prisma: PrismaService,
+    private readonly spendingLimits: SpendingLimitService,
+    @Optional() private readonly transactions?: PrismaTransactionService,
+    @Optional() private readonly transactionPreflight?: TransactionPreflightService,
+    @Optional() private readonly config?: ConfigService,
+    @Optional() private readonly idempotency?: IdempotencyService,
+    @Optional() private readonly approvalExpiry?: ApprovalExpiryQueue,
   ) {}
 
-  async create(organizationId: string, actorId: string, input: CreateTransactionInput) {
+  async create(
+    organizationId: string,
+    actorId: string,
+    input: CreateTransactionInput,
+    idempotency?: { principalId: string; key: string; route?: string },
+  ) {
+    if (!idempotency) return this.createTransaction(organizationId, actorId, input);
+    if (!this.idempotency) {
+      throw new Error('IdempotencyService is not available in this application context');
+    }
+    const store = this.idempotency;
+    const route = idempotency.route ?? TRANSACTION_CREATE_ROUTE;
+    const { keyTtlMs, waitTimeoutMs, pollIntervalMs } = this.idempotencySettings();
+    // Numeric amounts are normalized first so "50.0" and "50.0000000" are the
+    // same fingerprint.
+    const requestFingerprint = store.fingerprint({
+      ...input,
+      amount: normalizeAmount(input.amount),
+    });
+    const reservation = await store.reserve({
+      principalId: idempotency.principalId,
+      route,
+      key: idempotency.key,
+      requestFingerprint,
+      expiresAt: new Date(Date.now() + keyTtlMs),
+    });
+
+    if (!reservation.created) {
+      if (reservation.record.requestHash !== requestFingerprint) {
+        throw new ConflictException(
+          'Idempotency-Key was already used with a different transaction payload',
+        );
+      }
+
+      // A completed record replays the original status, body and request id.
+      const stored = store.completedResponse(reservation.record);
+      if (stored) return store.replay<Awaited<ReturnType<TransactionService['createTransaction']>>>(stored);
+
+      // The original submission is still in flight. Rather than failing the
+      // retrying client outright, wait for it to finish and replay its result;
+      // only one request is ever allowed to execute, so the database write and
+      // the on-chain submission still happen exactly once.
+      const replayed = await store.waitForCompletion(
+        reservation.record.id,
+        waitTimeoutMs,
+        pollIntervalMs,
+      );
+      if (replayed)
+        return store.replay<Awaited<ReturnType<TransactionService['createTransaction']>>>(replayed);
+      throw new ConflictException(
+        'A transaction submission with this Idempotency-Key is currently being processed; retry shortly',
+      );
+    }
+
+    let transactionId: string | undefined;
+    try {
+      const result = await this.createTransaction(organizationId, actorId, input, async (transaction) => {
+        transactionId = transaction.id;
+        await store.attachTransaction(reservation.record.id, transaction.id);
+      });
+      await store.complete({
+        recordId: reservation.record.id,
+        statusCode: IDEMPOTENT_DEFAULT_STATUS,
+        body: JSON.parse(JSON.stringify(result)) as Prisma.InputJsonValue,
+        transactionId,
+        requestId: RequestContext.getRequestId(),
+        expiresAt: new Date(Date.now() + keyTtlMs),
+      });
+      return result;
+    } catch (error) {
+      if (!transactionId) {
+        await store.release(reservation.record.id);
+      } else {
+        await store.failTransaction(transactionId);
+      }
+      throw error;
+    }
+  }
+
+  /** Idempotency retention/wait settings, falling back to their env defaults. */
+  private idempotencySettings(): IdempotencyConfig {
+    return this.config?.get<IdempotencyConfig>('idempotency') ?? idempotencyConfig();
+  }
+
+  private async createTransaction(
+    organizationId: string,
+    actorId: string,
+    input: CreateTransactionInput,
+    onTransactionCreated?: (transaction: Transaction) => Promise<void>,
+  ) {
     const amount = Number(input.amount);
+    const memoValue = input.memoType && input.memoValue ? input.memoValue : input.memo;
     const { wallet } = await this.preflight(organizationId, input);
 
     // 2.5. Velocity limit check for agent spending
     if (input.agentId) {
-      await this.policies.checkVelocityLimit(input.agentId, amount, input.asset);
+      await this.policies.checkVelocityLimit(organizationId, input.agentId, amount, input.asset, actorId);
     }
 
-    // 3. Policy evaluation — a hard failure blocks the transaction outright.
-    const intent = this.toIntent(organizationId, input, amount);
-    const policyResult = await this.policies.evaluateIntent(intent, actorId);
-    if (!policyResult.passed) {
-      throw new DomainException(
-        ErrorCode.POLICY_VIOLATION,
-        'Transaction blocked by one or more policies',
-        policyResult.violations,
-      );
-    }
+    // 2.6 – 6. Spend-limit enforcement, full policy evaluation, risk scoring,
+    //       budget headroom and transaction-row persistence. For an agent
+    //       transaction the whole check-then-create section runs inside an
+    //       agent-scoped distributed lock so two concurrent submissions cannot
+    //       both read a stale rolling-window aggregate and both pass (see
+    //       SpendingLimitService.withSpendEnforcementLock). The freshly created
+    //       DRAFT row is counted by the aggregate, so the next serialised caller
+    //       sees it and is denied if it would breach the window.
+    const enforceAndCreate = async (): Promise<{
+      transaction: Transaction;
+      assessment: RiskAggregation;
+      requiresApproval: boolean;
+      budgetReservationId: string | undefined;
+    }> => {
+      const baseIntent = this.toIntent(organizationId, input, amount);
+      let enrichedIntent = baseIntent;
+      if (input.agentId) {
+        const aggregates = await this.spendingLimits.aggregateSpend(input.agentId, input.asset);
+        enrichedIntent = {
+          ...baseIntent,
+          spentToday: aggregates.spentToday,
+          spentThisWeek: aggregates.spentThisWeek,
+          spentThisMonth: aggregates.spentThisMonth,
+        };
+        // Evaluate the rolling-window budget caps against the real aggregates.
+        // No-op when no periodic limit policy is configured; throws
+        // PolicyViolationException (HTTP 422) on violation.
+        await this.spendingLimits.evaluateSpendingLimits(enrichedIntent, actorId);
+      }
 
-    // 4. Risk scoring — CRITICAL can never auto-execute.
-    const assessment = await this.risk.evaluate(
-      organizationId,
-      await this.toRiskFactors(organizationId, wallet, input, amount, policyResult.violations.length),
-      { actorId },
-    );
+      // 3. Full policy evaluation — evaluates all rule types (maxAmount, assets,
+      //    recipients, time windows, emergency lock, periodic limits) with real
+      //    spend aggregates already embedded in the intent.
+      const policyResult = await this.policies.evaluateIntent(enrichedIntent, actorId);
+      if (!policyResult.passed) {
+        throw new DomainException(
+          ErrorCode.POLICY_VIOLATION,
+          'Transaction blocked by one or more policies',
+          policyResult.violations,
+        );
+      }
 
-    // 5. Budget headroom (no mutation yet).
-    if (input.budgetId) {
-      await this.budgets.assertWithinBudget(organizationId, input.budgetId, amount);
-    }
+      // 4. Risk scoring — the aggregator combines the velocity, destination
+      //    reputation and amount-anomaly signals into the composite score.
+      const assessment = await this.risk.assess({
+        organizationId,
+        walletId: wallet.id,
+        recipientAddress: input.recipientAddress,
+        amount,
+        asset: input.asset,
+        walletAgeDays: this.walletAgeDays(wallet),
+        policyViolations: policyResult.violations.length,
+        hourUtc: new Date().getUTCHours(),
+      });
 
-    const requiresApproval = policyResult.requiresApproval || !assessment.canAutoExecute;
+      // 5. Atomic budget reservation — replaces the read-then-write assertWithinBudget.
+      // The conditional UPDATE guarantees the balance can never go negative under
+      // concurrency. If the budget is exceeded the caller gets a typed
+      // BudgetExceededException (HTTP 422) rather than a 500.
+      let budgetReservationId: string | undefined;
+      if (input.budgetId) {
+        const reservation = await this.budgets.reserveAtomic(organizationId, input.budgetId, amount);
+        budgetReservationId = reservation.id;
+      }
 
-    // 6. Persist the transaction row.
-    const transaction = await this.repository.create({
-      organization: { connect: { id: organizationId } },
-      wallet: { connect: { id: wallet.id } },
-      ...(input.agentId ? { agent: { connect: { id: input.agentId } } } : {}),
-      ...(policyResult.matchedPolicyId
-        ? { policy: { connect: { id: policyResult.matchedPolicyId } } }
-        : {}),
-      ...(input.budgetId ? { budget: { connect: { id: input.budgetId } } } : {}),
-      asset: input.asset,
-      amount: new Decimal(input.amount),
-      senderAddress: wallet.stellarAddress,
-      recipientAddress: input.recipientAddress,
-      memo: input.memo,
-      purpose: input.purpose,
-      status: TransactionStatus.DRAFT,
-      riskScore: assessment.score,
-      riskBand: assessment.band,
-      requiresApproval,
-      metadata: input.metadata as Prisma.InputJsonValue,
-    });
+      const requiresApproval = policyResult.requiresApproval || assessment.requiresApproval;
+
+      // 6. Persist the transaction row.
+      const createTransactionRow = () => this.repository.create({
+        organization: { connect: { id: organizationId } },
+        wallet: { connect: { id: wallet.id } },
+        ...(input.agentId ? { agent: { connect: { id: input.agentId } } } : {}),
+        ...(policyResult.matchedPolicyId
+          ? { policy: { connect: { id: policyResult.matchedPolicyId } } }
+          : {}),
+        ...(input.budgetId ? { budget: { connect: { id: input.budgetId } } } : {}),
+        ...(budgetReservationId
+          ? { budgetReservation: { connect: { id: budgetReservationId } } }
+          : {}),
+        asset: input.asset,
+        amount: new Decimal(input.amount),
+        senderAddress: wallet.stellarAddress,
+        recipientAddress: input.recipientAddress,
+        memo: memoValue,
+        purpose: input.purpose,
+        status: TransactionStatus.DRAFT,
+        riskScore: assessment.score,
+        riskBand: assessment.band,
+        requiresApproval,
+        metadata: input.metadata as Prisma.InputJsonValue,
+      });
+      let transaction: Transaction;
+      try {
+        transaction = input.agentId && typeof this.budgets.withAgentBudgetLimit === 'function'
+          ? await this.budgets.withAgentBudgetLimit(
+              organizationId,
+              input.agentId,
+              input.asset,
+              amount,
+              createTransactionRow,
+            )
+          : await createTransactionRow();
+      } catch (error) {
+        // The reservation is already taken, but the submission was rejected
+        // (e.g. the agent budget check) or the row could not be persisted.
+        // Nothing will ever settle or release it through the transaction, so
+        // return the held amount now (idempotent, best effort).
+        await this.releaseReservation(budgetReservationId);
+        throw error;
+      }
+
+      return { transaction, assessment, requiresApproval, budgetReservationId: budgetReservationId as string | undefined };
+    };
+
+    const result = input.agentId
+      ? await this.spendingLimits.withSpendEnforcementLock(input.agentId, enforceAndCreate)
+      : await enforceAndCreate();
+
+    const { transaction, assessment, requiresApproval } = result;
+
+    await onTransactionCreated?.(transaction);
+
+    // 6.1. Persist the risk assessment against the transaction and emit the
+    //      risk evaluation events for the downstream notification workers.
+    await this.risk.record(organizationId, transaction.id, assessment, { actorId });
+
     await this.eventBus.emit(
       DomainEventName.TransactionCreated,
       { transactionId: transaction.id, amount: input.amount, riskBand: assessment.band },
@@ -133,7 +344,12 @@ export class TransactionService {
 
     // 7. Branch: approval proposal, or immediate execution.
     if (requiresApproval) {
-      const proposal = await this.createProposal(organizationId, transaction, assessment.band);
+      const proposal = await this.createProposal(
+        organizationId,
+        transaction,
+        assessment.band,
+        input.approvalExpiresInHours,
+      );
       await this.repository.update(transaction.id, { status: TransactionStatus.PENDING });
       return {
         transaction: { ...transaction, status: TransactionStatus.PENDING },
@@ -154,21 +370,126 @@ export class TransactionService {
    */
   async execute(organizationId: string, transactionId: string, actorId?: string): Promise<Transaction> {
     const tx = await this.getOrThrow(organizationId, transactionId);
-    if (
-      tx.status === TransactionStatus.COMPLETED ||
-      tx.status === TransactionStatus.SUBMITTED ||
-      tx.status === TransactionStatus.CONFIRMED
-    ) {
+    if (EXECUTED_STATUSES.includes(tx.status)) {
       throw new ConflictException(`Transaction '${transactionId}' has already been executed`);
     }
+
+    // An approval-gated transaction is only executable while its proposal is
+    // APPROVED. Checking the proposal *status* — not merely the existence of an
+    // approval record — keeps an EXPIRED (or otherwise terminal) proposal from
+    // being submitted by a stale or racing caller. ApprovalService moves the
+    // proposal to APPROVED before calling execute(); auto-executable
+    // transactions have no proposal at all.
+    const proposal = await this.prisma.proposal.findUnique({
+      where: { transactionId },
+      select: { id: true, status: true },
+    });
+    if (proposal && proposal.status !== ProposalStatus.APPROVED) {
+      throw new DomainException(
+        proposal.status === ProposalStatus.EXPIRED
+          ? ErrorCode.PROPOSAL_EXPIRED
+          : ErrorCode.PROPOSAL_NOT_PENDING,
+        `Transaction '${transactionId}' cannot be executed while its approval proposal is '${proposal.status}'`,
+      );
+    }
+
     const wallet = await this.wallets.getOrThrow(organizationId, tx.walletId);
     this.assertWalletSpendable(wallet);
 
-    await this.repository.update(tx.id, { status: TransactionStatus.SUBMITTED });
+    if (!this.transactionPreflight) {
+      throw new Error('TransactionPreflightService is not available in this application context');
+    }
+
+    const requestId = RequestContext.getRequestId();
+    const executionActorId = actorId ?? RequestContext.getActorId();
+    const transactionXdr = await this.stellar.buildPaymentXdr({
+      sourceAddress: wallet.stellarAddress,
+      destinationAddress: tx.recipientAddress,
+      asset: tx.asset,
+      amount: tx.amount.toFixed(7),
+      memo: tx.memo ?? undefined,
+      network: toNetworkName(wallet.network),
+    });
+    const preflight = await this.transactionPreflight.simulate(transactionXdr);
+    if (preflight.kind === 'retryable_error') {
+      throw preflight.error;
+    }
+    if (preflight.kind === 'terminal_error') {
+      await this.repository.update(tx.id, {
+        status: TransactionStatus.FAILED,
+        simulatedAt: preflight.simulatedAt,
+        simulationErrorCode: preflight.code,
+        simulationErrorMessage: preflight.message,
+      });
+      await this.releaseReservation(tx.budgetReservationId);
+      await this.eventBus.emit(
+        DomainEventName.TransactionFailed,
+        {
+          transactionId: tx.id,
+          reason: preflight.message,
+          code: preflight.code,
+          requestId,
+        },
+        {
+          organizationId,
+          actorId: executionActorId,
+          aggregateType: 'transaction',
+          aggregateId: tx.id,
+        },
+      );
+      throw new DomainException(
+        ErrorCode.SIMULATION_FAILED,
+        `Transaction simulation failed (${preflight.code}): ${preflight.message}`,
+        { code: preflight.code, message: preflight.message, requestId },
+      );
+    }
+
+    // Guarded DRAFT/PENDING -> SUBMITTED transition. Concurrent workers racing
+    // on the same transaction (fee-bump retries, approvals landing while an
+    // execute is in flight) previously clobbered each other's status writes;
+    // running the re-read + update as one SERIALIZABLE unit of work makes
+    // Postgres abort the loser with a serialization conflict (P2034), which
+    // runWithRetry replays — the replay re-reads the row, sees SUBMITTED and
+    // surfaces a ConflictException *before* any funds move on-chain.
+    await this.transactions!.runWithRetry(
+      async (client) => {
+        const current = await this.repository.findById(organizationId, transactionId, client);
+        if (!current) {
+          throw new NotFoundException('Transaction', transactionId);
+        }
+        if (EXECUTED_STATUSES.includes(current.status)) {
+          throw new ConflictException(`Transaction '${transactionId}' has already been executed`);
+        }
+        return this.repository.update(
+          transactionId,
+          {
+            status: TransactionStatus.SUBMITTED,
+            simulatedAt: preflight.simulatedAt,
+            minResourceFee: new Decimal(preflight.minResourceFee),
+            footprintSummary: {
+              readOnlyCount: preflight.footprintSummary.readOnlyCount,
+              readWriteCount: preflight.footprintSummary.readWriteCount,
+            },
+            simulationErrorCode: null,
+            simulationErrorMessage: null,
+          },
+          client,
+        );
+      },
+      {
+        name: 'transaction.status->submitted',
+        isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+      },
+    );
     await this.eventBus.emit(
       DomainEventName.TransactionSubmitted,
-      { transactionId: tx.id },
-      { organizationId, actorId, aggregateType: 'transaction', aggregateId: tx.id },
+      { transactionId: tx.id, requestId },
+      {
+        organizationId,
+        actorId: executionActorId,
+        aggregateType: 'transaction',
+        aggregateId: tx.id,
+      },
     );
 
     try {
@@ -188,15 +509,32 @@ export class TransactionService {
       });
 
       if (result.successful && tx.budgetId) {
-        await this.budgets.consume(organizationId, tx.budgetId, Number(tx.amount));
+        // Settle the atomic reservation so spent reflects the actual on-chain
+        // amount. Falls back to the legacy consume path when no reservationId
+        // is recorded (older transactions created before this change).
+        if (tx.budgetReservationId) {
+          await this.budgets.settle(organizationId, tx.budgetReservationId, Number(tx.amount));
+        } else {
+          await this.budgets.consume(organizationId, tx.budgetId, Number(tx.amount));
+        }
+      }
+      if (!result.successful) {
+        // The network rejected the payment without throwing: no money moved,
+        // so the hold is returned exactly as on a thrown submission failure.
+        await this.releaseReservation(tx.budgetReservationId);
       }
 
       await this.eventBus.emit(
         result.successful
           ? DomainEventName.TransactionCompleted
           : DomainEventName.TransactionFailed,
-        { transactionId: tx.id, stellarHash: result.hash },
-        { organizationId, actorId, aggregateType: 'transaction', aggregateId: tx.id },
+        { transactionId: tx.id, stellarHash: result.hash, requestId },
+        {
+          organizationId,
+          actorId: executionActorId,
+          aggregateType: 'transaction',
+          aggregateId: tx.id,
+        },
       );
       return completed;
     } catch (error) {
@@ -204,25 +542,48 @@ export class TransactionService {
         `Transaction ${tx.id} failed to submit: ${(error as Error).message}`,
       );
       await this.repository.update(tx.id, { status: TransactionStatus.FAILED });
+      // Release the atomic reservation so the budget headroom is restored.
+      if (tx.budgetReservationId) {
+        await this.budgets.release(tx.budgetReservationId).catch((releaseErr: unknown) => {
+          this.logger.warn(
+            `Could not release budget reservation ${tx.budgetReservationId}: ${(releaseErr as Error).message}`,
+          );
+        });
+      }
       await this.eventBus.emit(
         DomainEventName.TransactionFailed,
-        { transactionId: tx.id, reason: (error as Error).message },
-        { organizationId, actorId, aggregateType: 'transaction', aggregateId: tx.id },
+        { transactionId: tx.id, reason: (error as Error).message, requestId },
+        {
+          organizationId,
+          actorId: executionActorId,
+          aggregateType: 'transaction',
+          aggregateId: tx.id,
+        },
       );
       throw error;
     }
   }
 
   /** Dry-run: runs every governance check without persisting or moving funds. */
-  async simulate(organizationId: string, input: CreateTransactionInput) {
-    const amount = Number(input.amount);
-    const { wallet } = await this.preflight(organizationId, input);
-    const intent = this.toIntent(organizationId, input, amount);
+  async simulate(organizationId: string, input: CreateTransactionInput | SimulateTransactionInput) {
+    const firstTransfer = input.transfers?.[0];
+    const amount = Number(input.amount ?? firstTransfer?.amount ?? 0);
+    const asset = input.asset ?? firstTransfer?.asset ?? 'XLM';
+    const createInput = { ...input, asset, amount: String(amount) } as CreateTransactionInput;
+    const { wallet } = await this.preflight(organizationId, createInput);
+    const intent = this.toIntent(organizationId, createInput, amount);
     const policyResult = await this.policies.evaluateIntent(intent);
-    const assessment = this.risk.assess(
-      await this.toRiskFactors(organizationId, wallet, input, amount, policyResult.violations.length),
-    );
-    const requiresApproval = policyResult.requiresApproval || !assessment.canAutoExecute;
+    const assessment = await this.risk.assess({
+      organizationId,
+      walletId: wallet.id,
+      recipientAddress: input.recipientAddress,
+      amount,
+      asset,
+      walletAgeDays: this.walletAgeDays(wallet),
+      policyViolations: policyResult.violations.length,
+      hourUtc: new Date().getUTCHours(),
+    });
+    const requiresApproval = policyResult.requiresApproval || assessment.requiresApproval;
     return {
       wouldPass: policyResult.passed,
       requiresApproval,
@@ -234,7 +595,7 @@ export class TransactionService {
     };
   }
 
-  async list(organizationId: string, query: PaginationQuery) {
+  async list(organizationId: string, query: PaginationQuery & { cursor?: string; status?: string; search?: string; filter?: string }) {
     const where: Prisma.TransactionWhereInput = { organizationId, deletedAt: null };
     if (query.search) {
       where.OR = [
@@ -243,12 +604,27 @@ export class TransactionService {
         { stellarHash: { contains: query.search, mode: 'insensitive' } },
       ];
     }
-    if (query.filter) {
-      where.status = query.filter as TransactionStatus;
+    const status = query.status ?? query.filter;
+    if (status) where.status = status as TransactionStatus;
+    if (query.cursor) {
+      const cursorLimit = query.limit ?? 20;
+      const rows = await this.repository.findCursorPage(
+        where,
+        decodeCursor(query.cursor),
+        cursorLimit + 1,
+      );
+      const hasMore = rows.length > cursorLimit;
+      const items = hasMore ? rows.slice(0, cursorLimit) : rows;
+      const last = items[items.length - 1];
+      return new CursorPaginated(items, {
+        limit: cursorLimit,
+        hasMore,
+        nextCursor: hasMore && last ? encodeCursor(last) : null,
+      });
     }
-    const pagination = toPrismaPagination(query, SORTABLE);
+    const pagination = toPrismaPagination(query, ['createdAt', 'amount', 'status']);
     const { items, total } = await this.repository.findManyAndCount(where, pagination);
-    return new Paginated(items, buildPaginationMeta(total, query.page, query.limit));
+    return new Paginated(items, buildPaginationMeta(total, query));
   }
 
   async getOrThrow(organizationId: string, id: string): Promise<Transaction> {
@@ -260,14 +636,29 @@ export class TransactionService {
   }
 
   async cancel(organizationId: string, actorId: string, id: string) {
-    const tx = await this.getOrThrow(organizationId, id);
-    if (
-      tx.status !== TransactionStatus.DRAFT &&
-      tx.status !== TransactionStatus.PENDING
-    ) {
-      throw new ConflictException('Only draft or pending transactions can be cancelled');
-    }
-    const cancelled = await this.repository.update(id, { status: TransactionStatus.CANCELLED });
+    // Same guarded-transition pattern as execute(): the status check and the
+    // CANCELLED write run inside one SERIALIZABLE transaction that is replayed
+    // on P2034, so a cancel can never overwrite a transaction that a
+    // concurrent worker has just submitted or completed.
+    const cancelled = await this.transactions!.runWithRetry(
+      async (client) => {
+        const current = await this.repository.findById(organizationId, id, client);
+        if (!current) {
+          throw new NotFoundException('Transaction', id);
+        }
+        if (!CANCELLABLE_STATUSES.includes(current.status)) {
+          throw new ConflictException('Only draft or pending transactions can be cancelled');
+        }
+        return this.repository.update(id, { status: TransactionStatus.CANCELLED }, client);
+      },
+      {
+        name: 'transaction.status->cancelled',
+        isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+      },
+    );
+    // A cancelled transaction will never spend: return its held budget.
+    // Release is idempotent, so a retried cancel or a racing expiry is safe.
+    await this.releaseReservation(cancelled.budgetReservationId);
     await this.eventBus.emit(
       DomainEventName.TransactionCancelled,
       { transactionId: id },
@@ -278,6 +669,22 @@ export class TransactionService {
 
   // ── internals ──────────────────────────────────────────────────────────
 
+  /**
+   * Returns a held budget reservation (best effort, idempotent). Shared by
+   * cancellation, manual rejection and approval expiry so every terminal
+   * non-spend outcome frees budget the same way.
+   */
+  async releaseReservation(reservationId: string | null | undefined): Promise<void> {
+    if (!reservationId) return;
+    try {
+      await this.budgets.release(reservationId);
+    } catch (error) {
+      this.logger.warn(
+        `Could not release budget reservation ${reservationId}: ${(error as Error).message}`,
+      );
+    }
+  }
+
   /** Resolves and validates the sender wallet + agent before any evaluation. */
   private async preflight(
     organizationId: string,
@@ -286,8 +693,8 @@ export class TransactionService {
     const wallet = await this.wallets.getOrThrow(organizationId, input.walletId);
     this.assertWalletSpendable(wallet);
 
-    // Validate Stellar address and memo format using the new validator
-    TransactionsValidator.validateTransactionInput(input.recipientAddress, input.memo);
+    const memoValue = input.memoType && input.memoValue ? input.memoValue : input.memo;
+    TransactionsValidator.validateTransactionInput(input.recipientAddress, memoValue);
 
     let agent: Agent | undefined;
     if (input.agentId) {
@@ -330,34 +737,22 @@ export class TransactionService {
     };
   }
 
-  private async toRiskFactors(
-    organizationId: string,
-    wallet: Wallet,
-    input: CreateTransactionInput,
-    amount: number,
-    policyViolations: number,
-  ): Promise<RiskFactorsInput> {
-    const [knownRecipient, recentTransactionCount] = await Promise.all([
-      this.repository.hasPaidRecipient(organizationId, input.recipientAddress),
-      this.repository.recentCountForWallet(wallet.id),
-    ]);
-    const walletAgeDays = Math.floor(
-      (Date.now() - wallet.createdAt.getTime()) / 86_400_000,
-    );
-    return {
-      amount,
-      asset: input.asset,
-      knownRecipient,
-      recentTransactionCount,
-      walletAgeDays,
-      policyViolations,
-      hourUtc: new Date().getUTCHours(),
-    };
+  /** Age of the sending wallet in days — new wallets carry more risk. */
+  private walletAgeDays(wallet: Wallet): number {
+    return Math.floor((Date.now() - wallet.createdAt.getTime()) / 86_400_000);
   }
 
   /** Creates the approval Proposal row directly (avoids a circular module dep). */
-  private async createProposal(organizationId: string, tx: Transaction, band: RiskBand) {
+  private async createProposal(
+    organizationId: string,
+    tx: Transaction,
+    band: RiskBand,
+    approvalExpiresInHours?: number,
+  ) {
     const dualApproval = band === RiskBand.HIGH || band === RiskBand.CRITICAL;
+    const configuredTtl = this.config?.get<number>('approval.ttlHours') ?? 72;
+    const ttlHours = approvalExpiresInHours ?? configuredTtl;
+    const expiresAt = new Date(Date.now() + ttlHours * 3_600_000);
     const proposal = await this.prisma.proposal.create({
       data: {
         organizationId,
@@ -367,9 +762,10 @@ export class TransactionService {
         approvalType: dualApproval ? 'DUAL' : 'SINGLE',
         requiredApprovals: dualApproval ? 2 : 1,
         status: 'PENDING',
-        expiresAt: new Date(Date.now() + 72 * 3_600_000),
+        expiresAt,
       },
     });
+    await this.approvalExpiry?.schedule({ proposalId: proposal.id, organizationId, expiresAt });
     await this.eventBus.emit(
       DomainEventName.ProposalCreated,
       { proposalId: proposal.id, transactionId: tx.id, requiredApprovals: proposal.requiredApprovals },

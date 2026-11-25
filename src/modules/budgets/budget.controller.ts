@@ -7,31 +7,62 @@ import {
   Patch,
   Post,
   Query,
+  UseInterceptors,
 } from '@nestjs/common';
-import { ApiOperation, ApiTags } from '@nestjs/swagger';
+import {
+  ApiOperation,
+  ApiTags,
+  ApiParam,
+  ApiBody,
+  ApiQuery,
+  ApiHeader,
+} from '@nestjs/swagger';
 import { UserRole } from '@prisma/client';
 import { BudgetService } from './budget.service';
+import { UseBudgetLock } from '../../common/locks/budget-lock.decorator';
+import { Idempotent } from '../../common/decorators/idempotent.decorator';
+import { IdempotencyInterceptor } from '../../common/interceptors/idempotency.interceptor';
 import {
   allocateBudgetSchema,
   AllocateBudgetInput,
+  AllocateBudgetDto,
   createBudgetSchema,
   CreateBudgetInput,
+  CreateBudgetDto,
   updateBudgetSchema,
   UpdateBudgetInput,
 } from './budget.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
+import { AuditAction } from '../../common/decorators/audit-action.decorator';
+import { AuditLog } from '../../common/decorators/audit-log.decorator';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 import { AuthenticatedUser } from '../../common/interfaces/authenticated-user.interface';
 import { PaginationQuery, paginationQuerySchema } from '../../common/helpers/pagination';
+import { ApiPaginationQuery } from '../../common/decorators/api-pagination-query.decorator';
+import { ApiEnvelope, ApiPaginatedEnvelope } from '../../common/decorators/api-envelope.decorator';
+import { ApiErrorResponses } from '../../common/decorators/api-error-responses.decorator';
+import { ApiAuthenticated } from '../../common/decorators/api-authenticated.decorator';
 
 @ApiTags('budgets')
+@ApiAuthenticated()
 @Controller('budgets')
+@ApiErrorResponses({ unauthorized: true, forbidden: true, tooManyRequests: true, serverError: true })
 export class BudgetController {
   constructor(private readonly budgetService: BudgetService) {}
 
   @Get()
-  @ApiOperation({ summary: 'List budgets' })
+  @ApiOperation({
+    summary: 'List budgets',
+    description:
+      'Returns a paginated list of budgets for the current organization. ' +
+      'Supports filtering by period and status.',
+  })
+  @ApiPaginationQuery()
+  @ApiQuery({ name: 'period', required: false, enum: ['DAILY', 'WEEKLY', 'MONTHLY', 'QUARTERLY', 'YEARLY'], description: 'Filter by budget period' })
+  @ApiQuery({ name: 'enabled', required: false, type: Boolean, description: 'Filter by enabled status' })
+  @ApiPaginatedEnvelope(CreateBudgetDto, { description: 'Paginated list of budgets' })
+  @ApiErrorResponses({ unauthorized: true, serverError: true })
   list(
     @CurrentUser('organizationId') organizationId: string,
     @Query(new ZodValidationPipe(paginationQuerySchema)) query: PaginationQuery,
@@ -41,7 +72,21 @@ export class BudgetController {
 
   @Post()
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.FINANCE)
-  @ApiOperation({ summary: 'Create a budget' })
+  @AuditAction('BUDGET_CREATED')
+  @AuditLog({ action: 'BUDGET_CREATED', entity: 'Budget' })
+  @ApiOperation({
+    summary: 'Create a budget',
+    description:
+      'Creates a new budget with spending limits. Budgets can be hierarchical with parent-child relationships.',
+  })
+  @ApiBody({ type: CreateBudgetDto })
+  @ApiEnvelope(CreateBudgetDto, { status: 201, description: 'Budget created successfully' })
+  @ApiErrorResponses({
+    validation: true,
+    unauthorized: true,
+    forbidden: 'Insufficient permissions (requires OWNER, ADMIN, or FINANCE)',
+    serverError: true,
+  })
   create(
     @CurrentUser() user: AuthenticatedUser,
     @Body(new ZodValidationPipe(createBudgetSchema)) body: CreateBudgetInput,
@@ -50,14 +95,37 @@ export class BudgetController {
   }
 
   @Get(':id')
-  @ApiOperation({ summary: 'Get a budget with remaining balance and children' })
+  @ApiOperation({
+    summary: 'Get a budget with remaining balance and children',
+    description:
+      'Returns full details of a budget including its remaining balance, spending history, and child budgets.',
+  })
+  @ApiParam({ name: 'id', description: 'Budget UUID', example: '018f0a1b-...' })
+  @ApiEnvelope(CreateBudgetDto, { description: 'Budget details with balance and children' })
+  @ApiErrorResponses({ unauthorized: true, notFound: true, serverError: true })
   findOne(@CurrentUser('organizationId') organizationId: string, @Param('id') id: string) {
     return this.budgetService.getDetail(organizationId, id);
   }
 
   @Patch(':id')
+  @UseBudgetLock()
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.FINANCE)
-  @ApiOperation({ summary: 'Update a budget' })
+  @AuditAction('BUDGET_UPDATED')
+  @AuditLog({ action: 'BUDGET_UPDATED', entity: 'Budget' })
+  @ApiOperation({
+    summary: 'Update a budget',
+    description: 'Partial update of budget fields (name, limit, period, rollover, enabled).',
+  })
+  @ApiParam({ name: 'id', description: 'Budget UUID', example: '018f0a1b-...' })
+  @ApiBody({ type: CreateBudgetDto })
+  @ApiEnvelope(CreateBudgetDto, { description: 'Budget updated successfully' })
+  @ApiErrorResponses({
+    validation: true,
+    unauthorized: true,
+    forbidden: true,
+    notFound: true,
+    serverError: true,
+  })
   update(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id') id: string,
@@ -67,8 +135,33 @@ export class BudgetController {
   }
 
   @Post(':id/allocate')
+  @UseBudgetLock()
+  @UseInterceptors(IdempotencyInterceptor)
+  @Idempotent()
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.FINANCE)
-  @ApiOperation({ summary: 'Allocate funds from the parent budget to this child' })
+  @AuditAction('BUDGET_ALLOCATED')
+  @AuditLog({ action: 'BUDGET_ADJUSTED', entity: 'Budget' })
+  @ApiOperation({
+    summary: 'Allocate funds from the parent budget to this child',
+    description:
+      'Transfers funds from a parent budget to a child budget. The parent must have sufficient remaining balance.',
+  })
+  @ApiParam({ name: 'id', description: 'Child budget UUID', example: '018f0a1b-...' })
+  @ApiHeader({
+    name: 'Idempotency-Key',
+    required: false,
+    description: 'Optional key for replay-safe budget allocation (1-128 allowed ASCII characters).',
+  })
+  @ApiBody({ type: AllocateBudgetDto })
+  @ApiEnvelope(CreateBudgetDto, { description: 'Funds allocated successfully' })
+  @ApiErrorResponses({
+    validation: 'Validation error or insufficient parent balance',
+    unauthorized: true,
+    forbidden: true,
+    notFound: true,
+    conflict: 'Parent budget has insufficient balance or the idempotency key is in use',
+    serverError: true,
+  })
   allocate(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id') id: string,
@@ -78,8 +171,24 @@ export class BudgetController {
   }
 
   @Delete(':id')
+  @UseBudgetLock()
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.FINANCE)
-  @ApiOperation({ summary: 'Delete (soft) a budget' })
+  @AuditAction('BUDGET_DELETED')
+  @AuditLog({ action: 'BUDGET_DELETED', entity: 'Budget' })
+  @ApiOperation({
+    summary: 'Delete (soft) a budget',
+    description:
+      'Soft-deletes the budget. The budget record is retained for audit purposes but is excluded from active queries. ' +
+      'Child budgets are also soft-deleted.',
+  })
+  @ApiParam({ name: 'id', description: 'Budget UUID', example: '018f0a1b-...' })
+  @ApiEnvelope(CreateBudgetDto, { description: 'Budget deleted successfully' })
+  @ApiErrorResponses({
+    unauthorized: true,
+    forbidden: true,
+    notFound: true,
+    serverError: true,
+  })
   remove(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
     return this.budgetService.remove(user.organizationId, user.id, id);
   }

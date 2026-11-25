@@ -34,17 +34,29 @@ interface SorobanHealthResponse {
 @Injectable()
 export class StellarHealthIndicator {
   private readonly logger = new Logger(StellarHealthIndicator.name);
-  private readonly timeoutMs = 2000;
-  private readonly degradedLatencyThresholdMs = 5000;
+
+  /** Ceiling on a single endpoint probe, in ms. */
+  static readonly DEFAULT_TIMEOUT_MS = 2_000;
 
   constructor(private readonly configService: ConfigService) {}
 
-  async checkHealth(): Promise<StellarHealthReport> {
+  /**
+   * Probes Horizon and the Soroban RPC in parallel.
+   *
+   * Every probe is bounded by `timeoutMs`: the request is aborted when the
+   * budget is spent, so an unresponsive node can never stall the event loop
+   * or the health endpoint. An endpoint that answers but needs more than half
+   * of the budget is reported as `degraded` rather than `up`.
+   */
+  async checkHealth(
+    timeoutMs: number = StellarHealthIndicator.DEFAULT_TIMEOUT_MS,
+  ): Promise<StellarHealthReport> {
     const stellar = this.configService.getOrThrow<StellarConfig>('stellar');
+    const budget = this.resolveTimeout(timeoutMs);
 
     const [horizonHealth, sorobanHealth] = await Promise.all([
-      this.checkHorizonEndpoint(stellar.horizonUrl),
-      this.checkSorobanRpcEndpoint(stellar.sorobanRpcUrl),
+      this.checkHorizonEndpoint(stellar.horizonUrl, budget),
+      this.checkSorobanRpcEndpoint(stellar.sorobanRpcUrl, budget),
     ]);
 
     let overallStatus: 'up' | 'down' | 'degraded' = 'up';
@@ -66,10 +78,13 @@ export class StellarHealthIndicator {
     };
   }
 
-  async checkHorizonEndpoint(url: string): Promise<EndpointHealthStatus> {
+  async checkHorizonEndpoint(
+    url: string,
+    timeoutMs: number = StellarHealthIndicator.DEFAULT_TIMEOUT_MS,
+  ): Promise<EndpointHealthStatus> {
     const start = Date.now();
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
 
     try {
       const response = await fetch(url, {
@@ -77,7 +92,6 @@ export class StellarHealthIndicator {
         signal: controller.signal,
         headers: { Accept: 'application/json' },
       });
-      clearTimeout(timer);
       const latencyMs = Date.now() - start;
 
       if (!response.ok) {
@@ -91,7 +105,7 @@ export class StellarHealthIndicator {
 
       const data = (await response.json()) as HorizonRoot;
       const status: 'up' | 'degraded' =
-        latencyMs > this.degradedLatencyThresholdMs ? 'degraded' : 'up';
+        latencyMs > this.degradedLatencyThreshold(timeoutMs) ? 'degraded' : 'up';
 
       return {
         status,
@@ -101,7 +115,6 @@ export class StellarHealthIndicator {
         protocolVersion: data.protocol_version || undefined,
       };
     } catch (err) {
-      clearTimeout(timer);
       const latencyMs = Date.now() - start;
       const message = err instanceof Error ? err.message : String(err);
       this.logger.warn(`Horizon health check failed for ${url}: ${message}`);
@@ -111,13 +124,18 @@ export class StellarHealthIndicator {
         url,
         error: message || 'Connection failed',
       };
+    } finally {
+      clearTimeout(timer);
     }
   }
 
-  async checkSorobanRpcEndpoint(url: string): Promise<EndpointHealthStatus> {
+  async checkSorobanRpcEndpoint(
+    url: string,
+    timeoutMs: number = StellarHealthIndicator.DEFAULT_TIMEOUT_MS,
+  ): Promise<EndpointHealthStatus> {
     const start = Date.now();
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
 
     try {
       const response = await fetch(url, {
@@ -130,7 +148,6 @@ export class StellarHealthIndicator {
           method: 'getHealth',
         }),
       });
-      clearTimeout(timer);
       const latencyMs = Date.now() - start;
 
       if (!response.ok) {
@@ -144,7 +161,7 @@ export class StellarHealthIndicator {
 
       const data = (await response.json()) as SorobanHealthResponse;
       const status: 'up' | 'degraded' =
-        latencyMs > this.degradedLatencyThresholdMs || data.result?.status !== 'healthy'
+        latencyMs > this.degradedLatencyThreshold(timeoutMs) || data.result?.status !== 'healthy'
           ? 'degraded'
           : 'up';
 
@@ -155,7 +172,6 @@ export class StellarHealthIndicator {
         ledgerSequence: data.result?.latestLedger || undefined,
       };
     } catch (err) {
-      clearTimeout(timer);
       const latencyMs = Date.now() - start;
       const message = err instanceof Error ? err.message : String(err);
       this.logger.warn(`Soroban RPC health check failed for ${url}: ${message}`);
@@ -165,6 +181,23 @@ export class StellarHealthIndicator {
         url,
         error: message || 'Connection failed',
       };
+    } finally {
+      clearTimeout(timer);
     }
+  }
+
+  /** A non-positive timeout would disable the budget, so the default is used. */
+  private resolveTimeout(timeoutMs: number): number {
+    return Number.isFinite(timeoutMs) && timeoutMs > 0
+      ? timeoutMs
+      : StellarHealthIndicator.DEFAULT_TIMEOUT_MS;
+  }
+
+  /**
+   * Latency above which an endpoint that still answered is reported as
+   * `degraded`: it used more than half of the probe budget.
+   */
+  private degradedLatencyThreshold(timeoutMs: number): number {
+    return this.resolveTimeout(timeoutMs) / 2;
   }
 }

@@ -1,0 +1,433 @@
+import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { ExecutionContext } from '@nestjs/common';
+import { ThrottlerOptions, ThrottlerRequest } from '@nestjs/throttler';
+
+import { AstroidThrottlerGuard } from './throttler.guard';
+import { createThrottlerOptions, ThrottlerConfig } from '../../config/throttler.config';
+import { THROTTLE_TIER_KEY, ThrottleTier } from '../decorators/throttle-tier.decorator';
+
+/** Shape returned by `ThrottlerStorage#increment` (not re-exported by the lib). */
+type ThrottlerStorageRecord = Awaited<ReturnType<AstroidThrottlerGuard['storageService']['increment']>>;
+
+const CONFIG: ThrottlerConfig = {
+  windowSeconds: 60,
+  apiLimit: 120,
+  authLimit: 10,
+  agentLimit: 300,
+  webhookLimit: 30,
+  apiBurst: 10,
+  authBurst: 3,
+  webhookBurst: 5,
+};
+
+const UNBLOCKED: ThrottlerStorageRecord = {
+  totalHits: 1,
+  timeToExpire: 60,
+  isBlocked: false,
+  timeToBlockExpire: 0,
+};
+
+const BLOCKED: ThrottlerStorageRecord = {
+  totalHits: 11,
+  timeToExpire: 30,
+  isBlocked: true,
+  timeToBlockExpire: 30,
+};
+
+type MockResponse = { header: ReturnType<typeof vi.fn> };
+
+function buildContext(
+  request: Record<string, unknown> = { ip: '203.0.113.7', headers: {} },
+  response: MockResponse = { header: vi.fn() },
+) {
+  const handler = () => undefined;
+  return {
+    getHandler: () => handler,
+    getClass: () => class TransactionController {},
+    switchToHttp: () => ({
+      getRequest: () => request,
+      getResponse: () => response,
+    }),
+  } as unknown as ExecutionContext;
+}
+
+function throttlerNamed(name: string): ThrottlerOptions {
+  return { name, ttl: 60_000, limit: 10 };
+}
+
+async function prepare(
+  opts: {
+    tier?: ThrottleTier;
+    increment?: ReturnType<typeof vi.fn>;
+    apiKeyScopes?: string[];
+    isApiKey?: boolean;
+    rateLimitPerMinute?: number;
+  } = {},
+) {
+  const increment = opts.increment ?? vi.fn().mockResolvedValue(UNBLOCKED);
+  const reflector = {
+    getAllAndOverride: vi.fn((key: string) => (key === THROTTLE_TIER_KEY ? opts.tier : undefined)),
+  };
+  const guard = new AstroidThrottlerGuard(
+    createThrottlerOptions(CONFIG),
+    { increment } as never,
+    reflector as never,
+  );
+  await guard.onModuleInit();
+
+  const response: MockResponse = { header: vi.fn() };
+  const request: Record<string, unknown> = { ip: '203.0.113.7', headers: {} };
+  if (opts.apiKeyScopes) {
+    request.user = {
+      id: 'key-1',
+      organizationId: 'org-1',
+      isApiKey: opts.isApiKey ?? true,
+      scopes: opts.apiKeyScopes,
+    };
+  }
+  if (opts.rateLimitPerMinute !== undefined) {
+    request.apiKey = { id: 'key-1', rateLimitPerMinute: opts.rateLimitPerMinute };
+  }
+  const context = buildContext(request, response);
+  const { getTracker, generateKey } = (
+    guard as unknown as {
+      commonOptions: Pick<ThrottlerRequest, 'getTracker' | 'generateKey'>;
+    }
+  ).commonOptions;
+
+  const call = (throttler: ThrottlerOptions) =>
+    guard['handleRequest']({
+      context,
+      limit: 10,
+      ttl: 60_000,
+      throttler,
+      blockDuration: 60_000,
+      getTracker,
+      generateKey,
+    } as ThrottlerRequest);
+
+  return { guard, increment, reflector, context, response, call };
+}
+
+describe('AstroidThrottlerGuard', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  describe('tier routing — steady-state', () => {
+    it('ignores the auth throttler on a default api-tier route', async () => {
+      const { increment, call } = await prepare(); // no tier → 'api'
+
+      await expect(call(throttlerNamed('auth'))).resolves.toBe(true);
+
+      expect(increment).not.toHaveBeenCalled();
+    });
+
+    it('enforces the api throttler on a default api-tier route', async () => {
+      const { increment, call } = await prepare();
+
+      await expect(call(throttlerNamed('api'))).resolves.toBe(true);
+
+      expect(increment).toHaveBeenCalledTimes(1);
+    });
+
+    it('enforces only the auth throttler on routes declared with the auth tier', async () => {
+      const { increment, call } = await prepare({ tier: 'auth' });
+
+      await expect(call(throttlerNamed('api'))).resolves.toBe(true);
+      expect(increment).not.toHaveBeenCalled();
+
+      await expect(call(throttlerNamed('auth'))).resolves.toBe(true);
+      expect(increment).toHaveBeenCalledTimes(1);
+    });
+
+    it('enforces only the webhook throttler on routes declared with the webhook tier', async () => {
+      const { increment, call } = await prepare({ tier: 'webhook' });
+
+      await expect(call(throttlerNamed('api'))).resolves.toBe(true);
+      await expect(call(throttlerNamed('auth'))).resolves.toBe(true);
+      expect(increment).not.toHaveBeenCalled();
+
+      await expect(call(throttlerNamed('webhook'))).resolves.toBe(true);
+      expect(increment).toHaveBeenCalledTimes(1);
+    });
+
+    it('passes the resolved tier limits down to the storage', async () => {
+      const { increment, call } = await prepare({ tier: 'auth' });
+
+      await call(throttlerNamed('auth'));
+
+      expect(increment).toHaveBeenCalledWith(
+        expect.any(String),
+        60_000,
+        10,
+        60_000,
+        'auth',
+      );
+    });
+  });
+
+  describe('tier routing — burst throttlers', () => {
+    it('fires the api-burst throttler on api-tier routes (base tier matches)', async () => {
+      const { increment, call } = await prepare();
+
+      await expect(call(throttlerNamed('api-burst'))).resolves.toBe(true);
+
+      expect(increment).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not fire the api-burst throttler on auth-tier routes', async () => {
+      const { increment, call } = await prepare({ tier: 'auth' });
+
+      await expect(call(throttlerNamed('api-burst'))).resolves.toBe(true);
+
+      expect(increment).not.toHaveBeenCalled();
+    });
+
+    it('fires the auth-burst throttler on auth-tier routes', async () => {
+      const { increment, call } = await prepare({ tier: 'auth' });
+
+      await expect(call(throttlerNamed('auth-burst'))).resolves.toBe(true);
+
+      expect(increment).toHaveBeenCalledTimes(1);
+    });
+
+    it('fires the webhook-burst throttler on webhook-tier routes', async () => {
+      const { increment, call } = await prepare({ tier: 'webhook' });
+
+      await expect(call(throttlerNamed('webhook-burst'))).resolves.toBe(true);
+
+      expect(increment).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not fire the webhook-burst throttler on api-tier routes', async () => {
+      const { increment, call } = await prepare(); // api tier
+
+      await expect(call(throttlerNamed('webhook-burst'))).resolves.toBe(true);
+
+      expect(increment).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('tier routing — API key scopes', () => {
+    it('tightens a generic api route to the auth tier for a key holding credential scopes', async () => {
+      const { increment, call } = await prepare({ apiKeyScopes: ['auth:write'] });
+
+      await expect(call(throttlerNamed('api'))).resolves.toBe(true);
+      expect(increment).not.toHaveBeenCalled();
+
+      await expect(call(throttlerNamed('auth'))).resolves.toBe(true);
+      expect(increment).toHaveBeenCalledTimes(1);
+    });
+
+    it('tightens a generic api route to the webhook tier for a key holding webhook scopes', async () => {
+      const { increment, call } = await prepare({ apiKeyScopes: ['webhooks:write'] });
+
+      await expect(call(throttlerNamed('api'))).resolves.toBe(true);
+      expect(increment).not.toHaveBeenCalled();
+
+      await expect(call(throttlerNamed('webhook'))).resolves.toBe(true);
+      expect(increment).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps the route tier when the scope tier is the looser one', async () => {
+      // The agent tier (300/min) is looser than the api tier (120/min), so a
+      // high-volume agent key must not be allowed to escape the api budget.
+      const { increment, call } = await prepare({ apiKeyScopes: ['agents:execute'] });
+
+      await expect(call(throttlerNamed('agent'))).resolves.toBe(true);
+      expect(increment).not.toHaveBeenCalled();
+
+      await expect(call(throttlerNamed('api'))).resolves.toBe(true);
+      expect(increment).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps the auth route tier even when the key holds a looser scope tier', async () => {
+      const { increment, call } = await prepare({
+        tier: 'auth',
+        apiKeyScopes: ['agents:execute'],
+      });
+
+      await expect(call(throttlerNamed('agent'))).resolves.toBe(true);
+      expect(increment).not.toHaveBeenCalled();
+
+      await expect(call(throttlerNamed('auth'))).resolves.toBe(true);
+      expect(increment).toHaveBeenCalledTimes(1);
+    });
+
+    it('leaves the route tier in force for scopes that map to no tier', async () => {
+      const { increment, call } = await prepare({ apiKeyScopes: ['transactions:read'] });
+
+      await expect(call(throttlerNamed('api'))).resolves.toBe(true);
+      expect(increment).toHaveBeenCalledTimes(1);
+
+      await expect(call(throttlerNamed('auth'))).resolves.toBe(true);
+      expect(increment).toHaveBeenCalledTimes(1);
+    });
+
+    it('ignores scopes carried by a non API-key principal', async () => {
+      const { increment, call } = await prepare({
+        apiKeyScopes: ['auth:write'],
+        isApiKey: false,
+      });
+
+      await expect(call(throttlerNamed('api'))).resolves.toBe(true);
+      expect(increment).toHaveBeenCalledTimes(1);
+
+      await expect(call(throttlerNamed('auth'))).resolves.toBe(true);
+      expect(increment).toHaveBeenCalledTimes(1);
+    });
+
+    it('applies the scope tier to the burst throttler as well', async () => {
+      const { increment, call } = await prepare({ apiKeyScopes: ['auth:write'] });
+
+      await expect(call(throttlerNamed('api-burst'))).resolves.toBe(true);
+      expect(increment).not.toHaveBeenCalled();
+
+      await expect(call(throttlerNamed('auth-burst'))).resolves.toBe(true);
+      expect(increment).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('rate-limit exhaustion on a scope-derived tier', () => {
+    it('rejects the request with 429 once the scope tier budget is spent', async () => {
+      const { response, call } = await prepare({
+        apiKeyScopes: ['auth:write'],
+        increment: vi.fn().mockResolvedValue(BLOCKED),
+      });
+
+      await expect(call(throttlerNamed('auth'))).rejects.toMatchObject({ status: 429 });
+
+      expect(response.header).toHaveBeenCalledWith('Retry-After-auth', 30);
+    });
+
+    it('does not count the request against the looser route tier', async () => {
+      const { increment, call } = await prepare({
+        apiKeyScopes: ['auth:write'],
+        increment: vi.fn().mockResolvedValue(UNBLOCKED),
+      });
+
+      await expect(call(throttlerNamed('api'))).resolves.toBe(true);
+
+      expect(increment).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('per-key limit override', () => {
+    it('replaces the steady-state limit with the API key override', async () => {
+      const { increment, call } = await prepare({ rateLimitPerMinute: 5 });
+
+      await expect(call(throttlerNamed('api'))).resolves.toBe(true);
+
+      expect(increment).toHaveBeenCalledWith(
+        expect.any(String),
+        60_000,
+        5,
+        60_000,
+        'api',
+      );
+    });
+
+    it('does not raise the burst allowance with the override', async () => {
+      const { increment, call } = await prepare({ rateLimitPerMinute: 500 });
+
+      await call(throttlerNamed('api-burst'));
+
+      expect(increment.mock.calls[0][2]).toBe(10);
+    });
+
+    it('keeps the tier limit when the key has no override', async () => {
+      const { increment, call } = await prepare();
+
+      await call(throttlerNamed('api'));
+
+      expect(increment.mock.calls[0][2]).toBe(10);
+    });
+  });
+
+  describe('tracking', () => {
+    it('falls back to the client IP for anonymous requests', async () => {
+      const { guard } = await prepare();
+
+      const tracker = await guard['getTracker']({ ip: '203.0.113.7', headers: {} });
+
+      expect(tracker).toBe('ip:203.0.113.7');
+    });
+
+    it('scopes the counter to the organization when a user is authenticated', async () => {
+      const { guard } = await prepare();
+
+      const tracker = await guard['getTracker']({
+        ip: '203.0.113.7',
+        headers: {},
+        user: { organizationId: 'org-9' },
+      });
+
+      expect(tracker).toBe('org:org-9');
+    });
+
+    it('prefers the forwarded-for header over the socket address', async () => {
+      const { guard } = await prepare();
+
+      const tracker = await guard['getTracker']({
+        headers: { 'x-forwarded-for': '198.51.100.4' },
+      });
+
+      expect(tracker).toBe('ip:198.51.100.4');
+    });
+  });
+
+  describe('allowed responses', () => {
+    it('emits the standard X-RateLimit headers', async () => {
+      const { response, call } = await prepare();
+
+      await call(throttlerNamed('api'));
+
+      expect(response.header).toHaveBeenCalledWith('X-RateLimit-Limit-api', 10);
+      expect(response.header).toHaveBeenCalledWith('X-RateLimit-Remaining-api', 9);
+      expect(response.header).toHaveBeenCalledWith('X-RateLimit-Reset-api', 60);
+    });
+  });
+
+  describe('handleRequest throttled responses', () => {
+    it('throws a 429 exception and sets Retry-After when the client is blocked', async () => {
+      const { response, call } = await prepare({ increment: vi.fn().mockResolvedValue(BLOCKED) });
+
+      await expect(call(throttlerNamed('api'))).rejects.toMatchObject({ status: 429 });
+
+      expect(response.header).toHaveBeenCalledWith('Retry-After-api', 30);
+      expect(response.header).not.toHaveBeenCalledWith(
+        'X-RateLimit-Remaining-api',
+        expect.anything(),
+      );
+    });
+
+    it('throws a 429 for auth-tier routes when blocked', async () => {
+      const { call } = await prepare({
+        tier: 'auth',
+        increment: vi.fn().mockResolvedValue(BLOCKED),
+      });
+
+      await expect(call(throttlerNamed('auth'))).rejects.toMatchObject({ status: 429 });
+    });
+
+    it('throws a 429 for webhook-tier routes when blocked', async () => {
+      const { call } = await prepare({
+        tier: 'webhook',
+        increment: vi.fn().mockResolvedValue(BLOCKED),
+      });
+
+      await expect(call(throttlerNamed('webhook'))).rejects.toMatchObject({ status: 429 });
+    });
+
+    it('exposes getStatus() so the exception filter can render the 429 envelope', async () => {
+      const { call } = await prepare({ increment: vi.fn().mockResolvedValue(BLOCKED) });
+
+      const error = await call(throttlerNamed('api')).catch(
+        (e: Error & { getStatus: () => number }) => e,
+      );
+
+      expect((error as { getStatus: () => number }).getStatus()).toBe(429);
+    });
+  });
+});

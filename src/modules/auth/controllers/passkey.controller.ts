@@ -1,5 +1,12 @@
 import { Body, Controller, Delete, Get, Param, Post, Req } from '@nestjs/common';
-import { ApiOperation, ApiTags, ApiBearerAuth } from '@nestjs/swagger';
+import {
+  ApiOperation,
+  ApiTags,
+  ApiParam,
+  ApiBody,
+} from '@nestjs/swagger';
+import { ApiErrorResponses } from '../../../common/decorators/api-error-responses.decorator';
+import { ApiEnvelope } from '../../../common/decorators/api-envelope.decorator';
 import { Request } from 'express';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import { ThrottleTierDecorator } from '../../../common/decorators/throttle-tier.decorator';
@@ -10,12 +17,15 @@ import {
   VerifyPasskeyRegistrationInput,
   verifyPasskeyAuthenticationSchema,
   VerifyPasskeyAuthenticationInput,
+  VerifyPasskeyRegistrationDto,
   PasskeyCredentialDto,
   RegistrationOptionsDto,
   AuthenticationOptionsDto,
+  VerifyPasskeyAuthenticationDto,
   PasskeyAuthenticationResultDto,
 } from '../dto/passkey.dto';
 import { PasskeyService } from '../services/passkey.service';
+import { ApiAuthenticated } from '../../../common/decorators/api-authenticated.decorator';
 
 /**
  * WebAuthn passkey endpoints.
@@ -32,8 +42,13 @@ import { PasskeyService } from '../services/passkey.service';
  */
 @ApiTags('auth')
 @Controller('auth/passkey')
+@ApiErrorResponses({ unauthorized: true, forbidden: true, tooManyRequests: true, serverError: true })
 export class PasskeyController {
   constructor(private readonly passkeyService: PasskeyService) {}
+
+  // ────────────────────────────────────────────
+  // Registration endpoints
+  // ────────────────────────────────────────────
 
   /**
    * POST /auth/passkey/register/options
@@ -42,7 +57,7 @@ export class PasskeyController {
    * present to the authenticator. Stores the challenge for later verification.
    */
   @Post('register/options')
-  @ApiBearerAuth('access-token')
+  @ApiAuthenticated()
   @ThrottleTierDecorator('auth')
   @ApiOperation({
     summary: 'Generate WebAuthn registration options',
@@ -50,6 +65,11 @@ export class PasskeyController {
       'Returns a challenge and relying party configuration for the client ' +
       'to pass to navigator.credentials.create().',
   })
+  @ApiEnvelope(RegistrationOptionsDto, {
+    status: 201,
+    description: 'Registration options generated successfully',
+  })
+  @ApiErrorResponses({ unauthorized: true, tooManyRequests: true, serverError: true })
   async generateRegistrationOptions(
     @CurrentUser() user: AuthenticatedUser,
   ): Promise<RegistrationOptionsDto> {
@@ -64,13 +84,24 @@ export class PasskeyController {
    * credential atomically.
    */
   @Post('register/verify')
-  @ApiBearerAuth('access-token')
+  @ApiAuthenticated()
   @ThrottleTierDecorator('auth')
   @ApiOperation({
     summary: 'Verify a WebAuthn registration challenge response',
     description:
       'Validates the attestation credential from @simplewebauthn/browser, ' +
       'persists the public key and credential ID, and invalidates the challenge.',
+  })
+  @ApiBody({ type: VerifyPasskeyRegistrationDto })
+  @ApiEnvelope(PasskeyCredentialDto, {
+    status: 201,
+    description: 'Passkey credential created successfully',
+  })
+  @ApiErrorResponses({
+    validation: 'Invalid or expired registration challenge',
+    unauthorized: true,
+    tooManyRequests: true,
+    serverError: true,
   })
   verifyRegistration(
     @CurrentUser() user: AuthenticatedUser,
@@ -82,6 +113,10 @@ export class PasskeyController {
     return this.passkeyService.verifyRegistration(user.id, body, userAgent);
   }
 
+  // ────────────────────────────────────────────
+  // Authentication endpoints
+  // ────────────────────────────────────────────
+
   /**
    * POST /auth/passkey/authenticate/options
    *
@@ -89,7 +124,7 @@ export class PasskeyController {
    * registered passkey. Returns the list of allowed credentials.
    */
   @Post('authenticate/options')
-  @ApiBearerAuth('access-token')
+  @ApiAuthenticated()
   @ThrottleTierDecorator('auth')
   @ApiOperation({
     summary: 'Generate WebAuthn authentication options',
@@ -97,6 +132,11 @@ export class PasskeyController {
       'Returns a challenge and allowed credentials for the client ' +
       'to pass to navigator.credentials.get().',
   })
+  @ApiEnvelope(AuthenticationOptionsDto, {
+    status: 201,
+    description: 'Authentication options generated successfully',
+  })
+  @ApiErrorResponses({ unauthorized: true, tooManyRequests: true, serverError: true })
   async generateAuthenticationOptions(
     @CurrentUser() user: AuthenticatedUser,
   ): Promise<AuthenticationOptionsDto> {
@@ -110,13 +150,23 @@ export class PasskeyController {
    * counter to prevent replay, and returns the authenticated user.
    */
   @Post('authenticate/verify')
-  @ApiBearerAuth('access-token')
+  @ApiAuthenticated()
   @ThrottleTierDecorator('auth')
   @ApiOperation({
     summary: 'Verify a WebAuthn authentication assertion',
     description:
       'Validates the assertion credential from @simplewebauthn/browser, ' +
       'updates the signature counter, and returns the authenticated user.',
+  })
+  @ApiBody({ type: VerifyPasskeyAuthenticationDto })
+  @ApiEnvelope(PasskeyAuthenticationResultDto, {
+    description: 'Authentication successful',
+  })
+  @ApiErrorResponses({
+    validation: 'Invalid or expired authentication challenge',
+    unauthorized: true,
+    tooManyRequests: true,
+    serverError: true,
   })
   async verifyAuthentication(
     @Body(new ZodValidationPipe(verifyPasskeyAuthenticationSchema))
@@ -125,17 +175,26 @@ export class PasskeyController {
     return this.passkeyService.verifyAuthentication(body);
   }
 
+  // ────────────────────────────────────────────
+  // Credential management endpoints
+  // ────────────────────────────────────────────
+
   /**
    * GET /auth/passkey/credentials
    *
    * Lists all registered passkey credentials for the authenticated user.
    */
   @Get('credentials')
-  @ApiBearerAuth('access-token')
+  @ApiAuthenticated()
   @ApiOperation({
     summary: 'List registered passkey credentials',
     description: 'Returns all passkey credentials for the authenticated user.',
   })
+  @ApiEnvelope(PasskeyCredentialDto, {
+    isArray: true,
+    description: 'List of registered passkey credentials',
+  })
+  @ApiErrorResponses({ unauthorized: true, serverError: true })
   listCredentials(@CurrentUser() user: AuthenticatedUser) {
     return this.passkeyService.listCredentials(user.id);
   }
@@ -146,11 +205,18 @@ export class PasskeyController {
    * Revokes (deletes) a specific passkey credential.
    */
   @Delete('credentials/:credentialId')
-  @ApiBearerAuth('access-token')
+  @ApiAuthenticated()
   @ApiOperation({
     summary: 'Revoke a passkey credential',
     description: 'Deletes a registered passkey credential by its ID.',
   })
+  @ApiParam({
+    name: 'credentialId',
+    description: 'The unique identifier of the passkey credential to revoke',
+    example: 'cred_018f...',
+  })
+  @ApiEnvelope(PasskeyCredentialDto, { description: 'Credential revoked successfully' })
+  @ApiErrorResponses({ unauthorized: true, notFound: true, serverError: true })
   revokeCredential(
     @CurrentUser() user: AuthenticatedUser,
     @Param('credentialId') credentialId: string,

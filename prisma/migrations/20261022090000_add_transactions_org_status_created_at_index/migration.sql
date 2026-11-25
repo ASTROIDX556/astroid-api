@@ -1,0 +1,16 @@
+-- CreateIndex
+-- Status-filtered transaction listing and dashboard aggregates:
+-- `WHERE "organizationId" = $1 AND "status" = $2 AND "deletedAt" IS NULL
+--  ORDER BY "createdAt" DESC LIMIT n`
+-- (TransactionService.list?filter=<status>, AnalyticsRepository.overview).
+-- The single-column status index and the (organizationId, createdAt) index can
+-- each narrow the scan, but neither returns the status-filtered rows already
+-- ordered by time, so Postgres falls back to a sort. This composite index makes
+-- that the leading path.
+--
+-- Built CONCURRENTLY so writes are never blocked. Postgres forbids that inside
+-- a transaction, and Prisma runs a multi-statement migration as one, so this
+-- file must contain exactly this one statement. Prisma records the migration
+-- once, so re-applying it is a no-op; the paired down.sql restores the state
+-- needed to apply it again.
+CREATE INDEX CONCURRENTLY "transactions_organizationId_status_createdAt_idx" ON "transactions"("organizationId", "status", "createdAt");

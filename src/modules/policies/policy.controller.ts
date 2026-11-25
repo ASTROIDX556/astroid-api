@@ -1,31 +1,61 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
-import { ApiOperation, ApiTags } from '@nestjs/swagger';
+import {
+  ApiOperation,
+  ApiTags,
+  ApiParam,
+  ApiBody,
+  ApiQuery,
+  ApiExtraModels,
+} from '@nestjs/swagger';
 import { UserRole } from '@prisma/client';
 import { PolicyService } from './policy.service';
 import {
   createPolicySchema,
   CreatePolicyInput,
+  CreatePolicyDto,
   simulatePolicySchema,
   SimulatePolicyInput,
+  SimulatePolicyDto,
+  PolicySimulationDto,
   updatePolicySchema,
   UpdatePolicyInput,
+  SpendingAllowanceDto,
+  SpendingWindowAllowanceDto,
 } from './policy.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
+import { AuditAction } from '../../common/decorators/audit-action.decorator';
+import { AuditLog } from '../../common/decorators/audit-log.decorator';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 import { AuthenticatedUser } from '../../common/interfaces/authenticated-user.interface';
 import {
   PaginationQuery,
   paginationQuerySchema,
 } from '../../common/helpers/pagination';
+import { ApiPaginationQuery } from '../../common/decorators/api-pagination-query.decorator';
+import { ApiEnvelope, ApiPaginatedEnvelope } from '../../common/decorators/api-envelope.decorator';
+import { ApiErrorResponses } from '../../common/decorators/api-error-responses.decorator';
+import { ApiAuthenticated } from '../../common/decorators/api-authenticated.decorator';
 
 @ApiTags('policies')
+@ApiAuthenticated()
 @Controller('policies')
+@ApiErrorResponses({ unauthorized: true, forbidden: true, tooManyRequests: true, serverError: true })
 export class PolicyController {
   constructor(private readonly policyService: PolicyService) {}
 
   @Get()
-  @ApiOperation({ summary: 'List policies' })
+  @ApiOperation({
+    summary: 'List policies',
+    description:
+      'Returns a paginated list of policies for the current organization. ' +
+      'Supports filtering by type, status, and agent.',
+  })
+  @ApiPaginationQuery()
+  @ApiQuery({ name: 'type', required: false, enum: ['SPENDING_LIMIT', 'APPROVAL_REQUIRED', 'ALLOWLIST', 'TIME_WINDOW'], description: 'Filter by policy type' })
+  @ApiQuery({ name: 'enabled', required: false, type: Boolean, description: 'Filter by enabled status' })
+  @ApiPaginatedEnvelope(CreatePolicyDto, { description: 'Paginated list of policies' })
+  @ApiErrorResponses({ unauthorized: true, serverError: true })
   list(
     @CurrentUser('organizationId') organizationId: string,
     @Query(new ZodValidationPipe(paginationQuerySchema)) query: PaginationQuery,
@@ -35,7 +65,21 @@ export class PolicyController {
 
   @Post()
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.FINANCE)
-  @ApiOperation({ summary: 'Create a policy' })
+  @AuditAction('POLICY_CREATED')
+  @AuditLog({ action: 'POLICY_CREATED', entity: 'Policy' })
+  @ApiOperation({
+    summary: 'Create a policy',
+    description:
+      'Creates a new governance policy. Policies evaluate transaction intents and enforce spending rules.',
+  })
+  @ApiBody({ type: CreatePolicyDto })
+  @ApiEnvelope(CreatePolicyDto, { status: 201, description: 'Policy created successfully' })
+  @ApiErrorResponses({
+    validation: true,
+    unauthorized: true,
+    forbidden: 'Insufficient permissions (requires OWNER, ADMIN, or FINANCE)',
+    serverError: true,
+  })
   create(
     @CurrentUser() user: AuthenticatedUser,
     @Body(new ZodValidationPipe(createPolicySchema)) body: CreatePolicyInput,
@@ -44,7 +88,19 @@ export class PolicyController {
   }
 
   @Post('simulate')
-  @ApiOperation({ summary: 'Simulate a transaction intent against active policies' })
+  @ApiOperation({
+    summary: 'Simulate a transaction intent against active policies',
+    description:
+      'Dry-runs a hypothetical transaction through the policy engine without creating any records. ' +
+      'Returns which policies would match and their enforcement actions.',
+  })
+  @ApiBody({ type: SimulatePolicyDto })
+  @ApiEnvelope(PolicySimulationDto, { description: 'Simulation results with matching policies' })
+  @ApiErrorResponses({
+    validation: true,
+    unauthorized: true,
+    serverError: true,
+  })
   simulate(
     @CurrentUser('organizationId') organizationId: string,
     @Body(new ZodValidationPipe(simulatePolicySchema)) body: SimulatePolicyInput,
@@ -52,15 +108,58 @@ export class PolicyController {
     return this.policyService.simulate(organizationId, body);
   }
 
+  @Get('agents/:agentId/spending-allowance')
+  @ApiExtraModels(SpendingWindowAllowanceDto)
+  @ApiOperation({
+    summary: 'Get the rolling-window spending allowance for an agent',
+    description:
+      "Returns the used and remaining spend for the daily (UTC calendar day), weekly (ISO week) and monthly (calendar month) windows, " +
+      'computed from the agent\u2019s applicable enabled spending-limit policies and real transaction history. In-flight and settled ' +
+      'spend counts toward each window; terminal-failed transactions do not.',
+  })
+  @ApiParam({ name: 'agentId', description: 'Agent UUID', example: '018f0a1b-2c3d-4e5f-8a9b-0c1d2e3f4a5b' })
+  @ApiQuery({ name: 'asset', required: false, description: 'Asset to report allowance for (defaults to XLM)', example: 'USDC' })
+  @ApiEnvelope(SpendingAllowanceDto, { description: 'Used and remaining allowance per window' })
+  @ApiErrorResponses({ unauthorized: true, serverError: true })
+  spendingAllowance(
+    @CurrentUser('organizationId') organizationId: string,
+    @Param('agentId') agentId: string,
+    @Query('asset') asset?: string,
+  ) {
+    return this.policyService.getSpendAllowance(organizationId, agentId, asset ?? 'XLM');
+  }
+
   @Get(':id')
-  @ApiOperation({ summary: 'Get a policy' })
+  @ApiOperation({
+    summary: 'Get a policy',
+    description: 'Returns full details of a single policy by ID.',
+  })
+  @ApiParam({ name: 'id', description: 'Policy UUID', example: '018f0a1b-...' })
+  @ApiEnvelope(CreatePolicyDto, { description: 'Policy details' })
+  @ApiErrorResponses({ unauthorized: true, notFound: true, serverError: true })
   findOne(@CurrentUser('organizationId') organizationId: string, @Param('id') id: string) {
     return this.policyService.getOrThrow(organizationId, id);
   }
 
   @Patch(':id')
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.FINANCE)
-  @ApiOperation({ summary: 'Update a policy' })
+  @AuditAction('POLICY_UPDATED')
+  @AuditLog({ action: 'POLICY_UPDATED', entity: 'Policy' })
+  @ApiOperation({
+    summary: 'Update a policy',
+    description:
+      'Partial update of policy fields (name, type, configuration, priority, enabled).',
+  })
+  @ApiParam({ name: 'id', description: 'Policy UUID', example: '018f0a1b-...' })
+  @ApiBody({ type: CreatePolicyDto })
+  @ApiEnvelope(CreatePolicyDto, { description: 'Policy updated successfully' })
+  @ApiErrorResponses({
+    validation: true,
+    unauthorized: true,
+    forbidden: true,
+    notFound: true,
+    serverError: true,
+  })
   update(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id') id: string,
@@ -71,7 +170,21 @@ export class PolicyController {
 
   @Delete(':id')
   @Roles(UserRole.OWNER, UserRole.ADMIN)
-  @ApiOperation({ summary: 'Delete (soft) a policy' })
+  @AuditAction('POLICY_DELETED')
+  @AuditLog({ action: 'POLICY_DELETED', entity: 'Policy' })
+  @ApiOperation({
+    summary: 'Delete (soft) a policy',
+    description:
+      'Soft-deletes the policy. The policy record is retained for audit purposes but is excluded from active queries.',
+  })
+  @ApiParam({ name: 'id', description: 'Policy UUID', example: '018f0a1b-...' })
+  @ApiEnvelope(CreatePolicyDto, { description: 'Policy deleted successfully' })
+  @ApiErrorResponses({
+    unauthorized: true,
+    forbidden: 'Insufficient permissions (requires OWNER or ADMIN)',
+    notFound: true,
+    serverError: true,
+  })
   remove(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
     return this.policyService.remove(user.organizationId, user.id, id);
   }

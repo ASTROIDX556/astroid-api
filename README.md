@@ -18,6 +18,7 @@
 - **Stellar integration** — pluggable client with a fully-featured mock (`STELLAR_USE_MOCK=true`) so the whole API runs with zero on-chain dependencies in development.
 - **AI-powered** — Nvidia NIM integration (`meta/llama-3.1-70b-instruct`) for financial briefings, anomaly detection, and assistant capabilities.
 
+
 ## Architecture
 
 ```
@@ -54,6 +55,8 @@ cp .env.example .env            # then edit secrets (JWT_*, DATABASE_URL, …)
 
 npm run prisma:generate         # generate the Prisma client
 npm run prisma:migrate          # apply migrations to your database
+npm run db:seed                  # create development fixtures
+npm run db:seed:verify           # validate fixture integrity
 
 npm run start:dev               # http://localhost:3000
 ```
@@ -81,6 +84,27 @@ npm run start:dev               # http://localhost:3000
 
 Full OpenAPI spec available at `/docs` when the server is running.
 
+### Development database fixtures
+
+With PostgreSQL available and `DATABASE_URL` set in `.env`, apply migrations
+before creating fixtures:
+
+```bash
+npm run prisma:deploy
+npm run db:seed
+npm run db:seed:verify
+```
+
+The seed creates the `astroid-labs` organization, owner and finance users,
+paused test agents with public-only testnet wallet placeholders, three spending
+policies, a parent/agent budget pair, and a disabled sample webhook. Roles are
+represented by the existing `UserRole` enum; the schema has no standalone role
+or governance-configuration model. Fixture commands reject production and
+require an explicit opt-in for remote database hosts. Stable fixture IDs and
+natural keys make repeated runs update the same records without deleting other
+data. CI applies migrations, runs the seed twice, and verifies the fixtures
+against its disposable PostgreSQL service.
+
 ## Scripts
 
 | Script | Purpose |
@@ -93,22 +117,47 @@ Full OpenAPI spec available at `/docs` when the server is running.
 | `npm test` | Vitest unit tests |
 | `npm run prisma:migrate` | Create/apply a dev migration |
 | `npm run prisma:deploy` | Apply migrations in production |
+| `npm run db:seed` | Idempotently seed local development or test fixtures |
+| `npm run db:seed:verify` | Validate fixture fields and relationships |
 
 ## Data Model
 
-17 Prisma models: `Organization`, `User`, `Agent`, `Wallet`, `Policy`, `Budget`, `Transaction`, `Proposal`, `Approval`, `AuditLog`, `Notification`, `ApiKey`, `Webhook`, `Session`, `MemoryRecord`, `PasskeyCredential`, `DomainEvent`. Schema in [`prisma/`](prisma).
+18 Prisma models: `Organization`, `User`, `Agent`, `Wallet`, `Policy`, `Budget`, `Transaction`, `Proposal`, `Approval`, `AuditLog`, `AuditLogArchive`, `Notification`, `ApiKey`, `Webhook`, `Session`, `MemoryRecord`, `PasskeyCredential`, `DomainEvent`. Schema in [`prisma/`](prisma).
+
+## Spending Policies and Audit Archival
+
+- [`docs/spending-policies.md`](docs/spending-policies.md) — multi-asset policy
+  validation, per-asset limits and base-currency conversion.
+- [`docs/audit-archival.md`](docs/audit-archival.md) — the scheduled archival of
+  expired audit records into the compressed archive.
+- [`docs/approval-expiry.md`](docs/approval-expiry.md) — the `EXPIRED` proposal
+  state, the repeatable expiry sweep and the 409 guard on decisions.
+- [`docs/balance-cache.md`](docs/balance-cache.md) — the Redis cache-aside for
+  wallet balance reads, its TTL and its invalidation.
+
+## Health Probes
+
+- `GET /health/live` — liveness, `200` while the process runs; touches no dependency.
+- `GET /health/ready` — readiness, `200` when PostgreSQL and Redis answer within the timeout, `503` otherwise.
+
+Both are unauthenticated, never rate limited and served outside the `/api/v1` prefix. See
+[`docs/health-probes.md`](docs/health-probes.md) for the response shape, timeouts and caching.
 
 ## Environment Variables
 
-See [`.env.example`](.env.example) for the full list. Required variables:
+All variables are validated against a single schema when the process starts;
+if any are missing or malformed, the API exits immediately with a message listing
+every problem. See [`docs/configuration.md`](docs/configuration.md) for the full
+reference (types, defaults and production rules) and
+[`.env.example`](.env.example) for a working local setup. Required variables:
 
 | Variable | Description |
 |---|---|
 | `DATABASE_URL` | PostgreSQL connection string |
-| `REDIS_HOST` / `REDIS_PORT` / `REDIS_PASSWORD` | Redis/BullMQ config |
-| `JWT_ACCESS_SECRET` | JWT signing secret (≥16 chars) |
+| `JWT_ACCESS_SECRET` | Access-token signing secret (≥16 chars) |
+| `JWT_REFRESH_SECRET` | Refresh-token signing secret (≥16 chars, distinct from the access secret in production) |
 | `AI_PROVIDER_KEY` | Nvidia NIM API key (`nvapi-…`) |
-| `STELLAR_REGISTRY_CONTRACT_ID` | Deployed registry contract address |
+| `ENCRYPTION_KEY` | 32-byte encryption key (required in production; a development default is used otherwise) |
 
 ## Related Repositories
 

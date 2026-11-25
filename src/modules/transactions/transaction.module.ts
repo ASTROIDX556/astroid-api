@@ -7,6 +7,19 @@ import { AgentModule } from '../agents/agent.module';
 import { PolicyModule } from '../policies/policy.module';
 import { RiskModule } from '../risk/risk.module';
 import { BudgetModule } from '../budgets/budget.module';
+import { SorobanSimulationService } from './services/soroban-simulation.service';
+import { StellarSimulationService } from './services/stellar-simulation.service';
+import { GasEstimationService } from './services/gas-estimation.service';
+import { TransactionPreflightService } from './services/transaction-preflight.service';
+import { StellarModule } from '../stellar/stellar.module';
+import { SpendingLimitService } from './spending-limit.service';
+import { SpendingLimitGuard } from './guards/spending-limit.guard';
+import { BullModule } from '@nestjs/bullmq';
+import { Queues } from '../../queues/queues.constants';
+import { createQueueRegistrationOptions } from '../../queues/queue-policy';
+import { TransactionWorker } from './workers/transaction.worker';
+import { IdempotencyModule } from '../../common/idempotency/idempotency.module';
+import { ApprovalExpiryQueue } from '../../queues/approval-expiry.queue';
 
 /**
  * Transaction pipeline module. Pulls together wallets, agents, policies, risk
@@ -15,9 +28,40 @@ import { BudgetModule } from '../budgets/budget.module';
  * approved proposal's transaction.
  */
 @Module({
-  imports: [WalletModule, AgentModule, PolicyModule, RiskModule, BudgetModule],
+  imports: [
+    WalletModule,
+    AgentModule,
+    PolicyModule,
+    RiskModule,
+    BudgetModule,
+    StellarModule,
+    IdempotencyModule,
+    BullModule.registerQueue(
+      // Transaction execution is retried with exponential backoff and jitter.
+      // A job that still fails on its last attempt is dead-lettered by the
+      // shared QueueFailureListener for manual review.
+      createQueueRegistrationOptions(Queues.Transactions, {
+        attempts: 5,
+        backoff: { type: 'exponential', delay: 2_000 },
+      }),
+    ),
+    // Approval proposals are created here, so the delayed expiry job is
+    // scheduled from this module (ApprovalModule imports it for cancellation).
+    BullModule.registerQueue({ name: Queues.ApprovalSweep }),
+  ],
   controllers: [TransactionController],
-  providers: [TransactionService, TransactionRepository],
-  exports: [TransactionService],
+  providers: [
+    TransactionService,
+    TransactionRepository,
+    SorobanSimulationService,
+    StellarSimulationService,
+    GasEstimationService,
+    TransactionPreflightService,
+    SpendingLimitService,
+    SpendingLimitGuard,
+    TransactionWorker,
+    ApprovalExpiryQueue,
+  ],
+  exports: [TransactionService, ApprovalExpiryQueue, SorobanSimulationService, StellarSimulationService, GasEstimationService, SpendingLimitService],
 })
 export class TransactionModule {}

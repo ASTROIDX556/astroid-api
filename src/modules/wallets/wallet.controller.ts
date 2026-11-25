@@ -7,29 +7,61 @@ import {
   Patch,
   Post,
   Query,
+  UseGuards,
 } from '@nestjs/common';
-import { ApiOperation, ApiTags } from '@nestjs/swagger';
+import {
+  ApiOperation,
+  ApiTags,
+  ApiParam,
+  ApiBody,
+  ApiQuery,
+} from '@nestjs/swagger';
 import { UserRole, WalletStatus } from '@prisma/client';
 import { WalletService } from './wallet.service';
 import {
   createWalletSchema,
   CreateWalletInput,
+  CreateWalletDto,
   updateWalletSchema,
   UpdateWalletInput,
+  UpdateWalletDto,
+  WalletResponseDto,
+  WalletBalanceDto,
 } from './wallet.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
+import { AuditAction } from '../../common/decorators/audit-action.decorator';
+import { AuditLog } from '../../common/decorators/audit-log.decorator';
+import { AgentThrottlerGuard } from '../../common/guards/agent-throttler.guard';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 import { AuthenticatedUser } from '../../common/interfaces/authenticated-user.interface';
 import { PaginationQuery, paginationQuerySchema } from '../../common/helpers/pagination';
+import { ApiPaginationQuery } from '../../common/decorators/api-pagination-query.decorator';
+import { ApiEnvelope, ApiPaginatedEnvelope } from '../../common/decorators/api-envelope.decorator';
+import { ApiErrorResponses } from '../../common/decorators/api-error-responses.decorator';
+import { AstroidThrottlerGuard } from '../../common/guards/throttler.guard';
+import { ApiAuthenticated } from '../../common/decorators/api-authenticated.decorator';
 
 @ApiTags('wallets')
+@ApiAuthenticated()
+@UseGuards(AgentThrottlerGuard)
 @Controller('wallets')
+@ApiErrorResponses({ unauthorized: true, forbidden: true, tooManyRequests: true, serverError: true })
 export class WalletController {
   constructor(private readonly walletService: WalletService) {}
 
   @Get()
-  @ApiOperation({ summary: 'List wallets' })
+  @ApiOperation({
+    summary: 'List wallets',
+    description:
+      'Returns a paginated list of wallets for the current organization. ' +
+      'Supports filtering by status and network.',
+  })
+  @ApiPaginationQuery()
+  @ApiQuery({ name: 'status', required: false, enum: ['ACTIVE', 'FROZEN', 'ARCHIVED'], description: 'Filter by wallet status' })
+  @ApiQuery({ name: 'network', required: false, enum: ['TESTNET', 'PUBLIC'], description: 'Filter by Stellar network' })
+  @ApiPaginatedEnvelope(WalletResponseDto, { description: 'Paginated list of wallets' })
+  @ApiErrorResponses({ unauthorized: true, serverError: true })
   list(
     @CurrentUser('organizationId') organizationId: string,
     @Query(new ZodValidationPipe(paginationQuerySchema)) query: PaginationQuery,
@@ -39,10 +71,24 @@ export class WalletController {
 
   @Post()
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.FINANCE, UserRole.DEVELOPER)
+  @UseGuards(AstroidThrottlerGuard)
+  @AuditAction('WALLET_CREATED')
   @ApiOperation({
     summary: 'Create a wallet (generate a keypair or import an address)',
     description:
-      'When generating, the secret key is returned exactly once and never stored server-side.',
+      'When generating, the secret key is returned exactly once and never stored server-side. ' +
+      'When importing, only the public address is recorded for balance tracking.',
+  })
+  @ApiBody({ type: CreateWalletDto })
+  @ApiEnvelope(WalletResponseDto, {
+    status: 201,
+    description: 'Wallet created successfully (secret key included on generation)',
+  })
+  @ApiErrorResponses({
+    validation: true,
+    unauthorized: true,
+    forbidden: true,
+    serverError: true,
   })
   create(
     @CurrentUser() user: AuthenticatedUser,
@@ -52,20 +98,52 @@ export class WalletController {
   }
 
   @Get(':id')
-  @ApiOperation({ summary: 'Get a wallet' })
+  @ApiOperation({
+    summary: 'Get a wallet',
+    description: 'Returns full details of a single wallet by ID.',
+  })
+  @ApiParam({ name: 'id', description: 'Wallet UUID', example: '018f0a1b-...' })
+  @ApiEnvelope(WalletResponseDto, { description: 'Wallet details' })
+  @ApiErrorResponses({ unauthorized: true, notFound: true, serverError: true })
   findOne(@CurrentUser('organizationId') organizationId: string, @Param('id') id: string) {
     return this.walletService.getOrThrow(organizationId, id);
   }
 
   @Get(':id/balances')
-  @ApiOperation({ summary: 'Fetch live on-chain balances for a wallet' })
+  @ApiOperation({
+    summary: 'Fetch live on-chain balances for a wallet',
+    description:
+      'Queries the Stellar network for the current balances of the wallet. ' +
+      'For generated wallets, this includes XLM and all trustline assets.',
+  })
+  @ApiParam({ name: 'id', description: 'Wallet UUID', example: '018f0a1b-...' })
+  @ApiEnvelope(WalletBalanceDto, {
+    isArray: true,
+    description: 'Current on-chain balances',
+  })
+  @ApiErrorResponses({ unauthorized: true, notFound: true, serverError: true })
   balances(@CurrentUser('organizationId') organizationId: string, @Param('id') id: string) {
     return this.walletService.getBalances(organizationId, id);
   }
 
   @Patch(':id')
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.FINANCE, UserRole.DEVELOPER)
-  @ApiOperation({ summary: 'Update a wallet label or owning agent' })
+  @AuditAction('WALLET_UPDATED')
+  @AuditLog({ action: 'WALLET_UPDATED', entity: 'Wallet' })
+  @ApiOperation({
+    summary: 'Update a wallet label or owning agent',
+    description: 'Partial update of wallet metadata. Does not affect the Stellar keypair.',
+  })
+  @ApiParam({ name: 'id', description: 'Wallet UUID', example: '018f0a1b-...' })
+  @ApiBody({ type: UpdateWalletDto })
+  @ApiEnvelope(WalletResponseDto, { description: 'Wallet updated successfully' })
+  @ApiErrorResponses({
+    validation: true,
+    unauthorized: true,
+    forbidden: true,
+    notFound: true,
+    serverError: true,
+  })
   update(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id') id: string,
@@ -76,21 +154,65 @@ export class WalletController {
 
   @Post(':id/freeze')
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.FINANCE)
-  @ApiOperation({ summary: 'Freeze a wallet (block outgoing transactions)' })
+  @AuditAction('WALLET_FROZEN')
+  @AuditLog({ action: 'WALLET_FROZEN', entity: 'Wallet' })
+  @ApiOperation({
+    summary: 'Freeze a wallet (block outgoing transactions)',
+    description:
+      'Places the wallet in FROZEN status. All outgoing transactions will be blocked until the wallet is unfrozen.',
+  })
+  @ApiParam({ name: 'id', description: 'Wallet UUID', example: '018f0a1b-...' })
+  @ApiEnvelope(WalletResponseDto, { description: 'Wallet frozen successfully' })
+  @ApiErrorResponses({
+    unauthorized: true,
+    forbidden: true,
+    notFound: true,
+    conflict: 'Wallet is already frozen',
+    serverError: true,
+  })
   freeze(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
     return this.walletService.setStatus(user.organizationId, user.id, id, WalletStatus.FROZEN);
   }
 
   @Post(':id/unfreeze')
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.FINANCE)
-  @ApiOperation({ summary: 'Unfreeze a wallet' })
+  @AuditAction('WALLET_UNFROZEN')
+  @AuditLog({ action: 'WALLET_UNFROZEN', entity: 'Wallet' })
+  @ApiOperation({
+    summary: 'Unfreeze a wallet',
+    description: 'Restores a frozen wallet to ACTIVE status, allowing outgoing transactions again.',
+  })
+  @ApiParam({ name: 'id', description: 'Wallet UUID', example: '018f0a1b-...' })
+  @ApiEnvelope(WalletResponseDto, { description: 'Wallet unfrozen successfully' })
+  @ApiErrorResponses({
+    unauthorized: true,
+    forbidden: true,
+    notFound: true,
+    conflict: 'Wallet is not frozen',
+    serverError: true,
+  })
   unfreeze(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
     return this.walletService.setStatus(user.organizationId, user.id, id, WalletStatus.ACTIVE);
   }
 
   @Delete(':id')
   @Roles(UserRole.OWNER, UserRole.ADMIN)
-  @ApiOperation({ summary: 'Archive (soft-delete) a wallet' })
+  @AuditAction('WALLET_ARCHIVED')
+  @AuditLog({ action: 'WALLET_ARCHIVED', entity: 'Wallet' })
+  @ApiOperation({
+    summary: 'Archive (soft-delete) a wallet',
+    description:
+      'Soft-deletes the wallet. The wallet record is retained for audit purposes but is excluded from active queries. ' +
+      'Associated Stellar keys are securely wiped.',
+  })
+  @ApiParam({ name: 'id', description: 'Wallet UUID', example: '018f0a1b-...' })
+  @ApiEnvelope(WalletResponseDto, { description: 'Wallet archived successfully' })
+  @ApiErrorResponses({
+    unauthorized: true,
+    forbidden: 'Insufficient permissions (requires OWNER or ADMIN)',
+    notFound: true,
+    serverError: true,
+  })
   remove(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
     return this.walletService.remove(user.organizationId, user.id, id);
   }

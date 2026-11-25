@@ -2,76 +2,119 @@ import {
   CanActivate,
   ExecutionContext,
   Injectable,
+  Logger,
+  Optional,
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import * as crypto from 'crypto';
+import { createHmac, timingSafeEqual } from 'crypto';
 import { Request } from 'express';
 import {
   WEBHOOK_SIGNATURE_HEADER,
   WEBHOOK_TIMESTAMP_HEADER,
 } from '../constants/headers';
+import { parseWebhookSignatureHeader, verifyWebhookSignature } from '../../modules/webhooks/utils/signing';
+
+export type WebhookSecretResolver = (
+  request: Request,
+  integrationId?: string,
+) => string | undefined | Promise<string | undefined>;
+
+export interface WebhookSignatureGuardOptions {
+  secretResolver?: WebhookSecretResolver;
+  toleranceSeconds?: number;
+}
 
 /**
- * Validates HMAC-SHA256 signature and timestamp freshness on incoming Stellar Horizon/Soroban webhook events.
- * Signature calculation: HMAC-SHA256(timestamp + '.' + rawBody, secret)
+ * Verifies inbound signatures against the exact raw request bytes. The ingress
+ * secret is deliberately distinct from per-subscriber outbound signing secrets.
  */
 @Injectable()
 export class WebhookSignatureGuard implements CanActivate {
-  private readonly toleranceSeconds = 300; // 5 minutes
+  private readonly logger = new Logger(WebhookSignatureGuard.name);
+  private readonly toleranceSeconds: number;
+  private readonly secretResolver?: WebhookSecretResolver;
 
-  constructor(private readonly configService: ConfigService) {}
+  constructor(
+    private readonly configService: ConfigService,
+    @Optional() options?: WebhookSignatureGuardOptions,
+  ) {
+    this.toleranceSeconds = options?.toleranceSeconds ?? 300;
+    this.secretResolver = options?.secretResolver;
+  }
 
-  canActivate(context: ExecutionContext): boolean {
-    const request = context.switchToHttp().getRequest<Request>();
+  async canActivate(context: ExecutionContext): Promise<boolean> {
+    const request = context.switchToHttp().getRequest<Request & { rawBody?: Buffer }>();
+    const rawSignature = request.headers[WEBHOOK_SIGNATURE_HEADER];
+    const rawTimestamp = request.headers[WEBHOOK_TIMESTAMP_HEADER];
 
-    const signature = request.headers[WEBHOOK_SIGNATURE_HEADER] as string;
-    const timestampStr = request.headers[WEBHOOK_TIMESTAMP_HEADER] as string;
-
-    if (!signature) {
-      throw new UnauthorizedException('Missing webhook signature header');
+    if (typeof rawSignature !== 'string') {
+      throw new UnauthorizedException('Missing webhook signature headers');
     }
 
-    if (!timestampStr) {
-      throw new UnauthorizedException('Missing webhook timestamp header');
+    let timestamp = typeof rawTimestamp === 'string' ? rawTimestamp : undefined;
+    let signature = rawSignature;
+
+    if (rawSignature.includes('t=') || rawSignature.includes(',')) {
+      const parsed = parseWebhookSignatureHeader(rawSignature);
+      if (parsed.timestamp) {
+        timestamp = parsed.timestamp;
+      }
+      if (parsed.v1) {
+        signature = `v1=${parsed.v1}`;
+      }
     }
 
-    const timestamp = parseInt(timestampStr, 10);
-    if (isNaN(timestamp)) {
-      throw new UnauthorizedException('Invalid webhook timestamp');
+    if (typeof timestamp !== 'string') {
+      throw new UnauthorizedException('Missing webhook signature headers');
+    }
+    if (!/^\d{1,12}$/.test(timestamp)) {
+      throw new UnauthorizedException('Malformed webhook signature');
     }
 
+    const signatureMatch = /^(?:v1=)?([0-9a-fA-F]{64})$/.exec(signature.trim());
+    if (!signatureMatch) {
+      throw new UnauthorizedException('Malformed webhook signature');
+    }
+    const normalizedSignature = signatureMatch[1].toLowerCase();
+
+    const timestampSeconds = Number(timestamp);
     const now = Math.floor(Date.now() / 1000);
-    if (Math.abs(now - timestamp) > this.toleranceSeconds) {
+    if (Math.abs(now - timestampSeconds) > this.toleranceSeconds) {
       throw new UnauthorizedException('Webhook timestamp expired or out of tolerance');
     }
 
-    const secret =
-      this.configService.get<string>('WEBHOOK_SECRET') ||
-      this.configService.get<string>('STELLAR_WEBHOOK_SECRET') ||
-      'astroid-webhook-secret-key-default';
+    const secret = await this.resolveSecret(request);
+    if (!secret) {
+      this.logger.warn('No webhook ingress secret configured; rejecting request');
+      throw new UnauthorizedException('No webhook signing secret configured');
+    }
 
-    const payload =
-      (request as Request & { rawBody?: Buffer | string }).rawBody ||
-      (typeof request.body === 'string'
-        ? request.body
-        : JSON.stringify(request.body ?? {}));
+    if (!Buffer.isBuffer(request.rawBody)) {
+      throw new UnauthorizedException('Raw webhook body is unavailable');
+    }
 
-    const expectedPayloadToSign = `${timestamp}.${payload}`;
-    const hmac = crypto.createHmac('sha256', secret);
-    hmac.update(expectedPayloadToSign);
-    const expectedSignature = hmac.digest('hex');
+    const validVersionedSignature = verifyWebhookSignature(secret, timestamp, request.rawBody, signature);
+    const expected = createHmac('sha256', secret)
+      .update(Buffer.concat([Buffer.from(`${timestamp}.`, 'utf8'), request.rawBody]))
+      .digest();
+    const received = Buffer.from(normalizedSignature, 'hex');
+    const validLegacySignature =
+      received.length === expected.length && timingSafeEqual(received, expected);
 
-    const signatureBuffer = Buffer.from(signature, 'utf8');
-    const expectedBuffer = Buffer.from(expectedSignature, 'utf8');
-
-    if (
-      signatureBuffer.length !== expectedBuffer.length ||
-      !crypto.timingSafeEqual(signatureBuffer, expectedBuffer)
-    ) {
+    if (!validVersionedSignature && !validLegacySignature) {
       throw new UnauthorizedException('Invalid webhook cryptographic signature');
     }
 
     return true;
+  }
+
+  private async resolveSecret(request: Request): Promise<string | undefined> {
+    if (this.secretResolver) {
+      const integrationId = request.headers['x-integration-id'];
+      return this.secretResolver(request, typeof integrationId === 'string' ? integrationId : undefined);
+    }
+
+    return this.configService.get<string>('WEBHOOK_INGRESS_SECRET') || undefined;
   }
 }

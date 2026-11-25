@@ -1,36 +1,66 @@
 import { Body, Controller, Get, Post, Req } from '@nestjs/common';
-import { ApiOperation, ApiTags, ApiBearerAuth } from '@nestjs/swagger';
+import {
+  ApiOperation,
+  ApiTags,
+  ApiBody,
+} from '@nestjs/swagger';
+import { ApiErrorResponses } from '../../common/decorators/api-error-responses.decorator';
+import { SensitiveRateLimit } from '../../common/decorators/sensitive-rate-limit.decorator';
+import { ApiEnvelope } from '../../common/decorators/api-envelope.decorator';
 import { Request } from 'express';
 import { AuthService } from './auth.service';
 import {
   loginSchema,
   LoginInput,
   LoginDto,
+  RegisterDto,
   registerSchema,
   RegisterInput,
-  RegisterDto,
+  RefreshDto,
   refreshSchema,
   RefreshInput,
-  RefreshDto,
+  TokenPairDto,
+  AuthResultDto,
+  CurrentUserDto,
+  LogoutResultDto,
 } from './auth.dto';
 import { Public } from '../../common/decorators/public.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { ThrottleTierDecorator } from '../../common/decorators/throttle-tier.decorator';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 import { AuthenticatedUser } from '../../common/interfaces/authenticated-user.interface';
-import {
-  UnauthorizedException,
-} from '../../common/exceptions/domain.exception';
+import { UnauthorizedException } from '../../common/exceptions/domain.exception';
+import { ApiAuthenticated } from '../../common/decorators/api-authenticated.decorator';
 
 @ApiTags('auth')
 @Controller('auth')
+@ApiErrorResponses({ tooManyRequests: true, serverError: true })
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
+
+  // ────────────────────────────────────────────
+  // Public endpoints (no auth required)
+  // ────────────────────────────────────────────
 
   @Public()
   @Post('register')
   @ThrottleTierDecorator('auth')
-  @ApiOperation({ summary: 'Register a new organization and its owner' })
+  @ApiOperation({
+    summary: 'Register a new organization and its owner',
+    description:
+      'Creates a new organization with the caller as the owner. Returns a JWT token pair.',
+  })
+  @ApiBody({ type: RegisterDto })
+  @ApiEnvelope(AuthResultDto, {
+    status: 201,
+    description: 'Organization and owner created successfully',
+  })
+  @ApiErrorResponses({
+    validation: 'Validation error (missing or invalid fields)',
+    conflict: 'Email address already registered',
+    tooManyRequests: true,
+    serverError: true,
+  })
   register(
     @Body(new ZodValidationPipe(registerSchema)) body: RegisterInput,
     @Req() req: Request,
@@ -41,7 +71,20 @@ export class AuthController {
   @Public()
   @Post('login')
   @ThrottleTierDecorator('auth')
-  @ApiOperation({ summary: 'Authenticate with email and password' })
+  @SensitiveRateLimit('login')
+  @ApiOperation({
+    summary: 'Authenticate with email and password',
+    description: 'Validates credentials and returns a JWT access/refresh token pair.',
+  })
+  @ApiBody({ type: LoginDto })
+  @ApiEnvelope(AuthResultDto, { description: 'Authenticated successfully' })
+  @ApiErrorResponses({
+    validation: true,
+    unauthorized: 'Invalid email or password',
+    tooManyRequests: true,
+    serverError: true,
+    serviceUnavailable: 'Rate limiting is unavailable, so the endpoint refuses requests (fails closed)',
+  })
   login(
     @Body(new ZodValidationPipe(loginSchema)) body: LoginInput,
     @Req() req: Request,
@@ -52,14 +95,41 @@ export class AuthController {
   @Public()
   @Post('refresh')
   @ThrottleTierDecorator('auth')
-  @ApiOperation({ summary: 'Rotate an access/refresh token pair' })
+  @SensitiveRateLimit('refresh')
+  @ApiOperation({
+    summary: 'Rotate an access/refresh token pair',
+    description:
+      'Exchanges a valid refresh token for a new access/refresh token pair. The old refresh token is invalidated.',
+  })
+  @ApiBody({ type: RefreshDto })
+  @ApiEnvelope(TokenPairDto, { description: 'Token pair rotated successfully' })
+  @ApiErrorResponses({
+    validation: true,
+    unauthorized: 'Invalid or expired refresh token',
+    tooManyRequests: true,
+    serverError: true,
+    serviceUnavailable: 'Rate limiting is unavailable, so the endpoint refuses requests (fails closed)',
+  })
   refresh(@Body(new ZodValidationPipe(refreshSchema)) body: RefreshInput) {
     return this.authService.refresh(body.refreshToken);
   }
 
+  // ────────────────────────────────────────────
+  // Authenticated endpoints
+  // ────────────────────────────────────────────
+
   @Post('logout')
-  @ApiBearerAuth('access-token')
-  @ApiOperation({ summary: 'Revoke the current session' })
+  @ApiAuthenticated()
+  @ApiErrorResponses({ unauthorized: true, forbidden: true })
+  @ApiOperation({
+    summary: 'Revoke the current session',
+    description: 'Invalidates the JWT session so the access/refresh token pair can no longer be used.',
+  })
+  @ApiEnvelope(LogoutResultDto, { description: 'Session revoked' })
+  @ApiErrorResponses({
+    unauthorized: 'Not authenticated or no active session on this token',
+    serverError: true,
+  })
   logout(@CurrentUser() user: AuthenticatedUser) {
     if (!user.sessionId) {
       throw new UnauthorizedException('No active session on this token');
@@ -68,18 +138,27 @@ export class AuthController {
   }
 
   @Get('me')
-  @ApiBearerAuth('access-token')
-  @ApiOperation({ summary: 'Get the current authenticated user' })
+  @ApiAuthenticated()
+  @ApiErrorResponses({ unauthorized: true, forbidden: true })
+  @ApiOperation({
+    summary: 'Get the current authenticated user',
+    description: 'Returns the profile and organization details of the authenticated user.',
+  })
+  @ApiEnvelope(CurrentUserDto, { description: 'Current user profile' })
+  @ApiErrorResponses({ unauthorized: true, serverError: true })
   me(@CurrentUser() user: AuthenticatedUser) {
     return this.authService.me(user);
   }
 
   @Get('session')
-  @ApiBearerAuth('access-token')
+  @ApiAuthenticated()
+  @ApiErrorResponses({ unauthorized: true, forbidden: true })
   @ApiOperation({
     summary: 'Get the current session principal',
     description: 'PRD alias of GET /auth/me — resolves the authenticated user.',
   })
+  @ApiEnvelope(CurrentUserDto, { description: 'Current session principal' })
+  @ApiErrorResponses({ unauthorized: true, serverError: true })
   session(@CurrentUser() user: AuthenticatedUser) {
     return this.authService.me(user);
   }

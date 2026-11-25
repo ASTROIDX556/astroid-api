@@ -1,0 +1,14 @@
+-- CreateIndex
+-- Active-member filters: `WHERE "organizationId" = $1 AND "status" = 'ACTIVE'
+-- AND "deletedAt" IS NULL` (NotificationRepository.findActiveUserIds, used by
+-- every organization-wide notification broadcast) and the status-filtered
+-- member listing ordered by createdAt. users is small per organization but the
+-- broadcast fans out from a single query, and the existing (organizationId,
+-- createdAt) index cannot apply the status predicate.
+--
+-- Built CONCURRENTLY so writes are never blocked. Postgres forbids that inside
+-- a transaction, and Prisma runs a multi-statement migration as one, so this
+-- file must contain exactly this one statement. Prisma records the migration
+-- once, so re-applying it is a no-op; the paired down.sql restores the state
+-- needed to apply it again.
+CREATE INDEX CONCURRENTLY "users_organizationId_status_createdAt_idx" ON "users"("organizationId", "status", "createdAt");

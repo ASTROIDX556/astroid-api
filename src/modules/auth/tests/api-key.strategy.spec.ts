@@ -19,6 +19,7 @@ describe('ApiKeyStrategy', () => {
     name: 'Test Key',
     prefix: 'ak_live_123456',
     permissions: ['transactions:write', 'policies:read'],
+    scopes: ['transactions:execute'],
     allowedIps: ['192.168.1.0/24'],
   };
 
@@ -40,12 +41,13 @@ describe('ApiKeyStrategy', () => {
       expect(result).toEqual({
         id: 'key-123',
         keyId: 'key-123',
+        apiKeyId: 'key-123',
         organizationId: 'org-456',
         createdById: 'user-789',
         name: 'Test Key',
         prefix: 'ak_live_123456',
         permissions: ['transactions:write', 'policies:read'],
-        scopes: ['transactions:write', 'policies:read'],
+        scopes: ['transactions:execute'],
         allowedIps: ['192.168.1.0/24'],
         isApiKey: true,
         role: UserRole.DEVELOPER,

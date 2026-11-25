@@ -1,88 +1,151 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
-import { AuditRepository, CreateAuditLogData } from './audit.repository';
-import {
-  buildPaginationMeta,
-  PaginationQuery,
-  toPrismaPagination,
-} from '../../common/helpers/pagination';
-import { Paginated } from '../../common/interfaces/api-response.interface';
-
-const SORTABLE = ['createdAt', 'action', 'entity'];
+import { AuditRepository, buildAuditLogWhere, CreateAuditLogData } from './audit.repository';
+import { AuditHashService } from './audit-hash.service';
+import { CursorPaginated, Paginated } from '../../common/interfaces/api-response.interface';
+import { AuditListQuery, AUDIT_DEFAULT_PAGE_SIZE } from './audit-list.dto';
+import { AuditTimelineQuery } from './audit-timeline.dto';
+import { decodeAuditCursor, encodeAuditCursor } from './audit-cursor';
+import { ExportAuditLogsQuery, StreamAuditLogsQuery } from './audit-export.dto';
+import { sanitizeAuditPayload } from '../../common/helpers/audit-sanitizer';
+import { buildPaginationMeta } from '../../common/helpers/pagination';
 
 /** An audit row as returned by `AuditRepository.exportLogs`, with its joined user. */
 type ExportedAuditLog = Prisma.AuditLogGetPayload<{
   include: { user: { select: { id: true; email: true; name: true } } };
 }>;
 
+export type AuditOutcome = 'SUCCESS' | 'FAILURE';
+
+/**
+ * Derives the outcome stored on an audit row from its payload or action name.
+ * Records written by the structured audit interceptor carry `success`; domain
+ * events that end in `.failed` (or the `policy.violated` event) are failures.
+ * Anything else has no definitive outcome and stays null.
+ */
+export function deriveAuditOutcome(input: {
+  action: string;
+  newValue?: Prisma.InputJsonValue;
+}): AuditOutcome | null {
+  if (input.newValue && typeof input.newValue === 'object' && !Array.isArray(input.newValue)) {
+    const payload = input.newValue as Record<string, unknown>;
+    if (typeof payload.success === 'boolean') {
+      return payload.success ? 'SUCCESS' : 'FAILURE';
+    }
+    if (payload.outcome === 'SUCCESS' || payload.outcome === 'FAILURE') {
+      return payload.outcome;
+    }
+  }
+
+  if (input.action.endsWith('.failed') || input.action === 'policy.violated') {
+    return 'FAILURE';
+  }
+  return null;
+}
+
 /**
  * Writes and queries the immutable audit trail. Records Who / When / Where /
  * Why / Old / New for every important action. Never updates or deletes.
+ * Integrates cryptographic hash chaining for tamper-evident audit history.
  */
 @Injectable()
 export class AuditService {
-  constructor(private readonly repository: AuditRepository) {}
+  constructor(
+    private readonly repository: AuditRepository,
+    private readonly hashService: AuditHashService,
+  ) {}
 
-  record(data: CreateAuditLogData) {
-    return this.repository.create(data);
+  async record(data: CreateAuditLogData) {
+    const safeData: CreateAuditLogData = {
+      ...data,
+      ...(data.oldValue === undefined ? {} : { oldValue: sanitizeAuditPayload(data.oldValue) }),
+      ...(data.newValue === undefined ? {} : { newValue: sanitizeAuditPayload(data.newValue) }),
+    };
+    return this.repository.createChained({
+      ...safeData,
+      requestId: data.requestId ?? null,
+    }, (id, prevHash, timestamp) => this.hashService.computeEntryHash(
+      {
+        id,
+        organizationId: safeData.organizationId,
+        userId: safeData.userId,
+        action: safeData.action,
+        entity: safeData.entity,
+        entityId: safeData.entityId,
+        oldValue: safeData.oldValue,
+        newValue: safeData.newValue,
+        ipAddress: safeData.ipAddress,
+        device: safeData.device,
+        createdAt: timestamp,
+      },
+      prevHash,
+    ).hash);
   }
 
-  async list(organizationId: string, query: PaginationQuery) {
-    const where: Prisma.AuditLogWhereInput = { organizationId };
-    if (query.search) {
-      where.OR = [
-        { action: { contains: query.search, mode: 'insensitive' } },
-        { entity: { contains: query.search, mode: 'insensitive' } },
-        { entityId: { contains: query.search, mode: 'insensitive' } },
-      ];
+  /** Audit log listing, preserving cursor mode and adding standard page mode. */
+  async list(
+    organizationId: string,
+    query: AuditListQuery & { cursor: string },
+  ): Promise<CursorPaginated<ExportedAuditLog>>;
+  async list(
+    organizationId: string,
+    query: AuditListQuery,
+  ): Promise<CursorPaginated<ExportedAuditLog> | Paginated<ExportedAuditLog>>;
+  async list(organizationId: string, query: AuditListQuery): Promise<CursorPaginated<ExportedAuditLog> | Paginated<ExportedAuditLog>> {
+    const where = buildAuditLogWhere(organizationId, query);
+    if (!query.cursor) {
+      const { items, total } = await this.repository.findManyAndCount(where, {
+        skip: query.offset ?? 0,
+        take: query.limit ?? AUDIT_DEFAULT_PAGE_SIZE,
+      });
+      return new Paginated(items as ExportedAuditLog[], buildPaginationMeta(total, query));
     }
-    if (query.filter) {
-      where.entity = query.filter;
-    }
-    const pagination = toPrismaPagination(query, SORTABLE);
-    const { items, total } = await this.repository.findManyAndCount(where, pagination);
-    return new Paginated(items, buildPaginationMeta(total, query.page, query.limit));
+    const cursor = decodeAuditCursor(query.cursor);
+    const take = (query.limit ?? AUDIT_DEFAULT_PAGE_SIZE) + 1;
+    const rows = (await this.repository.findPage(where, cursor, take)) as ExportedAuditLog[];
+
+    return this.toCursorPage(rows, query.limit ?? AUDIT_DEFAULT_PAGE_SIZE);
   }
 
-  async export(organizationId: string, query: import('./audit-export.dto').ExportAuditLogsQuery) {
-    const where: Prisma.AuditLogWhereInput = { organizationId };
+  /**
+   * Ascending audit timeline for one resource. Uses the same opaque `(createdAt,
+   * id)` cursor as the listing, with the comparison direction inverted.
+   */
+  async timeline(
+    organizationId: string,
+    resourceId: string,
+    query: AuditTimelineQuery,
+  ): Promise<CursorPaginated<ExportedAuditLog>> {
+    const where = buildAuditLogWhere(organizationId, {
+      resourceId,
+      from: query.from,
+      to: query.to,
+    });
+    const limit = query.limit;
+    const rows = (await this.repository.findPage(
+      where,
+      query.cursor ? decodeAuditCursor(query.cursor) : undefined,
+      limit + 1,
+      'asc',
+    )) as ExportedAuditLog[];
 
-    if (query.userId) {
-      where.userId = query.userId;
-    }
+    return this.toCursorPage(rows, limit);
+  }
 
-    if (query.actionType) {
-      where.action = query.actionType;
-    }
+  /** Turns a `limit + 1` database fetch into a cursor page with stable meta. */
+  private toCursorPage(rows: ExportedAuditLog[], limit: number): CursorPaginated<ExportedAuditLog> {
+    const hasMore = rows.length > limit;
+    const items = hasMore ? rows.slice(0, limit) : rows;
+    const last = items[items.length - 1];
+    const nextCursor = hasMore && last
+      ? encodeAuditCursor({ createdAt: last.createdAt, id: last.id })
+      : null;
 
-    if (query.agentId) {
-      where.OR = [
-        { entityId: query.agentId },
-        {
-          oldValue: {
-            path: ['agentId'],
-            equals: query.agentId,
-          },
-        },
-        {
-          newValue: {
-            path: ['agentId'],
-            equals: query.agentId,
-          },
-        },
-      ];
-    }
+    return new CursorPaginated(items, { limit, hasMore, nextCursor });
+  }
 
-    if (query.startDate || query.endDate) {
-      where.createdAt = {};
-      if (query.startDate) {
-        where.createdAt.gte = new Date(query.startDate);
-      }
-      if (query.endDate) {
-        where.createdAt.lte = new Date(query.endDate);
-      }
-    }
-
+  async export(organizationId: string, query: ExportAuditLogsQuery) {
+    const where = buildAuditLogWhere(organizationId, query);
     const limit = Math.min(query.limit ?? 100, 1000);
     const records = await this.repository.exportLogs(where, limit, query.cursor);
 
@@ -92,18 +155,96 @@ export class AuditService {
       items = records.slice(0, limit);
       nextCursor = items[items.length - 1]?.id ?? null;
     }
+    const sanitized = items.map((item) => this.sanitizeRecord(item));
 
     if (query.format === 'csv') {
-      const csv = this.formatAsCsv(items);
-      return { format: 'csv', data: csv, count: items.length, nextCursor };
+      const csv = this.formatAsCsv(sanitized);
+      return { format: 'csv', data: csv, count: sanitized.length, nextCursor };
     }
 
     return {
       format: 'json',
-      data: items,
-      count: items.length,
+      data: sanitized,
+      count: sanitized.length,
       nextCursor,
     };
+  }
+
+  /**
+   * Streams an export in bounded batches so large exports never load the
+   * full result set into memory. Yields Buffer chunks: a JSON array
+   * (one record per chunk, wrapped by `[`/`]`) or raw CSV rows.
+   */
+  async *streamExport(organizationId: string, query: StreamAuditLogsQuery): AsyncGenerator<Buffer> {
+    const where = buildAuditLogWhere(organizationId, query);
+    const stream = this.repository.streamLogs(where, query.batchSize, query.cursor);
+
+    if (query.format === 'csv') {
+      const headers = [
+        'id',
+        'organizationId',
+        'userId',
+        'userEmail',
+        'action',
+        'entity',
+        'entityId',
+        'ipAddress',
+        'device',
+        'oldValue',
+        'newValue',
+        'createdAt',
+      ];
+      yield Buffer.from(`${headers.join(',')}\n`);
+      for await (const record of stream) {
+        const row = this.formatCsvRow(this.sanitizeRecord(record));
+        yield Buffer.from(`${row}\n`);
+      }
+      return;
+    }
+
+    let first = true;
+    yield Buffer.from('[');
+    for await (const record of stream) {
+      const sanitized = this.sanitizeRecord(record);
+      yield Buffer.from(`${first ? '' : ','}${JSON.stringify(sanitized)}`);
+      first = false;
+    }
+    yield Buffer.from(']');
+  }
+
+  /** Redacts sensitive payload fields from a raw audit row before it leaves the service. */
+  private sanitizeRecord(record: ExportedAuditLog): ExportedAuditLog {
+    return {
+      ...record,
+      oldValue: sanitizeAuditPayload(record.oldValue),
+      newValue: sanitizeAuditPayload(record.newValue),
+    };
+  }
+
+  private formatCsvRow(r: ExportedAuditLog): string {
+    const escapeCsvField = (value: unknown): string => {
+      if (value === null || value === undefined) return '';
+      const str = typeof value === 'object' ? JSON.stringify(value) : String(value);
+      if (str.includes(',') || str.includes('"') || str.includes('\n') || str.includes('\r')) {
+        return `"${str.replace(/"/g, '""')}"`;
+      }
+      return str;
+    };
+
+    return [
+      escapeCsvField(r.id),
+      escapeCsvField(r.organizationId),
+      escapeCsvField(r.userId),
+      escapeCsvField(r.user?.email ?? ''),
+      escapeCsvField(r.action),
+      escapeCsvField(r.entity),
+      escapeCsvField(r.entityId),
+      escapeCsvField(r.ipAddress),
+      escapeCsvField(r.device),
+      escapeCsvField(r.oldValue),
+      escapeCsvField(r.newValue),
+      escapeCsvField(r.createdAt ? new Date(r.createdAt).toISOString() : ''),
+    ].join(',');
   }
 
   formatAsCsv(records: ExportedAuditLog[]): string {
@@ -121,39 +262,26 @@ export class AuditService {
       'newValue',
       'createdAt',
     ];
-
-    const escapeCsvField = (value: unknown): string => {
-      if (value === null || value === undefined) return '';
-      const str = typeof value === 'object' ? JSON.stringify(value) : String(value);
-      if (str.includes(',') || str.includes('"') || str.includes('\n') || str.includes('\r')) {
-        return `"${str.replace(/"/g, '""')}"`;
-      }
-      return str;
-    };
-
-    const lines = [headers.join(',')];
-    for (const r of records) {
-      const row = [
-        escapeCsvField(r.id),
-        escapeCsvField(r.organizationId),
-        escapeCsvField(r.userId),
-        escapeCsvField(r.user?.email ?? ''),
-        escapeCsvField(r.action),
-        escapeCsvField(r.entity),
-        escapeCsvField(r.entityId),
-        escapeCsvField(r.ipAddress),
-        escapeCsvField(r.device),
-        escapeCsvField(r.oldValue),
-        escapeCsvField(r.newValue),
-        escapeCsvField(r.createdAt ? new Date(r.createdAt).toISOString() : ''),
-      ];
-      lines.push(row.join(','));
-    }
-
+    const lines = [headers.join(','), ...records.map((r) => this.formatCsvRow(r))];
     return lines.join('\n');
   }
 
   findById(organizationId: string, id: string) {
     return this.repository.findById(organizationId, id);
+  }
+
+  /**
+   * Verifies the integrity of the entire audit chain for an organization.
+   * Returns detailed information about chain validity.
+   */
+  async verifyIntegrity(organizationId: string) {
+    return this.hashService.verifyChainIntegrity(organizationId);
+  }
+
+  /**
+   * Verifies the integrity of a single audit log entry.
+   */
+  async verifyEntryIntegrity(entryId: string, organizationId: string) {
+    return this.hashService.verifyEntryIntegrity(entryId, organizationId);
   }
 }

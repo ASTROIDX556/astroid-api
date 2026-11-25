@@ -3,10 +3,11 @@ import { PassportStrategy } from '@nestjs/passport';
 import { Strategy } from 'passport-strategy';
 import { Request } from 'express';
 import { UserRole } from '@prisma/client';
-import { API_KEY_HEADER } from '../../common/constants/headers';
+import { extractApiKeyFromRequest } from '../../common/helpers/extract-api-key';
 import { ErrorCode } from '../../common/constants/error-codes';
 import { UnauthorizedException } from '../../common/exceptions/domain.exception';
 import { AuthenticatedApiKey } from '../../common/interfaces/authenticated-user.interface';
+import { DEFAULT_API_KEY_SCOPES } from '../../common/constants/scopes';
 import { ApiKeyService } from '../developer/api-key.service';
 
 /**
@@ -16,25 +17,7 @@ export class HeaderApiKeyPassportStrategy extends Strategy {
   readonly name = 'api-key';
 
   authenticate(req: Request, _options?: unknown): void {
-    const rawHeader =
-      req.headers[API_KEY_HEADER] ??
-      req.headers[API_KEY_HEADER.toLowerCase()] ??
-      req.headers['x-api-key'];
-
-    let apiKey: string | undefined;
-
-    if (typeof rawHeader === 'string' && rawHeader.trim().length > 0) {
-      apiKey = rawHeader.trim();
-    } else if (Array.isArray(rawHeader) && rawHeader.length > 0) {
-      apiKey = rawHeader[0].trim();
-    } else if (req.headers.authorization && typeof req.headers.authorization === 'string') {
-      const authHeader = req.headers.authorization.trim();
-      if (/^ApiKey\s+/i.test(authHeader)) {
-        apiKey = authHeader.replace(/^ApiKey\s+/i, '').trim();
-      } else if (/^Bearer\s+ak_/i.test(authHeader)) {
-        apiKey = authHeader.replace(/^Bearer\s+/i, '').trim();
-      }
-    }
+    const apiKey = extractApiKeyFromRequest(req);
 
     if (!apiKey) {
       return this.fail(
@@ -88,12 +71,16 @@ export class ApiKeyStrategy extends PassportStrategy(HeaderApiKeyPassportStrateg
     const principal: AuthenticatedApiKey = {
       id: apiKey.id,
       keyId: apiKey.id,
+      apiKeyId: apiKey.id,
       organizationId: apiKey.organizationId,
       createdById: apiKey.createdById,
       name: apiKey.name,
       prefix: apiKey.prefix,
       permissions: apiKey.permissions ?? [],
-      scopes: apiKey.permissions ?? [],
+      scopes:
+        apiKey.scopes && apiKey.scopes.length > 0
+          ? apiKey.scopes
+          : [...DEFAULT_API_KEY_SCOPES],
       allowedIps: apiKey.allowedIps ?? [],
       isApiKey: true,
       role: UserRole.DEVELOPER,

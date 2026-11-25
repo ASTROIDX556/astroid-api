@@ -2,121 +2,170 @@ import { Injectable } from '@nestjs/common';
 import { RiskBand } from '@prisma/client';
 import { clamp } from '../../utils/decimal.util';
 import {
+  DEFAULT_RISK_CONFIG,
   RiskAssessment,
-  RiskFactorScore,
+  RiskConfig,
   RiskFactorsInput,
-  RISK_WEIGHTS,
+  RiskRuleContext,
+  RiskRule,
+  RiskFactorScore,
 } from './risk.types';
+import {
+  AmountRule,
+  AmountAnomalyRule,
+  RecipientRule,
+  RecipientReputationRule,
+  VelocityRule,
+  WalletAgeRule,
+  PolicyViolationRule,
+  SuspiciousTimingRule,
+} from './rules';
 
 /**
  * Pure risk-scoring engine. Produces a 0-100 composite score from weighted
- * factors and maps it to a band:
+ * pluggable rules and maps it to a band:
  *   0-20 Low, 21-50 Medium, 51-80 High, 81-100 Critical.
- * Critical transactions can never auto-execute (must go through approval).
- * Contains no I/O and is fully unit-tested.
+ *
+ * Rules are pure functions — each takes a {@link RiskRuleContext} and returns
+ * a partial {@link RiskFactorScore}. New heuristics can be added by registering
+ * additional rules without modifying the engine.
+ *
+ * Thresholds (saturation points, band boundaries) are driven by
+ * {@link RiskConfig}, which can be overridden per agent or organization.
  */
 @Injectable()
 export class RiskEngine {
-  /** Amount (in asset units) at which the amount factor saturates to full weight. */
-  private static readonly AMOUNT_SATURATION = 10_000;
-  /** Recent transaction count at which the velocity factor saturates. */
-  private static readonly VELOCITY_SATURATION = 20;
-  /** Wallet age (days) beyond which the wallet is considered fully seasoned. */
-  private static readonly WALLET_SEASONED_DAYS = 90;
+  /** Built-in rules registered by default. */
+  private readonly defaultRules: RiskRule[] = [
+    AmountRule,
+    AmountAnomalyRule,
+    RecipientRule,
+    RecipientReputationRule,
+    VelocityRule,
+    WalletAgeRule,
+    PolicyViolationRule,
+    SuspiciousTimingRule,
+  ];
 
-  assess(input: RiskFactorsInput): RiskAssessment {
-    const factors: RiskFactorScore[] = [
-      this.amountFactor(input.amount),
-      this.recipientFactor(input.knownRecipient),
-      this.velocityFactor(input.recentTransactionCount),
-      this.walletAgeFactor(input.walletAgeDays),
-      this.policyFactor(input.policyViolations),
-      this.timingFactor(input.hourUtc),
-    ];
+  /**
+   * Run the full assessment using the provided (or default) rules and config.
+   *
+   * @param input    Transaction risk factors
+   * @param config   Optional per-org/agent configuration overrides
+   * @param rules    Optional additional or replacement rules
+   */
+  assess(
+    input: RiskFactorsInput,
+    config?: Partial<RiskConfig>,
+    rules?: RiskRule[],
+  ): RiskAssessment {
+    const effectiveConfig = this.mergeConfig(config);
+    const effectiveRules = rules ?? this.defaultRules;
+    const context: RiskRuleContext = { input, config: effectiveConfig };
+
+    const factors = this.normalizeFactors(
+      effectiveRules.map((rule) => rule.evaluate(context)),
+    );
 
     const score = Math.round(
       clamp(
-        factors.reduce((sum, factor) => sum + factor.contribution, 0),
+        factors.reduce((sum, f) => sum + f.contribution, 0),
         0,
         100,
       ),
     );
-    const band = this.toBand(score);
-    return { score, band, factors, canAutoExecute: band !== RiskBand.CRITICAL };
+    this.normalizeContributions(factors, score);
+    const band = this.toBand(score, effectiveConfig);
+    return {
+      score,
+      band,
+      factors,
+      // Thresholds are explicit so a high-risk transaction is always routed to
+      // a human: at or above the review threshold it needs an approval, at or
+      // above the block threshold it can never auto-execute.
+      canAutoExecute: score < effectiveConfig.blockThreshold,
+      requiresApproval: score >= effectiveConfig.reviewThreshold,
+    };
   }
 
-  /** Maps a numeric score to its band per the PRD thresholds. */
-  toBand(score: number): RiskBand {
-    if (score <= 20) {
-      return RiskBand.LOW;
+  private normalizeFactors(factors: RiskFactorScore[]): RiskFactorScore[] {
+    const order = [
+      'amount',
+      'amountAnomaly',
+      'unknownRecipient',
+      'destinationReputation',
+      'velocity',
+      'walletAge',
+      'policyViolations',
+      'suspiciousTiming',
+    ];
+    const index = new Map(order.map((code, i) => [code, i]));
+
+    return factors
+      .map((factor) => {
+        const code = factor.code ?? (factor.factor as RiskFactorScore['code']);
+        return {
+          ...factor,
+          code,
+          description: factor.description ?? factor.detail,
+        };
+      })
+      .sort((a, b) => {
+        const ai = index.get(a.code ?? '') ?? order.length;
+        const bi = index.get(b.code ?? '') ?? order.length;
+        return ai === bi ? a.factor.localeCompare(b.factor) : ai - bi;
+      });
+  }
+
+  /** Round the breakdown without changing the existing rounded scalar score. */
+  private normalizeContributions(factors: RiskFactorScore[], score: number): void {
+    for (const factor of factors) {
+      factor.contribution = Math.round((factor.contribution + Number.EPSILON) * 100) / 100;
     }
-    if (score <= 50) {
-      return RiskBand.MEDIUM;
+
+    let remainingCents = Math.round(
+      (score - factors.reduce((sum, factor) => sum + factor.contribution, 0)) * 100,
+    );
+    for (const factor of factors) {
+      if (remainingCents === 0) break;
+      const currentCents = Math.round(factor.contribution * 100);
+      const adjustment = remainingCents > 0
+        ? Math.min(remainingCents, Math.max(Math.round(factor.weight * 100) - currentCents, 0))
+        : Math.max(remainingCents, -currentCents);
+      factor.contribution = (currentCents + adjustment) / 100;
+      remainingCents -= adjustment;
     }
-    if (score <= 80) {
-      return RiskBand.HIGH;
+
+    if (remainingCents !== 0 && factors.length > 0) {
+      factors[0].contribution += remainingCents / 100;
     }
+  }
+
+  /**
+   * Maps a numeric score to its band, using optional custom thresholds from config.
+   */
+  toBand(score: number, config?: Partial<RiskConfig>): RiskBand {
+    const t = config?.bandThresholds;
+    const lowMax = t?.lowMax ?? 20;
+    const medMax = t?.medMax ?? 50;
+    const highMax = t?.highMax ?? 80;
+
+    if (score <= lowMax) return RiskBand.LOW;
+    if (score <= medMax) return RiskBand.MEDIUM;
+    if (score <= highMax) return RiskBand.HIGH;
     return RiskBand.CRITICAL;
   }
 
-  private amountFactor(amount: number): RiskFactorScore {
-    const ratio = clamp(amount / RiskEngine.AMOUNT_SATURATION, 0, 1);
+  /** Merges partial overrides onto the default config. */
+  private mergeConfig(overrides?: Partial<RiskConfig>): RiskConfig {
+    if (!overrides) return { ...DEFAULT_RISK_CONFIG };
     return {
-      factor: 'amount',
-      weight: RISK_WEIGHTS.amount,
-      contribution: ratio * RISK_WEIGHTS.amount,
-      detail: `Amount ${amount}`,
-    };
-  }
-
-  private recipientFactor(known: boolean): RiskFactorScore {
-    return {
-      factor: 'unknownRecipient',
-      weight: RISK_WEIGHTS.unknownRecipient,
-      contribution: known ? 0 : RISK_WEIGHTS.unknownRecipient,
-      detail: known ? 'Known recipient' : 'Recipient never paid before',
-    };
-  }
-
-  private velocityFactor(count: number): RiskFactorScore {
-    const ratio = clamp(count / RiskEngine.VELOCITY_SATURATION, 0, 1);
-    return {
-      factor: 'velocity',
-      weight: RISK_WEIGHTS.velocity,
-      contribution: ratio * RISK_WEIGHTS.velocity,
-      detail: `${count} recent transactions`,
-    };
-  }
-
-  private walletAgeFactor(days: number): RiskFactorScore {
-    const seasoned = clamp(days / RiskEngine.WALLET_SEASONED_DAYS, 0, 1);
-    return {
-      factor: 'walletAge',
-      weight: RISK_WEIGHTS.walletAge,
-      contribution: (1 - seasoned) * RISK_WEIGHTS.walletAge,
-      detail: `Wallet age ${days} day(s)`,
-    };
-  }
-
-  private policyFactor(violations: number): RiskFactorScore {
-    // Each violation adds half the weight, saturating at 2 violations.
-    const ratio = clamp(violations / 2, 0, 1);
-    return {
-      factor: 'policyViolations',
-      weight: RISK_WEIGHTS.policyViolations,
-      contribution: ratio * RISK_WEIGHTS.policyViolations,
-      detail: `${violations} policy violation(s)`,
-    };
-  }
-
-  private timingFactor(hourUtc?: number): RiskFactorScore {
-    // Overnight window (00:00-05:00 UTC) is treated as mildly suspicious.
-    const suspicious = hourUtc !== undefined && hourUtc >= 0 && hourUtc < 5;
-    return {
-      factor: 'suspiciousTiming',
-      weight: RISK_WEIGHTS.suspiciousTiming,
-      contribution: suspicious ? RISK_WEIGHTS.suspiciousTiming : 0,
-      detail: suspicious ? 'Overnight transaction' : 'Normal hours',
+      ...DEFAULT_RISK_CONFIG,
+      ...overrides,
+      weights: { ...DEFAULT_RISK_CONFIG.weights, ...overrides.weights },
+      bandThresholds: overrides.bandThresholds
+        ? { ...DEFAULT_RISK_CONFIG.bandThresholds, ...overrides.bandThresholds }
+        : DEFAULT_RISK_CONFIG.bandThresholds,
     };
   }
 }

@@ -1,8 +1,8 @@
-import { Injectable } from '@nestjs/common';
-import { PrismaService } from '../../database/prisma.service';
+import { Inject, Injectable, Optional } from '@nestjs/common';
+import { ConfigType } from '@nestjs/config';
 import { Prisma } from '@prisma/client';
 import { ApiKeyRepository } from './api-key.repository';
-import { CreateApiKeyInput } from './api-key.dto';
+import { CreateApiKeyInput, RotateApiKeyInput } from './api-key.dto';
 import { ConflictException, NotFoundException } from '../../common/exceptions/domain.exception';
 import {
   buildPaginationMeta,
@@ -10,27 +10,30 @@ import {
   toPrismaPagination,
 } from '../../common/helpers/pagination';
 import { Paginated } from '../../common/interfaces/api-response.interface';
-import { generateApiKey, sha256 } from '../../utils/crypto.util';
-import { ConfigService } from '@nestjs/config';
-import { AuditService } from '../../modules/audit/audit.service';
+import { generateApiKey, safeEqual, verifyArgon2, sha256 } from '../../utils/crypto.util';
+import { DEFAULT_API_KEY_SCOPES } from '../../common/constants/scopes';
+import { authConfig } from '../../config/auth.config';
+import { AuditService } from '../audit/audit.service';
 
 const SORTABLE = ['createdAt', 'name', 'lastUsedAt'];
 
+/**
+ * Issues and manages programmatic API keys. The raw secret is generated, shown
+ * to the caller exactly once, and only its Argon2id hash is persisted. Keys can
+ * never be recovered — only regenerated. Legacy SHA-256 hashes are supported for
+ * backward compatibility during migration.
+ */
 @Injectable()
 export class ApiKeyService {
   constructor(
-    private readonly prisma: PrismaService,
     private readonly repository: ApiKeyRepository,
-    private readonly configService: ConfigService,
-    private readonly auditService: AuditService,
+    @Optional() private readonly auditService?: AuditService,
+    @Optional() @Inject(authConfig.KEY) private readonly authConfiguration?: ConfigType<typeof authConfig>,
   ) {}
 
-  private getGracePeriodMillis(): number {
-    return this.configService.get('rotation').apiKeyRotationGracePeriodHours * 60 * 60 * 1000;
-  }
-
   async create(organizationId: string, actorId: string, input: CreateApiKeyInput) {
-    const { raw, prefix, hashedKey } = generateApiKey('live');
+    const { raw, prefix, hashedKey } = await generateApiKey('live');
+    const lastFour = raw.slice(-4);
     const expiresAt = input.expiresInDays
       ? new Date(Date.now() + input.expiresInDays * 86_400_000)
       : null;
@@ -40,9 +43,14 @@ export class ApiKeyService {
       createdById: actorId,
       name: input.name,
       prefix,
+      lastFour,
+      status: 'active',
       hashedKey,
+      scopes: input.scopes ?? [...DEFAULT_API_KEY_SCOPES],
       permissions: input.permissions,
       allowedIps: input.allowedIps || [],
+      rateLimitPerMinute: input.rateLimitPerMinute ?? null,
+      rateLimitPerDay: input.rateLimitPerDay ?? null,
       expiresAt,
     });
 
@@ -51,7 +59,11 @@ export class ApiKeyService {
       id: apiKey.id,
       name: apiKey.name,
       prefix: apiKey.prefix,
+      lastFour: apiKey.lastFour ?? lastFour,
+      scopes: apiKey.scopes,
       permissions: apiKey.permissions,
+      rateLimitPerMinute: apiKey.rateLimitPerMinute,
+      rateLimitPerDay: apiKey.rateLimitPerDay,
       expiresAt: apiKey.expiresAt,
       key: raw,
     };
@@ -64,15 +76,111 @@ export class ApiKeyService {
     }
     const pagination = toPrismaPagination(query, SORTABLE);
     const { items, total } = await this.repository.findManyAndCount(where, pagination);
-    return new Paginated(items, buildPaginationMeta(total, query.page, query.limit));
+    return new Paginated(items, buildPaginationMeta(total, query));
   }
 
-  async revoke(organizationId: string, id: string) {
+  async rotate(
+    organizationId: string,
+    actorId: string,
+    id: string,
+    input?: RotateApiKeyInput,
+  ) {
     const key = await this.repository.findById(organizationId, id);
     if (!key) {
       throw new NotFoundException('ApiKey', id);
     }
-    if (key.revokedAt) {
+    if (key.revokedAt || key.status === 'revoked') {
+      throw new ConflictException('API key is already revoked');
+    }
+    if (key.status === 'rotating' || key.rotatedAt) {
+      throw new ConflictException('API key is already being rotated');
+    }
+    if (key.expiresAt && key.expiresAt.getTime() <= Date.now()) {
+      throw new ConflictException('API key is expired');
+    }
+
+    const defaultGrace = this.authConfiguration?.apiKeyRotationGracePeriodSeconds ?? 86400;
+    const gracePeriodSeconds = input?.gracePeriodSeconds ?? defaultGrace;
+    const graceExpiresAt = new Date(Date.now() + gracePeriodSeconds * 1000);
+    const previousKeyExpiresAt =
+      key.expiresAt && key.expiresAt.getTime() < graceExpiresAt.getTime()
+        ? key.expiresAt
+        : graceExpiresAt;
+
+    const { raw, prefix, hashedKey } = await generateApiKey('live');
+    const lastFour = raw.slice(-4);
+    const newExpiresAt = input?.expiresInDays
+      ? new Date(Date.now() + input.expiresInDays * 86_400_000)
+      : null;
+
+    const newApiKey = await this.repository.create({
+      organizationId,
+      createdById: actorId,
+      name: key.name,
+      prefix,
+      lastFour,
+      status: 'active',
+      hashedKey,
+      scopes: key.scopes,
+      permissions: key.permissions,
+      allowedIps: key.allowedIps,
+      rateLimitPerMinute: key.rateLimitPerMinute,
+      rateLimitPerDay: key.rateLimitPerDay,
+      expiresAt: newExpiresAt,
+    });
+
+    await this.repository.markRotating(key.id, {
+      status: 'rotating',
+      rotatedAt: new Date(),
+      expiresAt: previousKeyExpiresAt,
+      replacementId: newApiKey.id,
+    });
+
+    if (this.auditService) {
+      try {
+        await this.auditService.record({
+          organizationId,
+          userId: actorId,
+          action: 'API_KEY_ROTATED',
+          entity: 'ApiKey',
+          entityId: key.id,
+          oldValue: {
+            keyId: key.id,
+            prefix: key.prefix,
+            status: 'rotating',
+            expiresAt: previousKeyExpiresAt,
+          },
+          newValue: {
+            keyId: newApiKey.id,
+            prefix: newApiKey.prefix,
+            status: 'active',
+          },
+        });
+      } catch {
+        // audit log failure should not break rotation
+      }
+    }
+
+    return {
+      id: newApiKey.id,
+      name: newApiKey.name,
+      prefix: newApiKey.prefix,
+      lastFour: newApiKey.lastFour ?? lastFour,
+      scopes: newApiKey.scopes,
+      permissions: newApiKey.permissions,
+      expiresAt: newApiKey.expiresAt,
+      key: raw,
+      previousKeyId: key.id,
+      previousKeyExpiresAt,
+    };
+  }
+
+  async revoke(organizationId: string, id: string, actorId?: string) {
+    const key = await this.repository.findById(organizationId, id);
+    if (!key) {
+      throw new NotFoundException('ApiKey', id);
+    }
+    if (key.revokedAt || key.status === 'revoked') {
       throw new ConflictException('API key is already revoked');
     }
     await this.repository.revoke(id);
@@ -82,7 +190,22 @@ export class ApiKeyService {
       ? await this.repository.findById(organizationId, key.rotatedFromId)
       : null;
     if (successor && !successor.revokedAt) {
-      await this.repository.revoke(successor.id);
+      await this.repository.revoke(successor.id)
+    };
+    if (this.auditService && actorId) {
+      try {
+        await this.auditService.record({
+          organizationId,
+          userId: actorId,
+          action: 'API_KEY_REVOKED',
+          entity: 'ApiKey',
+          entityId: key.id,
+          oldValue: { keyId: key.id, prefix: key.prefix },
+          newValue: { revoked: true, revokedAt: new Date() },
+        });
+      } catch {
+        // gracefully continue
+      }
     }
 
     return { id, revoked: true };
@@ -92,6 +215,8 @@ export class ApiKeyService {
    * Verifies a presented raw key: matches by hash, checks it is neither revoked
    * nor expired, and updates lastUsedAt. Returns the owning key or null.
    * Also checks grace period expiry for predecessor keys.
+   * Verifies a presented raw key: matches by Argon2 hash (with SHA-256 fallback for legacy keys),
+   * checks it is neither revoked nor expired, and updates lastUsedAt. Returns the owning key or null.
    */
   async verify(rawKey: string) {
     if (!rawKey || rawKey.trim().length === 0) {
@@ -112,12 +237,53 @@ export class ApiKeyService {
       return null;
     }
 
+    
+    const trimmedKey = rawKey.trim();
+    
+    // The hash algorithm is not known before the key is found, so candidates are
+    // looked up by their public prefix. Revoked and expired rows are excluded
+    // by the repository, and re-checked below so a stale cache can never let a
+    // dead key through.
+    const keys = await this.repository.findActiveByPrefix(trimmedKey.slice(0, 14));
+    
+    for (const key of keys) {
+      if (key.revokedAt) {
+        continue;
+      }
+      if (key.expiresAt && key.expiresAt.getTime() < Date.now()) {
+        continue;
+      }
+      
+      // Try Argon2 verification first (new keys). Argon2id verification is a
+      // constant-time comparison of the derived hash against the stored one.
+      const isValidArgon2 = await verifyArgon2(key.hashedKey, trimmedKey);
+      if (isValidArgon2) {
+        await this.touchLastUsed(key.id);
+        return key;
+      }
+      
+      // Fallback to SHA-256 for legacy keys (backward compatibility). The
+      // comparison is constant-time as well, so a legacy key is never
+      // distinguishable from a wrong one by response timing.
+      if (safeEqual(key.hashedKey, sha256(trimmedKey))) {
+        await this.touchLastUsed(key.id);
+        return key;
+      }
+    }
+    
+    return null;
+  }
+
+  /**
+   * Records that a key was just used. A failure to persist the timestamp must
+   * never turn a valid authentication into a rejection, so it is swallowed.
+   */
+  private async touchLastUsed(id: string): Promise<void> {
     try {
-      await this.repository.touchLastUsed(key.id);
+      await this.repository.touchLastUsed(id);
     } catch {
       // Gracefully continue even if updating lastUsedAt encounters an error
     }
-    return key;
   }
 
   /**

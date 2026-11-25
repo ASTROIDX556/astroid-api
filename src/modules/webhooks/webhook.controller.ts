@@ -7,29 +7,62 @@ import {
   Patch,
   Post,
   Query,
+  UseInterceptors,
 } from '@nestjs/common';
-import { ApiOperation, ApiTags } from '@nestjs/swagger';
+import {
+  ApiOperation,
+  ApiTags,
+  ApiParam,
+  ApiBody,
+  ApiQuery,
+} from '@nestjs/swagger';
+import { ApiErrorResponses } from '../../common/decorators/api-error-responses.decorator';
+import { SensitiveRateLimit } from '../../common/decorators/sensitive-rate-limit.decorator';
+import { ApiCursorPaginatedEnvelope, ApiEnvelope, ApiPaginatedEnvelope } from '../../common/decorators/api-envelope.decorator';
+import { ApiCursorPaginationQuery } from '../../common/decorators/api-cursor-pagination-query.decorator';
+import { cursorPaginationQuerySchema, CursorPaginationQuery } from '../../common/pagination/cursor-pagination';
 import { UserRole } from '@prisma/client';
 import { WebhookService } from './webhook.service';
 import {
   createWebhookSchema,
   CreateWebhookInput,
+  CreateWebhookDto,
   updateWebhookSchema,
   UpdateWebhookInput,
+  WebhookSecretDto,
 } from './webhook.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
+import { RequiredScopes } from '../../common/decorators/scopes.decorator';
+import { AuditAction } from '../../common/decorators/audit-action.decorator';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 import { PaginationQuery, paginationQuerySchema } from '../../common/helpers/pagination';
+import { ApiPaginationQuery } from '../../common/decorators/api-pagination-query.decorator';
+import { WebhookDeliveryDto, WebhookResponseDto } from './webhook.dto';
+import { Idempotent } from '../../common/decorators/idempotent.decorator';
+import { IdempotencyInterceptor } from '../../common/interceptors/idempotency.interceptor';
+import { ApiAuthenticated } from '../../common/decorators/api-authenticated.decorator';
 
 @ApiTags('webhooks')
+@ApiAuthenticated()
 @Controller('webhooks')
+@ApiErrorResponses({ unauthorized: true, forbidden: true, tooManyRequests: true, serverError: true })
 export class WebhookController {
   constructor(private readonly webhookService: WebhookService) {}
 
   @Get()
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.DEVELOPER)
-  @ApiOperation({ summary: 'List webhooks (signing secrets are never returned)' })
+  @RequiredScopes('read')
+  @ApiOperation({
+    summary: 'List webhooks (signing secrets are never returned)',
+    description:
+      'Returns a paginated list of webhooks for the current organization. ' +
+      'HMAC signing secrets are never included in the response.',
+  })
+  @ApiPaginationQuery()
+  @ApiQuery({ name: 'events', required: false, type: String, description: 'Filter by event type' })
+  @ApiPaginatedEnvelope(WebhookResponseDto, { description: 'Paginated list of webhooks' })
+  @ApiErrorResponses({ unauthorized: true, forbidden: true, serverError: true })
   list(
     @CurrentUser('organizationId') organizationId: string,
     @Query(new ZodValidationPipe(paginationQuerySchema)) query: PaginationQuery,
@@ -37,11 +70,43 @@ export class WebhookController {
     return this.webhookService.list(organizationId, query);
   }
 
+  @Get('deliveries')
+  @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.DEVELOPER)
+  @RequiredScopes('read')
+  @ApiOperation({ summary: 'List webhook delivery logs', description: 'Returns cursor-paginated webhook delivery history, newest first.' })
+  @ApiCursorPaginationQuery()
+  @ApiCursorPaginatedEnvelope(WebhookDeliveryDto, { description: 'Cursor-paginated webhook delivery logs' })
+  @ApiErrorResponses({ unauthorized: true, forbidden: true, validation: 'Invalid cursor or limit', serverError: true })
+  listDeliveries(
+    @CurrentUser('organizationId') organizationId: string,
+    @Query(new ZodValidationPipe(cursorPaginationQuerySchema)) query: CursorPaginationQuery,
+  ) { return this.webhookService.listDeliveries(organizationId, query); }
+
   @Post()
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.DEVELOPER)
+  @RequiredScopes('webhooks:manage')
+  @SensitiveRateLimit('webhookCreate')
+  @UseInterceptors(IdempotencyInterceptor)
+  @Idempotent()
+  @AuditAction('WEBHOOK_CREATED')
   @ApiOperation({
     summary: 'Create a webhook',
-    description: 'The HMAC signing secret is returned exactly once in this response.',
+    description:
+      'The HMAC signing secret is returned exactly once in this response. ' +
+      'Store it securely — it cannot be retrieved later.',
+  })
+  @ApiBody({ type: CreateWebhookDto })
+  @ApiEnvelope(WebhookSecretDto, {
+    status: 201,
+    description: 'Webhook created successfully (includes signing secret)',
+  })
+  @ApiErrorResponses({
+    validation: true,
+    unauthorized: true,
+    forbidden: true,
+    unprocessable: 'Invalid URL or event types',
+    tooManyRequests: true,
+    serverError: true,
   })
   create(
     @CurrentUser('organizationId') organizationId: string,
@@ -52,14 +117,41 @@ export class WebhookController {
 
   @Get(':id')
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.DEVELOPER)
-  @ApiOperation({ summary: 'Get a webhook' })
+  @RequiredScopes('read')
+  @ApiOperation({
+    summary: 'Get a webhook',
+    description: 'Returns full details of a single webhook by ID.',
+  })
+  @ApiParam({ name: 'id', description: 'Webhook UUID', example: '018f0a1b-...' })
+  @ApiEnvelope(WebhookResponseDto, { description: 'Webhook details' })
+  @ApiErrorResponses({
+    unauthorized: true,
+    forbidden: true,
+    notFound: true,
+    serverError: true,
+  })
   findOne(@CurrentUser('organizationId') organizationId: string, @Param('id') id: string) {
     return this.webhookService.get(organizationId, id);
   }
 
   @Patch(':id')
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.DEVELOPER)
-  @ApiOperation({ summary: 'Update a webhook' })
+  @RequiredScopes('webhooks:manage')
+  @AuditAction('WEBHOOK_UPDATED')
+  @ApiOperation({
+    summary: 'Update a webhook',
+    description: 'Partial update of webhook configuration (URL, events, enabled status).',
+  })
+  @ApiParam({ name: 'id', description: 'Webhook UUID', example: '018f0a1b-...' })
+  @ApiBody({ type: CreateWebhookDto })
+  @ApiEnvelope(WebhookResponseDto, { description: 'Webhook updated successfully' })
+  @ApiErrorResponses({
+    validation: true,
+    unauthorized: true,
+    forbidden: true,
+    notFound: true,
+    serverError: true,
+  })
   update(
     @CurrentUser('organizationId') organizationId: string,
     @Param('id') id: string,
@@ -70,14 +162,45 @@ export class WebhookController {
 
   @Post(':id/rotate-secret')
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.DEVELOPER)
-  @ApiOperation({ summary: 'Rotate the signing secret (returned once)' })
+  @RequiredScopes('webhooks:manage')
+  @SensitiveRateLimit('webhookRotateSecret')
+  @AuditAction('WEBHOOK_SECRET_ROTATED')
+  @ApiOperation({
+    summary: 'Rotate the signing secret (returned once)',
+    description:
+      'Generates a new HMAC signing secret for the webhook. The old secret is immediately invalidated. ' +
+      'The new secret is returned exactly once.',
+  })
+  @ApiParam({ name: 'id', description: 'Webhook UUID', example: '018f0a1b-...' })
+  @ApiEnvelope(WebhookSecretDto, { description: 'New signing secret generated' })
+  @ApiErrorResponses({
+    unauthorized: true,
+    forbidden: true,
+    notFound: true,
+    tooManyRequests: true,
+    serverError: true,
+  })
   rotate(@CurrentUser('organizationId') organizationId: string, @Param('id') id: string) {
     return this.webhookService.rotateSecret(organizationId, id);
   }
 
   @Delete(':id')
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.DEVELOPER)
-  @ApiOperation({ summary: 'Delete a webhook' })
+  @RequiredScopes('webhooks:manage')
+  @AuditAction('WEBHOOK_DELETED')
+  @ApiOperation({
+    summary: 'Delete a webhook',
+    description:
+      'Permanently deletes the webhook and invalidates its signing secret. This action cannot be undone.',
+  })
+  @ApiParam({ name: 'id', description: 'Webhook UUID', example: '018f0a1b-...' })
+  @ApiEnvelope(WebhookResponseDto, { description: 'Webhook deleted successfully' })
+  @ApiErrorResponses({
+    unauthorized: true,
+    forbidden: true,
+    notFound: true,
+    serverError: true,
+  })
   remove(@CurrentUser('organizationId') organizationId: string, @Param('id') id: string) {
     return this.webhookService.remove(organizationId, id);
   }

@@ -1,0 +1,14 @@
+-- CreateIndex
+-- Status-filtered agent listing: `WHERE "organizationId" = $1
+-- AND "status" = $2 AND "deletedAt" IS NULL ORDER BY "createdAt" DESC`
+-- (AgentService.list?filter=<status>). The existing (organizationId, status)
+-- index finds the rows but leaves them unordered, so the page still needs a
+-- sort over every match. Adding createdAt lets Postgres read the first page in
+-- index order and stop at LIMIT.
+--
+-- Built CONCURRENTLY so writes are never blocked. Postgres forbids that inside
+-- a transaction, and Prisma runs a multi-statement migration as one, so this
+-- file must contain exactly this one statement. Prisma records the migration
+-- once, so re-applying it is a no-op; the paired down.sql restores the state
+-- needed to apply it again.
+CREATE INDEX CONCURRENTLY "agents_organizationId_status_createdAt_idx" ON "agents"("organizationId", "status", "createdAt");
