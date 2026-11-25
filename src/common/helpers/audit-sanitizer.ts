@@ -2,7 +2,7 @@
  * Sensitive field keys that must never appear in audit-logged payloads.
  * Scrubbed recursively from any object or nested structure.
  */
-const SENSITIVE_FIELDS = [
+const DEFAULT_SENSITIVE_FIELDS = [
   'password',
   'passphrase',
   'passkey',
@@ -18,12 +18,29 @@ const SENSITIVE_FIELDS = [
   'mnemonic',
   'seedphrase',
   'hashedkey',
+  // Scoped replay keys: ``idempotencykey`` covers both ``idempotency-key``
+  // and ``idempotency_key`` after key normalisation.
+  'idempotencykey',
 ];
+
+/**
+ * Application-specific field names added through `LOG_REDACT_FIELDS`. Replaced
+ * (never mutated) by {@link configureSensitiveFields} at boot, so tests and
+ * callers see either the defaults or the configured list, never a mixture.
+ */
+let additionalSensitiveFields: readonly string[] = [];
 
 export const REDACTED = '[REDACTED]';
 const MAX_DEPTH = 8;
 const MAX_COLLECTION_SIZE = 500;
-const MAX_STRING_LENGTH = 2_048;
+/**
+ * Documented cap on a single log string value. Anything longer (a large JSON
+ * payload, a base64 blob, a signed XDR envelope) is truncated before it is
+ * serialized, so one request cannot flood the log sink.
+ */
+export const MAX_LOG_STRING_LENGTH = 2_048;
+/** How many leading characters of an oversized binary value are kept. */
+const BINARY_PREFIX_LENGTH = 256;
 const CIRCULAR = '[Circular]';
 const MAX_DEPTH_MARKER = '[MaxDepth]';
 const TRUNCATED = '[Truncated]';
@@ -39,6 +56,10 @@ const SENSITIVE_TEXT_PATTERNS: ReadonlyArray<[RegExp, string]> = [
   [/\b[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g, REDACTED],
   [/\bwhsec_[A-Za-z0-9_-]+/gi, REDACTED],
   [/\bsk-[A-Za-z0-9_-]{16,}\b/gi, REDACTED],
+  // Platform API keys (`ak_<environment>_<secret>`, see generateApiKey). The
+  // 14-character display prefix that identifies a key in logs is shorter than
+  // the 16-character minimum and stays readable.
+  [/\bak_[a-z]+_[A-Za-z0-9_-]{16,}/gi, REDACTED],
   [/([a-z][a-z0-9+.-]*:\/\/)[^\s/:@]+:[^\s/@]+@/gi, `$1${REDACTED}@`],
 ];
 
@@ -47,14 +68,51 @@ export function redactSensitiveText(value: string): string {
   for (const [pattern, replacement] of SENSITIVE_TEXT_PATTERNS) {
     redacted = redacted.replace(pattern, replacement);
   }
-  return redacted.length > MAX_STRING_LENGTH
-    ? `${redacted.slice(0, MAX_STRING_LENGTH)}...[truncated]`
-    : redacted;
+  return truncateLogString(redacted);
+}
+
+/**
+ * Truncates a string to the documented log-size cap.
+ *
+ * Binary payloads (base64 envelopes, signed XDR, data URIs) keep only a short
+ * recognisable prefix plus their original length; ordinary payloads keep the
+ * first {@link MAX_LOG_STRING_LENGTH} characters. Both markers make the
+ * truncation explicit in the log.
+ */
+export function truncateLogString(value: string): string {
+  if (value.length <= MAX_LOG_STRING_LENGTH) return value;
+  if (isBinaryLike(value)) {
+    return `${value.slice(0, BINARY_PREFIX_LENGTH)}...[truncated binary, ${value.length} chars]`;
+  }
+  return `${value.slice(0, MAX_LOG_STRING_LENGTH)}...[truncated]`;
+}
+
+/** Heuristic for base64 blobs and signed XDR envelopes. */
+function isBinaryLike(value: string): boolean {
+  if (value.startsWith('data:')) return true;
+  if (/\s/.test(value)) return false;
+  // Require base64-only characters *and* a base64-specific marker: a long
+  // ordinary word or identifier must fall back to plain truncation.
+  return /^[A-Za-z0-9+/]+={0,2}$/.test(value) && /[+/=]/.test(value);
 }
 
 export function isSensitiveField(key: string): boolean {
   const normalized = key.toLowerCase().replace(/[_\s-]/g, '');
-  return SENSITIVE_FIELDS.some((fragment) => normalized.includes(fragment));
+  return [...DEFAULT_SENSITIVE_FIELDS, ...additionalSensitiveFields].some((fragment) =>
+    normalized.includes(fragment),
+  );
+}
+
+/**
+ * Adds deployment-specific sensitive field names (from `LOG_REDACT_FIELDS`) on
+ * top of the built-in list, for keys this codebase does not know about. Names
+ * are matched like the defaults: case-insensitive, ignoring `_`, `-` and
+ * spaces, as substrings. Passing an empty list restores the defaults.
+ */
+export function configureSensitiveFields(fields: readonly string[]): void {
+  additionalSensitiveFields = fields
+    .map((field) => field.trim().toLowerCase().replace(/[_\s-]/g, ''))
+    .filter((field) => field.length > 0);
 }
 
 export function sanitizeAuditPayload<T>(data: T): T {
@@ -76,6 +134,10 @@ function redactValue(value: unknown, depth: number, ancestors: WeakSet<object>):
   const object = value as object;
   if (ancestors.has(object)) return CIRCULAR;
   if (object instanceof Date) return object.toISOString();
+  if (Buffer.isBuffer(object)) return `[Binary ${object.length} bytes]`;
+  if (ArrayBuffer.isView(object)) {
+    return `[Binary ${(object as ArrayBufferView).byteLength} bytes]`;
+  }
 
   ancestors.add(object);
   try {

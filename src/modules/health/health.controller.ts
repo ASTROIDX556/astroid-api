@@ -1,11 +1,12 @@
 import { Controller, Get, Optional, Req, Res, HttpStatus } from '@nestjs/common';
-import { ApiExtraModels, ApiOperation, ApiResponse, ApiTags, getSchemaPath } from '@nestjs/swagger';
+import { ApiExcludeEndpoint, ApiExtraModels, ApiOperation, ApiResponse, ApiTags, getSchemaPath } from '@nestjs/swagger';
 import { HealthIndicatorResult } from '@nestjs/terminus';
 import { SkipThrottle } from '@nestjs/throttler';
 import { Request, Response } from 'express';
 import { Public } from '../../common/decorators/public.decorator';
 import { SkipAudit } from '../../common/decorators/skip-audit.decorator';
 import { SkipPublicRateLimit } from '../../common/decorators/skip-public-rate-limit.decorator';
+import { SkipCredentialRateLimit } from '../../common/decorators/skip-credential-rate-limit.decorator';
 import { ApiEnvelope, ApiEnvelopeDto } from '../../common/decorators/api-envelope.decorator';
 import { REQUEST_ID_HEADER } from '../../common/constants/headers';
 import { ApiMeta } from '../../common/interfaces/api-response.interface';
@@ -14,6 +15,8 @@ import { RedisHealthIndicator } from './indicators/redis.health';
 import { StellarHealthIndicator } from './indicators/stellar.health';
 import { DatabaseMigrationHealthIndicator } from './indicators/database-migration.health';
 import { resolveHealthProbeConfig } from '../../config/health.config';
+import { QueueHealthIndicator } from './indicators/queue.health';
+import { ShutdownCoordinator } from '../../common/shutdown/shutdown-coordinator.service';
 import {
   DependencyProbeDto,
   HealthStatusDto,
@@ -60,6 +63,7 @@ interface ReadinessServiceReport {
 @Public()
 @SkipAudit()
 @SkipPublicRateLimit()
+@SkipCredentialRateLimit()
 @SkipThrottle({ api: true, auth: true })
 @ApiExtraModels(ApiEnvelopeDto, ReadinessDto, ReadinessCheckDto, DependencyProbeDto)
 export class HealthController {
@@ -75,6 +79,10 @@ export class HealthController {
     private readonly redisIndicator: RedisHealthIndicator,
     private readonly stellarIndicator: StellarHealthIndicator,
     private readonly migrationIndicator: DatabaseMigrationHealthIndicator,
+    private readonly queueIndicator: QueueHealthIndicator,
+    // Global infrastructure: present in the running app, absent in unit tests
+    // that construct the controller directly.
+    @Optional() private readonly shutdown?: ShutdownCoordinator,
     @Optional()
     private readonly readinessRunner: ReadinessRunner = new ReadinessRunner(
       resolveHealthProbeConfig(),
@@ -86,6 +94,7 @@ export class HealthController {
         run: async (timeoutMs) => unwrap(await this.dbIndicator.check('database', timeoutMs), 'database'),
       },
       { name: 'cache', run: (timeoutMs) => this.redisIndicator.checkHealth(timeoutMs) },
+      { name: 'queue', run: (timeoutMs) => this.queueIndicator.checkHealth(timeoutMs) },
     ];
   }
 
@@ -111,8 +120,8 @@ export class HealthController {
   @ApiOperation({
     summary: 'Readiness probe',
     description:
-      'Probes the critical dependencies (database and cache) in parallel, each bounded by a ' +
-      'timeout. Returns 200 when every dependency is up and 503 when any is down, with ' +
+      'Probes the critical dependencies (database, cache and the BullMQ queue connection) in ' +
+      'parallel, each bounded by a timeout. Returns 200 when every dependency is up and 503 when any is down, with ' +
       'per-dependency status and latency under `data.services`. A failure is reported as ' +
       '`timeout` or `unavailable` only; driver messages stay in the server log. Infrastructure ' +
       'endpoint for orchestrators and load balancers (served outside the versioned API prefix, ' +
@@ -135,6 +144,12 @@ export class HealthController {
     },
   })
   async ready(@Req() req: Request, @Res() res: Response) {
+    // Flip to not-ready as soon as shutdown starts, before probing anything, so
+    // load balancers stop routing new traffic during the drain.
+    if (this.shutdown?.isShuttingDown) {
+      return sendProbe(req, res, HttpStatus.SERVICE_UNAVAILABLE, shuttingDown(['database', 'cache', 'queue']));
+    }
+
     const report = await this.readinessRunner.run(this.readinessChecks);
 
     // `services` (keyed by name) predates `checks` and stays for existing clients.
@@ -164,6 +179,7 @@ export class HealthController {
   }
 
   @Get('liveness')
+  @ApiExcludeEndpoint()
   @ApiOperation({ summary: 'Application liveness check' })
   @ApiResponse({ status: 200, description: 'Application is alive', type: HealthStatusDto })
   getLiveness() {
@@ -177,6 +193,7 @@ export class HealthController {
   // and registering `ready` here as well put a second, unreachable handler on that
   // route whose richer schema the OpenAPI document then showed in its place.
   @Get('readiness')
+  @ApiExcludeEndpoint()
   @ApiOperation({ summary: 'Application readiness check' })
   @ApiResponse({ status: 200, description: 'Application is ready', type: HealthStatusDto })
   @ApiResponse({
@@ -185,6 +202,10 @@ export class HealthController {
     type: HealthStatusDto,
   })
   async getReadiness(@Res() res: Response) {
+    if (this.shutdown?.isShuttingDown) {
+      return res.status(HttpStatus.SERVICE_UNAVAILABLE).json(shuttingDown(['database', 'redis', 'stellar', 'migrations']));
+    }
+
     // The database indicator is a Terminus health indicator, so it reports
     // `{ database: { status, ...details } }`; unwrap it to the same flat shape
     // the other dependencies use.
@@ -213,6 +234,7 @@ export class HealthController {
   }
 
   @Get('database')
+  @ApiExcludeEndpoint()
   @ApiOperation({ summary: 'Database connectivity check' })
   @ApiResponse({ status: 200, description: 'Database is reachable', type: HealthStatusDto })
   @ApiResponse({
@@ -230,6 +252,7 @@ export class HealthController {
   }
 
   @Get('redis')
+  @ApiExcludeEndpoint()
   @ApiOperation({ summary: 'Redis connectivity check' })
   @ApiResponse({ status: 200, description: 'Redis is reachable', type: HealthStatusDto })
   @ApiResponse({
@@ -247,6 +270,7 @@ export class HealthController {
   }
 
   @Get('stellar')
+  @ApiExcludeEndpoint()
   @ApiOperation({
     summary: 'Stellar network connectivity check',
     description:
@@ -272,6 +296,7 @@ export class HealthController {
   }
 
   @Get()
+  @ApiExcludeEndpoint()
   @ApiOperation({ summary: 'Application health check' })
   @ApiResponse({ status: 200, description: 'Application is healthy', type: HealthStatusDto })
   @ApiResponse({
@@ -282,6 +307,22 @@ export class HealthController {
   async check(@Res() res: Response) {
     return this.getReadiness(res);
   }
+}
+
+/**
+ * Readiness payload while the process is shutting down: every dependency is
+ * reported `down` because no new work is accepted, and `reason` names the cause
+ * so an operator is not left guessing which probe failed.
+ */
+function shuttingDown(dependencies: readonly string[]) {
+  const timestamp = new Date().toISOString();
+  const service = { status: 'down', latencyMs: 0, timestamp, error: 'unavailable' } as const;
+  return {
+    status: 'down' as const,
+    timestamp,
+    reason: 'shutting_down' as const,
+    services: Object.fromEntries(dependencies.map((name) => [name, { ...service }])),
+  };
 }
 
 /**

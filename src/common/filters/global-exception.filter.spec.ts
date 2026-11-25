@@ -199,7 +199,7 @@ describe('GlobalExceptionFilter', () => {
       });
     });
 
-    it('maps P2003 (foreign key constraint) to 400 BAD_REQUEST', () => {
+    it('maps P2003 (foreign key constraint) to 409 CONFLICT', () => {
       const { host, response } = buildHost();
       const error = new Prisma.PrismaClientKnownRequestError('Foreign key constraint failed', {
         code: 'P2003',
@@ -208,14 +208,14 @@ describe('GlobalExceptionFilter', () => {
 
       filter.catch(error, host);
 
-      expect(response.status).toHaveBeenCalledWith(400);
+      expect(response.status).toHaveBeenCalledWith(409);
       expect(renderedBody(response)).toMatchObject({
-        status: 400,
-        code: ErrorCode.BAD_REQUEST,
+        status: 409,
+        code: ErrorCode.CONFLICT,
       });
     });
 
-    it('maps other known Prisma request errors to 400 BAD_REQUEST', () => {
+    it('maps P2000 (value too long) to 400 BAD_REQUEST', () => {
       const { host, response } = buildHost();
       const error = new Prisma.PrismaClientKnownRequestError('Value too long for field', {
         code: 'P2000',
@@ -227,6 +227,19 @@ describe('GlobalExceptionFilter', () => {
       expect(response.status).toHaveBeenCalledWith(400);
       expect(renderedBody(response).code).toBe(ErrorCode.BAD_REQUEST);
     });
+
+    it('maps unknown Prisma request errors to 500 INTERNAL_ERROR', () => {
+      const { host, response } = buildHost();
+      const error = new Prisma.PrismaClientKnownRequestError('Unknown internal engine fault', {
+        code: 'P9999',
+        clientVersion: '5.22.0',
+      });
+
+      filter.catch(error, host);
+
+      expect(response.status).toHaveBeenCalledWith(500);
+      expect(renderedBody(response).code).toBe(ErrorCode.INTERNAL_ERROR);
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -236,7 +249,9 @@ describe('GlobalExceptionFilter', () => {
   describe('validation failures', () => {
     it('renders ZodValidationException as 400 VALIDATION_ERROR with field-level details', () => {
       const { host, response } = buildHost();
-      const details = [{ path: 'limit', message: 'Number must be less than or equal to 200' }];
+      const details = [
+        { path: 'limit', code: 'too_big', message: 'Number must be less than or equal to 200' },
+      ];
 
       filter.catch(new ZodValidationException('Request validation failed', details), host);
 
@@ -256,7 +271,7 @@ describe('GlobalExceptionFilter', () => {
 
       filter.catch(
         new ValidationException('Request validation failed', [
-          { path: 'email', message: 'Invalid email' },
+          { path: 'email', code: 'invalid_string', message: 'Invalid email' },
         ]),
         host,
       );

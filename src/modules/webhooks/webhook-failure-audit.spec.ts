@@ -16,7 +16,12 @@ const createDestinationPolicy = () => ({
       body: options.body,
       signal: AbortSignal.timeout(options.timeoutMs),
     });
-    return { status: response.status };
+    const headers: Record<string, string | string[] | undefined> = {};
+    const responseHeaders = response.headers ?? new Headers();
+    for (const [key, value] of responseHeaders.entries()) {
+      headers[key.toLowerCase()] = value;
+    }
+    return { status: response.status, headers };
   },
 });
 
@@ -55,7 +60,12 @@ describe('WebhooksProcessor terminal failures', () => {
           body: options.body.toString('utf8'),
           signal: AbortSignal.timeout(options.timeoutMs),
         });
-        return { status: response.status };
+        const headers: Record<string, string | string[] | undefined> = {};
+        const responseHeaders = response.headers ?? new Headers();
+        for (const [key, value] of responseHeaders.entries()) {
+          headers[key.toLowerCase()] = value;
+        }
+        return { status: response.status, headers };
       },
     };
     processor = new WebhooksProcessor(

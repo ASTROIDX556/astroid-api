@@ -14,6 +14,7 @@ import { PrismaHealthIndicator } from './indicators/prisma.health';
 import { RedisHealthIndicator } from './indicators/redis.health';
 import { StellarHealthIndicator } from './indicators/stellar.health';
 import { DatabaseMigrationHealthIndicator } from './indicators/database-migration.health';
+import { QueueHealthIndicator } from './indicators/queue.health';
 
 /** A public route that is not a probe, to prove the public limiter is live here. */
 @Controller('probe-control')
@@ -41,6 +42,7 @@ describe('Health probes over HTTP', () => {
   const dbIndicator = { check: vi.fn() };
   const redisIndicator = { checkHealth: vi.fn() };
   const stellarIndicator = { checkHealth: vi.fn() };
+  const queueIndicator = { checkHealth: vi.fn() };
 
   const databaseUp = () => ({
     database: { status: 'up', latencyMs: 3, timestamp: new Date().toISOString() },
@@ -73,6 +75,7 @@ describe('Health probes over HTTP', () => {
         { provide: PrismaHealthIndicator, useValue: dbIndicator },
         { provide: RedisHealthIndicator, useValue: redisIndicator },
         { provide: StellarHealthIndicator, useValue: stellarIndicator },
+        { provide: QueueHealthIndicator, useValue: queueIndicator },
         { provide: DatabaseMigrationHealthIndicator, useValue: { checkHealth: vi.fn() } },
       ],
     }).compile();
@@ -91,6 +94,7 @@ describe('Health probes over HTTP', () => {
   beforeEach(() => {
     dbIndicator.check.mockReset().mockResolvedValue(databaseUp());
     redisIndicator.checkHealth.mockReset().mockResolvedValue(cacheUp());
+    queueIndicator.checkHealth.mockReset().mockResolvedValue(cacheUp());
   });
 
   it('serves GET /health/live without credentials and outside the API prefix', async () => {
@@ -113,9 +117,39 @@ describe('Health probes over HTTP', () => {
       success: true,
       data: {
         status: 'up',
-        services: { database: { status: 'up', latencyMs: 3 }, cache: { status: 'up', latencyMs: 1 } },
+        services: {
+          database: { status: 'up', latencyMs: 3 },
+          cache: { status: 'up', latencyMs: 1 },
+          queue: { status: 'up', latencyMs: 1 },
+        },
       },
     });
+  });
+
+  it('answers GET /health/ready with 503 when only the queue connection is down', async () => {
+    queueIndicator.checkHealth.mockResolvedValue({
+      status: 'down',
+      latencyMs: 4,
+      timestamp: new Date().toISOString(),
+      error: 'getaddrinfo ENOTFOUND redis.internal',
+    });
+
+    const res = await fetch(`${baseUrl}/health/ready`);
+    const text = await res.text();
+
+    expect(res.status).toBe(503);
+    expect(JSON.parse(text)).toMatchObject({
+      success: false,
+      data: {
+        status: 'down',
+        services: {
+          database: { status: 'up' },
+          cache: { status: 'up' },
+          queue: { status: 'down', error: 'unavailable' },
+        },
+      },
+    });
+    expect(text).not.toMatch(/ENOTFOUND|redis\.internal/);
   });
 
   it('answers GET /health/ready with 503 and structured detail during a database outage', async () => {

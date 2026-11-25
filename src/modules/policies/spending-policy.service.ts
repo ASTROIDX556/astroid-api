@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Policy, Prisma } from '@prisma/client';
 
+import { fromStroops, toStroops } from '../../utils/decimal.util';
 import {
   NotFoundException,
   ValidationException,
@@ -22,6 +23,7 @@ import {
   policyConfigurationSchemaStrict,
 } from './policy.types';
 import { SpendingPolicyRepository } from './spending-policy.repository';
+import { windowBoundsUtc } from './spending-window.util';
 
 /** Fields a caller may sort the policy list by. */
 const SORTABLE = ['createdAt', 'priority', 'name', 'type'];
@@ -122,6 +124,16 @@ export class SpendingPolicyService {
     return this.repository.findActiveForEvaluation(organizationId, agentId);
   }
 
+  /**
+   * All applicable policies (enabled and disabled) for evaluation. Deliberate
+   * contrast with {@link listActiveForEvaluation}: the evaluation path passes
+   * disabled policies through so the engine fails closed on them (the
+   * "safer default, deny" semantics for disabled policies).
+   */
+  findApplicableForEvaluation(organizationId: string, agentId?: string) {
+    return this.repository.findApplicableForEvaluation(organizationId, agentId);
+  }
+
   /** Validates a policy configuration against the strict spending-policy schema. */
   private validateConfiguration(
     configuration: CreatePolicyInput['configuration'],
@@ -155,7 +167,11 @@ export class SpendingPolicyService {
       since: new Date(Date.now() - VELOCITY_WINDOW_MS),
     });
 
-    if (spentInWindow + amount > dailyLimit) {
+    const spentStroops = toStroops(spentInWindow);
+    const amountStroops = toStroops(amount);
+    const limitStroops = toStroops(dailyLimit);
+
+    if (spentStroops + amountStroops > limitStroops) {
       throw new VelocityLimitExceededException(
         `Daily velocity limit exceeded. Spent: ${spentInWindow}, Pending: ${amount}, Limit: ${dailyLimit}`,
         { spentInWindow, pendingAmount: amount, limit: dailyLimit, assetCode },
@@ -174,6 +190,48 @@ export class SpendingPolicyService {
   ): Promise<number> {
     const since = new Date(Date.now() - VELOCITY_WINDOW_DURATIONS[window]);
     return this.repository.countTransactionsInWindow({ agentId, since });
+  }
+
+  /**
+   * Computes the used and remaining spend for the daily, weekly and monthly UTC
+   * windows for an agent/asset, derived from the agent's applicable *enabled*
+   * spending-limit policies and real transaction history.
+   *
+   * The "used" figure mirrors what the enforcement path counts (in-flight +
+   * settled spend; terminal-failed excluded via {@link EXCLUDED_SPEND_STATUSES}),
+   * so the headroom a client reads is what it can actually spend. The effective
+   * limit for a window is the most restrictive (smallest) limit declared by any
+   * enabled policy — the engine evaluates every applicable policy's limit
+   * against the shared spend, so the tightest one binds. A window with no
+   * enabled policy limit is reported as unlimited (`null`).
+   *
+   * Disabled policies fail closed (deny all spending) and are deliberately not
+   * represented as a numeric limit here; per-asset periodic limits are not
+   * enforced by the engine, so they are not reported (reporting them would
+   * promise enforcement that does not happen).
+   */
+  async getSpendAllowance(
+    organizationId: string,
+    agentId: string,
+    asset: string,
+  ): Promise<SpendingAllowance> {
+    const policies = await this.repository.findActiveForEvaluation(organizationId, agentId);
+    const configs = policies.map((p) => (p.configuration as PolicyConfiguration) ?? {});
+
+    const bounds = windowBoundsUtc();
+    const [usedDay, usedWeek, usedMonth] = await Promise.all([
+      this.repository.sumSpendSince({ organizationId, agentId, asset, since: bounds.startOfDay }),
+      this.repository.sumSpendSince({ organizationId, agentId, asset, since: bounds.startOfWeek }),
+      this.repository.sumSpendSince({ organizationId, agentId, asset, since: bounds.startOfMonth }),
+    ]);
+
+    return {
+      agentId,
+      asset,
+      daily: allowanceFor(tightestLimit(configs, 'dailyLimit'), usedDay),
+      weekly: allowanceFor(tightestLimit(configs, 'weeklyLimit'), usedWeek),
+      monthly: allowanceFor(tightestLimit(configs, 'monthlyLimit'), usedMonth),
+    };
   }
 
   /** Highest-priority agent policy that declares a positive `dailyLimit`, if any. */
@@ -218,4 +276,60 @@ export class SpendingPolicyService {
       );
     }
   }
+}
+
+// ── Spending-allowance read model ──────────────────────────────────────────
+
+/** Used and remaining spend capacity for one rolling window. */
+export interface SpendingWindowAllowance {
+  /** Spend already counted toward this window (in-flight + settled). */
+  used: number;
+  /**
+   * Most restrictive applicable limit for this window, or `null` when no
+   * enabled policy sets one (the window is unlimited).
+   */
+  limit: number | null;
+  /** Remaining capacity (`limit - used`, floored at 0), or `null` when unlimited. */
+  remaining: number | null;
+}
+
+/** Per-window spending allowance for an agent/asset, returned by the read endpoint. */
+export interface SpendingAllowance {
+  agentId: string;
+  asset: string;
+  daily: SpendingWindowAllowance;
+  weekly: SpendingWindowAllowance;
+  monthly: SpendingWindowAllowance;
+}
+
+type PeriodicLimitField = 'dailyLimit' | 'weeklyLimit' | 'monthlyLimit';
+
+/**
+ * The most restrictive (smallest) limit declared for `field` across the given
+ * policy configurations, or `null` when none declares one. The engine evaluates
+ * every applicable policy's limit against the shared spend, so the tightest
+ * limit is the one that actually binds.
+ */
+function tightestLimit(configs: PolicyConfiguration[], field: PeriodicLimitField): number | null {
+  const limits = configs
+    .map((config) => config[field])
+    .filter((value): value is number => typeof value === 'number' && value >= 0);
+  return limits.length === 0 ? null : Math.min(...limits);
+}
+
+/** Builds the per-window allowance object from a limit and the used spend. */
+function allowanceFor(limit: number | null, used: number): SpendingWindowAllowance {
+  return {
+    used,
+    limit,
+    remaining:
+      limit === null
+        ? null
+        : Math.max(
+            0,
+            fromStroops(
+              toStroops(limit) > toStroops(used) ? toStroops(limit) - toStroops(used) : 0n,
+            ),
+          ),
+  };
 }

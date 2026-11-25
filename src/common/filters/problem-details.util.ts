@@ -1,10 +1,10 @@
 import { HttpException, HttpStatus } from '@nestjs/common';
 import { STATUS_CODES } from 'http';
 import { Request, Response } from 'express';
-import { Prisma } from '@prisma/client';
 import { v7 as uuidv7 } from 'uuid';
 import { ERROR_TITLE, ErrorCode, problemTypeFor } from '../constants/error-codes';
 import { DomainException } from '../exceptions/domain.exception';
+import { isPrismaClientError, mapPrismaError } from '../exceptions/prisma-error.mapper';
 import { PROBLEM_JSON_CONTENT_TYPE, ProblemDetails } from '../interfaces/api-response.interface';
 import { REQUEST_ID_HEADER } from '../constants/headers';
 import { RequestContext } from '../context/request-context';
@@ -106,7 +106,7 @@ export function resolveError(exception: unknown): ResolvedError {
     };
   }
 
-  if (exception instanceof Prisma.PrismaClientKnownRequestError) {
+  if (isPrismaClientError(exception)) {
     return resolvePrisma(exception);
   }
 
@@ -163,25 +163,26 @@ function resolveHttp(exception: HttpException): ResolvedError {
   };
 }
 
-function resolvePrisma(exception: Prisma.PrismaClientKnownRequestError): ResolvedError {
-  if (exception.code === 'P2025') {
+/**
+ * Reduces a Prisma client error to a {@link ResolvedError} through the shared
+ * {@link mapPrismaError} mapper, so HTTP responses and worker logs agree on
+ * the mapping. Only the mapped status, code and client-safe message are
+ * returned: Prisma's `meta` (constraint targets, field names) stays in the
+ * server-side log.
+ */
+export function resolvePrisma(exception: unknown): ResolvedError {
+  const mapped = mapPrismaError(exception);
+  if (!mapped) {
     return {
-      status: HttpStatus.NOT_FOUND,
-      code: ErrorCode.NOT_FOUND,
-      detail: 'Resource not found',
-    };
-  }
-  if (exception.code === 'P2002') {
-    return {
-      status: HttpStatus.CONFLICT,
-      code: ErrorCode.CONFLICT,
-      detail: 'A resource with these unique attributes already exists',
+      status: HttpStatus.INTERNAL_SERVER_ERROR,
+      code: ErrorCode.INTERNAL_ERROR,
+      detail: 'An unexpected database error occurred',
     };
   }
   return {
-    status: HttpStatus.BAD_REQUEST,
-    code: ErrorCode.BAD_REQUEST,
-    detail: 'Database request could not be processed',
+    status: mapped.status,
+    code: mapped.code,
+    detail: mapped.message,
   };
 }
 

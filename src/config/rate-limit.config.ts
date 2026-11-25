@@ -25,20 +25,27 @@ export type SensitiveRouteLimit = {
   windowSeconds: number;
 };
 
+/** Default per-credential quota when an API key has no override. */
+export type CredentialRateLimitConfig = {
+  perMinute: number;
+  perDay: number;
+  dayWindowSeconds: number;
+  quotaCacheSeconds: number;
+};
+
 export type RateLimitConfig = {
   windowSeconds: number;
   maxRequests: number;
   public: PublicRateLimitConfig;
+  credential: CredentialRateLimitConfig;
   /** Per-route limits of the `@SensitiveRateLimit` guard. */
   sensitive: Record<SensitiveRoute, SensitiveRouteLimit>;
 };
 
 /**
- * Parses the `PUBLIC_RATE_LIMIT_CLIENT_IDENTIFIERS` list. Unknown entries are
- * ignored so a typo cannot break startup; the IP always participates anyway.
- *
- * Read outside the Zod environment schema (same pattern as
- * `BALANCE_CACHE_TTL`) so the schema file keeps a fixed set of keys.
+ * Parses the validated `PUBLIC_RATE_LIMIT_CLIENT_IDENTIFIERS` list. Unknown
+ * entries are ignored so a typo cannot break startup; the IP always
+ * participates anyway.
  */
 function parseClientIdentifiers(raw: string | undefined): PublicRateLimitIdentifier[] {
   if (!raw) {
@@ -69,7 +76,13 @@ export const rateLimitConfig = registerAs('rateLimit', (): RateLimitConfig => {
       maxRequests: env.PUBLIC_RATE_LIMIT_MAX_REQUESTS,
       windowSeconds: env.PUBLIC_RATE_LIMIT_WINDOW_SECONDS,
       trustProxy: env.PUBLIC_RATE_LIMIT_TRUST_PROXY,
-      clientIdentifiers: parseClientIdentifiers(process.env.PUBLIC_RATE_LIMIT_CLIENT_IDENTIFIERS),
+      clientIdentifiers: parseClientIdentifiers(env.PUBLIC_RATE_LIMIT_CLIENT_IDENTIFIERS),
+    },
+    credential: {
+      perMinute: env.RATE_LIMIT_CREDENTIAL_PER_MINUTE,
+      perDay: env.RATE_LIMIT_CREDENTIAL_PER_DAY,
+      dayWindowSeconds: env.RATE_LIMIT_CREDENTIAL_DAY_WINDOW_SECONDS,
+      quotaCacheSeconds: env.RATE_LIMIT_CREDENTIAL_QUOTA_CACHE_SECONDS,
     },
     sensitive: {
       login: {

@@ -15,12 +15,13 @@ import { PrismaService } from '../../../database/prisma.service';
 import { AgentStatus, RiskBand, TransactionStatus, WalletStatus } from '@prisma/client';
 import { Keypair } from '@stellar/stellar-sdk';
 import { CreateTransactionInput } from '../transaction.dto';
-import { DomainException } from '../../../common/exceptions/domain.exception';
+import { DomainException, ForbiddenException } from '../../../common/exceptions/domain.exception';
 import { ErrorCode } from '../../../common/constants/error-codes';
 import { parseIdempotencyKey } from '../transaction.dto';
 import { PrismaTransactionService } from '../../../database/prisma-transaction.service';
 import { IdempotencyService } from '../../../common/idempotency/idempotency.service';
-import { TransactionIdempotencyRecord } from '@prisma/client';
+import { IdempotencyRecord } from '@prisma/client';
+import { TransactionPreflightService } from '../services/transaction-preflight.service';
 
 /**
  * Stand-in transaction manager that runs the callback straight through with a
@@ -37,23 +38,24 @@ const passthroughTxService = {
  * reservation/replay logic without a database.
  */
 function createIdempotencyPrisma(): PrismaService {
-  const rows = new Map<string, TransactionIdempotencyRecord>();
+  const rows = new Map<string, IdempotencyRecord>();
   let sequence = 0;
   const findByIdentity = (where: Record<string, unknown>) =>
     [...rows.values()].find(
       (row) =>
-        row.principalId === where.principalId &&
+        row.scope === (where.scope ?? where.principalId) &&
         row.route === where.route &&
         row.keyHash === where.keyHash,
     );
 
   return {
-    transactionIdempotencyRecord: {
+    idempotencyRecord: {
       deleteMany: vi.fn(async ({ where }: { where: Record<string, unknown> }) => {
         let count = 0;
         for (const [id, row] of rows) {
           if (typeof where.id === 'string' && where.id !== id) continue;
           if (typeof where.principalId === 'string' && where.principalId !== row.principalId) continue;
+          if (typeof where.scope === 'string' && where.scope !== row.scope) continue;
           if (typeof where.route === 'string' && where.route !== row.route) continue;
           if (typeof where.keyHash === 'string' && where.keyHash !== row.keyHash) continue;
           const expiry = where.expiresAt as { lte?: Date } | undefined;
@@ -68,20 +70,20 @@ function createIdempotencyPrisma(): PrismaService {
       }),
       create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
         if (findByIdentity(data)) throw { code: 'P2002' };
-        const row: TransactionIdempotencyRecord = {
+        const row: IdempotencyRecord = {
           id: `idempotency_${(sequence += 1)}`,
           principalId: data.principalId as string,
-          operation: data.operation as string,
+          scope: (data.scope as string | undefined) ?? (data.principalId as string),
           route: data.route as string,
           keyHash: data.keyHash as string,
           requestHash: data.requestHash as string,
           status: 'PROCESSING',
           transactionId: null,
-          response: null,
+          responseBody: null,
           responseStatus: null,
           requestId: null,
           createdAt: new Date(),
-          completedAt: null,
+          updatedAt: new Date(),
           expiresAt: data.expiresAt as Date,
         };
         rows.set(row.id, row);
@@ -89,13 +91,13 @@ function createIdempotencyPrisma(): PrismaService {
       }),
       findUnique: vi.fn(async ({ where }: { where: Record<string, unknown> }) => {
         if (typeof where.id === 'string') return rows.get(where.id) ?? null;
-        const identity = where.principalId_route_keyHash as Record<string, unknown>;
+        const identity = where.scope_route_keyHash as Record<string, unknown>;
         return findByIdentity(identity) ?? null;
       }),
       update: vi.fn(async ({ where, data }: { where: { id: string }; data: Record<string, unknown> }) => {
         const row = rows.get(where.id);
         if (!row) throw new Error(`missing idempotency record ${where.id}`);
-        const updated = { ...row, ...data } as TransactionIdempotencyRecord;
+        const updated = { ...row, ...data } as IdempotencyRecord;
         rows.set(row.id, updated);
         return updated;
       }),
@@ -104,7 +106,7 @@ function createIdempotencyPrisma(): PrismaService {
           (row) => row.transactionId === where.transactionId && row.status === where.status,
         );
         for (const row of matching) {
-          rows.set(row.id, { ...row, ...data } as TransactionIdempotencyRecord);
+          rows.set(row.id, { ...row, ...data } as IdempotencyRecord);
         }
         return { count: matching.length };
       }),
@@ -178,7 +180,7 @@ describe('TransactionService', () => {
         {} as BudgetService,
         stellarService as unknown as StellarService,
         eventBus as unknown as EventBusService,
-        {} as PrismaService,
+        { proposal: { findUnique: vi.fn().mockResolvedValue(null) } } as unknown as PrismaService,
         {
           aggregateSpend: vi.fn().mockResolvedValue({
             spentToday: 0,
@@ -186,6 +188,7 @@ describe('TransactionService', () => {
             spentThisMonth: 0,
           }),
           evaluateSpendingLimits: vi.fn().mockResolvedValue(undefined),
+          withSpendEnforcementLock: vi.fn(async (_agentId: string, fn: () => Promise<unknown>) => fn()),
         } as unknown as SpendingLimitService,
         passthroughTxService,
       );
@@ -249,6 +252,7 @@ describe('TransactionService - create', () => {
     waitTimeoutMs: number;
     pollIntervalMs: number;
   };
+  let transactionPreflight: { simulate: ReturnType<typeof vi.fn> };
 
   const wallet = {
     id: 'wallet_1',
@@ -263,6 +267,14 @@ describe('TransactionService - create', () => {
       keyTtlMs: 24 * 60 * 60 * 1000,
       waitTimeoutMs: 1_000,
       pollIntervalMs: 5,
+    };
+    transactionPreflight = {
+      simulate: vi.fn().mockResolvedValue({
+        kind: 'ok',
+        simulatedAt: new Date('2026-11-24T11:00:00.000Z'),
+        minResourceFee: '125000',
+        footprintSummary: { readOnlyCount: 1, readWriteCount: 2 },
+      }),
     };
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -331,7 +343,9 @@ describe('TransactionService - create', () => {
         {
           provide: BudgetService,
           useValue: {
-            assertWithinBudget: vi.fn().mockResolvedValue(undefined),
+            reserveAtomic: vi.fn().mockResolvedValue({ id: 'rsv_1' }),
+            settle: vi.fn().mockResolvedValue(undefined),
+            release: vi.fn().mockResolvedValue(undefined),
             assertAgentBudgetWithinLimit: vi.fn().mockResolvedValue(undefined),
             withAgentBudgetLimit: vi.fn(
               (_organizationId, _agentId, _asset, _amount, operation) => operation(),
@@ -342,6 +356,7 @@ describe('TransactionService - create', () => {
         {
           provide: StellarService,
           useValue: {
+            buildPaymentXdr: vi.fn().mockResolvedValue('safe-payment-xdr'),
             submitPayment: vi.fn().mockResolvedValue({
               hash: 'stellar_hash_1',
               ledger: 100,
@@ -350,13 +365,18 @@ describe('TransactionService - create', () => {
           },
         },
         { provide: EventBusService, useValue: { emit: vi.fn().mockResolvedValue(undefined) } },
-        { provide: PrismaService, useValue: {} },
+        {
+          provide: PrismaService,
+          useValue: { proposal: { findUnique: vi.fn().mockResolvedValue(null) } },
+        },
         { provide: PrismaTransactionService, useValue: passthroughTxService },
+        { provide: TransactionPreflightService, useValue: transactionPreflight },
         {
           provide: SpendingLimitService,
           useValue: {
             aggregateSpend: vi.fn().mockResolvedValue({ spentToday: 0, spentThisWeek: 0, spentThisMonth: 0 }),
             evaluateSpendingLimits: vi.fn().mockResolvedValue(undefined),
+            withSpendEnforcementLock: vi.fn(async (_agentId: string, fn: () => Promise<unknown>) => fn()),
           },
         },
       ],
@@ -381,6 +401,17 @@ describe('TransactionService - create', () => {
   it('auto-executes and submits on-chain when policy and risk allow it', async () => {
     const result = await service.create('org_1', 'user_1', input);
 
+    expect(transactionPreflight.simulate).toHaveBeenCalledWith('safe-payment-xdr');
+    expect(transactionRepository.update).toHaveBeenNthCalledWith(
+      1,
+      'tx_1',
+      expect.objectContaining({
+        simulatedAt: new Date('2026-11-24T11:00:00.000Z'),
+        minResourceFee: expect.anything(),
+        footprintSummary: { readOnlyCount: 1, readWriteCount: 2 },
+      }),
+      expect.any(Object),
+    );
     expect(stellarService.submitPayment).toHaveBeenCalledWith(
       expect.objectContaining({
         sourceAddress: wallet.stellarAddress,
@@ -390,6 +421,29 @@ describe('TransactionService - create', () => {
     );
     expect(result.requiresApproval).toBe(false);
     expect(result.transaction.status).toBe(TransactionStatus.COMPLETED);
+  });
+
+  it('marks a failed simulation terminal and never submits the payment', async () => {
+    transactionPreflight.simulate.mockResolvedValueOnce({
+      kind: 'terminal_error',
+      code: 'txINSUFFICIENT_BALANCE',
+      message: 'not enough balance',
+      simulatedAt: new Date('2026-11-24T11:01:00.000Z'),
+    });
+
+    await expect(service.create('org_1', 'user_1', input)).rejects.toThrow(
+      'Transaction simulation failed (txINSUFFICIENT_BALANCE): not enough balance',
+    );
+
+    expect(stellarService.submitPayment).not.toHaveBeenCalled();
+    expect(transactionRepository.update).toHaveBeenCalledWith(
+      'tx_1',
+      expect.objectContaining({
+        status: TransactionStatus.FAILED,
+        simulationErrorCode: 'txINSUFFICIENT_BALANCE',
+        simulationErrorMessage: 'not enough balance',
+      }),
+    );
   });
 
   it('routes a high-risk transaction into the approval workflow instead of executing it', async () => {
@@ -449,7 +503,7 @@ describe('TransactionService - create', () => {
             record: vi.fn().mockResolvedValue(undefined),
           },
         },
-        { provide: BudgetService, useValue: { assertWithinBudget: vi.fn(), consume: vi.fn() } },
+        { provide: BudgetService, useValue: { reserveAtomic: vi.fn(), consume: vi.fn() } },
         { provide: StellarService, useValue: { submitPayment: vi.fn() } },
         { provide: EventBusService, useValue: { emit: vi.fn().mockResolvedValue(undefined) } },
         {
@@ -461,6 +515,7 @@ describe('TransactionService - create', () => {
           useValue: {
             aggregateSpend: vi.fn().mockResolvedValue({ spentToday: 0, spentThisWeek: 0, spentThisMonth: 0 }),
             evaluateSpendingLimits: vi.fn().mockResolvedValue(undefined),
+            withSpendEnforcementLock: vi.fn(async (_agentId: string, fn: () => Promise<unknown>) => fn()),
           },
         },
       ],
@@ -625,13 +680,17 @@ describe('TransactionService - create', () => {
         { provide: BudgetService, useValue: { assertWithinBudget: vi.fn(), consume: vi.fn() } },
         { provide: StellarService, useValue: { submitPayment: vi.fn() } },
         { provide: EventBusService, useValue: { emit: vi.fn().mockResolvedValue(undefined) } },
-        { provide: PrismaService, useValue: {} },
+        {
+          provide: PrismaService,
+          useValue: { proposal: { findUnique: vi.fn().mockResolvedValue(null) } },
+        },
         { provide: PrismaTransactionService, useValue: passthroughTxService },
         {
           provide: SpendingLimitService,
           useValue: {
             aggregateSpend: vi.fn().mockResolvedValue({ spentToday: 0, spentThisWeek: 0, spentThisMonth: 0 }),
             evaluateSpendingLimits: vi.fn().mockResolvedValue(undefined),
+            withSpendEnforcementLock: vi.fn(async (_agentId: string, fn: () => Promise<unknown>) => fn()),
           },
         },
       ],
@@ -646,6 +705,93 @@ describe('TransactionService - create', () => {
     expect(error).toBeInstanceOf(DomainException);
     expect((error as DomainException).code).toBe(ErrorCode.POLICY_VIOLATION);
     expect(blockedStellar.submitPayment).not.toHaveBeenCalled();
+  });
+
+  describe('budget reservation lifecycle', () => {
+    const budgeted = { ...input, budgetId: 'budget_1' };
+    let budgets: {
+      reserveAtomic: ReturnType<typeof vi.fn>;
+      settle: ReturnType<typeof vi.fn>;
+      release: ReturnType<typeof vi.fn>;
+      withAgentBudgetLimit: ReturnType<typeof vi.fn>;
+    };
+
+    beforeEach(() => {
+      budgets = (service as unknown as { budgets: typeof budgets }).budgets;
+      // Mirror the real repository: the connected reservation is readable as
+      // `budgetReservationId` on the stored row.
+      const create = vi.mocked(transactionRepository.create);
+      const original = create.getMockImplementation() as TransactionRepository['create'];
+      create.mockImplementation((data) => {
+        const connect = (data.budgetReservation as { connect?: { id: string } } | undefined)?.connect;
+        return original({
+          ...data,
+          budgetId: 'budget_1',
+          budgetReservationId: connect?.id ?? null,
+        } as unknown as Parameters<TransactionRepository['create']>[0]);
+      });
+    });
+
+    it('settles the reservation after a successful payment and never releases it', async () => {
+      const result = await service.create('org_1', 'user_1', budgeted);
+
+      expect(budgets.reserveAtomic).toHaveBeenCalledWith('org_1', 'budget_1', 50);
+      expect(budgets.settle).toHaveBeenCalledWith('org_1', 'rsv_1', 50);
+      expect(budgets.release).not.toHaveBeenCalled();
+      expect(result.transaction.status).toBe(TransactionStatus.COMPLETED);
+    });
+
+    it('releases the reservation when the agent budget check rejects after it was taken', async () => {
+      budgets.withAgentBudgetLimit.mockRejectedValueOnce(
+        new ForbiddenException("Transaction would exceed the active budget 'Agent cap'"),
+      );
+
+      await expect(service.create('org_1', 'user_1', budgeted)).rejects.toBeInstanceOf(ForbiddenException);
+
+      expect(budgets.release).toHaveBeenCalledTimes(1);
+      expect(budgets.release).toHaveBeenCalledWith('rsv_1');
+      expect(stellarService.submitPayment).not.toHaveBeenCalled();
+    });
+
+    it('releases the reservation when the transaction row cannot be persisted', async () => {
+      vi.mocked(transactionRepository.create).mockRejectedValueOnce(new Error('insert failed'));
+
+      await expect(service.create('org_1', 'user_1', budgeted)).rejects.toThrow('insert failed');
+
+      expect(budgets.release).toHaveBeenCalledWith('rsv_1');
+    });
+
+    it('releases the reservation when the network rejects the payment without throwing', async () => {
+      vi.mocked(stellarService.submitPayment).mockResolvedValueOnce({
+        hash: 'stellar_hash_failed',
+        ledger: 0,
+        successful: false,
+      } as Awaited<ReturnType<StellarService['submitPayment']>>);
+
+      const result = await service.create('org_1', 'user_1', budgeted);
+
+      expect(result.transaction.status).toBe(TransactionStatus.FAILED);
+      expect(budgets.settle).not.toHaveBeenCalled();
+      expect(budgets.release).toHaveBeenCalledTimes(1);
+      expect(budgets.release).toHaveBeenCalledWith('rsv_1');
+    });
+
+    it('releases the reservation when the submission throws', async () => {
+      vi.mocked(stellarService.submitPayment).mockRejectedValueOnce(new Error('horizon timeout'));
+
+      await expect(service.create('org_1', 'user_1', budgeted)).rejects.toThrow('horizon timeout');
+
+      expect(budgets.settle).not.toHaveBeenCalled();
+      expect(budgets.release).toHaveBeenCalledTimes(1);
+      expect(budgets.release).toHaveBeenCalledWith('rsv_1');
+    });
+
+    it('does not take a reservation for a transaction without a budget', async () => {
+      await service.create('org_1', 'user_1', input);
+
+      expect(budgets.reserveAtomic).not.toHaveBeenCalled();
+      expect(budgets.release).not.toHaveBeenCalled();
+    });
   });
 });
 

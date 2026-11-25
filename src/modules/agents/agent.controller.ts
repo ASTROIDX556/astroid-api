@@ -2,7 +2,6 @@ import { Body, Controller, Delete, Get, Param, Patch, Post, Query, UseGuards } f
 import {
   ApiOperation,
   ApiTags,
-  ApiBearerAuth,
   ApiParam,
   ApiBody,
 } from '@nestjs/swagger';
@@ -35,10 +34,12 @@ import {
   SlidingWindowLimit,
 } from '../../common/guards/sliding-window-throttler.guard';
 import { AgentRateLimiterGuard } from './guards/agent-rate-limiter.guard';
+import { ApiAuthenticated } from '../../common/decorators/api-authenticated.decorator';
 
 @ApiTags('agents')
-@ApiBearerAuth('access-token')
+@ApiAuthenticated()
 @Controller('agents')
+@ApiErrorResponses({ unauthorized: true, forbidden: true, tooManyRequests: true, serverError: true })
 export class AgentController {
   constructor(private readonly agentService: AgentService) {}
 

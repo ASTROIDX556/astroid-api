@@ -7,18 +7,20 @@ import {
   Patch,
   Post,
   Query,
+  UseInterceptors,
 } from '@nestjs/common';
 import {
   ApiOperation,
   ApiTags,
-  ApiBearerAuth,
   ApiParam,
   ApiBody,
   ApiQuery,
 } from '@nestjs/swagger';
 import { ApiErrorResponses } from '../../common/decorators/api-error-responses.decorator';
 import { SensitiveRateLimit } from '../../common/decorators/sensitive-rate-limit.decorator';
-import { ApiEnvelope, ApiPaginatedEnvelope } from '../../common/decorators/api-envelope.decorator';
+import { ApiCursorPaginatedEnvelope, ApiEnvelope, ApiPaginatedEnvelope } from '../../common/decorators/api-envelope.decorator';
+import { ApiCursorPaginationQuery } from '../../common/decorators/api-cursor-pagination-query.decorator';
+import { cursorPaginationQuerySchema, CursorPaginationQuery } from '../../common/pagination/cursor-pagination';
 import { UserRole } from '@prisma/client';
 import { WebhookService } from './webhook.service';
 import {
@@ -31,20 +33,26 @@ import {
 } from './webhook.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
+import { RequiredScopes } from '../../common/decorators/scopes.decorator';
 import { AuditAction } from '../../common/decorators/audit-action.decorator';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 import { PaginationQuery, paginationQuerySchema } from '../../common/helpers/pagination';
 import { ApiPaginationQuery } from '../../common/decorators/api-pagination-query.decorator';
-import { WebhookResponseDto } from './webhook.dto';
+import { WebhookDeliveryDto, WebhookResponseDto } from './webhook.dto';
+import { Idempotent } from '../../common/decorators/idempotent.decorator';
+import { IdempotencyInterceptor } from '../../common/interceptors/idempotency.interceptor';
+import { ApiAuthenticated } from '../../common/decorators/api-authenticated.decorator';
 
 @ApiTags('webhooks')
-@ApiBearerAuth('access-token')
+@ApiAuthenticated()
 @Controller('webhooks')
+@ApiErrorResponses({ unauthorized: true, forbidden: true, tooManyRequests: true, serverError: true })
 export class WebhookController {
   constructor(private readonly webhookService: WebhookService) {}
 
   @Get()
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.DEVELOPER)
+  @RequiredScopes('read')
   @ApiOperation({
     summary: 'List webhooks (signing secrets are never returned)',
     description:
@@ -62,9 +70,24 @@ export class WebhookController {
     return this.webhookService.list(organizationId, query);
   }
 
+  @Get('deliveries')
+  @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.DEVELOPER)
+  @RequiredScopes('read')
+  @ApiOperation({ summary: 'List webhook delivery logs', description: 'Returns cursor-paginated webhook delivery history, newest first.' })
+  @ApiCursorPaginationQuery()
+  @ApiCursorPaginatedEnvelope(WebhookDeliveryDto, { description: 'Cursor-paginated webhook delivery logs' })
+  @ApiErrorResponses({ unauthorized: true, forbidden: true, validation: 'Invalid cursor or limit', serverError: true })
+  listDeliveries(
+    @CurrentUser('organizationId') organizationId: string,
+    @Query(new ZodValidationPipe(cursorPaginationQuerySchema)) query: CursorPaginationQuery,
+  ) { return this.webhookService.listDeliveries(organizationId, query); }
+
   @Post()
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.DEVELOPER)
+  @RequiredScopes('webhooks:manage')
   @SensitiveRateLimit('webhookCreate')
+  @UseInterceptors(IdempotencyInterceptor)
+  @Idempotent()
   @AuditAction('WEBHOOK_CREATED')
   @ApiOperation({
     summary: 'Create a webhook',
@@ -94,6 +117,7 @@ export class WebhookController {
 
   @Get(':id')
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.DEVELOPER)
+  @RequiredScopes('read')
   @ApiOperation({
     summary: 'Get a webhook',
     description: 'Returns full details of a single webhook by ID.',
@@ -112,6 +136,7 @@ export class WebhookController {
 
   @Patch(':id')
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.DEVELOPER)
+  @RequiredScopes('webhooks:manage')
   @AuditAction('WEBHOOK_UPDATED')
   @ApiOperation({
     summary: 'Update a webhook',
@@ -137,6 +162,7 @@ export class WebhookController {
 
   @Post(':id/rotate-secret')
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.DEVELOPER)
+  @RequiredScopes('webhooks:manage')
   @SensitiveRateLimit('webhookRotateSecret')
   @AuditAction('WEBHOOK_SECRET_ROTATED')
   @ApiOperation({
@@ -160,6 +186,7 @@ export class WebhookController {
 
   @Delete(':id')
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.DEVELOPER)
+  @RequiredScopes('webhooks:manage')
   @AuditAction('WEBHOOK_DELETED')
   @ApiOperation({
     summary: 'Delete a webhook',

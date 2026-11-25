@@ -13,6 +13,9 @@ export const PolicyViolationRule: RiskRule = {
     const ratio = clamp(input.policyViolations / config.policyViolationSaturation, 0, 1);
     const weight = config.weights?.policyViolations ?? PolicyViolationRule.defaultWeight;
     return {
+      code: 'policyViolations',
+      description: `${input.policyViolations} policy violation(s)`,
+      value: input.policyViolations,
       factor: 'policyViolations',
       weight,
       contribution: ratio * weight,

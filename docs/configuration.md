@@ -73,6 +73,7 @@ are rejected:
 | `API_PREFIX`   | `api/v1`      | Global route prefix.                                                 |
 | `LOG_LEVEL`    | `info`        | One of `fatal`, `error`, `warn`, `info`, `debug`, `trace`, `silent`. |
 | `CORS_ORIGINS` | `*`           | Comma-separated list of allowed origins.                             |
+| `LOG_REDACT_FIELDS` | _(empty)_ | Extra field names to redact from structured logs, on top of the built-in list (see `docs/security-redaction.md`). Comma-separated; case-insensitive, `_`/`-`/spaces ignored. |
 
 ### Database
 
@@ -103,6 +104,17 @@ are rejected:
 | `REDIS_PASSWORD` | _(empty)_   | Redis password.               |
 | `REDIS_DB`       | `0`         | Redis database index.         |
 
+### Wallet balance cache
+
+See [`docs/balance-cache.md`](balance-cache.md) for the key layout and the
+invalidation rules.
+
+| Variable            | Default       | Description |
+| ------------------- | ------------- | ----------- |
+| `BALANCE_CACHE_TTL` | `30`          | Staleness window in seconds (1–3600) for a cached wallet balance. A terminal transaction event deletes the entry immediately, so this only bounds the staleness after an external balance change. |
+| `BALANCE_CACHE_ENV` | `NODE_ENV`    | Namespace folded into every balance cache key, so deployments sharing a Redis instance never read each other's entries. |
+| `LOW_XLM_THRESHOLD` | `10`          | Native XLM balance below which a wallet is reported as low. |
+
 ### Authentication
 
 | Variable          | Default                 | Description                          |
@@ -112,6 +124,7 @@ are rejected:
 | `PASSKEY_RP_ID`   | `localhost`             | WebAuthn relying-party ID.           |
 | `PASSKEY_RP_NAME` | `Astroid`               | WebAuthn relying-party display name. |
 | `PASSKEY_ORIGIN`  | `http://localhost:3001` | Expected WebAuthn origin.            |
+| `API_KEY_ROTATION_GRACE_PERIOD_SECONDS` | `86400` | Default grace period in seconds during which a rotating API key remains valid alongside its replacement. |
 
 ### Stellar
 
@@ -127,6 +140,12 @@ are rejected:
 | `STELLAR_FALLBACK_GAS_LIMIT` | `1000000` | Static gas limit used when simulation fails or omits a gas estimate. |
 | `STELLAR_FALLBACK_FEE_STROOPS` | `100000` | Static fee limit in stroops paired with the fallback gas limit. |
 | `STELLAR_ANCHOR_ASSETS` | _(empty)_ | Comma-separated `CODE=ISSUER` mappings for anchored Stellar assets. |
+| `STELLAR_SOROBAN_RPC_TIMEOUT_MS` | `5000` | Per-attempt timeout for an outbound Soroban RPC call (max `60000`). |
+| `STELLAR_SOROBAN_RPC_MAX_ATTEMPTS` | `3` | Total attempts per Soroban RPC call including the first (`1`–`3`). Only timeouts, connection errors, 5xx and 429 are retried. |
+| `STELLAR_SOROBAN_RPC_RETRY_BASE_DELAY_MS` | `250` | Base delay of the jittered exponential backoff between Soroban RPC attempts. |
+| `STELLAR_SOROBAN_RPC_RETRY_MAX_DELAY_MS` | `2000` | Upper bound for a single Soroban RPC backoff delay. |
+| `STELLAR_SOROBAN_RPC_CIRCUIT_FAILURE_THRESHOLD` | `5` | Consecutive failed attempts that open the Soroban RPC circuit breaker. Calls then fail fast with `503 SOROBAN_UNAVAILABLE`. |
+| `STELLAR_SOROBAN_RPC_CIRCUIT_COOLDOWN_MS` | `30000` | How long the Soroban RPC circuit stays open before a single half-open probe. |
 
 ### Price oracle
 
@@ -139,7 +158,7 @@ are rejected:
 | `PRICE_ORACLE_MAX_AGE_MS` | `300000` | Maximum accepted quote age in milliseconds. |
 | `PRICE_ORACLE_STATIC_PRICES` | _(empty)_ | Comma-separated static `ASSET=PRICE` fallback quotes. |
 
-### Audit archival
+### Audit
 
 | Variable | Default | Description |
 | -------- | ------- | ----------- |
@@ -148,11 +167,14 @@ are rejected:
 | `AUDIT_ARCHIVE_BATCH_SIZE` | `500` | Maximum records per archival batch. |
 | `AUDIT_ARCHIVE_MAX_BATCHES` | `20` | Maximum batches per archival run. |
 | `AUDIT_RETENTION_DAYS` | `90` | Hard-delete retention for audit records. |
+| `AUDIT_PAGE_SIZE_DEFAULT` | `20` | Default page size for audit listing and resource timelines. |
+| `AUDIT_PAGE_SIZE_MAX` | `100` | Hard upper bound for audit page sizes; larger values return 400. |
 
 ### Transaction idempotency
 
 | Variable | Default | Description |
 | -------- | ------- | ----------- |
+| `IDEMPOTENCY_HEADER_NAME` | `Idempotency-Key` | HTTP header carrying the key on `POST /transactions`. Trimmed; values must be 8–255 characters. |
 | `IDEMPOTENCY_KEY_TTL_HOURS` | `24` | How long a completed `Idempotency-Key` record stays replayable; after this window the key is ignored and a fresh submission is processed. |
 | `IDEMPOTENCY_WAIT_TIMEOUT_MS` | `5000` | How long a duplicate request waits for the in-flight original to finish before returning `409`. `0` returns the conflict immediately. |
 | `IDEMPOTENCY_POLL_INTERVAL_MS` | `100` | Poll interval used while waiting for the in-flight original. |
@@ -168,6 +190,14 @@ are rejected:
 
 See [`docs/wallet-reconciliation.md`](wallet-reconciliation.md) for the worker,
 queue and event behaviour.
+
+### Approval Expiry & Sweep
+
+| Variable | Default | Description |
+| -------- | ------- | ----------- |
+| `APPROVAL_TTL_HOURS` | `72` | Default lifetime in hours for approval requests before automatic expiration. |
+| `APPROVAL_SWEEP_INTERVAL_MS` | `60000` | Fixed interval in milliseconds between background sweep jobs (default: 1 minute). |
+| `APPROVAL_SWEEP_BATCH_SIZE` | `100` | Maximum number of expired pending proposals processed per batch during a sweep. |
 
 ### Storage (S3-compatible)
 
@@ -194,6 +224,13 @@ queue and event behaviour.
 Webhook retries use BullMQ exponential backoff with 20% jitter. Permanent
 redirect and 4xx responses stop retrying; HTTP 408, 429, 5xx, and network or
 timeout failures are retried up to the configured attempt limit.
+
+### Queue observability
+
+| Variable                                  | Default | Description |
+| ----------------------------------------- | ------- | ----------- |
+| `QUEUE_OBSERVABILITY_ENABLED`             | `false` | Enables the queue observability endpoint (`/api/v1/queues/observability`). |
+| `QUEUE_OBSERVABILITY_MAX_FAILED_JOBS`     | `10` | Maximum number of failed jobs to return per queue; bounded to 20. |
 
 ### Webhook ingress
 
@@ -250,7 +287,7 @@ deliveries of a failing endpoint instead of hammering it.
 | `PUBLIC_RATE_LIMIT_MAX_REQUESTS` | `60` | Requests allowed per client IP per sliding window on public routes. |
 | `PUBLIC_RATE_LIMIT_WINDOW_SECONDS` | `60` | Sliding-window size for the public-route rate limiter. |
 | `PUBLIC_RATE_LIMIT_TRUST_PROXY` | `false` | Reads client IP from `X-Forwarded-For`. Only enable behind a trusted reverse proxy. |
-| `PUBLIC_RATE_LIMIT_CLIENT_IDENTIFIERS` | _(empty)_ | Comma-separated client identifiers to add to the IP bucket, currently `apiKey`. |
+| `PUBLIC_RATE_LIMIT_CLIENT_IDENTIFIERS` | _(empty)_ | Comma-separated client identifiers to add to the IP bucket (`ip`, `apiKey`). Unknown entries are ignored. |
 | `RATE_LIMIT_LOGIN_MAX` | `5` | `POST /auth/login` requests per client IP per window. |
 | `RATE_LIMIT_LOGIN_WINDOW_SECONDS` | `60` | Window of the login limit. |
 | `RATE_LIMIT_REFRESH_MAX` | `30` | `POST /auth/refresh` requests per client IP per window. |
@@ -261,6 +298,20 @@ deliveries of a failing endpoint instead of hammering it.
 | `RATE_LIMIT_WEBHOOK_CREATE_WINDOW_SECONDS` | `3600` | Window of the webhook creation limit. |
 | `RATE_LIMIT_WEBHOOK_ROTATE_MAX` | `10` | `POST /webhooks/:id/rotate-secret` requests per API key or user per window. |
 | `RATE_LIMIT_WEBHOOK_ROTATE_WINDOW_SECONDS` | `3600` | Window of the webhook secret rotation limit. |
+| `RATE_LIMIT_CREDENTIAL_PER_MINUTE` | `120` | Default requests per minute per verified API key (falls back to user, then IP). Overridden by a key's `rateLimitPerMinute`. |
+| `RATE_LIMIT_CREDENTIAL_PER_DAY` | `10000` | Default requests per day per credential. Overridden by a key's `rateLimitPerDay`. |
+| `RATE_LIMIT_CREDENTIAL_DAY_WINDOW_SECONDS` | `86400` | Length of the per-credential day window. |
+| `RATE_LIMIT_CREDENTIAL_QUOTA_CACHE_SECONDS` | `60` | How long per-key quota overrides stay cached in Redis. |
+
+### Budgets
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `BUDGET_ALERT_THRESHOLDS` | `80,100` | Comma-separated budget-utilisation percentages (integers 1-100) that emit a `budget.threshold_reached` event once per budget period. A budget's own `alertThresholds` (strictly ascending, 1-100) overrides this list. |
+| `BUDGET_ROLLOVER_ENABLED` | `true` | Register the repeatable budget period rollover job at boot. |
+| `BUDGET_ROLLOVER_INTERVAL_MINUTES` | `1` | Cadence of the repeatable rollover job. |
+| `BUDGET_ROLLOVER_BATCH_SIZE` | `100` | Budgets loaded per page (1–1000). |
+| `BUDGET_ROLLOVER_MAX_BATCHES` | `20` | Maximum pages processed in one run; later ticks pick up the rest. |
 
 ### Health probes
 
@@ -275,6 +326,18 @@ deliveries of a failing endpoint instead of hammering it.
 | --------------------- | ---------------------------- | ------------------------------------------------------------- |
 | `METRICS_ALLOWED_IPS` | loopback and RFC 1918 ranges | Comma-separated CIDR ranges allowed to scrape `GET /metrics`. |
 
+### Graceful shutdown
+
+| Variable                   | Default | Description                                                                                                                                    |
+| -------------------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SHUTDOWN_GRACE_PERIOD_MS` | `20000` | How long in-flight HTTP requests and BullMQ jobs may run after SIGTERM/SIGINT before they are terminated. Positive integer in milliseconds. |
+
+### Health checks
+
+| Variable                          | Default | Description                                                                                       |
+| --------------------------------- | ------- | ------------------------------------------------------------------------------------------------- |
+| `HEALTH_CHECK_MIGRATIONS_ENABLED` | `true`  | `true` or `false`. Reports pending Prisma migrations in the diagnostic readiness check (`GET /api/v1/health/readiness`). Set to `false` to skip it, e.g. against a scratch database. |
+
 ### AI provider
 
 | Variable      | Default                               | Description            |
@@ -288,4 +351,5 @@ deliveries of a failing endpoint instead of hammering it.
 | Variable               | Default              | Description                                                                                  |
 | ---------------------- | -------------------- | -------------------------------------------------------------------------------------------- |
 | `ENCRYPTION_KEY`       | development-only key | 32-byte key: 64 hex characters, 32 raw bytes, or base64 of 32 bytes. Required in production. |
+| `ENCRYPTION_MASTER_KEY` | —                   | Legacy alias read only when `ENCRYPTION_KEY` is unset.                                       |
 | `ENCRYPTION_ALGORITHM` | `aes-256-gcm`        | Cipher algorithm.                                                                            |

@@ -26,7 +26,7 @@ describe('ApiKeyAuthGuard', () => {
     const { execution, reflector, request } = context({ 'x-api-key': 'ast_live_valid' });
     const record = {
       id: 'key-1', organizationId: 'tenant-1', createdById: 'user-1',
-      name: 'integration', prefix: 'ast_live_', permissions: ['transactions:read'],
+      name: 'integration', prefix: 'ast_live_', permissions: ['admin'], scopes: ['read'],
       allowedIps: [],
     };
     const verify = vi.fn().mockResolvedValue(record);
@@ -37,7 +37,7 @@ describe('ApiKeyAuthGuard', () => {
     expect(request.apiKey).toBe(record);
     expect(request.user).toMatchObject({
       id: 'key-1', organizationId: 'tenant-1', isApiKey: true,
-      scopes: ['transactions:read'], role: UserRole.DEVELOPER,
+      scopes: ['read'], role: UserRole.DEVELOPER,
     });
   });
 

@@ -54,6 +54,7 @@ export const createTransactionSchema = z
     memoType: stellarMemoTypeSchema.optional(),
     memoValue: z.string().optional(),
     purpose: z.string().max(280).optional(),
+    approvalExpiresInHours: z.number().int().positive().max(720).optional(),
     metadata: z.record(jsonValueSchema).default({}),
   })
   .strict()
@@ -174,6 +175,7 @@ export const simulateTransactionSchema = z
     memoType: stellarMemoTypeSchema.optional(),
     memoValue: z.string().optional(),
     purpose: z.string().max(280).optional(),
+    approvalExpiresInHours: z.number().int().positive().max(720).optional(),
     metadata: z.record(jsonValueSchema).default({}),
   })
   .strict()
@@ -206,8 +208,11 @@ export class CreateTransactionDto {
   @ApiProperty({ example: '125.5000000', description: 'Amount to transfer, with up to 7 decimals' })
   amount!: string;
 
-  @ApiProperty({ example: 'GB...', description: 'Stellar address the funds are sent to' })
+  @ApiPropertyOptional({ example: 'GB...', description: 'Stellar address the funds are sent to' })
   recipientAddress!: string;
+
+  @ApiPropertyOptional({ description: 'Optional approval expiration override in hours (default: 72)' })
+  approvalExpiresInHours?: number;
 
   @ApiPropertyOptional({
     description: 'Memo text (legacy format, max 28 bytes UTF-8)',
@@ -268,10 +273,7 @@ export class TransactionResponseDto {
   @ApiProperty({ description: 'Composite risk score between 0 and 100', example: 24 })
   riskScore!: number;
 
-  @ApiProperty({
-    description: 'Risk band derived from the score',
-    enum: ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'],
-  })
+  @ApiProperty({ description: 'Risk band derived from the score', enum: ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'] })
   riskBand!: string;
 
   @ApiProperty({ description: 'Whether the transaction needs a human approval before execution' })
@@ -282,6 +284,28 @@ export class TransactionResponseDto {
 
   @ApiPropertyOptional({ description: 'Number of ledger confirmations received' })
   confirmationCount?: number;
+
+  @ApiPropertyOptional({ description: 'Timestamp of the successful pre-submission simulation' })
+  simulatedAt?: string;
+
+  @ApiPropertyOptional({
+    description: 'Minimum Soroban resource fee estimated by simulation, in stroops',
+    example: '100000',
+  })
+  minResourceFee?: string;
+
+  @ApiPropertyOptional({
+    type: Object,
+    description:
+      'Summary of the simulated ledger footprint, by read-only and read-write entry count',
+  })
+  footprintSummary?: { readOnlyCount: number; readWriteCount: number };
+
+  @ApiPropertyOptional({ description: 'RPC error code when preflight simulation failed' })
+  simulationErrorCode?: string;
+
+  @ApiPropertyOptional({ description: 'RPC error message when preflight simulation failed' })
+  simulationErrorMessage?: string;
 
   @ApiProperty({ description: 'Creation timestamp', example: '2026-01-15T10:30:00.000Z' })
   createdAt!: string;

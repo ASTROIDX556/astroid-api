@@ -84,16 +84,15 @@ describe('Dead-letter list pagination (integration)', () => {
 
     expect(res.status).toBe(200);
     expect(res.headers.get('x-total-count')).toBe('65');
-    expect(body.data).toHaveLength(50);
+    expect(body.data).toHaveLength(20);
     expect(body.data[0].id).toBe('evt-1');
     expect(body.meta).toEqual({
-      offset: 0,
       page: 1,
-      limit: 50,
+      pageSize: 20,
       total: 65,
-      totalPages: 2,
-      hasNext: true,
-      hasPrev: false,
+      totalPages: 4,
+      hasNextPage: true,
+      hasPreviousPage: false,
     });
   });
 
@@ -104,7 +103,12 @@ describe('Dead-letter list pagination (integration)', () => {
     expect(body.data.map((row) => row.id)).toEqual([
       'evt-61', 'evt-62', 'evt-63', 'evt-64', 'evt-65',
     ]);
-    expect(body.meta).toMatchObject({ offset: 60, limit: 10, hasPrev: true, hasNext: false });
+    expect(body.meta).toMatchObject({
+      page: 7,
+      pageSize: 10,
+      hasPreviousPage: true,
+      hasNextPage: false,
+    });
   });
 
   it('returns an empty slice past the end instead of failing', async () => {

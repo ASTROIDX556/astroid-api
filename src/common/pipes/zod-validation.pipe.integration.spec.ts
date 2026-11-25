@@ -98,6 +98,7 @@ describe('ZodValidationPipe Integration', () => {
       const customErrorMap = (error: z.ZodError) => {
         return error.issues.map((issue) => ({
           path: issue.path.join('.'),
+          code: issue.code,
           message: `Custom: ${issue.message}`,
         }));
       };

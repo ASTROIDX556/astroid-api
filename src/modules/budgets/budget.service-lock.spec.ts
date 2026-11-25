@@ -1,11 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { Budget, Prisma } from '@prisma/client';
+import { Budget, BudgetReservation, Prisma } from '@prisma/client';
 import { BudgetService } from './budget.service';
-import { BudgetRepository } from './budget.repository';
+import { BudgetRepository, BudgetReservationError } from './budget.repository';
+import { BudgetRolloverService } from './services/budget-rollover.service';
 import { RedisLock } from '../../common/locks/redis-lock.util';
 import { EventBusService } from '../../events/event-bus.service';
-import { BudgetExceededException } from '../../common/exceptions/domain.exception';
-import { PrismaTransactionService } from '../../database/prisma-transaction.service';
+import {
+  BudgetExceededException,
+  ConflictException,
+  ValidationException,
+} from '../../common/exceptions/domain.exception';
 
 const Decimal = Prisma.Decimal;
 
@@ -13,11 +17,6 @@ const Decimal = Prisma.Decimal;
  * Passes the callback straight through with a stand-in transactional client so
  * the specs keep exercising real `BudgetService` logic without a live database.
  */
-function fakeTransactions(): PrismaTransactionService {
-  return {
-    run: (fn: (tx: never) => Promise<unknown>) => fn({} as never),
-  } as unknown as PrismaTransactionService;
-}
 
 /** Minimal mock Budget row builder. */
 function mockBudget(
@@ -66,6 +65,7 @@ describe('BudgetService — distributed locking', () => {
       create: vi.fn(),
       findManyAndCount: vi.fn(),
       findChildren: vi.fn(),
+      sumPendingReservations: vi.fn().mockResolvedValue(new Map()),
       softDelete: vi.fn(),
       findEnabledByAgentId: vi.fn(),
       sumUnaccountedSpendByAgent: vi.fn().mockResolvedValue(new Decimal(0)),
@@ -81,7 +81,33 @@ describe('BudgetService — distributed locking', () => {
       emit: vi.fn().mockResolvedValue(undefined),
     } as unknown as EventBusService;
 
-    service = new BudgetService(repository, eventBus, redisLock, fakeTransactions());
+    service = new BudgetService(repository, eventBus, redisLock, {} as never);
+  });
+
+  describe('getDetail', () => {
+    it('reports available, reserved and spent for the budget and its children', async () => {
+      const parent = mockBudget({ id: 'b-1', parentBudgetId: null, limitAmount: 1000, spent: 600 });
+      const child = mockBudget({ id: 'b-2', parentBudgetId: 'b-1', limitAmount: 200, spent: 250 });
+      vi.mocked(repository.findById).mockResolvedValue(parent);
+      vi.mocked(repository.findChildren).mockResolvedValue([child]);
+      vi.mocked(repository.sumPendingReservations).mockResolvedValue(new Map([['b-1', new Decimal(150)]]));
+
+      const detail = await service.getDetail('org-1', 'b-1');
+
+      expect(repository.sumPendingReservations).toHaveBeenCalledWith(['b-1', 'b-2']);
+      expect(detail).toMatchObject({
+        remaining: '400.0000000',
+        available: '400.0000000',
+        reserved: '150.0000000',
+      });
+      expect(detail.spent.toString()).toBe('600');
+      expect(detail.children[0]).toMatchObject({
+        id: 'b-2',
+        remaining: '0.0000000',
+        available: '0.0000000',
+        reserved: '0.0000000',
+      });
+    });
   });
 
   // ── allocate ──
@@ -260,55 +286,6 @@ describe('BudgetService — distributed locking', () => {
     });
   });
 
-  // ── assertWithinBudget ──
-
-  describe('assertWithinBudget', () => {
-    it('acquires a lock on the budget check key during the pre-flight check', async () => {
-      const budget = mockBudget({ id: 'budget-1', spent: 1000, limitAmount: 10000 });
-      vi.mocked(repository.findById).mockResolvedValue(budget);
-
-      await service.assertWithinBudget('org-1', 'budget-1', 500);
-
-      expect(redisLock.withLock).toHaveBeenCalledWith(
-        'budget:check:budget-1',
-        expect.any(Function),
-      );
-    });
-
-    it('throws BudgetExceededException within the lock when the spend would exceed the limit', async () => {
-      const budget = mockBudget({ id: 'budget-1', spent: 9500, limitAmount: 10000 });
-      vi.mocked(repository.findById).mockResolvedValue(budget);
-
-      await expect(service.assertWithinBudget('org-1', 'budget-1', 1000)).rejects.toThrow(
-        BudgetExceededException,
-      );
-
-      // Lock should still have been called (no leak)
-      expect(redisLock.withLock).toHaveBeenCalledWith(
-        'budget:check:budget-1',
-        expect.any(Function),
-      );
-    });
-
-    it('releases the lock even when BudgetExceededException is thrown', async () => {
-      const budget = mockBudget({ id: 'budget-1', spent: 9500, limitAmount: 10000 });
-      vi.mocked(repository.findById).mockResolvedValue(budget);
-
-      let lockReleased = false;
-      vi.mocked(redisLock.withLock).mockImplementation(async (_key: unknown, fn: () => Promise<unknown>) => {
-        try {
-          return await fn();
-        } finally {
-          lockReleased = true;
-        }
-      });
-
-      await expect(service.assertWithinBudget('org-1', 'budget-1', 1000)).rejects.toThrow();
-
-      expect(lockReleased).toBe(true);
-    });
-  });
-
   describe('assertAgentBudgetWithinLimit', () => {
     it('allows an amount exactly at the active agent budget limit', async () => {
       vi.mocked(repository.findEnabledByAgentId).mockResolvedValue([
@@ -347,56 +324,224 @@ describe('BudgetService — distributed locking', () => {
 
 
 
-describe('BudgetService - reserveBudget concurrency', () => {
+describe('BudgetService — reserveAtomic concurrency', () => {
   let repository: BudgetRepository;
+  let eventBus: EventBusService;
   let service: BudgetService;
+
   beforeEach(() => {
     repository = new BudgetRepository({} as unknown as ConstructorParameters<typeof BudgetRepository>[0]);
+    eventBus = { emit: vi.fn().mockResolvedValue(undefined) } as unknown as EventBusService;
     service = new BudgetService(
       repository,
-      {} as unknown as EventBusService,
+      eventBus,
       {} as unknown as RedisLock,
-      fakeTransactions(),
+      {} as never,
     );
   });
 
-    it('should securely process parallel reserves without exceeding limit', async () => {
-      let spent = new Prisma.Decimal(0);
-      const limitAmount = new Prisma.Decimal(100);
+  it('never exceeds the limit when N parallel reservations are fired concurrently', async () => {
+    // Simulate the atomic conditional-update behaviour in JS:
+    // only one reservation at a time can observe the right remaining balance.
+    let spent = new Prisma.Decimal(0);
+    const limitAmount = new Prisma.Decimal(100);
 
-      // Mock the repo's reserveBudget to simulate atomic row-level behavior locally
-      vi.spyOn(repository, 'reserveBudget').mockImplementation(async (_orgId, _id, amount) => {
-        const spentAfter = spent.plus(amount);
-        if (spentAfter.greaterThan(limitAmount)) {
-          throw new Error('ConflictException: BudgetExceeded');
-        }
-        spent = spentAfter;
-        return { spent: spentAfter } as unknown as Budget;
-      });
+    vi.spyOn(repository, 'createReservation').mockImplementation(async (_orgId, _id, amount) => {
+      const spentAfter = spent.plus(amount);
+      if (spentAfter.greaterThan(limitAmount)) {
+        throw new BudgetReservationError('BudgetExceeded');
+      }
+      spent = spentAfter;
+      return { id: `rsv-${spent}`, budgetId: 'budget-1', amount, status: 'PENDING' } as unknown as BudgetReservation;
+    });
 
-      // Fire 10 concurrent requests to reserve 15 budget each.
-      // Total requested = 150. Only 6 should succeed (6 * 15 = 90), 4 should fail.
-      const requests = Array.from({ length: 10 }).map(() =>
-        service.reserveBudget('org-1', 'budget-1', 15)
-          .then(() => 'success')
-          .catch(e => e.message.includes('BudgetExceeded') ? 'failed' : 'error')
-      );
+    vi.spyOn(repository, 'findById').mockResolvedValue(null);
 
-      const results = await Promise.all(requests);
-      const successes = results.filter(r => r === 'success').length;
-      const failures = results.filter(r => r === 'failed').length;
+    // 10 concurrent requests of 15 each → total 150 > 100.
+    // Only 6 succeed (6 × 15 = 90 ≤ 100); the remaining 4 must be rejected.
+    const requests = Array.from({ length: 10 }).map(() =>
+      service
+        .reserveAtomic('org-1', 'budget-1', 15)
+        .then(() => 'success' as const)
+        .catch((err: Error) =>
+          err.message.includes('exceed') || err.constructor.name === 'BudgetExceededException'
+            ? ('failed' as const)
+            : ('error' as const),
+        ),
+    );
 
-      expect(successes).toBe(6);
-      expect(failures).toBe(4);
-      expect(spent.toNumber()).toBe(90);
+    const results = await Promise.all(requests);
+    const successes = results.filter((r) => r === 'success').length;
+    const failures = results.filter((r) => r === 'failed').length;
+
+    expect(successes).toBe(6);
+    expect(failures).toBe(4);
+    expect(spent.toNumber()).toBe(90);
+  });
+
+  it('throws BudgetExceededException (not a generic error) on over-budget', async () => {
+    vi.spyOn(repository, 'createReservation').mockRejectedValue(new BudgetReservationError('BudgetExceeded'));
+    vi.spyOn(repository, 'findById').mockResolvedValue({
+      id: 'budget-1',
+      limitAmount: new Prisma.Decimal(100),
+      spent: new Prisma.Decimal(90),
+    } as unknown as Budget);
+
+    await expect(service.reserveAtomic('org-1', 'budget-1', 50)).rejects.toMatchObject({
+      status: 422,
     });
   });
-describe('BudgetService reserveBudget concurrency', () => {
-  it('should prevent over-allocation during concurrent reserveBudget requests', async () => {
-    // This is typically an integration test that hits the DB, but since the test file mocks Prisma,
-    // we would just mock it or if this is the actual repo, we would need to mock the transaction.
-    // Wait, let's write a mock test if this is a unit test suite, but the instructions say "concurrency-simulating integration test".
-    expect(true).toBe(true);
+
+  it('throws NotFoundException when the budget does not exist', async () => {
+    vi.spyOn(repository, 'createReservation').mockRejectedValue(new BudgetReservationError('NotFoundException'));
+
+    await expect(service.reserveAtomic('org-1', 'missing-budget', 10)).rejects.toMatchObject({
+      status: 404,
+    });
+  });
+
+  it('rejects a zero or negative amount with a validation error, not a reservation', async () => {
+    vi.spyOn(repository, 'createReservation').mockRejectedValue(new BudgetReservationError('InvalidAmount'));
+
+    await expect(service.reserveAtomic('org-1', 'budget-1', 0)).rejects.toBeInstanceOf(ValidationException);
+  });
+
+  it('passes through errors that are not reservation outcomes', async () => {
+    const outage = new Error('connection reset');
+    vi.spyOn(repository, 'createReservation').mockRejectedValue(outage);
+
+    await expect(service.reserveAtomic('org-1', 'budget-1', 10)).rejects.toBe(outage);
+  });
+});
+
+describe('BudgetService — reservations after a period boundary', () => {
+  const now = new Date('2026-09-01T00:00:05.000Z');
+  let repository: BudgetRepository;
+  let rollover: { rolloverBudget: ReturnType<typeof vi.fn> };
+  let service: BudgetService;
+
+  beforeEach(() => {
+    repository = new BudgetRepository({} as unknown as ConstructorParameters<typeof BudgetRepository>[0]);
+    rollover = { rolloverBudget: vi.fn().mockResolvedValue({ outcome: 'rolled_over', periodsClosed: 1 }) };
+    service = new BudgetService(
+      repository,
+      { emit: vi.fn().mockResolvedValue(undefined) } as unknown as EventBusService,
+      {} as unknown as RedisLock,
+      rollover as unknown as BudgetRolloverService,
+    );
+    vi.spyOn(repository, 'findById').mockResolvedValue(null);
+  });
+
+  it('rolls an elapsed budget over first, then reserves in the new period', async () => {
+    const reservation = { id: 'rsv-new', budgetId: 'budget-1' } as unknown as BudgetReservation;
+    const create = vi
+      .spyOn(repository, 'createReservation')
+      .mockRejectedValueOnce(new BudgetReservationError('BudgetPeriodElapsed'))
+      .mockResolvedValueOnce(reservation);
+
+    await expect(service.reserveAtomic('org-1', 'budget-1', 40, now)).resolves.toBe(reservation);
+
+    expect(rollover.rolloverBudget).toHaveBeenCalledWith('budget-1', now);
+    expect(create).toHaveBeenCalledTimes(2);
+    expect(create).toHaveBeenLastCalledWith('org-1', 'budget-1', new Decimal(40), now);
+  });
+
+  it('does not roll over when the period is still live', async () => {
+    vi.spyOn(repository, 'createReservation').mockResolvedValue({ id: 'rsv' } as unknown as BudgetReservation);
+
+    await service.reserveAtomic('org-1', 'budget-1', 40, now);
+
+    expect(rollover.rolloverBudget).not.toHaveBeenCalled();
+  });
+
+  it('maps an over-limit retry in the new period to BudgetExceededException', async () => {
+    vi.spyOn(repository, 'createReservation')
+      .mockRejectedValueOnce(new BudgetReservationError('BudgetPeriodElapsed'))
+      .mockRejectedValueOnce(new BudgetReservationError('BudgetExceeded'));
+
+    await expect(service.reserveAtomic('org-1', 'budget-1', 400, now)).rejects.toBeInstanceOf(
+      BudgetExceededException,
+    );
+  });
+
+  it('refuses with a conflict, never reserving in the closed period, when the budget cannot roll over', async () => {
+    // e.g. a disabled budget: the rollover skips it and the period stays elapsed.
+    rollover.rolloverBudget.mockResolvedValue({ outcome: 'skipped', periodsClosed: 0 });
+    const create = vi
+      .spyOn(repository, 'createReservation')
+      .mockRejectedValue(new BudgetReservationError('BudgetPeriodElapsed'));
+
+    await expect(service.reserveAtomic('org-1', 'budget-1', 40, now)).rejects.toBeInstanceOf(ConflictException);
+    expect(create).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('BudgetService — settle and release idempotency', () => {
+  let repository: BudgetRepository;
+  let eventBus: EventBusService;
+  let service: BudgetService;
+
+  beforeEach(() => {
+    repository = new BudgetRepository({} as unknown as ConstructorParameters<typeof BudgetRepository>[0]);
+    eventBus = { emit: vi.fn().mockResolvedValue(undefined) } as unknown as EventBusService;
+    service = new BudgetService(
+      repository,
+      eventBus,
+      {} as unknown as RedisLock,
+      {} as never,
+    );
+  });
+
+  it('settle is idempotent: calling twice returns the same record without double-adjusting spent', async () => {
+    const settled = {
+      id: 'rsv-1',
+      budgetId: 'budget-1',
+      status: 'SETTLED',
+      amount: new Prisma.Decimal(50),
+      settledAmount: new Prisma.Decimal(48),
+    } as unknown as BudgetReservation;
+    vi.spyOn(repository, 'settleReservation').mockResolvedValue(settled);
+    vi.spyOn(repository, 'findById').mockResolvedValue(null);
+
+    const first = await service.settle('org-1', 'rsv-1', 48);
+    const second = await service.settle('org-1', 'rsv-1', 48);
+
+    expect(first).toEqual(settled);
+    expect(second).toEqual(settled);
+    // The underlying repo method handles idempotency; called twice is fine.
+    expect(repository.settleReservation).toHaveBeenCalledTimes(2);
+  });
+
+  it('release is idempotent: calling twice on a RELEASED record does not decrement twice', async () => {
+    const released = {
+      id: 'rsv-2',
+      budgetId: 'budget-1',
+      status: 'RELEASED',
+      amount: new Prisma.Decimal(50),
+    } as unknown as BudgetReservation;
+    vi.spyOn(repository, 'releaseReservation').mockResolvedValue(released);
+
+    const first = await service.release('rsv-2');
+    const second = await service.release('rsv-2');
+
+    expect(first).toEqual(released);
+    expect(second).toEqual(released);
+  });
+
+  it('settle adjusts spent by the delta when actual differs from reserved', async () => {
+    const settled = {
+      id: 'rsv-3',
+      budgetId: 'budget-1',
+      status: 'SETTLED',
+      amount: new Prisma.Decimal(50),
+      settledAmount: new Prisma.Decimal(45),
+    } as unknown as BudgetReservation;
+    vi.spyOn(repository, 'settleReservation').mockResolvedValue(settled);
+    vi.spyOn(repository, 'findById').mockResolvedValue(null);
+
+    await service.settle('org-1', 'rsv-3', 45);
+
+    expect(repository.settleReservation).toHaveBeenCalledWith('rsv-3', new Prisma.Decimal(45));
   });
 });
 

@@ -1,126 +1,254 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ConfigService } from '@nestjs/config';
-import { BalanceCacheService } from './balance-cache.service';
+import type Redis from 'ioredis';
+import { BalanceCacheService, BALANCE_CACHE_KEY_PREFIX } from './balance-cache.service';
+import { BalanceCacheConfig } from '../../../config/balance-cache.config';
 
-function buildMockConfig(overrides: Record<string, unknown> = {}) {
+const ADDRESS = 'GDEGSXLGANKHK7QFOV63XCBHBTZ3YRKUJV7ZB7JMSJQB5CNBRLL5QIG5';
+const BALANCES = [
+  { asset: 'XLM', balance: '100.0000000', assetType: 'native' },
+  { asset: 'USDC', balance: '50.0000000', assetType: 'credit_alphanum4' },
+];
+
+function buildConfig(settings: Partial<BalanceCacheConfig> = {}): ConfigService {
+  const value: BalanceCacheConfig = { ttlSeconds: 30, environment: 'test', ...settings };
   return {
-    get: vi.fn((key: string, defaultValue?: unknown) => {
-      const config: Record<string, unknown> = {
-        BALANCE_CACHE_TTL: 60,
-        LOW_XLM_THRESHOLD: 10,
-        REDIS_URL: undefined, // no Redis in tests
-        ...overrides,
-      };
-      return config[key] ?? defaultValue;
-    }),
+    get: vi.fn((key: string) => (key === 'balanceCache' ? value : undefined)),
   } as unknown as ConfigService;
 }
 
+/** Minimal ioredis stand-in: only the commands the cache issues. */
+class FakeRedis {
+  readonly store = new Map<string, string>();
+  failGet: Error | null = null;
+  failSet: Error | null = null;
+  failDel: Error | null = null;
+
+  get = vi.fn(async (key: string) => {
+    if (this.failGet) throw this.failGet;
+    return this.store.get(key) ?? null;
+  });
+
+  setex = vi.fn(async (key: string, _ttl: number, value: string) => {
+    if (this.failSet) throw this.failSet;
+    this.store.set(key, value);
+    return 'OK';
+  });
+
+  del = vi.fn(async (key: string) => {
+    if (this.failDel) throw this.failDel;
+    return this.store.delete(key) ? 1 : 0;
+  });
+}
+
+/** A promise whose resolution is driven by the test. */
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 describe('BalanceCacheService', () => {
+  let redis: FakeRedis;
   let service: BalanceCacheService;
 
   beforeEach(() => {
-    vi.clearAllMocks();
-    service = new BalanceCacheService(buildMockConfig());
+    vi.restoreAllMocks();
+    redis = new FakeRedis();
+    service = new BalanceCacheService(buildConfig(), redis as unknown as Redis);
   });
 
-  describe('get/set', () => {
-    it('should store and retrieve cached balances', async () => {
-      const balances = [
-        { asset: 'XLM', balance: '100.0000000', assetType: 'native' },
-        { asset: 'USDC', balance: '50.0000000', assetType: 'credit_alphanum4' },
-      ];
-
-      await service.set('GABC...', 'testnet', balances);
-      const cached = await service.get('GABC...', 'testnet');
-
-      expect(cached).not.toBeNull();
-      expect(cached!.address).toBe('GABC...');
-      expect(cached!.network).toBe('testnet');
-      expect(cached!.balances).toHaveLength(2);
-      expect(cached!.balances[0].asset).toBe('XLM');
+  describe('key namespacing', () => {
+    it('namespaces the key by environment, network and wallet address', () => {
+      expect(service.cacheKey(ADDRESS, 'testnet')).toBe(
+        `${BALANCE_CACHE_KEY_PREFIX}:test:testnet:${ADDRESS}`,
+      );
+      expect(service.getEnvironment()).toBe('test');
+      expect(service.cacheKey(ADDRESS, 'public')).not.toBe(service.cacheKey(ADDRESS, 'testnet'));
     });
 
-    it('should return null for cache miss', async () => {
-      const result = await service.get('GMISS...', 'testnet');
-      expect(result).toBeNull();
+    it('uses the configured TTL', () => {
+      expect(service.getTtlSeconds()).toBe(30);
+      expect(new BalanceCacheService(buildConfig({ ttlSeconds: 5 }), redis as unknown as Redis).getTtlSeconds()).toBe(5);
+    });
+  });
+
+  describe('get / set', () => {
+    it('stores an entry with the configured TTL and reads it back', async () => {
+      await service.set(ADDRESS, 'testnet', BALANCES);
+
+      expect(redis.setex).toHaveBeenCalledWith(
+        service.cacheKey(ADDRESS, 'testnet'),
+        30,
+        expect.any(String),
+      );
+      const cached = await service.get(ADDRESS, 'testnet');
+      expect(cached?.balances).toEqual(BALANCES);
+      expect(cached?.cachedAt).toEqual(expect.any(Number));
     });
 
-    it('should invalidate cached data', async () => {
-      await service.set('GABC...', 'testnet', [
-        { asset: 'XLM', balance: '100.0000000', assetType: 'native' },
-      ]);
-      await service.invalidate('GABC...', 'testnet');
-      const result = await service.get('GABC...', 'testnet');
-      expect(result).toBeNull();
+    it('returns null on a cache miss', async () => {
+      await expect(service.get(ADDRESS, 'testnet')).resolves.toBeNull();
     });
 
-    it('should use different cache keys for different networks', async () => {
-      const balances = [
-        { asset: 'XLM', balance: '100.0000000', assetType: 'native' },
-      ];
+    it('ignores an entry older than the TTL even if Redis still holds it', async () => {
+      const entry = {
+        address: ADDRESS,
+        network: 'testnet',
+        balances: BALANCES,
+        cachedAt: Date.now() - 60_000,
+      };
+      redis.store.set(service.cacheKey(ADDRESS, 'testnet'), JSON.stringify(entry));
 
-      await service.set('GABC...', 'testnet', balances);
-      await service.set('GABC...', 'public', [
-        { asset: 'XLM', balance: '200.0000000', assetType: 'native' },
-      ]);
+      await expect(service.get(ADDRESS, 'testnet')).resolves.toBeNull();
+    });
 
-      const testnet = await service.get('GABC...', 'testnet');
-      const publicNet = await service.get('GABC...', 'public');
+    it('discards a malformed entry instead of failing the read', async () => {
+      redis.store.set(service.cacheKey(ADDRESS, 'testnet'), '{"oops":true}');
+      vi.spyOn(console, 'warn').mockImplementation(() => undefined);
 
-      expect(testnet!.balances[0].balance).toBe('100.0000000');
-      expect(publicNet!.balances[0].balance).toBe('200.0000000');
+      await expect(service.get(ADDRESS, 'testnet')).resolves.toBeNull();
+    });
+  });
+
+  describe('getOrLoad', () => {
+    it('serves two reads inside the TTL from one RPC call', async () => {
+      const loader = vi.fn().mockResolvedValue(BALANCES);
+
+      const first = await service.getOrLoad(ADDRESS, 'testnet', loader);
+      const second = await service.getOrLoad(ADDRESS, 'testnet', loader);
+
+      expect(first).toEqual(BALANCES);
+      expect(second).toEqual(BALANCES);
+      expect(loader).toHaveBeenCalledTimes(1);
+      expect(redis.setex).toHaveBeenCalledTimes(1);
+    });
+
+    it('deduplicates concurrent misses for the same wallet', async () => {
+      const pending = deferred<typeof BALANCES>();
+      const loader = vi.fn(() => pending.promise);
+
+      const first = service.getOrLoad(ADDRESS, 'testnet', loader);
+      const second = service.getOrLoad(ADDRESS, 'testnet', loader);
+      pending.resolve(BALANCES);
+
+      await expect(Promise.all([first, second])).resolves.toEqual([BALANCES, BALANCES]);
+      expect(loader).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps the two networks of one address apart', async () => {
+      const loader = vi.fn().mockResolvedValue(BALANCES);
+
+      await service.getOrLoad(ADDRESS, 'testnet', loader);
+      await service.getOrLoad(ADDRESS, 'public', loader);
+
+      expect(loader).toHaveBeenCalledTimes(2);
+      expect(redis.store.has(service.cacheKey(ADDRESS, 'testnet'))).toBe(true);
+      expect(redis.store.has(service.cacheKey(ADDRESS, 'public'))).toBe(true);
+    });
+  });
+
+  describe('invalidate', () => {
+    it('deletes the key so the next read hits the RPC again', async () => {
+      const loader = vi.fn().mockResolvedValue(BALANCES);
+
+      await service.getOrLoad(ADDRESS, 'testnet', loader);
+      await service.invalidate(ADDRESS, 'testnet');
+      await service.getOrLoad(ADDRESS, 'testnet', loader);
+
+      expect(redis.del).toHaveBeenCalledWith(service.cacheKey(ADDRESS, 'testnet'));
+      expect(loader).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not let a load started before the invalidation repopulate the key', async () => {
+      const pending = deferred<typeof BALANCES>();
+      const loader = vi.fn(() => pending.promise);
+
+      const read = service.getOrLoad(ADDRESS, 'testnet', loader);
+      // Let the cache miss and the loader start before deleting the key.
+      await vi.waitFor(() => expect(loader).toHaveBeenCalledTimes(1));
+      await service.invalidate(ADDRESS, 'testnet');
+      pending.resolve(BALANCES);
+      await read;
+
+      expect(redis.setex).not.toHaveBeenCalled();
+      await expect(service.get(ADDRESS, 'testnet')).resolves.toBeNull();
+    });
+  });
+
+  describe('Redis failure', () => {
+    it('falls through to the RPC when the read fails', async () => {
+      const loggerWarn = vi.spyOn(
+        (await import('@nestjs/common')).Logger.prototype,
+        'warn',
+      ).mockImplementation(() => undefined);
+      redis.failGet = new Error('connection refused');
+      const loader = vi.fn().mockResolvedValue(BALANCES);
+
+      await expect(service.getOrLoad(ADDRESS, 'testnet', loader)).resolves.toEqual(BALANCES);
+
+      expect(loader).toHaveBeenCalledTimes(1);
+      expect(loggerWarn).toHaveBeenCalledWith(
+        expect.stringContaining('Redis get failed'),
+      );
+    });
+
+    it('still returns the RPC result when the write fails', async () => {
+      const loggerWarn = vi.spyOn(
+        (await import('@nestjs/common')).Logger.prototype,
+        'warn',
+      ).mockImplementation(() => undefined);
+      redis.failSet = new Error('OOM');
+
+      const loader = vi.fn().mockResolvedValue(BALANCES);
+      await expect(service.getOrLoad(ADDRESS, 'testnet', loader)).resolves.toEqual(BALANCES);
+
+      expect(loggerWarn).toHaveBeenCalledWith(expect.stringContaining('Redis setex failed'));
+    });
+
+    it('swallows an invalidation failure so the write that triggered it succeeds', async () => {
+      const loggerWarn = vi.spyOn(
+        (await import('@nestjs/common')).Logger.prototype,
+        'warn',
+      ).mockImplementation(() => undefined);
+      redis.failDel = new Error('connection reset');
+
+      await expect(service.invalidate(ADDRESS, 'testnet')).resolves.toBeUndefined();
+      expect(loggerWarn).toHaveBeenCalledWith(expect.stringContaining('Redis del failed'));
+    });
+  });
+
+  describe('without a Redis client', () => {
+    it('never fails a read: every call goes to the RPC', async () => {
+      const offline = new BalanceCacheService(buildConfig());
+      const loader = vi.fn().mockResolvedValue(BALANCES);
+
+      await expect(offline.getOrLoad(ADDRESS, 'testnet', loader)).resolves.toEqual(BALANCES);
+      await expect(offline.getOrLoad(ADDRESS, 'testnet', loader)).resolves.toEqual(BALANCES);
+
+      expect(loader).toHaveBeenCalledTimes(2);
+      await expect(offline.get(ADDRESS, 'testnet')).resolves.toBeNull();
+      await expect(offline.set(ADDRESS, 'testnet', BALANCES)).resolves.toBeUndefined();
+      await expect(offline.invalidate(ADDRESS, 'testnet')).resolves.toBeUndefined();
     });
   });
 
   describe('checkThresholds', () => {
-    it('should detect low XLM balance', () => {
-      const balances = [
+    it('detects a low XLM balance', () => {
+      const alerts = service.checkThresholds([
         { asset: 'XLM', balance: '5.0000000', assetType: 'native' },
         { asset: 'USDC', balance: '1000.0000000', assetType: 'credit_alphanum4' },
-      ];
+      ]);
 
-      const alerts = service.checkThresholds(balances);
-
-      expect(alerts).toHaveLength(1);
-      expect(alerts[0].asset).toBe('XLM');
-      expect(alerts[0].balance).toBe('5.0000000');
-      expect(alerts[0].threshold).toBe(10);
+      expect(alerts).toEqual([{ asset: 'XLM', balance: '5.0000000', threshold: 10 }]);
     });
 
-    it('should not alert for healthy balances', () => {
-      const balances = [
-        { asset: 'XLM', balance: '100.0000000', assetType: 'native' },
-        { asset: 'USDC', balance: '1000.0000000', assetType: 'credit_alphanum4' },
-      ];
-
-      const alerts = service.checkThresholds(balances);
-      expect(alerts).toHaveLength(0);
-    });
-
-    it('should return empty array when no thresholds configured', () => {
-      const balances = [
-        { asset: 'XLM', balance: '1.0000000', assetType: 'native' },
-        { asset: 'UNKNOWN', balance: '0.001', assetType: 'credit_alphanum12' },
-      ];
-
-      const alerts = service.checkThresholds(balances);
-      // XLM should alert, UNKNOWN has no threshold
-      expect(alerts).toHaveLength(1);
-      expect(alerts[0].asset).toBe('XLM');
-    });
-  });
-
-  describe('getTtlSeconds', () => {
-    it('should return configured TTL', () => {
-      expect(service.getTtlSeconds()).toBe(60);
-    });
-
-    it('should use custom TTL from config', () => {
-      const customService = new BalanceCacheService(
-        buildMockConfig({ BALANCE_CACHE_TTL: 120 }),
-      );
-      expect(customService.getTtlSeconds()).toBe(120);
+    it('does not alert for healthy balances', () => {
+      expect(service.checkThresholds(BALANCES)).toEqual([]);
     });
   });
 });

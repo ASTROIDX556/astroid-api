@@ -1,8 +1,16 @@
-import { Body, Controller, Get, Headers, Param, Post, Query, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  Post,
+  Query,
+  UseGuards,
+  UseInterceptors,
+} from '@nestjs/common';
 import {
   ApiOperation,
   ApiTags,
-  ApiBearerAuth,
   ApiParam,
   ApiBody,
   ApiQuery,
@@ -20,32 +28,35 @@ import {
   TransactionSubmissionDto,
   simulateTransactionSchema,
   SimulateTransactionInput,
-  parseIdempotencyKey,
 } from './transaction.dto';
 import { SpendingLimitGuard, RequireSpendingLimitCheck } from './guards/spending-limit.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
+import { RequiredScopes } from '../../common/decorators/scopes.decorator';
 import { AuditAction } from '../../common/decorators/audit-action.decorator';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 import { UseWalletLock } from '../../common/locks/wallet-lock.decorator';
 import { UseTransactionLock } from '../../common/locks/transaction-lock.decorator';
 import { AgentThrottlerGuard } from '../../common/guards/agent-throttler.guard';
 import { AuthenticatedUser } from '../../common/interfaces/authenticated-user.interface';
-import { PaginationQuery, paginationQuerySchema } from '../../common/helpers/pagination';
-import { ApiPaginationQuery } from '../../common/decorators/api-pagination-query.decorator';
-import { ApiEnvelope, ApiPaginatedEnvelope } from '../../common/decorators/api-envelope.decorator';
+import { ApiEnvelope } from '../../common/decorators/api-envelope.decorator';
 import { ApiErrorResponses } from '../../common/decorators/api-error-responses.decorator';
-import { IDEMPOTENCY_KEY_HEADER } from '../../common/constants/headers';
-import { TRANSACTION_CREATE_ROUTE } from '../../common/idempotency/idempotency.constants';
+import { Idempotent } from '../../common/decorators/idempotent.decorator';
+import { IdempotencyInterceptor } from '../../common/interceptors/idempotency.interceptor';
 import {
   SlidingWindowThrottlerGuard,
   SlidingWindowLimit,
 } from '../../common/guards/sliding-window-throttler.guard';
+import { PaginationQuery, paginationQuerySchema } from '../../common/helpers/pagination';
+import { ApiPaginationQuery } from '../../common/decorators/api-pagination-query.decorator';
+import { ApiPageOrCursorPaginatedEnvelope } from '../../common/decorators/api-envelope.decorator';
+import { ApiAuthenticated } from '../../common/decorators/api-authenticated.decorator';
 
 @ApiTags('transactions')
-@ApiBearerAuth('access-token')
+@ApiAuthenticated()
 @UseGuards(AgentThrottlerGuard)
 @Controller('transactions')
+@ApiErrorResponses({ unauthorized: true, forbidden: true, tooManyRequests: true, serverError: true })
 export class TransactionController {
   constructor(private readonly transactionService: TransactionService) {}
 
@@ -56,27 +67,31 @@ export class TransactionController {
       'Returns a paginated list of transactions for the current organization. Supports filtering by status, agent, wallet, and date range.',
   })
   @ApiPaginationQuery()
+  @ApiQuery({ name: 'cursor', required: false, type: String, description: 'Legacy cursor pagination mode' })
   @ApiQuery({ name: 'status', required: false, enum: ['DRAFT', 'PENDING', 'APPROVED', 'COMPLETED', 'FAILED', 'CANCELLED'], description: 'Filter by transaction status' })
   @ApiQuery({ name: 'agentId', required: false, type: String, description: 'Filter by agent UUID' })
   @ApiQuery({ name: 'walletId', required: false, type: String, description: 'Filter by wallet UUID' })
-  @ApiPaginatedEnvelope(TransactionResponseDto, {
+  @ApiPageOrCursorPaginatedEnvelope(TransactionResponseDto, {
     description: 'Paginated list of transactions',
   })
   @ApiErrorResponses({ unauthorized: true, serverError: true })
   list(
     @CurrentUser('organizationId') organizationId: string,
-    @Query(new ZodValidationPipe(paginationQuerySchema)) query: PaginationQuery,
+    @Query(new ZodValidationPipe(paginationQuerySchema)) query: PaginationQuery & { cursor?: string; status?: string; search?: string; filter?: string },
   ) {
     return this.transactionService.list(organizationId, query);
   }
 
   @Post()
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.FINANCE, UserRole.DEVELOPER)
+  @RequiredScopes('transactions:execute')
   @UseGuards(SlidingWindowThrottlerGuard, SpendingLimitGuard, AgentBudgetGuard)
   @SlidingWindowLimit(30, 60)
   @RequireSpendingLimitCheck()
   @UseWalletLock()
   @UseTransactionLock({ attempts: 3, retryDelayMs: 50 })
+  @UseInterceptors(IdempotencyInterceptor)
+  @Idempotent({ bodySchema: createTransactionSchema })
   @AuditAction('TRANSFER_FUNDS')
   @ApiOperation({
     summary: 'Create a transaction (runs the full governance pipeline)',
@@ -90,7 +105,7 @@ export class TransactionController {
   @ApiHeader({
     name: 'Idempotency-Key',
     required: false,
-    description: 'Optional key for replay-safe transaction submission (1-128 allowed ASCII characters).',
+    description: 'Optional key for replay-safe transaction submission (8-255 characters after trimming).',
   })
   @ApiEnvelope(TransactionSubmissionDto, {
     status: 201,
@@ -108,16 +123,12 @@ export class TransactionController {
   create(
     @CurrentUser() user: AuthenticatedUser,
     @Body(new ZodValidationPipe(createTransactionSchema)) body: CreateTransactionInput,
-    @Headers(IDEMPOTENCY_KEY_HEADER) rawIdempotencyKey?: string,
   ) {
     const actorId = user.isApiKey ? user.createdById ?? user.id : user.id;
-    const key = parseIdempotencyKey(rawIdempotencyKey);
-    return this.transactionService.create(
-      user.organizationId,
-      actorId,
-      body,
-      key ? { principalId: user.id, key, route: TRANSACTION_CREATE_ROUTE } : undefined,
-    );
+    // Idempotency is enforced at the HTTP boundary by IdempotencyInterceptor
+    // with the reusable IdempotencyService, so the service call stays focused on
+    // the governance pipeline.
+    return this.transactionService.create(user.organizationId, actorId, body);
   }
 
   @Post('simulate')
@@ -173,7 +184,7 @@ export class TransactionController {
     unauthorized: true,
     forbidden: true,
     notFound: true,
-    conflict: 'Transaction cannot be cancelled (wrong status)',
+    conflict: 'Transaction cannot be cancelled (wrong status) or the idempotency key is in use',
     serverError: true,
   })
   cancel(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {

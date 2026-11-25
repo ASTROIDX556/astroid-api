@@ -42,6 +42,10 @@ export const DomainEventName = {
   BudgetConsumed: 'budget.consumed',
   BudgetExceeded: 'budget.exceeded',
   BudgetWarning: 'budget.warning',
+  /** A spend crossed a configured percentage threshold of a budget period. */
+  BudgetThresholdReached: 'budget.threshold_reached',
+  /** A scheduled job closed an elapsed budget period and opened the next one. */
+  BudgetPeriodRollover: 'budget.period_rollover',
 
   // Proposal / approval
   ProposalCreated: 'proposal.created',
@@ -69,6 +73,10 @@ export const DomainEventName = {
   AuditRecorded: 'audit.recorded',
   WebhookPermanentlyFailed: 'webhook.permanently_failed',
 
+  // Session / refresh-token reuse detection
+  /** A rotated refresh token was presented again (reuse): the token family was revoked. */
+  SessionFamilyRevoked: 'session.family_revoked',
+
   // Webhook delivery / circuit breaker
   /** The circuit of a webhook endpoint opened: deliveries are paused for the cooldown. */
   WebhookCircuitOpened: 'webhook.circuit_opened',
@@ -95,4 +103,5 @@ export const WEBHOOK_EVENTS: DomainEventNameType[] = [
   DomainEventName.TransactionFailed,
   DomainEventName.PolicyViolated,
   DomainEventName.BudgetExceeded,
+  DomainEventName.BudgetThresholdReached,
 ];

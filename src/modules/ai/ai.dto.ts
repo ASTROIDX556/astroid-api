@@ -56,6 +56,17 @@ export class ChatMessageDto {
   createdAt!: string;
 }
 
+/** A message sent to the AI assistant. */
+export class ChatRequestDto {
+  @ApiProperty({
+    description: 'User message to the AI assistant',
+    example: 'What was our total spend this month?',
+    minLength: 1,
+    maxLength: 2000,
+  })
+  message!: string;
+}
+
 /** The answer of the AI assistant. */
 export class AiChatResponseDto {
   @ApiProperty({ description: 'The assistant answer', example: 'Two proposals are waiting for your approval.' })

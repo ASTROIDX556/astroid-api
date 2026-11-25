@@ -8,6 +8,7 @@ import { RequestContext } from '../common/context/request-context';
 import { NO_REQUEST_CONTEXT, readJobMetadata } from '../queues/job-correlation';
 import type { QueueJobMetadata } from '../queues/queues.constants';
 import { isTerminalJobFailure } from './dlq.processor';
+import { mapPrismaError } from '../common/exceptions/prisma-error.mapper';
 
 /**
  * The subset of a BullMQ `Job` the wrapper reads. Kept structural so workers
@@ -53,6 +54,12 @@ export interface WorkerJobLogRecord {
   /** True when the job was declared `UnrecoverableError` by its handler. */
   unrecoverable?: boolean;
   error?: { name: string; message: string; stack?: string };
+  /**
+   * Mapped application code, status and Prisma code when the failure came
+   * from the database (see `mapPrismaError`), so worker logs use the same
+   * vocabulary as HTTP error responses.
+   */
+  database?: Record<string, unknown>;
   payload?: unknown;
   /**
    * Id of the request that enqueued the job, in the same flat `requestId` field
@@ -154,6 +161,7 @@ export async function runWorkerJob<TData, TResult>(
     return result;
   } catch (error) {
     const described = describeError(error);
+    const database = mapPrismaError(error)?.toLogContext();
     const unrecoverable = classifyJobError(error) === 'permanent';
     const terminal =
       unrecoverable ||
@@ -169,6 +177,7 @@ export async function runWorkerJob<TData, TResult>(
         ...base(),
         ...(unrecoverable ? { unrecoverable: true } : {}),
         error: described,
+        ...(database ? { database } : {}),
         payload: scrubForLog(job.data),
         timestamp: new Date().toISOString(),
       };

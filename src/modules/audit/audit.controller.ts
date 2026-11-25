@@ -2,14 +2,17 @@ import { Controller, Get, Param, Query, Res } from '@nestjs/common';
 import {
   ApiOperation,
   ApiTags,
-  ApiBearerAuth,
   ApiParam,
   ApiQuery,
   ApiProduces,
-  ApiResponse,
 } from '@nestjs/swagger';
 import { ApiErrorResponses } from '../../common/decorators/api-error-responses.decorator';
-import { ApiEnvelope } from '../../common/decorators/api-envelope.decorator';
+import {
+  ApiPageOrCursorPaginatedEnvelope,
+  ApiCursorPaginatedEnvelope,
+  ApiEnvelope,
+} from '../../common/decorators/api-envelope.decorator';
+import { ApiPaginationQuery } from '../../common/decorators/api-pagination-query.decorator';
 import { UserRole } from '@prisma/client';
 import { Response } from 'express';
 import { AuditService } from './audit.service';
@@ -17,6 +20,10 @@ import { AuditArchiveService } from './audit-archive.service';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
+import {
+  AuditArchiveBatchListDto,
+  AuditArchiveRecordListDto,
+} from './audit-archive.dto';
 import {
   ExportAuditLogsQuery,
   exportAuditLogsQuerySchema,
@@ -27,12 +34,19 @@ import {
 } from './audit-export.dto';
 import { AuditListQuery, auditListQuerySchema } from './audit-list.dto';
 import { AuditLogEntryDto, AuditExportDto, AuditIntegrityDto } from './audit-list.dto';
+import {
+  AuditTimelineQuery,
+  auditResourceIdParamSchema,
+  auditTimelineQuerySchema,
+} from './audit-timeline.dto';
+import { ApiAuthenticated } from '../../common/decorators/api-authenticated.decorator';
 
 /** Read-only access to the append-only audit trail. Restricted to auditors/admins. */
 @ApiTags('audit')
-@ApiBearerAuth('access-token')
+@ApiAuthenticated()
 @Controller('audit')
 @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.AUDITOR)
+@ApiErrorResponses({ unauthorized: true, forbidden: true, tooManyRequests: true, serverError: true })
 export class AuditController {
   constructor(
     private readonly auditService: AuditService,
@@ -83,20 +97,38 @@ export class AuditController {
   @ApiOperation({
     summary: 'List audit log entries for the organization',
     description:
-      'Returns a cursor-paginated list of audit log entries, newest first. Supports filtering by actor, action, resource and date range.',
+      'Returns audit log entries of the authenticated organization, always ordered by `createdAt DESC, id DESC`. ' +
+      '`id` breaks ties between entries that share a timestamp, so pages never skip or repeat rows. ' +
+      'Pass `cursor` from `meta.nextCursor` for stable keyset pagination; page/offset mode is kept for backwards compatibility and uses the same order. ' +
+      '`actorId`, `action`, `resourceType` and `resourceId` are exact, case-sensitive matches (no partial or fuzzy matching); ' +
+      '`from`/`to` bound `createdAt` inclusively and `from` must not be later than `to`. ' +
+      'Filters only narrow the organization-scoped result set; unknown query parameters are rejected with 400.',
   })
-  @ApiQuery({ name: 'cursor', required: false, type: String, description: 'Opaque pagination cursor from a previous page' })
-  @ApiQuery({ name: 'limit', required: false, type: Number, description: 'Max entries to return (default 20, max 100)' })
-  @ApiQuery({ name: 'actorId', required: false, type: String, description: 'Filter by acting user UUID' })
-  @ApiQuery({ name: 'action', required: false, type: String, description: 'Filter by audit action type' })
-  @ApiQuery({ name: 'resourceId', required: false, type: String, description: 'Filter by affected entity UUID' })
-  @ApiQuery({ name: 'from', required: false, type: String, description: 'ISO 8601 start of the date range' })
-  @ApiQuery({ name: 'to', required: false, type: String, description: 'ISO 8601 end of the date range' })
-  @ApiEnvelope(AuditLogEntryDto, {
-    isArray: true,
-    description: 'Cursor-paginated list of audit log entries',
+  @ApiPaginationQuery()
+  @ApiQuery({ name: 'cursor', required: false, type: String, description: 'Opaque keyset cursor from meta.nextCursor' })
+  @ApiQuery({ name: 'actorId', required: false, type: String, description: 'Exact match on the id of the acting user (stored as `userId`), 1-128 characters' })
+  @ApiQuery({ name: 'action', required: false, type: String, description: 'Exact match on the audit action, e.g. `transaction.created`, 1-120 characters' })
+  @ApiQuery({ name: 'resourceType', required: false, type: String, description: 'Exact match on the affected entity type (stored as `entity`), 1-120 characters' })
+  @ApiQuery({ name: 'resourceId', required: false, type: String, description: 'Exact match on the affected entity id (stored as `entityId`), 1-128 characters' })
+  @ApiQuery({ name: 'outcome', required: false, enum: ['SUCCESS', 'FAILURE'], description: 'Filter by the derived result of the audited operation' })
+  @ApiQuery({ name: 'search', required: false, type: String, description: 'Case-insensitive search over action, entity, entityId and requestId' })
+  @ApiQuery({
+    name: 'from',
+    required: false,
+    schema: { type: 'string', format: 'date-time', example: '2026-09-01T00:00:00.000Z' },
+    description: 'Inclusive ISO 8601 start of the range (`createdAt >= from`). Must not be later than `to`, otherwise 400',
+  })
+  @ApiQuery({
+    name: 'to',
+    required: false,
+    schema: { type: 'string', format: 'date-time', example: '2026-09-30T23:59:59.999Z' },
+    description: 'Inclusive ISO 8601 end of the range (`createdAt <= to`). Must not be earlier than `from`, otherwise 400',
+  })
+  @ApiPageOrCursorPaginatedEnvelope(AuditLogEntryDto, {
+    description: 'Paginated list of audit log entries',
   })
   @ApiErrorResponses({
+    validation: 'Malformed cursor or invalid filter',
     unauthorized: true,
     forbidden: true,
     serverError: true,
@@ -106,6 +138,34 @@ export class AuditController {
     @Query(new ZodValidationPipe(auditListQuerySchema)) query: AuditListQuery,
   ) {
     return this.auditService.list(organizationId, query);
+  }
+
+  @Get('resources/:resourceId/timeline')
+  @ApiOperation({
+    summary: 'List the audit timeline for a resource',
+    description:
+      'Returns every audit entry for one resource id in ascending creation order. Uses the same opaque `(createdAt, id)` cursor as the audit listing, with the comparison direction inverted.',
+  })
+  @ApiParam({ name: 'resourceId', description: 'Affected entity id whose timeline is requested' })
+  @ApiQuery({ name: 'cursor', required: false, type: String, description: 'Opaque keyset cursor from meta.nextCursor' })
+  @ApiQuery({ name: 'limit', required: false, type: Number, description: 'Page size, bounded by AUDIT_PAGE_SIZE_MAX' })
+  @ApiQuery({ name: 'from', required: false, type: String, description: 'Inclusive ISO 8601 start of the range' })
+  @ApiQuery({ name: 'to', required: false, type: String, description: 'Inclusive ISO 8601 end of the range' })
+  @ApiCursorPaginatedEnvelope(AuditLogEntryDto, {
+    description: 'Ascending audit timeline for the requested resource',
+  })
+  @ApiErrorResponses({
+    validation: 'Malformed cursor or invalid filter',
+    unauthorized: true,
+    forbidden: true,
+    serverError: true,
+  })
+  timeline(
+    @CurrentUser('organizationId') organizationId: string,
+    @Param('resourceId', new ZodValidationPipe(auditResourceIdParamSchema)) resourceId: string,
+    @Query(new ZodValidationPipe(auditTimelineQuerySchema)) query: AuditTimelineQuery,
+  ) {
+    return this.auditService.timeline(organizationId, resourceId, query);
   }
 
   @Get('export/stream')
@@ -191,18 +251,7 @@ export class AuditController {
       'Only the batch metadata is returned; use `GET /audit/archives/{batchId}` to read the records of a batch.',
   })
   @ApiQuery({ name: 'limit', required: false, type: Number, description: 'Max batches to return (default 50, max 100)' })
-  @ApiResponse({
-    status: 200,
-    description: 'Archive batches, newest first',
-    schema: {
-      type: 'object',
-      required: ['batches', 'count'],
-      properties: {
-        batches: { type: 'array', items: { type: 'object', additionalProperties: true } },
-        count: { type: 'integer' },
-      },
-    },
-  })
+  @ApiEnvelope(AuditArchiveBatchListDto, { description: 'Archive batches, newest first' })
   @ApiErrorResponses({ unauthorized: true, forbidden: true, serverError: true })
   async listArchives(
     @CurrentUser('organizationId') organizationId: string,
@@ -223,18 +272,7 @@ export class AuditController {
       'Returns the audit records of one archived batch. The compressed payload is decompressed and its checksum verified before it is returned.',
   })
   @ApiParam({ name: 'batchId', description: 'Archive batch id', example: '8f1c…' })
-  @ApiResponse({
-    status: 200,
-    description: 'The archived audit records',
-    schema: {
-      type: 'object',
-      required: ['records', 'count'],
-      properties: {
-        records: { type: 'array', items: { type: 'object', additionalProperties: true } },
-        count: { type: 'integer' },
-      },
-    },
-  })
+  @ApiEnvelope(AuditArchiveRecordListDto, { description: 'The archived audit records' })
   @ApiErrorResponses({ unauthorized: true, forbidden: true, notFound: true, serverError: true })
   async readArchive(
     @CurrentUser('organizationId') organizationId: string,

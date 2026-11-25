@@ -1,5 +1,105 @@
 import { applyDecorators } from '@nestjs/common';
-import { ApiExtraModels, ApiProperty, ApiPropertyOptional, ApiResponse, getSchemaPath } from '@nestjs/swagger';
+import {
+  ApiExtraModels,
+  ApiProperty,
+  ApiPropertyOptional,
+  ApiResponse,
+  getSchemaPath,
+} from '@nestjs/swagger';
+
+/**
+ * OpenAPI model of an individual field-level validation problem.
+ */
+export class ValidationErrorItemDto {
+  @ApiProperty({
+    example: 'recipientAddress',
+    description: 'Dot-joined property path identifying the failing field',
+  })
+  path!: string;
+
+  @ApiProperty({
+    example: 'Required',
+    description: 'Human-readable explanation of why validation failed',
+  })
+  message!: string;
+
+  @ApiProperty({
+    example: 'REQUIRED',
+    description: 'Stable, machine-readable validation issue code',
+    enum: [
+      'REQUIRED',
+      'INVALID_TYPE',
+      'TOO_SMALL',
+      'TOO_BIG',
+      'INVALID_STRING',
+      'INVALID_ENUM',
+      'INVALID_DATE',
+      'INVALID_LITERAL',
+      'UNRECOGNIZED_KEYS',
+      'CUSTOM',
+      'INVALID_VALUE',
+    ],
+  })
+  code!: string;
+}
+
+/**
+ * OpenAPI model of the request metadata returned with error responses.
+ */
+export class ErrorMetaDto {
+  @ApiProperty({
+    example: 'req_018f...',
+    description: 'Correlation request id for tracing and log inspection',
+  })
+  requestId!: string;
+}
+
+/**
+ * OpenAPI model of the core error detail payload.
+ */
+export class ErrorDetailDto {
+  @ApiProperty({
+    example: 'VALIDATION_ERROR',
+    description: 'Machine-readable domain error code',
+  })
+  code!: string;
+
+  @ApiProperty({
+    example: 'Request validation failed',
+    description: 'Human-readable summary of the error',
+  })
+  message!: string;
+
+  @ApiPropertyOptional({
+    type: [ValidationErrorItemDto],
+    description: 'Field-level validation error details when applicable',
+  })
+  errors?: ValidationErrorItemDto[];
+}
+
+/**
+ * OpenAPI model of the uniform error envelope:
+ * `{ success: false, error: { code, message, errors? }, meta: { requestId } }`.
+ */
+export class StandardErrorEnvelopeDto {
+  @ApiProperty({
+    example: false,
+    description: 'Always false — indicates the request failed',
+  })
+  success!: boolean;
+
+  @ApiProperty({
+    type: ErrorDetailDto,
+    description: 'Structured error information including code, message and optional field errors',
+  })
+  error!: ErrorDetailDto;
+
+  @ApiProperty({
+    type: ErrorMetaDto,
+    description: 'Request metadata including correlation requestId',
+  })
+  meta!: ErrorMetaDto;
+}
 
 /**
  * OpenAPI model of the RFC 9457 problem-details body every failing request
@@ -97,13 +197,8 @@ const ERROR_STATUSES: Array<[keyof ApiErrorResponsesOptions, number]> = [
 /**
  * Documents the error responses of an endpoint.
  *
- * Every error the API returns uses the same RFC 9457 body, so the responses
- * reference {@link ApiErrorEnvelopeDto} instead of repeating the schema. Only
- * the status codes that can actually occur should be requested; pass a string
- * instead of `true` to document a more specific description.
- *
- * The decorator replaces any plain `@ApiResponse` for the same status, so the
- * two must not be combined.
+ * Emits schemas for both standard uniform error envelopes (`application/json`)
+ * and RFC 9457 problem details (`application/problem+json`).
  */
 export function ApiErrorResponses(options: ApiErrorResponsesOptions) {
   const responses = ERROR_STATUSES.filter(([key]) => options[key] !== undefined && options[key] !== false).map(
@@ -115,6 +210,9 @@ export function ApiErrorResponses(options: ApiErrorResponsesOptions) {
         status,
         description,
         content: {
+          'application/json': {
+            schema: { $ref: getSchemaPath(StandardErrorEnvelopeDto) },
+          },
           'application/problem+json': {
             schema: { $ref: getSchemaPath(ApiErrorEnvelopeDto) },
           },
@@ -123,5 +221,14 @@ export function ApiErrorResponses(options: ApiErrorResponsesOptions) {
     },
   );
 
-  return applyDecorators(ApiExtraModels(ApiErrorEnvelopeDto), ...responses);
+  return applyDecorators(
+    ApiExtraModels(
+      ApiErrorEnvelopeDto,
+      StandardErrorEnvelopeDto,
+      ErrorDetailDto,
+      ValidationErrorItemDto,
+      ErrorMetaDto,
+    ),
+    ...responses,
+  );
 }

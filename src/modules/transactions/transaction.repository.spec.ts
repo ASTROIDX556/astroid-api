@@ -15,3 +15,51 @@ describe('TransactionRepository', () => {
     });
   });
 });
+
+describe('TransactionRepository.findCursorPage', () => {
+  it('asks for limit + 1 rows with the tenant filter and a keyset cursor', async () => {
+    const findMany = vi.fn().mockResolvedValue([]);
+    const count = vi.fn();
+    const prisma = { transaction: { findMany, count } } as unknown as PrismaService;
+    const repository = new TransactionRepository(prisma);
+    const createdAt = new Date('2026-09-29T12:00:00.000Z');
+
+    await repository.findCursorPage(
+      { organizationId: 'org-1', deletedAt: null },
+      { createdAt, id: 'tx-20' },
+      21,
+    );
+
+    expect(findMany).toHaveBeenCalledWith({
+      where: {
+        AND: [
+          { organizationId: 'org-1', deletedAt: null },
+          {
+            OR: [
+              { createdAt: { lt: createdAt } },
+              { createdAt, id: { lt: 'tx-20' } },
+            ],
+          },
+        ],
+      },
+      take: 21,
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+    });
+    // No count query: the extra row is what tells us another page exists.
+    expect(count).not.toHaveBeenCalled();
+  });
+
+  it('queries the first page without a cursor condition', async () => {
+    const findMany = vi.fn().mockResolvedValue([]);
+    const prisma = { transaction: { findMany } } as unknown as PrismaService;
+    const repository = new TransactionRepository(prisma);
+
+    await repository.findCursorPage({ organizationId: 'org-1' }, undefined, 11);
+
+    expect(findMany).toHaveBeenCalledWith({
+      where: { organizationId: 'org-1' },
+      take: 11,
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+    });
+  });
+});

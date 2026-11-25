@@ -1,5 +1,4 @@
 import { Module } from '@nestjs/common';
-import { ScheduleModule } from '@nestjs/schedule';
 import { TransactionController } from './transaction.controller';
 import { TransactionService } from './transaction.service';
 import { TransactionRepository } from './transaction.repository';
@@ -11,6 +10,7 @@ import { BudgetModule } from '../budgets/budget.module';
 import { SorobanSimulationService } from './services/soroban-simulation.service';
 import { StellarSimulationService } from './services/stellar-simulation.service';
 import { GasEstimationService } from './services/gas-estimation.service';
+import { TransactionPreflightService } from './services/transaction-preflight.service';
 import { StellarModule } from '../stellar/stellar.module';
 import { SpendingLimitService } from './spending-limit.service';
 import { SpendingLimitGuard } from './guards/spending-limit.guard';
@@ -18,8 +18,8 @@ import { BullModule } from '@nestjs/bullmq';
 import { Queues } from '../../queues/queues.constants';
 import { createQueueRegistrationOptions } from '../../queues/queue-policy';
 import { TransactionWorker } from './workers/transaction.worker';
-import { TransactionIdempotencyCleanupService } from './transaction-idempotency-cleanup.service';
 import { IdempotencyModule } from '../../common/idempotency/idempotency.module';
+import { ApprovalExpiryQueue } from '../../queues/approval-expiry.queue';
 
 /**
  * Transaction pipeline module. Pulls together wallets, agents, policies, risk
@@ -29,7 +29,6 @@ import { IdempotencyModule } from '../../common/idempotency/idempotency.module';
  */
 @Module({
   imports: [
-    ScheduleModule.forRoot(),
     WalletModule,
     AgentModule,
     PolicyModule,
@@ -46,6 +45,9 @@ import { IdempotencyModule } from '../../common/idempotency/idempotency.module';
         backoff: { type: 'exponential', delay: 2_000 },
       }),
     ),
+    // Approval proposals are created here, so the delayed expiry job is
+    // scheduled from this module (ApprovalModule imports it for cancellation).
+    BullModule.registerQueue({ name: Queues.ApprovalSweep }),
   ],
   controllers: [TransactionController],
   providers: [
@@ -54,11 +56,12 @@ import { IdempotencyModule } from '../../common/idempotency/idempotency.module';
     SorobanSimulationService,
     StellarSimulationService,
     GasEstimationService,
+    TransactionPreflightService,
     SpendingLimitService,
     SpendingLimitGuard,
     TransactionWorker,
-    TransactionIdempotencyCleanupService,
+    ApprovalExpiryQueue,
   ],
-  exports: [TransactionService, SorobanSimulationService, StellarSimulationService, GasEstimationService, SpendingLimitService],
+  exports: [TransactionService, ApprovalExpiryQueue, SorobanSimulationService, StellarSimulationService, GasEstimationService, SpendingLimitService],
 })
 export class TransactionModule {}

@@ -1,4 +1,4 @@
-import { ExecutionContext, Injectable, ForbiddenException } from '@nestjs/common';
+import { ExecutionContext, Injectable } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { AuthGuard } from '@nestjs/passport';
 import { Observable } from 'rxjs';
@@ -6,8 +6,9 @@ import { IS_PUBLIC_KEY } from '../decorators/public.decorator';
 import { SCOPES_KEY } from '../decorators/scopes.decorator';
 import { matchScope } from '../guards/scopes.guard';
 import { ErrorCode } from '../constants/error-codes';
-import { UnauthorizedException } from '../exceptions/domain.exception';
+import { ForbiddenException, UnauthorizedException } from '../exceptions/domain.exception';
 import { AuthenticatedUser } from '../interfaces/authenticated-user.interface';
+import { ApiKeyScope } from '../constants/scopes';
 
 /**
  * Guard enforcing API Key authentication ('api-key' passport strategy)
@@ -18,7 +19,7 @@ import { AuthenticatedUser } from '../interfaces/authenticated-user.interface';
  */
 @Injectable()
 export class ApiKeyGuard extends AuthGuard('api-key') {
-  private _requiredScopes: string[] | undefined;
+  private _requiredScopes: ApiKeyScope[] | undefined;
 
   constructor(private readonly reflector: Reflector) {
     super();
@@ -33,7 +34,7 @@ export class ApiKeyGuard extends AuthGuard('api-key') {
       return true;
     }
 
-    this._requiredScopes = this.reflector.getAllAndOverride<string[] | undefined>(SCOPES_KEY, [
+    this._requiredScopes = this.reflector.getAllAndOverride<ApiKeyScope[] | undefined>(SCOPES_KEY, [
       context.getHandler(),
       context.getClass(),
     ]);
@@ -51,10 +52,7 @@ export class ApiKeyGuard extends AuthGuard('api-key') {
     }
 
     const principal = user as unknown as AuthenticatedUser;
-    const grantedScopes = [
-      ...(principal.scopes ?? []),
-      ...(principal.permissions ?? []),
-    ];
+    const grantedScopes = principal.scopes ?? [];
 
     const missingScopes = this._requiredScopes.filter(
       (required) => !grantedScopes.some((granted) => matchScope(granted, required)),

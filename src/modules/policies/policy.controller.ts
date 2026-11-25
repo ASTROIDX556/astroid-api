@@ -2,10 +2,10 @@ import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestj
 import {
   ApiOperation,
   ApiTags,
-  ApiBearerAuth,
   ApiParam,
   ApiBody,
   ApiQuery,
+  ApiExtraModels,
 } from '@nestjs/swagger';
 import { UserRole } from '@prisma/client';
 import { PolicyService } from './policy.service';
@@ -19,6 +19,8 @@ import {
   PolicySimulationDto,
   updatePolicySchema,
   UpdatePolicyInput,
+  SpendingAllowanceDto,
+  SpendingWindowAllowanceDto,
 } from './policy.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
@@ -33,10 +35,12 @@ import {
 import { ApiPaginationQuery } from '../../common/decorators/api-pagination-query.decorator';
 import { ApiEnvelope, ApiPaginatedEnvelope } from '../../common/decorators/api-envelope.decorator';
 import { ApiErrorResponses } from '../../common/decorators/api-error-responses.decorator';
+import { ApiAuthenticated } from '../../common/decorators/api-authenticated.decorator';
 
 @ApiTags('policies')
-@ApiBearerAuth('access-token')
+@ApiAuthenticated()
 @Controller('policies')
+@ApiErrorResponses({ unauthorized: true, forbidden: true, tooManyRequests: true, serverError: true })
 export class PolicyController {
   constructor(private readonly policyService: PolicyService) {}
 
@@ -102,6 +106,27 @@ export class PolicyController {
     @Body(new ZodValidationPipe(simulatePolicySchema)) body: SimulatePolicyInput,
   ) {
     return this.policyService.simulate(organizationId, body);
+  }
+
+  @Get('agents/:agentId/spending-allowance')
+  @ApiExtraModels(SpendingWindowAllowanceDto)
+  @ApiOperation({
+    summary: 'Get the rolling-window spending allowance for an agent',
+    description:
+      "Returns the used and remaining spend for the daily (UTC calendar day), weekly (ISO week) and monthly (calendar month) windows, " +
+      'computed from the agent\u2019s applicable enabled spending-limit policies and real transaction history. In-flight and settled ' +
+      'spend counts toward each window; terminal-failed transactions do not.',
+  })
+  @ApiParam({ name: 'agentId', description: 'Agent UUID', example: '018f0a1b-2c3d-4e5f-8a9b-0c1d2e3f4a5b' })
+  @ApiQuery({ name: 'asset', required: false, description: 'Asset to report allowance for (defaults to XLM)', example: 'USDC' })
+  @ApiEnvelope(SpendingAllowanceDto, { description: 'Used and remaining allowance per window' })
+  @ApiErrorResponses({ unauthorized: true, serverError: true })
+  spendingAllowance(
+    @CurrentUser('organizationId') organizationId: string,
+    @Param('agentId') agentId: string,
+    @Query('asset') asset?: string,
+  ) {
+    return this.policyService.getSpendAllowance(organizationId, agentId, asset ?? 'XLM');
   }
 
   @Get(':id')

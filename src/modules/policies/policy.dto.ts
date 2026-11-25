@@ -103,3 +103,61 @@ export class PolicySimulationDto {
   @ApiProperty({ description: 'Number of policies that were evaluated', example: 3 })
   evaluatedPolicies!: number;
 }
+
+/**
+ * Used and remaining spend capacity for one rolling window. Returned by the
+ * spending-allowance read endpoint.
+ */
+export class SpendingWindowAllowanceDto {
+  @ApiProperty({
+    example: 450,
+    description: 'Amount already counted toward this window (in-flight and settled spend, in the asset\'s units).',
+  })
+  used!: number;
+
+  @ApiProperty({
+    nullable: true,
+    type: Number,
+    example: 1000,
+    description: 'Most restrictive applicable limit for this window, or null when no enabled policy sets one (the window is unlimited).',
+  })
+  limit!: number | null;
+
+  @ApiProperty({
+    nullable: true,
+    type: Number,
+    example: 550,
+    description: 'Remaining spend capacity for this window (limit minus used, floored at 0), or null when the window is unlimited.',
+  })
+  remaining!: number | null;
+}
+
+/**
+ * Per-window spending allowance for an agent/asset. `daily` is the UTC calendar
+ * day, `weekly` the ISO week (Monday, UTC) and `monthly` the calendar month.
+ */
+export class SpendingAllowanceDto {
+  @ApiProperty({ example: '018f0a1b-2c3d-4e5f-8a9b-0c1d2e3f4a5b', description: 'Agent the allowance is computed for.' })
+  agentId!: string;
+
+  @ApiProperty({ example: 'USDC', description: 'Asset the allowance is denominated in.' })
+  asset!: string;
+
+  @ApiProperty({
+    type: SpendingWindowAllowanceDto,
+    description: 'Daily allowance — UTC calendar day, resets at UTC midnight.',
+  })
+  daily!: SpendingWindowAllowanceDto;
+
+  @ApiProperty({
+    type: SpendingWindowAllowanceDto,
+    description: 'Weekly allowance — ISO week, resets at UTC Monday midnight.',
+  })
+  weekly!: SpendingWindowAllowanceDto;
+
+  @ApiProperty({
+    type: SpendingWindowAllowanceDto,
+    description: 'Monthly allowance — calendar month, resets at UTC midnight on the 1st.',
+  })
+  monthly!: SpendingWindowAllowanceDto;
+}

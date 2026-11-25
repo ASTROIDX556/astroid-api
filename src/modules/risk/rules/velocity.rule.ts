@@ -20,6 +20,9 @@ export const VelocityRule: RiskRule = {
     const ratio = Math.max(countRatio, amountRatio);
     const weight = config.weights?.velocity ?? VelocityRule.defaultWeight;
     return {
+      code: 'velocity',
+      description: `${input.recentTransactionCount} recent transactions, ${input.recentTransactionAmount ?? 0} total value`,
+      value: input.recentTransactionCount,
       factor: 'velocity',
       weight,
       contribution: ratio * weight,

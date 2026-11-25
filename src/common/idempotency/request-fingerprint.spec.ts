@@ -18,6 +18,26 @@ describe('request fingerprinting', () => {
     );
   });
 
+  it('canonicalises nested objects independently of key order', () => {
+    const left = { metadata: { b: [{ z: 1, y: 2 }], a: true }, amount: '50' };
+    const right = { amount: '50', metadata: { a: true, b: [{ y: 2, z: 1 }] } };
+
+    expect(canonicalJson(left)).toBe(canonicalJson(right));
+    expect(computeRequestFingerprint({ body: left })).toBe(
+      computeRequestFingerprint({ body: right }),
+    );
+  });
+
+  it('ignores JSON formatting whitespace but preserves whitespace inside values', () => {
+    const compact = JSON.parse('{"amount":"50","memo":"hello world"}') as unknown;
+    const spaced = JSON.parse('{ "memo" : "hello world", "amount" : "50" }') as unknown;
+
+    expect(canonicalJson(compact)).toBe(canonicalJson(spaced));
+    expect(
+      computeRequestFingerprint({ body: { amount: '50', memo: 'hello  world' } }),
+    ).not.toBe(computeRequestFingerprint({ body: { amount: '50', memo: 'hello world' } }));
+  });
+
   it('produces a different fingerprint when the body differs', () => {
     expect(computeRequestFingerprint({ body: { amount: '50' } })).not.toBe(
       computeRequestFingerprint({ body: { amount: '51' } }),

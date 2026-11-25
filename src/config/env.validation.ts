@@ -13,6 +13,18 @@ export const appEnvSchema = z.object({
   API_PREFIX: z.string().default('api/v1'),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
   CORS_ORIGINS: z.string().default('*'),
+  // Extra field names to redact from structured logs and error reports, on top
+  // of the built-in list in src/common/helpers/audit-sanitizer.ts. Comma
+  // separated; matching is case-insensitive and ignores `_`, `-` and spaces.
+  LOG_REDACT_FIELDS: z
+    .string()
+    .default('')
+    .transform((value) =>
+      value
+        .split(',')
+        .map((field) => field.trim())
+        .filter((field) => field.length > 0),
+    ),
 });
 
 export const databaseEnvSchema = z.object({
@@ -56,6 +68,19 @@ export const redisEnvSchema = z.object({
   REDIS_DB: z.coerce.number().int().nonnegative().default(0),
 });
 
+export const balanceCacheEnvSchema = z.object({
+  // Seconds a cached Stellar balance may be served before it is re-read from
+  // the RPC. Keep it short: a confirmed transaction deletes the key, so the TTL
+  // only bounds the staleness window when an invalidation is missed.
+  BALANCE_CACHE_TTL: z.coerce.number().int().min(1).max(3600).default(30),
+  // Namespace of the cache entries. Two deployments (staging, production, …)
+  // that share a Redis instance never share a balance entry.
+  BALANCE_CACHE_ENV: z.string().min(1).default(process.env.NODE_ENV ?? 'development'),
+  // Native XLM balance below which a wallet is reported as low. Read by the
+  // balance cache watcher on every refresh.
+  LOW_XLM_THRESHOLD: z.coerce.number().nonnegative().default(10),
+});
+
 export const authEnvSchema = z.object({
   JWT_ACCESS_SECRET: z.string().min(16, 'JWT_ACCESS_SECRET must be >= 16 chars'),
   JWT_REFRESH_SECRET: z.string().min(16, 'JWT_REFRESH_SECRET must be >= 16 chars'),
@@ -64,6 +89,7 @@ export const authEnvSchema = z.object({
   PASSKEY_RP_ID: z.string().default('localhost'),
   PASSKEY_RP_NAME: z.string().default('Astroid'),
   PASSKEY_ORIGIN: z.string().default('http://localhost:3001'),
+  API_KEY_ROTATION_GRACE_PERIOD_SECONDS: z.coerce.number().int().positive().default(86400),
 });
 
 export const stellarEnvSchema = z.object({
@@ -86,6 +112,19 @@ export const stellarEnvSchema = z.object({
   // Static fee limit, in stroops, used alongside the fallback gas limit.
   STELLAR_FALLBACK_FEE_STROOPS: z.coerce.number().int().nonnegative().default(100_000),
   STELLAR_ANCHOR_ASSETS: z.string().default(''),
+  // Soroban RPC resilience (see src/integrations/stellar/soroban.client.ts).
+  // Per-attempt timeout for an outbound Soroban RPC call.
+  STELLAR_SOROBAN_RPC_TIMEOUT_MS: z.coerce.number().int().positive().max(60_000).default(5_000),
+  // Total attempts per call, including the first. Only timeouts, connection
+  // errors, 5xx and 429 are retried.
+  STELLAR_SOROBAN_RPC_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(3).default(3),
+  // Base and maximum delay of the jittered exponential backoff between attempts.
+  STELLAR_SOROBAN_RPC_RETRY_BASE_DELAY_MS: z.coerce.number().int().positive().default(250),
+  STELLAR_SOROBAN_RPC_RETRY_MAX_DELAY_MS: z.coerce.number().int().positive().default(2_000),
+  // Consecutive failed attempts that open the circuit breaker.
+  STELLAR_SOROBAN_RPC_CIRCUIT_FAILURE_THRESHOLD: z.coerce.number().int().positive().default(5),
+  // How long the circuit stays open before a single half-open probe.
+  STELLAR_SOROBAN_RPC_CIRCUIT_COOLDOWN_MS: z.coerce.number().int().positive().default(30_000),
 });
 
 export const priceOracleEnvSchema = z.object({
@@ -97,12 +136,35 @@ export const priceOracleEnvSchema = z.object({
   PRICE_ORACLE_STATIC_PRICES: z.string().default(''),
 });
 
+/** Page-size bounds for audit log cursor listing and resource timelines. */
+export const auditPaginationEnvSchemaBase = z.object({
+  AUDIT_PAGE_SIZE_DEFAULT: z.coerce.number().int().min(1).max(1000).default(20),
+  AUDIT_PAGE_SIZE_MAX: z.coerce.number().int().min(1).max(1000).default(100),
+});
+
+function validateAuditPaginationRange(
+  env: { AUDIT_PAGE_SIZE_DEFAULT: number; AUDIT_PAGE_SIZE_MAX: number },
+  ctx: z.RefinementCtx,
+): void {
+  if (env.AUDIT_PAGE_SIZE_DEFAULT > env.AUDIT_PAGE_SIZE_MAX) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['AUDIT_PAGE_SIZE_DEFAULT'],
+      message: `must be less than or equal to AUDIT_PAGE_SIZE_MAX (${env.AUDIT_PAGE_SIZE_MAX})`,
+    });
+  }
+}
+
+/** Standalone schema used by the audit DTOs to read the configured bounds. */
+export const auditPaginationEnvSchema = auditPaginationEnvSchemaBase.superRefine(validateAuditPaginationRange);
+
 export const auditEnvSchemaBase = z.object({
     AUDIT_ARCHIVE_ENABLED: z.enum(['true', 'false']).default('true').transform((value) => value === 'true'),
     AUDIT_ARCHIVE_RETENTION_DAYS: z.coerce.number().int().positive().max(3650).default(30),
     AUDIT_ARCHIVE_BATCH_SIZE: z.coerce.number().int().positive().max(5_000).default(500),
     AUDIT_ARCHIVE_MAX_BATCHES: z.coerce.number().int().positive().max(1_000).default(20),
     AUDIT_RETENTION_DAYS: z.coerce.number().int().positive().max(3650).default(90),
+    ...auditPaginationEnvSchemaBase.shape,
 });
 
 export const auditEnvSchema = auditEnvSchemaBase.superRefine((env, ctx) => {
@@ -113,6 +175,7 @@ export const auditEnvSchema = auditEnvSchemaBase.superRefine((env, ctx) => {
         message: `must be lower than AUDIT_RETENTION_DAYS (${env.AUDIT_RETENTION_DAYS}) so records are archived before they are deleted`,
       });
     }
+    validateAuditPaginationRange(env, ctx);
   });
 
 export const storageEnvSchema = z.object({
@@ -124,6 +187,13 @@ export const storageEnvSchema = z.object({
 });
 
 export const idempotencyEnvSchema = z.object({
+  // Name of the HTTP header carrying the idempotency key. Some proxies reserve
+  // the default name, so deployments may override it without code changes.
+  IDEMPOTENCY_HEADER_NAME: z
+    .string()
+    .trim()
+    .regex(/^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/)
+    .default('Idempotency-Key'),
   // How long a completed idempotency record stays replayable. After this window
   // the key is ignored and a fresh request is processed and stored.
   IDEMPOTENCY_KEY_TTL_HOURS: z.coerce.number().int().positive().max(720).default(24),
@@ -150,6 +220,12 @@ export const walletReconciliationEnvSchema = z.object({
   WALLET_BALANCE_DRIFT_THRESHOLD: z.coerce.number().nonnegative().max(1_000_000_000).default(0.0000001),
 });
 
+export const approvalEnvSchema = z.object({
+  APPROVAL_TTL_HOURS: z.coerce.number().int().positive().default(72),
+  APPROVAL_SWEEP_INTERVAL_MS: z.coerce.number().int().positive().default(60000),
+  APPROVAL_SWEEP_BATCH_SIZE: z.coerce.number().int().positive().default(100),
+});
+
 export const queueEnvSchema = z.object({
   QUEUE_PREFIX: z.string().default('astroid'),
   QUEUE_CONCURRENCY: z.coerce.number().int().positive().default(5),
@@ -158,6 +234,13 @@ export const queueEnvSchema = z.object({
   WEBHOOK_HTTP_TIMEOUT_MS: z.coerce.number().int().positive().max(120_000).default(5_000),
   WEBHOOK_FAILED_JOB_RETENTION_SECONDS: z.coerce.number().int().positive().max(2_592_000).default(86_400),
   WEBHOOK_DEAD_LETTER_RETENTION_SECONDS: z.coerce.number().int().positive().max(2_592_000).default(604_800),
+  /** Enable the queue observability endpoint (off by default). */
+  QUEUE_OBSERVABILITY_ENABLED: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
+  /** Maximum failed jobs to return per queue (capped at 20). */
+  QUEUE_OBSERVABILITY_MAX_FAILED_JOBS: z.coerce.number().int().min(1).max(20).default(10),
 });
 
 /**
@@ -189,6 +272,45 @@ export const webhookEnvSchema = z.object({
   WEBHOOK_CIRCUIT_FAILURE_THRESHOLD: z.coerce.number().int().min(1).max(100).default(5),
   // How long the circuit stays open before a probe delivery is allowed (ms).
   WEBHOOK_CIRCUIT_COOLDOWN_MS: z.coerce.number().int().min(1_000).max(86_400_000).default(300_000),
+});
+
+export const budgetRolloverEnvSchema = z.object({
+  // Enables the repeatable budget period rollover job at boot.
+  BUDGET_ROLLOVER_ENABLED: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((value) => value === 'true'),
+  // Cadence of the repeatable BullMQ job (minutes). Every tick only touches
+  // budgets whose period end is already in the past.
+  BUDGET_ROLLOVER_INTERVAL_MINUTES: z.coerce.number().int().min(1).max(1_440).default(1),
+  // Budgets loaded per page. Pages are processed one at a time so a large
+  // number of budgets never occupies more than this many rows in memory.
+  BUDGET_ROLLOVER_BATCH_SIZE: z.coerce.number().int().min(1).max(1_000).default(100),
+  // Upper bound on pages per run; the next scheduled tick picks up the rest.
+  BUDGET_ROLLOVER_MAX_BATCHES: z.coerce.number().int().min(1).max(1_000).default(20),
+});
+
+export const budgetAlertEnvSchema = z.object({
+  // Comma-separated percentage thresholds (e.g. "80,100") at which a budget
+  // spend emits an alert. Sorted ascending and de-duplicated after parsing.
+  BUDGET_ALERT_THRESHOLDS: z
+    .string()
+    .default('80,100')
+    .transform((value) =>
+      value
+        .split(',')
+        .map((part) => part.trim())
+        .filter((part) => part.length > 0),
+    )
+    .refine((parts) => parts.length > 0, {
+      message: 'must contain at least one threshold',
+    })
+    .refine(
+      (parts) =>
+        parts.every((part) => /^\d+$/.test(part) && Number(part) >= 1 && Number(part) <= 100),
+      { message: 'must be comma-separated whole percentages between 1 and 100' },
+    )
+    .transform((parts) => Array.from(new Set(parts.map(Number))).sort((a, b) => a - b)),
 });
 
 export const throttleEnvSchema = z.object({
@@ -225,6 +347,10 @@ export const rateLimitEnvSchema = z.object({
     .enum(['true', 'false'])
     .default('false')
     .transform((value) => value === 'true'),
+  // Comma-separated extra identifiers folded into the public bucket key next to
+  // the client IP (`ip`, `apiKey`). Entries are parsed leniently by
+  // `rate-limit.config.ts`; unknown ones are ignored.
+  PUBLIC_RATE_LIMIT_CLIENT_IDENTIFIERS: z.string().default(''),
   // Per-route limits of the sensitive-route limiter (`@SensitiveRateLimit`). Each
   // pair is requests allowed per sliding window of that many seconds, counted per
   // route and per caller (the client IP before login, the principal after it).
@@ -238,6 +364,19 @@ export const rateLimitEnvSchema = z.object({
   RATE_LIMIT_WEBHOOK_CREATE_WINDOW_SECONDS: z.coerce.number().int().positive().default(3600),
   RATE_LIMIT_WEBHOOK_ROTATE_MAX: z.coerce.number().int().positive().default(10),
   RATE_LIMIT_WEBHOOK_ROTATE_WINDOW_SECONDS: z.coerce.number().int().positive().default(3600),
+  RATE_LIMIT_CREDENTIAL_PER_MINUTE: z.coerce.number().int().positive().default(120),
+  RATE_LIMIT_CREDENTIAL_PER_DAY: z.coerce.number().int().positive().default(10000),
+  RATE_LIMIT_CREDENTIAL_DAY_WINDOW_SECONDS: z.coerce.number().int().positive().default(86400),
+  RATE_LIMIT_CREDENTIAL_QUOTA_CACHE_SECONDS: z.coerce.number().int().positive().default(60),
+});
+
+export const healthEnvSchema = z.object({
+  // Readiness reports pending Prisma migrations. Set to `false` to skip that
+  // check, e.g. in local development against a scratch database.
+  HEALTH_CHECK_MIGRATIONS_ENABLED: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((value) => value === 'true'),
 });
 
 export const metricsEnvSchema = z.object({
@@ -273,6 +412,8 @@ export const INSECURE_DEFAULT_ENCRYPTION_KEY =
   '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 
 export const encryptionEnvSchema = z.object({
+  // Legacy alias accepted as a fallback when ENCRYPTION_KEY is unset.
+  ENCRYPTION_MASTER_KEY: z.string().optional(),
   ENCRYPTION_KEY: z
     .string()
     .default(INSECURE_DEFAULT_ENCRYPTION_KEY)
@@ -309,6 +450,7 @@ export const environmentSchema = z
     ...appEnvSchema.shape,
     ...databaseEnvSchema.shape,
     ...redisEnvSchema.shape,
+    ...balanceCacheEnvSchema.shape,
     ...authEnvSchema.shape,
     ...stellarEnvSchema.shape,
     ...storageEnvSchema.shape,
@@ -317,10 +459,15 @@ export const environmentSchema = z
     ...queueEnvSchema.shape,
     ...idempotencyEnvSchema.shape,
     ...walletReconciliationEnvSchema.shape,
+    ...approvalEnvSchema.shape,
     ...webhookEnvSchema.shape,
+    ...budgetAlertEnvSchema.shape,
+    ...budgetRolloverEnvSchema.shape,
     ...throttleEnvSchema.shape,
     ...rateLimitEnvSchema.shape,
     ...metricsEnvSchema.shape,
+    ...shutdownEnvSchema.shape,
+    ...healthEnvSchema.shape,
     ...aiEnvSchema.shape,
     ...encryptionEnvSchema.shape,
   })
@@ -332,6 +479,7 @@ export const environmentSchema = z
         message: `must be lower than AUDIT_RETENTION_DAYS (${env.AUDIT_RETENTION_DAYS}) so records are archived before they are deleted`,
       });
     }
+    validateAuditPaginationRange(env, ctx);
     if (env.NODE_ENV !== 'production') {
       return;
     }

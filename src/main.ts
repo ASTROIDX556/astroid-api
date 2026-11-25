@@ -1,24 +1,34 @@
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
+import { SwaggerModule } from '@nestjs/swagger';
 import { Logger as PinoLogger } from 'nestjs-pino';
 import helmet from 'helmet';
 import { Request, Response, NextFunction } from 'express';
 import { AppModule } from './app.module';
 import { ShutdownCoordinator } from './common/shutdown/shutdown-coordinator.service';
 import { AppConfig } from './config/app.config';
-import { TOTAL_COUNT_HEADER } from './common/constants/headers';
+import {
+  RATE_LIMIT_LIMIT_HEADER,
+  RATE_LIMIT_REMAINING_HEADER,
+  RATE_LIMIT_RESET_HEADER,
+  RETRY_AFTER_HEADER,
+  TOTAL_COUNT_HEADER,
+} from './common/constants/headers';
 import { GLOBAL_PREFIX_EXCLUDED_ROUTES } from './common/constants/global-prefix';
+import { buildSwaggerConfig } from './common/openapi/swagger-config';
 import { assertValidEnvironment, EnvironmentValidationError } from './config/env.validation';
 import { PrismaService } from './database/prisma.service';
+import { configureSensitiveFields } from './common/helpers/audit-sanitizer';
 
 async function bootstrap() {
   // Fail fast on missing or malformed configuration, before any module is
   // constructed or any connection is opened. `.env` has already been merged
   // into `process.env` at this point: `ConfigModule.forRoot` loads it when
   // `AppModule` is imported.
-  assertValidEnvironment(process.env);
+  const environment = assertValidEnvironment(process.env);
+  // Deployment-specific redaction keys, applied before the logger is built.
+  configureSensitiveFields(environment.LOG_REDACT_FIELDS);
 
   // `NestFactory.create` awaits every module's `onModuleInit`, and
   // `PrismaService.onModuleInit` connects and then unconditionally validates
@@ -75,7 +85,13 @@ async function bootstrap() {
   app.enableCors({
     origin: appConfig.corsOrigins,
     credentials: true,
-    exposedHeaders: [TOTAL_COUNT_HEADER],
+    exposedHeaders: [
+      TOTAL_COUNT_HEADER,
+      RATE_LIMIT_LIMIT_HEADER,
+      RATE_LIMIT_REMAINING_HEADER,
+      RATE_LIMIT_RESET_HEADER,
+      RETRY_AFTER_HEADER,
+    ],
   });
 
   // Global validation pipe (transforms + validates DTOs)
@@ -96,16 +112,7 @@ async function bootstrap() {
 
   // OpenAPI / Swagger documentation
   if (appConfig.nodeEnv !== 'production') {
-    const swaggerConfig = new DocumentBuilder()
-      .setTitle('Astroid API')
-      .setDescription(
-        'The intelligence layer for the Financial Operating System for autonomous AI agents on Stellar.',
-      )
-      .setVersion('1.0')
-      .addBearerAuth({ type: 'http', scheme: 'bearer', bearerFormat: 'JWT' }, 'access-token')
-      .addApiKey({ type: 'apiKey', in: 'header', name: 'x-api-key' }, 'api-key')
-      .build();
-    const document = SwaggerModule.createDocument(app, swaggerConfig);
+    const document = SwaggerModule.createDocument(app, buildSwaggerConfig());
     SwaggerModule.setup('docs', app, document);
   }
 

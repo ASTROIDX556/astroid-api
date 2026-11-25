@@ -32,17 +32,17 @@ function policyRow(overrides: Partial<Policy> = {}): Policy {
 
 describe('PolicyService evaluation', () => {
   let service: PolicyService;
-  let listActiveForEvaluation: ReturnType<typeof vi.fn>;
+  let findApplicableForEvaluation: ReturnType<typeof vi.fn>;
   let convert: ReturnType<typeof vi.fn>;
   let emit: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
-    listActiveForEvaluation = vi.fn().mockResolvedValue([]);
+    findApplicableForEvaluation = vi.fn().mockResolvedValue([]);
     convert = vi.fn().mockImplementation(async (amount: number) => amount);
     emit = vi.fn().mockResolvedValue(undefined);
 
     service = new PolicyService(
-      { listActiveForEvaluation } as unknown as SpendingPolicyService,
+      { findApplicableForEvaluation } as unknown as SpendingPolicyService,
       new PolicyEngine(),
       { emit } as unknown as EventBusService,
       { convert } as unknown as PriceOracleService,
@@ -62,8 +62,24 @@ describe('PolicyService evaluation', () => {
     expect(result.violations).toHaveLength(0);
   });
 
+  it('fails closed when an applicable policy is disabled', async () => {
+    findApplicableForEvaluation.mockResolvedValue([
+      policyRow({ id: 'disabled-1', enabled: false, configuration: { maxAmount: 10 } }),
+    ]);
+
+    const result = await service.evaluateIntent({
+      organizationId: 'org-1',
+      asset: 'XLM',
+      amount: 100,
+      recipientAddress: 'GABC',
+    });
+
+    expect(result.passed).toBe(false);
+    expect(result.violations[0].code).toBe('POLICY_DISABLED');
+  });
+
   it('evaluates every leg of a multi-asset intent', async () => {
-    listActiveForEvaluation.mockResolvedValue([
+    findApplicableForEvaluation.mockResolvedValue([
       policyRow({ configuration: { assetLimits: { USDC: { maxAmount: 50 } } } }),
     ]);
 
@@ -85,7 +101,7 @@ describe('PolicyService evaluation', () => {
   });
 
   it('converts the amounts when the policy denominates its limits in a base currency', async () => {
-    listActiveForEvaluation.mockResolvedValue([
+    findApplicableForEvaluation.mockResolvedValue([
       policyRow({ configuration: { baseCurrency: 'USD', maxAmount: 50 } }),
     ]);
     convert.mockImplementation(async (amount: number) => amount * 0.5);
@@ -103,7 +119,7 @@ describe('PolicyService evaluation', () => {
   });
 
   it('rejects a transfer whose converted amount exceeds the base-currency limit', async () => {
-    listActiveForEvaluation.mockResolvedValue([
+    findApplicableForEvaluation.mockResolvedValue([
       policyRow({ configuration: { baseCurrency: 'USD', maxAmount: 40 } }),
     ]);
     convert.mockImplementation(async (amount: number) => amount * 0.5);
@@ -121,7 +137,7 @@ describe('PolicyService evaluation', () => {
   });
 
   it('never converts an amount when no policy declares a base currency', async () => {
-    listActiveForEvaluation.mockResolvedValue([policyRow({ configuration: { maxAmount: 50 } })]);
+    findApplicableForEvaluation.mockResolvedValue([policyRow({ configuration: { maxAmount: 50 } })]);
 
     await service.evaluateIntent({
       organizationId: 'org-1',
@@ -134,7 +150,7 @@ describe('PolicyService evaluation', () => {
   });
 
   it('fails closed when the price required for a base-currency limit is unavailable', async () => {
-    listActiveForEvaluation.mockResolvedValue([
+    findApplicableForEvaluation.mockResolvedValue([
       policyRow({ configuration: { baseCurrency: 'USD', maxAmount: 50 } }),
     ]);
     convert.mockRejectedValue(
@@ -152,7 +168,7 @@ describe('PolicyService evaluation', () => {
   });
 
   it('evaluates policies with different base currencies independently', async () => {
-    listActiveForEvaluation.mockResolvedValue([
+    findApplicableForEvaluation.mockResolvedValue([
       policyRow({ id: 'policy-usd', configuration: { baseCurrency: 'USD', maxAmount: 10 } }),
       policyRow({ id: 'policy-xlm', configuration: { maxAmount: 1000 } }),
     ]);
@@ -172,7 +188,7 @@ describe('PolicyService evaluation', () => {
   });
 
   it('emits the policy evaluation event with the evaluated transfers', async () => {
-    listActiveForEvaluation.mockResolvedValue([policyRow({ configuration: { maxAmount: 1000 } })]);
+    findApplicableForEvaluation.mockResolvedValue([policyRow({ configuration: { maxAmount: 1000 } })]);
 
     await service.evaluateIntent({
       organizationId: 'org-1',
@@ -198,7 +214,7 @@ describe('PolicyService evaluation', () => {
   });
 
   it('converts every leg of a multi-asset transfer into the base currency', async () => {
-    listActiveForEvaluation.mockResolvedValue([
+    findApplicableForEvaluation.mockResolvedValue([
       policyRow({ configuration: { baseCurrency: 'USD', maxAmount: 1000 } }),
     ]);
     convert.mockImplementation(async (amount: number) => amount * 0.5);
@@ -220,7 +236,7 @@ describe('PolicyService evaluation', () => {
   });
 
   it('converts the spend already accumulated for every asset', async () => {
-    listActiveForEvaluation.mockResolvedValue([
+    findApplicableForEvaluation.mockResolvedValue([
       policyRow({ configuration: { baseCurrency: 'USD', dailyLimit: 1000 } }),
     ]);
     convert.mockImplementation(async (amount: number) => amount * 0.5);
@@ -245,7 +261,7 @@ describe('PolicyService evaluation', () => {
   });
 
   it('fails closed when the price of one leg of a multi-asset transfer is unavailable', async () => {
-    listActiveForEvaluation.mockResolvedValue([
+    findApplicableForEvaluation.mockResolvedValue([
       policyRow({ configuration: { baseCurrency: 'USD', maxAmount: 1000 } }),
     ]);
     convert.mockImplementation(async (amount: number, asset: string) => {
@@ -272,12 +288,12 @@ describe('PolicyService evaluation', () => {
 
 describe('PolicyService simulate', () => {
   let service: PolicyService;
-  let listActiveForEvaluation: ReturnType<typeof vi.fn>;
+  let findApplicableForEvaluation: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
-    listActiveForEvaluation = vi.fn().mockResolvedValue([]);
+    findApplicableForEvaluation = vi.fn().mockResolvedValue([]);
     service = new PolicyService(
-      { listActiveForEvaluation } as unknown as SpendingPolicyService,
+      { findApplicableForEvaluation } as unknown as SpendingPolicyService,
       new PolicyEngine(),
       { emit: vi.fn().mockResolvedValue(undefined) } as unknown as EventBusService,
       { convert: vi.fn(async (amount: number) => amount) } as unknown as PriceOracleService,
@@ -297,7 +313,7 @@ describe('PolicyService simulate', () => {
     });
 
     expect(result.passed).toBe(true);
-    expect(listActiveForEvaluation).toHaveBeenCalled();
+    expect(findApplicableForEvaluation).toHaveBeenCalled();
   });
 
   it('falls back to the first leg when the payload has no top-level amount', async () => {
@@ -310,7 +326,7 @@ describe('PolicyService simulate', () => {
   });
 
   it('reports the violations of the simulated policies', async () => {
-    listActiveForEvaluation.mockResolvedValue([
+    findApplicableForEvaluation.mockResolvedValue([
       policyRow({ configuration: { assetLimits: { USDC: { maxAmount: 10 } } } }),
     ]);
 

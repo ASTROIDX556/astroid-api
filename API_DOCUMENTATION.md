@@ -204,6 +204,8 @@ Create a transaction (runs the full governance pipeline).
 
 **Response:** Transaction object with governance evaluation result
 
+**Budget:** when `budgetId` is set, the amount is reserved atomically against the budget's current period before execution. A reservation that does not fit the remaining balance is refused with `422` and code `BUDGET_EXCEEDED`; the hold is released if the transaction is later rejected, fails or is cancelled (see `docs/budget-period-rollover.md`).
+
 **Idempotency:** send an optional `Idempotency-Key` header (1-128 ASCII
 letters, digits, dots, underscores, tildes or hyphens) to make submission
 replay-safe. A repeat request with the same key and payload returns the original
@@ -429,11 +431,28 @@ Every response includes the selected request ID in the `x-request-id` header and
 ## Audit History (`/audit`)
 
 ### GET `/audit`
-List audit records in reverse chronological order using a stable `(createdAt, id)` keyset.
+List audit records of the authenticated organization in reverse chronological order.
 
-**Query Parameters:** `limit` defaults to 20 and is bounded to 1-100; `cursor` is the opaque `nextCursor` from the previous response; optional `actorId`, `action`, `resourceId`, `from`, and `to` filters apply within the authenticated organization. `from` and `to` are inclusive ISO 8601 timestamps and `from` must not be later than `to`.
+**Ordering:** results are always ordered by `createdAt DESC, id DESC`, in both pagination modes. `id` breaks ties between records that share a timestamp, so rows are never skipped or duplicated across pages.
 
-The response `meta` includes `limit`, `hasNext`, and `nextCursor` (null on the final page). New records inserted after a page is read do not shift subsequent pages.
+**Query Parameters:**
+
+| Parameter | Format | Behaviour |
+|---|---|---|
+| `cursor` | opaque string | `meta.nextCursor` from the previous response; selects keyset pagination |
+| `page` / `offset`, `pageSize` / `limit` | integers | Page mode (default when no `cursor`). Page size defaults to `AUDIT_PAGE_SIZE_DEFAULT` (20) and is bounded by `AUDIT_PAGE_SIZE_MAX` (100) |
+| `actorId` | string, 1-128 chars | Exact match on the acting user id (`userId`) |
+| `action` | string, 1-120 chars | Exact match on the audit action, e.g. `wallet.created` |
+| `resourceType` | string, 1-120 chars | Exact match on the affected entity type (`entity`) |
+| `resourceId` | string, 1-128 chars | Exact match on the affected entity id (`entityId`) |
+| `from` | ISO 8601 date-time | Inclusive lower bound: `createdAt >= from` |
+| `to` | ISO 8601 date-time | Inclusive upper bound: `createdAt <= to` |
+| `outcome` | `SUCCESS` \| `FAILURE` | Exact match on the derived outcome |
+| `search` | string, 1-200 chars | Case-insensitive substring search over `action`, `entity`, `entityId` and `requestId` |
+
+The id and type filters are exact, case-sensitive matches with no partial or fuzzy matching. Filters combine with AND and only narrow the organization-scoped result set; they can never return another organization's records. `from` later than `to`, a malformed timestamp or cursor, and unknown query parameters are rejected with `400` and the standard validation error envelope.
+
+In cursor mode the response `meta` includes `limit`, `hasMore`, and `nextCursor` (null on the final page), and new records inserted after a page is read do not shift subsequent pages. In page mode `meta` contains `page`, `pageSize`, `total`, `totalPages`, `hasNextPage` and `hasPreviousPage`.
 
 **Example:** `GET /audit?limit=20&actorId=user-123&action=wallet.created`
 
@@ -731,6 +750,23 @@ All endpoints return errors as [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457
 | `details` | Optional structured context, e.g. field-level validation errors |
 
 Unhandled server errors always return `500` with `code: "INTERNAL_ERROR"` and a generic `detail`; internal information is only written to the server logs under the `requestId`. Stack traces are never included in a response.
+
+#### Database errors
+
+Database failures that are not handled by a service are mapped by their Prisma error class and code (never by message text):
+
+| Prisma error | Status | `code` | `detail` |
+|--------------|--------|--------|----------|
+| `P2002` unique constraint | 409 | `CONFLICT` | A resource with these details already exists |
+| `P2025` record not found | 404 | `NOT_FOUND` | Resource not found |
+| `P2003` foreign key constraint | 409 | `CONFLICT` | The operation conflicts with a related resource that does not exist or is still in use |
+| `P2000` value too long | 400 | `BAD_REQUEST` | A provided value is too long |
+| `P2023` inconsistent column data (e.g. a malformed UUID) | 400 | `BAD_REQUEST` | A provided value has an invalid format |
+| Query validation error | 400 | `BAD_REQUEST` | Invalid database query or input data |
+| Connection / initialisation failure, engine panic | 503 | `DATABASE_UNAVAILABLE` | The database is temporarily unavailable; please retry later |
+| Any other database error | 500 | `INTERNAL_ERROR` | An unexpected database error occurred |
+
+The response never contains the SQL, the database message, constraint, column or model names, or Prisma's `meta`. The full original error (message, Prisma code, `meta` and stack) is logged server-side with the `requestId`: `5xx` at error level, `4xx` at warn level. A `503` is transient; clients should back off and retry.
 
 The same envelope is used for requests rejected before they reach a controller — a malformed JSON body returns `400`, and a body above the parser limit returns `413` — so clients only ever parse one error shape.
 
