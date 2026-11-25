@@ -26,6 +26,9 @@ import { ApprovalExpiryQueue } from '../../queues/approval-expiry.queue';
  * and budgets to enforce governance on every payment. Stellar + events are
  * provided globally. Exports the service so the approvals module can execute an
  * approved proposal's transaction.
+ *
+ * IdempotencyModule is imported so IdempotencyService is available to both
+ * TransactionService and IdempotencyInterceptor on the create route.
  */
 @Module({
   imports: [
