@@ -39,6 +39,7 @@ export * from './rate-limit.config';
 export * from './throttler.config';
 export * from './shutdown.config';
 export * from './webhook.config';
+export * from './health.config';
 export * from './budget-alert.config';
 export * from './budget-rollover.config';
 export * from './audit.config';
