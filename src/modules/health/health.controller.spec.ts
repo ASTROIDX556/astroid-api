@@ -145,6 +145,7 @@ describe('HealthController', () => {
             { name: 'database', status: 'up', latencyMs: 5 },
             { name: 'cache', status: 'up', latencyMs: 2 },
             { name: 'queue', status: 'up', latencyMs: 1 },
+            { name: 'soroban', status: 'up', latencyMs: 40 },
           ],
           services: {
             database: { status: 'up', latencyMs: 5, timestamp: expect.any(String) },
@@ -259,6 +260,7 @@ describe('HealthController', () => {
         { name: 'database', status: 'up', latencyMs: 5 },
         { name: 'cache', status: 'down', latencyMs: 9, error: 'unavailable' },
         { name: 'queue', status: 'up', latencyMs: 1 },
+        { name: 'soroban', status: 'up', latencyMs: 40 },
       ]);
       expect(JSON.stringify(body())).not.toMatch(/10.1.2.3|6379|ECONNREFUSED/);
     });
@@ -269,6 +271,7 @@ describe('HealthController', () => {
       expect(dbHealth.check).toHaveBeenCalledWith('database', 1_000);
       expect(redisHealth.checkHealth).toHaveBeenCalledWith(1_000);
       expect(queueHealth.checkHealth).toHaveBeenCalledWith(1_000);
+      expect(stellarHealth.checkSorobanRpcHealth).toHaveBeenCalledWith(1_000);
     });
 
     it('returns 503 with success false during a simulated database outage', async () => {

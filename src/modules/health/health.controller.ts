@@ -95,6 +95,9 @@ export class HealthController {
       },
       { name: 'cache', run: (timeoutMs) => this.redisIndicator.checkHealth(timeoutMs) },
       { name: 'queue', run: (timeoutMs) => this.queueIndicator.checkHealth(timeoutMs) },
+      // Only the Soroban RPC is critical: Horizon is probed by the diagnostics
+      // endpoint, so a Horizon outage cannot take the API out of rotation.
+      { name: 'soroban', run: (timeoutMs) => this.stellarIndicator.checkSorobanRpcHealth(timeoutMs) },
     ];
   }
 

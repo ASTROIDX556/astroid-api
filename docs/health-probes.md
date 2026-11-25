@@ -13,7 +13,7 @@ process is alive" apart from "its dependencies can serve traffic".
 | Probe | Path | Touches dependencies | Success | Failure |
 | ----- | ---- | -------------------- | ------- | ------- |
 | Liveness | `GET /health/live` | No | `200` while the process can answer HTTP | n/a |
-| Readiness | `GET /health/ready` | PostgreSQL (`SELECT 1`), Redis (`PING`) | `200` when every required dependency is up | `503` when any required dependency is down or times out |
+| Readiness | `GET /health/ready` | PostgreSQL (`SELECT 1`), Redis (`PING`), the BullMQ queue connection (`PING`), the Soroban RPC (`getHealth`) | `200` when every required dependency is up | `503` when any required dependency is down or times out |
 
 Use liveness for "restart this container" decisions and readiness for "send
 traffic to this instance" decisions. A dependency outage must only ever fail
