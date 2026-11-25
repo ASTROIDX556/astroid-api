@@ -365,6 +365,7 @@ export const rateLimitEnvSchema = z.object({
   RATE_LIMIT_WEBHOOK_ROTATE_MAX: z.coerce.number().int().positive().default(10),
   RATE_LIMIT_WEBHOOK_ROTATE_WINDOW_SECONDS: z.coerce.number().int().positive().default(3600),
   RATE_LIMIT_CREDENTIAL_PER_MINUTE: z.coerce.number().int().positive().default(120),
+  RATE_LIMIT_CREDENTIAL_MINUTE_WINDOW_SECONDS: z.coerce.number().int().positive().default(60),
   RATE_LIMIT_CREDENTIAL_PER_DAY: z.coerce.number().int().positive().default(10000),
   RATE_LIMIT_CREDENTIAL_DAY_WINDOW_SECONDS: z.coerce.number().int().positive().default(86400),
   RATE_LIMIT_CREDENTIAL_QUOTA_CACHE_SECONDS: z.coerce.number().int().positive().default(60),

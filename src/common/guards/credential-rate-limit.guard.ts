@@ -67,7 +67,7 @@ export class CredentialRateLimitGuard implements CanActivate {
     this.defaults = rateLimit.credential;
     this.trustProxy = rateLimit.public.trustProxy;
     this.windows = {
-      minuteWindowMs: 60_000,
+      minuteWindowMs: rateLimit.credential.minuteWindowSeconds * 1000,
       dayWindowMs: rateLimit.credential.dayWindowSeconds * 1000,
     };
     this.store = new RedisCredentialRateLimitStore(redis);
@@ -104,6 +104,7 @@ export class CredentialRateLimitGuard implements CanActivate {
       this.logger.warn(
         `Credential rate-limit check failed for "${identity}"; allowing request (fails open): ${(error as Error).message}`,
       );
+      this.setFailOpenHeaders(response, quota);
       return true;
     }
 
@@ -125,6 +126,15 @@ export class CredentialRateLimitGuard implements CanActivate {
       );
     }
     return true;
+  }
+
+  /** Best-effort minute-budget headers when Redis cannot provide exact counters. */
+  private setFailOpenHeaders(response: Response, quota: CredentialQuota): void {
+    const now = Date.now();
+    const resetAt = now + this.windows.minuteWindowMs;
+    response.setHeader(RATE_LIMIT_LIMIT_HEADER, quota.perMinute);
+    response.setHeader(RATE_LIMIT_REMAINING_HEADER, quota.perMinute);
+    response.setHeader(RATE_LIMIT_RESET_HEADER, Math.ceil(resetAt / 1000));
   }
 
   /** Verified API key id, when the caller authenticated with one. */

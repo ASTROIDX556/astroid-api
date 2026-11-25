@@ -131,6 +131,7 @@ describe('Credential rate limiting over HTTP', () => {
               public: { trustProxy: false },
               credential: {
                 perMinute: PER_MINUTE,
+                minuteWindowSeconds: 60,
                 perDay: PER_DAY,
                 dayWindowSeconds: 86_400,
                 quotaCacheSeconds: 60,
@@ -156,6 +157,9 @@ describe('Credential rate limiting over HTTP', () => {
     counters.clear();
     cache.clear();
     redis.status = 'ready';
+    redis.eval.mockClear();
+    redis.get.mockClear();
+    redis.set.mockClear();
     redis.get.mockImplementation(async (key: string) => cache.get(key) ?? null);
     redis.set.mockImplementation(async (key: string, value: string) => {
       cache.set(key, value);
@@ -301,7 +305,11 @@ describe('Credential rate limiting over HTTP', () => {
     redis.status = 'reconnecting';
 
     for (let i = 0; i < PER_MINUTE + 2; i++) {
-      expect((await wallets(READ_KEY)).status).toBe(200);
+      const response = await wallets(READ_KEY);
+      expect(response.status).toBe(200);
+      expect(response.headers.get('x-ratelimit-limit')).toBe(String(PER_MINUTE));
+      expect(response.headers.get('x-ratelimit-remaining')).toBe(String(PER_MINUTE));
+      expect(response.headers.get('x-ratelimit-reset')).not.toBeNull();
     }
   });
 });
