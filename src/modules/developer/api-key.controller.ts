@@ -37,6 +37,19 @@ export class ApiKeyController {
     return this.apiKeyService.create(user.organizationId, user.id, body);
   }
 
+  @Post(':id/rotate')
+  @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.DEVELOPER)
+  @ApiOperation({
+    summary: 'Rotate an API key',
+    description: 'Generates a replacement key while keeping the predecessor valid for a configurable grace period. The replacement key is returned in plaintext exactly once.',
+  })
+  rotate(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') keyId: string,
+  ) {
+    return this.apiKeyService.rotateKey(user.organizationId, user.id, keyId);
+  }
+
   @Delete(':id')
   @Roles(UserRole.OWNER, UserRole.ADMIN, UserRole.DEVELOPER)
   @ApiOperation({ summary: 'Revoke an API key' })

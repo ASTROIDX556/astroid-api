@@ -16,6 +16,7 @@ export * from './stellar.config';
 export * from './storage.config';
 export * from './queue.config';
 export * from './ai.config';
+export * from './rotation.config';
 
 /**
  * Global configuration module. Every slice is registered via `registerAs` and
