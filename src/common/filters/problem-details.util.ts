@@ -166,8 +166,9 @@ function resolveHttp(exception: HttpException): ResolvedError {
 /**
  * Reduces a Prisma client error to a {@link ResolvedError} through the shared
  * {@link mapPrismaError} mapper, so HTTP responses and worker logs agree on
- * the mapping. A unique-constraint conflict carries the conflicting field
- * names in `details.fields` when Prisma reports them.
+ * the mapping. Only the mapped status, code and client-safe message are
+ * returned: Prisma's `meta` (constraint targets, field names) stays in the
+ * server-side log.
  */
 export function resolvePrisma(exception: unknown): ResolvedError {
   const mapped = mapPrismaError(exception);
@@ -182,7 +183,6 @@ export function resolvePrisma(exception: unknown): ResolvedError {
     status: mapped.status,
     code: mapped.code,
     detail: mapped.message,
-    ...(mapped.fields ? { details: { fields: mapped.fields } } : {}),
   };
 }
 

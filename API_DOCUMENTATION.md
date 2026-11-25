@@ -751,6 +751,23 @@ All endpoints return errors as [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457
 
 Unhandled server errors always return `500` with `code: "INTERNAL_ERROR"` and a generic `detail`; internal information is only written to the server logs under the `requestId`. Stack traces are never included in a response.
 
+#### Database errors
+
+Database failures that are not handled by a service are mapped by their Prisma error class and code (never by message text):
+
+| Prisma error | Status | `code` | `detail` |
+|--------------|--------|--------|----------|
+| `P2002` unique constraint | 409 | `CONFLICT` | A resource with these details already exists |
+| `P2025` record not found | 404 | `NOT_FOUND` | Resource not found |
+| `P2003` foreign key constraint | 409 | `CONFLICT` | The operation conflicts with a related resource that does not exist or is still in use |
+| `P2000` value too long | 400 | `BAD_REQUEST` | A provided value is too long |
+| `P2023` inconsistent column data (e.g. a malformed UUID) | 400 | `BAD_REQUEST` | A provided value has an invalid format |
+| Query validation error | 400 | `BAD_REQUEST` | Invalid database query or input data |
+| Connection / initialisation failure, engine panic | 503 | `DATABASE_UNAVAILABLE` | The database is temporarily unavailable; please retry later |
+| Any other database error | 500 | `INTERNAL_ERROR` | An unexpected database error occurred |
+
+The response never contains the SQL, the database message, constraint, column or model names, or Prisma's `meta`. The full original error (message, Prisma code, `meta` and stack) is logged server-side with the `requestId`: `5xx` at error level, `4xx` at warn level. A `503` is transient; clients should back off and retry.
+
 The same envelope is used for requests rejected before they reach a controller — a malformed JSON body returns `400`, and a body above the parser limit returns `413` — so clients only ever parse one error shape.
 
 A transaction that is blocked by a spending policy returns `422` with
