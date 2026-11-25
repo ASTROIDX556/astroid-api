@@ -41,9 +41,9 @@ const MAX_KEY_LENGTH = 255;
  *
  * Responses:
  * - **409 + Retry-After** when a duplicate arrives while the original runs.
- * - **409** when the key was already used with a different request body.
+ * - **422** when the key was already used with a different request body.
  * - The original status, body and request id on replay, plus
- *   `Idempotent-Replay: true`.
+ *   `Idempotency-Replayed: true`.
  *
  * Streaming and multipart/file-upload requests are deliberately excluded:
  * buffering their bodies for hashing (and replaying their streams) is not
