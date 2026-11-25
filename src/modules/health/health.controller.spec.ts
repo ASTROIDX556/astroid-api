@@ -17,7 +17,10 @@ describe('HealthController', () => {
   let controller: HealthController;
   let dbHealth: { check: ReturnType<typeof vi.fn> };
   let redisHealth: { checkHealth: ReturnType<typeof vi.fn> };
-  let stellarHealth: { checkHealth: ReturnType<typeof vi.fn> };
+  let stellarHealth: {
+    checkHealth: ReturnType<typeof vi.fn>;
+    checkSorobanRpcHealth: ReturnType<typeof vi.fn>;
+  };
   let migrationHealth: { isEnabled: boolean; checkHealth: ReturnType<typeof vi.fn> };
   let queueHealth: { checkHealth: ReturnType<typeof vi.fn> };
   let res: Partial<Response>;
@@ -51,6 +54,11 @@ describe('HealthController', () => {
         network: 'testnet',
         horizon: { status: 'up', latencyMs: 50, url: 'https://horizon' },
         sorobanRpc: { status: 'up', latencyMs: 40, url: 'https://soroban' },
+      }),
+      checkSorobanRpcHealth: vi.fn().mockResolvedValue({
+        status: 'up',
+        latencyMs: 40,
+        url: 'https://soroban',
       }),
     };
     migrationHealth = {
@@ -103,6 +111,7 @@ describe('HealthController', () => {
       });
       expect(dbHealth.check).not.toHaveBeenCalled();
       expect(redisHealth.checkHealth).not.toHaveBeenCalled();
+      expect(stellarHealth.checkSorobanRpcHealth).not.toHaveBeenCalled();
     });
 
     it('stays 200 during a database outage', () => {
@@ -123,7 +132,7 @@ describe('HealthController', () => {
   describe('GET /health/ready', () => {
     const body = () => (res.json as ReturnType<typeof vi.fn>).mock.calls[0][0];
 
-    it('returns 200 with per-dependency status and latency when database, cache and queue are up', async () => {
+    it('returns 200 with per-dependency status and latency when database, cache, queue and Soroban RPC are up', async () => {
       await controller.ready(req as Request, res as Response);
 
       expect(res.status).toHaveBeenCalledWith(200);
@@ -136,11 +145,13 @@ describe('HealthController', () => {
             { name: 'database', status: 'up', latencyMs: 5 },
             { name: 'cache', status: 'up', latencyMs: 2 },
             { name: 'queue', status: 'up', latencyMs: 1 },
+            { name: 'soroban', status: 'up', latencyMs: 40 },
           ],
           services: {
             database: { status: 'up', latencyMs: 5, timestamp: expect.any(String) },
             cache: { status: 'up', latencyMs: 2, timestamp: expect.any(String) },
             queue: { status: 'up', latencyMs: 1, timestamp: expect.any(String) },
+            soroban: { status: 'up', latencyMs: 40, timestamp: expect.any(String) },
           },
         },
         meta: {},
@@ -170,12 +181,14 @@ describe('HealthController', () => {
             database: { status: 'down', error: 'unavailable' },
             cache: { status: 'down', error: 'unavailable' },
             queue: { status: 'down', error: 'unavailable' },
+            soroban: { status: 'down', error: 'unavailable' },
           },
         },
       });
       expect(dbHealth.check).not.toHaveBeenCalled();
       expect(redisHealth.checkHealth).not.toHaveBeenCalled();
       expect(queueHealth.checkHealth).not.toHaveBeenCalled();
+      expect(stellarHealth.checkSorobanRpcHealth).not.toHaveBeenCalled();
     });
 
     it('returns 503 when only the queue connection is down', async () => {
@@ -247,6 +260,7 @@ describe('HealthController', () => {
         { name: 'database', status: 'up', latencyMs: 5 },
         { name: 'cache', status: 'down', latencyMs: 9, error: 'unavailable' },
         { name: 'queue', status: 'up', latencyMs: 1 },
+        { name: 'soroban', status: 'up', latencyMs: 40 },
       ]);
       expect(JSON.stringify(body())).not.toMatch(/10.1.2.3|6379|ECONNREFUSED/);
     });
@@ -257,6 +271,7 @@ describe('HealthController', () => {
       expect(dbHealth.check).toHaveBeenCalledWith('database', 1_000);
       expect(redisHealth.checkHealth).toHaveBeenCalledWith(1_000);
       expect(queueHealth.checkHealth).toHaveBeenCalledWith(1_000);
+      expect(stellarHealth.checkSorobanRpcHealth).toHaveBeenCalledWith(1_000);
     });
 
     it('returns 503 with success false during a simulated database outage', async () => {
@@ -362,11 +377,92 @@ describe('HealthController', () => {
       });
     });
 
-    it('probes only critical dependencies, so an external Stellar outage cannot fail readiness', async () => {
-      stellarHealth.checkHealth.mockResolvedValue({ status: 'down', timestamp: 'now' });
+    it('returns 503 when the Soroban RPC is unavailable', async () => {
+      stellarHealth.checkSorobanRpcHealth.mockResolvedValue({
+        status: 'down',
+        latencyMs: 2_000,
+        url: 'https://soroban.internal',
+        error: 'The operation was aborted',
+      });
 
       await controller.ready(req as Request, res as Response);
 
+      expect(res.status).toHaveBeenCalledWith(503);
+      expect(body()).toMatchObject({
+        success: false,
+        data: {
+          status: 'down',
+          services: {
+            database: { status: 'up' },
+            cache: { status: 'up' },
+            queue: { status: 'up' },
+            soroban: { status: 'down', error: 'unavailable' },
+          },
+        },
+      });
+    });
+
+    it('reports a Soroban RPC probe that hit its timeout as `timeout`', async () => {
+      stellarHealth.checkSorobanRpcHealth.mockResolvedValue({
+        status: 'down',
+        latencyMs: 2_000,
+        url: 'https://soroban.internal',
+        error: 'Soroban RPC health check timed out after 2000ms',
+      });
+
+      await controller.ready(req as Request, res as Response);
+
+      expect(body().data.services.soroban).toMatchObject({
+        status: 'down',
+        error: 'timeout',
+        latencyMs: 2_000,
+      });
+    });
+
+    it('does not put the Soroban endpoint or driver message in the body', async () => {
+      stellarHealth.checkSorobanRpcHealth.mockResolvedValue({
+        status: 'down',
+        latencyMs: 10,
+        url: 'https://soroban.internal:443/rpc',
+        error: 'getaddrinfo ENOTFOUND soroban.internal',
+      });
+
+      await controller.ready(req as Request, res as Response);
+
+      expect(JSON.stringify(body())).not.toMatch(/ENOTFOUND|soroban\.internal|https:/);
+    });
+
+    it('returns 503 when several dependencies fail at once', async () => {
+      dbHealth.check.mockResolvedValue(terminus({ status: 'down', error: 'Error' }));
+      redisHealth.checkHealth.mockResolvedValue({ status: 'down', latencyMs: 2_000, error: 'timeout' });
+      stellarHealth.checkSorobanRpcHealth.mockResolvedValue({ status: 'down', latencyMs: 2_000 });
+
+      await controller.ready(req as Request, res as Response);
+
+      expect(res.status).toHaveBeenCalledWith(503);
+      expect(body().data).toMatchObject({
+        status: 'down',
+        services: {
+          database: { status: 'down' },
+          cache: { status: 'down' },
+          queue: { status: 'up' },
+          soroban: { status: 'down' },
+        },
+      });
+    });
+
+    it('checks only the Soroban RPC, so a Horizon outage cannot fail readiness', async () => {
+      stellarHealth.checkHealth.mockResolvedValue({
+        status: 'down',
+        timestamp: 'now',
+        network: 'testnet',
+        horizon: { status: 'down', latencyMs: 2_000, url: 'https://horizon', error: 'timeout' },
+        sorobanRpc: { status: 'up', latencyMs: 20, url: 'https://soroban' },
+      });
+
+      await controller.ready(req as Request, res as Response);
+
+      expect(stellarHealth.checkSorobanRpcHealth).toHaveBeenCalledTimes(1);
       expect(stellarHealth.checkHealth).not.toHaveBeenCalled();
       expect(migrationHealth.checkHealth).not.toHaveBeenCalled();
       expect(res.status).toHaveBeenCalledWith(200);

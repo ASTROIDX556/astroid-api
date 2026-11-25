@@ -116,7 +116,13 @@ export class StellarHealthIndicator {
       };
     } catch (err) {
       const latencyMs = Date.now() - start;
-      const message = err instanceof Error ? err.message : String(err);
+      // A budget that expired is a timeout, not a connection error; the
+      // readiness probe reports the two differently.
+      const message = controller.signal.aborted
+        ? `Horizon health check timed out after ${timeoutMs}ms`
+        : err instanceof Error
+          ? err.message
+          : String(err);
       this.logger.warn(`Horizon health check failed for ${url}: ${message}`);
       return {
         status: 'down',
@@ -127,6 +133,21 @@ export class StellarHealthIndicator {
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  /**
+   * Readiness probe for the Soroban RPC endpoint only.
+   *
+   * Readiness depends on the RPC the API submits through, not on Horizon, so
+   * this reuses the same bounded `getHealth` call as {@link checkHealth}
+   * without also requiring Horizon. The report is the shared endpoint shape;
+   * the caller reduces it to a coarse status before it is exposed publicly.
+   */
+  async checkSorobanRpcHealth(
+    timeoutMs: number = StellarHealthIndicator.DEFAULT_TIMEOUT_MS,
+  ): Promise<EndpointHealthStatus> {
+    const stellar = this.configService.getOrThrow<StellarConfig>('stellar');
+    return this.checkSorobanRpcEndpoint(stellar.sorobanRpcUrl, this.resolveTimeout(timeoutMs));
   }
 
   async checkSorobanRpcEndpoint(
@@ -173,7 +194,11 @@ export class StellarHealthIndicator {
       };
     } catch (err) {
       const latencyMs = Date.now() - start;
-      const message = err instanceof Error ? err.message : String(err);
+      const message = controller.signal.aborted
+        ? `Soroban RPC health check timed out after ${timeoutMs}ms`
+        : err instanceof Error
+          ? err.message
+          : String(err);
       this.logger.warn(`Soroban RPC health check failed for ${url}: ${message}`);
       return {
         status: 'down',

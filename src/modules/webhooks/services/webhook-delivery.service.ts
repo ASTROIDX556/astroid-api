@@ -4,7 +4,12 @@ import { ConfigService } from '@nestjs/config';
 import { Queue, JobsOptions } from 'bullmq';
 
 import { QueueJobMetadata, Queues } from '../../../queues/queues.constants';
-import { WEBHOOK_JOB_NAME, webhookJobOptions, webhookJobOptionsFor } from '../../../queues/webhook.queue';
+import {
+  buildWebhookJobId,
+  WEBHOOK_JOB_NAME,
+  webhookJobOptions,
+  webhookJobOptionsFor,
+} from '../../../queues/webhook.queue';
 import { DEFAULT_WEBHOOK_CONFIG, WebhookConfig } from '../../../config/webhook.config';
 import { WebhookJobData } from '../types/webhook-job.types';
 import { RequestContext } from '../../../common/context/request-context';
@@ -46,6 +51,14 @@ export class WebhookDeliveryService {
    * attempts, an exponential backoff with ±20% jitter and a maximum delay
    * applied by the queue's backoff strategy, and 24h retention of failed jobs
    * so exhausted deliveries remain inspectable.
+   *
+   * The job id is derived deterministically from the event and the
+   * subscription, so a duplicate dispatch of the same event — two workers, a
+   * retried API call, a replay — is ignored by BullMQ instead of producing a
+   * second concurrent delivery. Because completed and failed jobs are
+   * retained (see the retention options), the guard also covers a duplicate
+   * that arrives just after the first delivery finished, for as long as the
+   * job record lives.
    */
   async queueDelivery(data: WebhookJobData): Promise<void> {
     try {
@@ -70,6 +83,7 @@ export class WebhookDeliveryService {
       const baseOptions = this.config ? webhookJobOptionsFor(this.settings) : webhookJobOptions;
       const options: JobsOptions & { group?: string } = {
         ...baseOptions,
+        jobId: buildWebhookJobId(data.eventId, data.webhookId),
         group: buildWebhookConcurrencyGroup(data.webhookId),
       };
       await this.webhookQueue.add(

@@ -1,6 +1,7 @@
-import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { ConflictException, Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { Job, Queue, QueueEvents } from 'bullmq';
 import { Queues, QueueName } from '../../queues/queues.constants';
+import { buildWebhookJobId } from '../../queues/webhook.queue';
 import { redisConfig } from '../../config/redis.config';
 import { PrismaService } from '../../database/prisma.service';
 import { DomainEventName } from '../../events/event-names';
@@ -51,6 +52,10 @@ const DLQ_EVENT_NAMES = [
  * `UnrecoverableError`). Each failure is persisted to the append-only
  * `domain_events` DLQ ledger for audit and administrative inspection, and can
  * be safely re-driven via {@link requeue} or removed via {@link purge}.
+ *
+ * Replaying a webhook delivery is refused while another delivery of the same
+ * event and subscription is already in flight, so an operator re-drive can
+ * never race the automatic retry of the same delivery.
  *
  * This is a passive observer, not a worker: it opens read-only `Queue` and
  * `QueueEvents` connections (mirroring how `MetricsService` samples queue
@@ -156,6 +161,8 @@ export class DeadLetterService implements OnModuleInit, OnModuleDestroy {
       throw new Error(`Cannot re-drive ${normalized}/${jobId}: job not found`);
     }
 
+    await this.assertNoWebhookDeliveryInFlight(normalized, job);
+
     const requeuedJobId = `dlq-retry-${jobId}-${Date.now()}`;
     await this.queueHandles.get(normalized)!.add(job.name ?? 'default', job.data, {
       jobId: requeuedJobId,
@@ -173,6 +180,47 @@ export class DeadLetterService implements OnModuleInit, OnModuleDestroy {
     }).catch(() => undefined);
 
     return { queue: normalized, jobId, requeuedJobId };
+  }
+
+  /** BullMQ job states in which a job is already queued or executing. */
+  private static readonly IN_FLIGHT_STATES = new Set([
+    'waiting',
+    'active',
+    'delayed',
+    'prioritized',
+    'paused',
+    'waiting-children',
+  ]);
+
+  /**
+   * Refuses a webhook replay while a delivery of the same event and
+   * subscription is already waiting, delayed or running.
+   *
+   * A re-drive deliberately uses a new job id so the operator can retry the
+   * delivery, but that also means BullMQ's own id-based deduplication cannot
+   * catch a replay that races an in-flight retry of the same delivery. The
+   * deterministic delivery job id is therefore looked up explicitly.
+   *
+   * Only webhook jobs carry the `eventId`/`webhookId` pair; every other queue
+   * is re-driven exactly as before.
+   */
+  private async assertNoWebhookDeliveryInFlight(queue: QueueName, job: Job): Promise<void> {
+    if (queue !== Queues.Webhooks) return;
+    const data = (job.data ?? {}) as { eventId?: unknown; webhookId?: unknown };
+    if (typeof data.eventId !== 'string' || typeof data.webhookId !== 'string') return;
+
+    const handle = this.queueHandles.get(Queues.Webhooks);
+    if (!handle) return;
+
+    const inFlight = await handle.getJob(buildWebhookJobId(data.eventId, data.webhookId));
+    if (!inFlight || inFlight.id === job.id) return;
+
+    const state = await inFlight.getState();
+    if (DeadLetterService.IN_FLIGHT_STATES.has(state)) {
+      throw new ConflictException(
+        `Cannot re-drive ${queue}/${job.id}: a delivery for this event and subscription is already ${state}`,
+      );
+    }
   }
 
   /**

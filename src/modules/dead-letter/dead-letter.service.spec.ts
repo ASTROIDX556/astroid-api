@@ -54,10 +54,16 @@ function buildExhaustedJob(overrides: Record<string, unknown> = {}) {
   return {
     id: 'job-123',
     name: 'webhook-delivery',
-    data: { webhookId: 'wh-1', organizationId: 'org-1', url: 'https://example.com/hook' },
+    data: {
+      webhookId: 'wh-1',
+      eventId: 'evt-1',
+      organizationId: 'org-1',
+      url: 'https://example.com/hook',
+    },
     attemptsMade: 5,
     stacktrace: ['Error: HTTP 500 (attempt 5)', '    at deliver (webhook.worker.ts:88)'],
     opts: { attempts: 5, backoff: { type: 'exponential' } },
+    getState: vi.fn().mockResolvedValue('failed'),
     remove,
     ...overrides,
   };
@@ -184,6 +190,35 @@ describe('DeadLetterService', () => {
       );
       expect(opts.jobId).toMatch(/^dlq-retry-job-123-\d+$/);
       expect(result.requeuedJobId).toMatch(/^dlq-retry-job-123-\d+$/);
+    });
+
+    it('refuses to re-drive a delivery that is already in flight', async () => {
+      getJob
+        .mockResolvedValueOnce(buildExhaustedJob())
+        .mockResolvedValueOnce({
+          id: 'webhook-delivery-evt-1-wh-1',
+          getState: vi.fn().mockResolvedValue('active'),
+        });
+
+      await expect(service.requeue(Queues.Webhooks, 'job-123')).rejects.toThrow(
+        /already active/,
+      );
+      expect(add).not.toHaveBeenCalled();
+    });
+
+    it('re-drives the delivery once the previous attempt is no longer in flight', async () => {
+      getJob
+        .mockResolvedValueOnce(buildExhaustedJob())
+        .mockResolvedValueOnce({
+          id: 'webhook-delivery-evt-1-wh-1',
+          getState: vi.fn().mockResolvedValue('failed'),
+        });
+
+      await expect(service.requeue(Queues.Webhooks, 'job-123')).resolves.toMatchObject({
+        queue: Queues.Webhooks,
+        jobId: 'job-123',
+      });
+      expect(add).toHaveBeenCalledTimes(1);
     });
 
     it('throws a clear error for an unknown queue', async () => {

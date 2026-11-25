@@ -95,6 +95,9 @@ export class HealthController {
       },
       { name: 'cache', run: (timeoutMs) => this.redisIndicator.checkHealth(timeoutMs) },
       { name: 'queue', run: (timeoutMs) => this.queueIndicator.checkHealth(timeoutMs) },
+      // Only the Soroban RPC is critical: Horizon is probed by the diagnostics
+      // endpoint, so a Horizon outage cannot take the API out of rotation.
+      { name: 'soroban', run: (timeoutMs) => this.stellarIndicator.checkSorobanRpcHealth(timeoutMs) },
     ];
   }
 
@@ -120,8 +123,8 @@ export class HealthController {
   @ApiOperation({
     summary: 'Readiness probe',
     description:
-      'Probes the critical dependencies (database, cache and the BullMQ queue connection) in ' +
-      'parallel, each bounded by a timeout. Returns 200 when every dependency is up and 503 when any is down, with ' +
+      'Probes the critical dependencies (database, cache, the BullMQ queue connection and the ' +
+      'Soroban RPC) in parallel, each bounded by a timeout. Returns 200 when every dependency is up and 503 when any is down, with ' +
       'per-dependency status and latency under `data.services`. A failure is reported as ' +
       '`timeout` or `unavailable` only; driver messages stay in the server log. Infrastructure ' +
       'endpoint for orchestrators and load balancers (served outside the versioned API prefix, ' +
@@ -147,7 +150,12 @@ export class HealthController {
     // Flip to not-ready as soon as shutdown starts, before probing anything, so
     // load balancers stop routing new traffic during the drain.
     if (this.shutdown?.isShuttingDown) {
-      return sendProbe(req, res, HttpStatus.SERVICE_UNAVAILABLE, shuttingDown(['database', 'cache', 'queue']));
+      return sendProbe(
+        req,
+        res,
+        HttpStatus.SERVICE_UNAVAILABLE,
+        shuttingDown(['database', 'cache', 'queue', 'soroban']),
+      );
     }
 
     const report = await this.readinessRunner.run(this.readinessChecks);

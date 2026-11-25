@@ -126,6 +126,12 @@ export class ReadinessServicesDto {
     type: DependencyProbeDto,
   })
   queue!: DependencyProbeDto;
+
+  @ApiProperty({
+    description: 'Soroban RPC, probed with a bounded `getHealth` call on the configured endpoint',
+    type: DependencyProbeDto,
+  })
+  soroban!: DependencyProbeDto;
 }
 
 /** Payload of the readiness probe. */
