@@ -1,12 +1,13 @@
 import { Injectable, Optional } from '@nestjs/common';
 import { Budget, BudgetPeriod, BudgetReservation, Prisma } from '@prisma/client';
-import { BudgetRepository } from './budget.repository';
+import { BudgetRepository, BudgetReservationError } from './budget.repository';
 import { AllocateBudgetInput, CreateBudgetInput, UpdateBudgetInput } from './budget.dto';
 import {
   BudgetExceededException,
   ConflictException,
   ForbiddenException,
   NotFoundException,
+  ValidationException,
 } from '../../common/exceptions/domain.exception';
 import {
   buildPaginationMeta,
@@ -17,8 +18,8 @@ import { Paginated } from '../../common/interfaces/api-response.interface';
 import { EventBusService } from '../../events/event-bus.service';
 import { DomainEventName } from '../../events/event-names';
 import { RedisLock } from '../../common/locks/redis-lock.util';
-import { PrismaTransactionService } from '../../database/prisma-transaction.service';
 import { BudgetAlertService } from './services/budget-alert.service';
+import { BudgetRolloverService } from './services/budget-rollover.service';
 import { getPeriodBounds } from './utils/period.util';
 
 const SORTABLE = ['createdAt', 'name', 'limitAmount', 'spent', 'period'];
@@ -33,8 +34,10 @@ function remaining(budget: Budget): Prisma.Decimal {
 /**
  * Governs spend against hierarchical budgets (Org → Department → Project →
  * Agent). Amounts use Prisma.Decimal to preserve Stellar's 7-dp precision and
- * avoid floating-point drift. The transactions pipeline calls `assertWithinBudget`
- * before executing and `consume` after a successful payment.
+ * avoid floating-point drift. The transactions pipeline takes an atomic
+ * reservation (`reserveAtomic`) before executing, then `settle`s it after a
+ * successful payment or `release`s it when the transaction is rejected, fails
+ * or is cancelled.
  */
 @Injectable()
 export class BudgetService {
@@ -42,7 +45,7 @@ export class BudgetService {
     private readonly repository: BudgetRepository,
     private readonly eventBus: EventBusService,
     private readonly redisLock: RedisLock,
-    private readonly transactions: PrismaTransactionService,
+    private readonly rollover: BudgetRolloverService,
     @Optional() private readonly budgetAlerts?: BudgetAlertService,
   ) {}
 
@@ -68,6 +71,7 @@ export class BudgetService {
       carryOverRule: input.carryOverRule,
       rollover: input.rollover,
       enabled: input.enabled,
+      ...(input.alertThresholds !== undefined ? { alertThresholds: input.alertThresholds } : {}),
     });
     await this.eventBus.emit(
       DomainEventName.BudgetCreated,
@@ -147,6 +151,9 @@ export class BudgetService {
     if (input.limitAmount !== undefined) {
       data.limitAmount = new Decimal(input.limitAmount);
     }
+    if (input.alertThresholds !== undefined) {
+      data.alertThresholds = input.alertThresholds;
+    }
     const budget = await this.repository.update(id, data);
     await this.eventBus.emit(
       DomainEventName.BudgetUpdated,
@@ -194,35 +201,6 @@ export class BudgetService {
         { organizationId, actorId, aggregateType: 'budget', aggregateId: childId },
       );
       return updated;
-    });
-  }
-
-  /**
-   * Pre-flight check used by the transactions pipeline. Throws
-   * BudgetExceededException when the spend would breach the limit. Does not
-   * mutate state — call {@link consume} after the payment succeeds.
-   */
-  async assertWithinBudget(organizationId: string, budgetId: string, amount: number) {
-    // Lock the budget for the duration of the check-and-consume cycle so
-    // concurrent callers see a consistent view of the remaining headroom.
-    const lockKey = `budget:check:${budgetId}`;
-    return this.redisLock.withLock(lockKey, async () => {
-      const budget = await this.getOrThrow(organizationId, budgetId);
-      const spendAfter = new Decimal(budget.spent).plus(amount);
-      if (spendAfter.greaterThan(budget.limitAmount)) {
-        await this.eventBus.emit(
-          DomainEventName.BudgetExceeded,
-          { budgetId, limit: budget.limitAmount.toFixed(7), attempted: spendAfter.toFixed(7) },
-          { organizationId, aggregateType: 'budget', aggregateId: budgetId },
-        );
-        throw new BudgetExceededException('Transaction would exceed the budget limit', {
-          budgetId,
-          limit: budget.limitAmount.toFixed(7),
-          spent: budget.spent.toFixed(7),
-          attempted: amount,
-        });
-      }
-      return budget;
     });
   }
 
@@ -285,24 +263,35 @@ export class BudgetService {
   }
 
   /**
-   * Atomically reserves `amount` from the budget using a conditional database
-   * UPDATE (`WHERE limitAmount - spent >= amount`). The arithmetic stays in
-   * Postgres so two concurrent callers cannot both observe the same remaining
-   * balance and both succeed.
+   * Atomically reserves `amount` from the budget (see
+   * {@link BudgetRepository.createReservation}): the limit check and the
+   * increment are one conditional UPDATE, so concurrent callers — from any
+   * worker, replica or agent — can never take the budget past its limit.
+   *
+   * A reservation always lands in the budget's current period. When the period
+   * has ended but the scheduled rollover has not processed this budget yet, the
+   * budget is rolled over first (idempotent, row-locked) and the reservation is
+   * retried once, so spend made after the boundary is counted against the new
+   * period instead of leaking into the closed one.
    *
    * @throws NotFoundException         – budget not found for the organisation
    * @throws BudgetExceededException   – reservation would exceed the limit
+   * @throws ValidationException       – zero, negative or non-finite amount
+   * @throws ConflictException         – the period has ended and the budget
+   *                                     could not be rolled over (disabled)
    */
   async reserveAtomic(
     organizationId: string,
     budgetId: string,
     amount: number,
+    now: Date = new Date(),
   ): Promise<BudgetReservation> {
     try {
-      const reservation = await this.repository.createReservation(
+      const reservation = await this.createReservationInCurrentPeriod(
         organizationId,
         budgetId,
         new Decimal(amount),
+        now,
       );
       if (this.budgetAlerts) {
         const budget = await this.repository.findById(organizationId, budgetId);
@@ -312,9 +301,21 @@ export class BudgetService {
       }
       return reservation;
     } catch (error: unknown) {
-      const msg = (error as Error).message ?? '';
-      if (msg === 'NotFoundException') throw new NotFoundException('Budget', budgetId);
-      if (msg === 'BudgetExceeded') {
+      if (!(error instanceof BudgetReservationError)) throw error;
+      if (error.reason === 'NotFoundException') throw new NotFoundException('Budget', budgetId);
+      if (error.reason === 'InvalidAmount') {
+        throw new ValidationException('Budget reservation amount must be greater than zero', {
+          budgetId,
+          attempted: amount,
+        });
+      }
+      if (error.reason === 'BudgetPeriodElapsed') {
+        throw new ConflictException(
+          'The budget period has ended and the budget could not be rolled over to a new period',
+          { budgetId },
+        );
+      }
+      if (error.reason === 'BudgetExceeded') {
         const budget = await this.repository.findById(organizationId, budgetId).catch(() => null);
         await this.eventBus.emit(
           DomainEventName.BudgetExceeded,
@@ -337,23 +338,23 @@ export class BudgetService {
   }
 
   /**
-   * Releases a previously reserved budget amount, decrementing spent.
-   * Used by the approvals flow to return a held amount when a request expires
-   * or is rejected. Runs under a serializable row-level lock.
+   * Takes the reservation; if the budget's period has elapsed without being
+   * rolled over, rolls it over and tries once more.
    */
-  async releaseBudget(organizationId: string, budgetId: string, amount: number) {
+  private async createReservationInCurrentPeriod(
+    organizationId: string,
+    budgetId: string,
+    amount: Prisma.Decimal,
+    now: Date,
+  ): Promise<BudgetReservation> {
     try {
-      const budget = await this.transactions.run(
-        (tx) => this.repository.releaseBudget(organizationId, budgetId, new Decimal(amount), tx),
-        { name: 'budget.release' },
-      );
-      return budget;
+      return await this.repository.createReservation(organizationId, budgetId, amount, now);
     } catch (error: unknown) {
-      const err = error as Error;
-      if (err.message && err.message.includes('NotFoundException')) {
-        throw new NotFoundException('Budget', budgetId);
+      if (!(error instanceof BudgetReservationError) || error.reason !== 'BudgetPeriodElapsed') {
+        throw error;
       }
-      throw error;
+      await this.rollover.rolloverBudget(budgetId, now);
+      return this.repository.createReservation(organizationId, budgetId, amount, now);
     }
   }
 

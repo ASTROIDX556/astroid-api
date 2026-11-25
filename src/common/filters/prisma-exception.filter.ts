@@ -21,11 +21,16 @@ export function resolvePrismaError(exception: unknown): ResolvedError {
 }
 
 /**
- * Dedicated exception filter for Prisma database persistence failures.
- * Maps known error codes (P2002 → 409, P2025 → 404, P2003 → 400, P2000 → 422,
- * validation errors → 400)
- * to standard problem details response envelopes, preserving requestId and logging
- * internal details only server-side.
+ * Dedicated exception filter for Prisma database persistence failures. Maps
+ * them through the shared mapper (P2002 → 409, P2025 → 404, P2003 → 409,
+ * P2000 → 400, P2023 → 400, validation errors → 400, initialisation errors and
+ * engine panics → 503, anything else → 500) to the standard problem details
+ * envelope with the requestId.
+ *
+ * The client only ever receives the mapped code and a fixed, client-safe
+ * message. The full original error — Prisma's message, error code, `meta` and
+ * stack — is logged server-side with the requestId: 5xx at error level, 4xx at
+ * warn level, the same levels as every other error.
  */
 @Catch(
   Prisma.PrismaClientKnownRequestError,
@@ -49,15 +54,19 @@ export class PrismaExceptionFilter implements ExceptionFilter {
     const prismaCode = mapPrismaError(exception)?.prismaCode;
     const prismaMeta =
       exception instanceof Prisma.PrismaClientKnownRequestError ? exception.meta : undefined;
+    const errorClass = exception instanceof Error ? exception.constructor.name : typeof exception;
+    // The stack's first line carries Prisma's original message, so this is the
+    // full original error. It goes to the server log only, never to the client.
+    const original = exception instanceof Error ? (exception.stack ?? exception.message) : String(exception);
 
     if (body.status >= HttpStatus.INTERNAL_SERVER_ERROR) {
       this.logger.error(
-        `[${requestId}] ${request.method} ${request.url} -> ${body.status} ${body.code}: Database error (code: ${prismaCode ?? 'UNKNOWN'}, meta: ${JSON.stringify(prismaMeta ?? {})})`,
-        exception instanceof Error ? exception.stack : undefined,
+        `[${requestId}] ${request.method} ${request.url} -> ${body.status} ${body.code}: Database error (${errorClass}, code: ${prismaCode ?? 'UNKNOWN'}, meta: ${JSON.stringify(prismaMeta ?? {})})`,
+        original,
       );
     } else {
       this.logger.warn(
-        `[${requestId}] ${request.method} ${request.url} -> ${body.status} ${body.code}: ${body.detail} (Prisma code: ${prismaCode ?? 'N/A'})`,
+        `[${requestId}] ${request.method} ${request.url} -> ${body.status} ${body.code}: ${body.detail} (${errorClass}, Prisma code: ${prismaCode ?? 'N/A'}, meta: ${JSON.stringify(prismaMeta ?? {})})\n${original}`,
       );
     }
 

@@ -8,7 +8,7 @@ import {
   HttpCode,
   HttpStatus,
 } from '@nestjs/common';
-import { ApiOperation, ApiTags, ApiParam, ApiQuery, ApiBearerAuth } from '@nestjs/swagger';
+import { ApiOperation, ApiTags, ApiParam, ApiQuery } from '@nestjs/swagger';
 import { ApiErrorResponses } from '../../common/decorators/api-error-responses.decorator';
 import { ApiEnvelope } from '../../common/decorators/api-envelope.decorator';
 import { UserRole } from '@prisma/client';
@@ -31,15 +31,17 @@ import {
   PurgeResultDto,
 } from './dto/dlq.dto';
 import { Queues } from '../../queues/queues.constants';
+import { ApiAuthenticated } from '../../common/decorators/api-authenticated.decorator';
 
 /**
  * Administrative Dead-Letter Queue (DLQ) controller.
  * Restricted strictly to system administrators (OWNER and ADMIN roles).
  */
 @ApiTags('admin-dlq')
-@ApiBearerAuth('access-token')
+@ApiAuthenticated()
 @Controller('admin/dlq')
 @Roles(UserRole.OWNER, UserRole.ADMIN)
+@ApiErrorResponses({ unauthorized: true, forbidden: true, tooManyRequests: true, serverError: true })
 export class DlqController {
   constructor(private readonly dlqService: DlqService) {}
 

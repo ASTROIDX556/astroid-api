@@ -14,9 +14,30 @@ export const PRISMA_ERROR_CODES = {
   UNIQUE_CONSTRAINT: 'P2002',
   /** Foreign key constraint violation. */
   FOREIGN_KEY_CONSTRAINT: 'P2003',
+  /** Inconsistent column data, e.g. a malformed UUID. */
+  INCONSISTENT_COLUMN_DATA: 'P2023',
   /** A record required by the operation was not found. */
   RECORD_NOT_FOUND: 'P2025',
 } as const;
+
+/**
+ * Connection-level codes a running client reports as a
+ * `PrismaClientKnownRequestError` once the database becomes unreachable after
+ * start-up (a fresh client reports the same failures as a
+ * `PrismaClientInitializationError`). Transient: mapped to 503.
+ */
+export const PRISMA_CONNECTION_ERROR_CODES: ReadonlySet<string> = new Set([
+  /** Can't reach the database server. */
+  'P1001',
+  /** Reaching the database server timed out. */
+  'P1002',
+  /** Operations timed out. */
+  'P1008',
+  /** The server closed the connection. */
+  'P1017',
+  /** Timed out fetching a new connection from the connection pool. */
+  'P2024',
+]);
 
 /** Union of every Prisma client error class the mapper understands. */
 export type PrismaClientError =
@@ -57,7 +78,10 @@ export class PrismaMappedError extends Error {
     message: string,
     /** Prisma's own error code (e.g. `P2002`), when the error carried one. */
     readonly prismaCode: string | undefined,
-    /** Fields involved in a unique-constraint conflict, when derivable. */
+    /**
+     * Fields involved in a unique-constraint conflict, when derivable. For
+     * server-side logs only; never part of a client response.
+     */
     readonly fields: string[] | undefined,
     /** The original Prisma error. Never serialise this to a client. */
     override readonly cause: unknown,
@@ -65,7 +89,7 @@ export class PrismaMappedError extends Error {
     super(message);
   }
 
-  /** HTTP-equivalent status for the mapped code (e.g. 409 for CONFLICT). */
+  /** HTTP-equivalent status for the mapped code (e.g. 409 for CONFLICT, 503 for DATABASE_UNAVAILABLE). */
   get status(): number {
     return ERROR_STATUS[this.code] ?? 500;
   }
@@ -102,78 +126,87 @@ function uniqueTargetFields(meta: Record<string, unknown> | undefined): string[]
   return fields.length > 0 ? fields : undefined;
 }
 
+/** Client-safe messages. They never echo the Prisma message, SQL, `meta`, constraint or model names. */
+export const PRISMA_ERROR_MESSAGES = {
+  UNIQUE_CONSTRAINT: 'A resource with these details already exists',
+  RECORD_NOT_FOUND: 'Resource not found',
+  FOREIGN_KEY_CONSTRAINT:
+    'The operation conflicts with a related resource that does not exist or is still in use',
+  VALUE_TOO_LONG: 'A provided value is too long',
+  INCONSISTENT_COLUMN_DATA: 'A provided value has an invalid format',
+  INVALID_QUERY: 'Invalid database query or input data',
+  UNAVAILABLE: 'The database is temporarily unavailable; please retry later',
+  UNEXPECTED: 'An unexpected database error occurred',
+} as const;
+
 /**
- * Maps a Prisma client error onto a typed {@link PrismaMappedError} by error
- * code (never by parsing message text):
+ * Maps a Prisma client error onto a typed {@link PrismaMappedError} by class
+ * (`instanceof`) and error `code` — never by parsing message text:
  *
- * | Prisma error                       | Code               | Status |
- * | ---------------------------------- | ------------------ | ------ |
- * | `P2002` unique constraint          | `CONFLICT`         | 409    |
- * | `P2025` record not found           | `NOT_FOUND`        | 404    |
- * | `P2003` foreign key constraint     | `BAD_REQUEST`      | 400    |
- * | `P2000` value too long             | `VALIDATION_ERROR` | 422    |
- * | `PrismaClientValidationError`      | `BAD_REQUEST`      | 400    |
- * | any other Prisma error             | `INTERNAL_ERROR`   | 500    |
+ * | Prisma error                                 | Code                   | Status |
+ * | -------------------------------------------- | ---------------------- | ------ |
+ * | `P2002` unique constraint                    | `CONFLICT`             | 409    |
+ * | `P2025` record not found                     | `NOT_FOUND`            | 404    |
+ * | `P2003` foreign key constraint               | `CONFLICT`             | 409    |
+ * | `P2000` value too long                       | `BAD_REQUEST`          | 400    |
+ * | `P2023` inconsistent column data             | `BAD_REQUEST`          | 400    |
+ * | `P1001` `P1002` `P1008` `P1017` `P2024`      | `DATABASE_UNAVAILABLE` | 503    |
+ * | any other known request error code           | `INTERNAL_ERROR`       | 500    |
+ * | `PrismaClientValidationError`                | `BAD_REQUEST`          | 400    |
+ * | `PrismaClientInitializationError`            | `DATABASE_UNAVAILABLE` | 503    |
+ * | `PrismaClientRustPanicError`                 | `DATABASE_UNAVAILABLE` | 503    |
+ * | `PrismaClientUnknownRequestError`            | `INTERNAL_ERROR`       | 500    |
  *
- * Returns `undefined` for anything that is not a Prisma client error so
- * callers can fall through to their own handling.
+ * Messages come from {@link PRISMA_ERROR_MESSAGES} only. Returns `undefined`
+ * for anything that is not a Prisma client error so callers can fall through
+ * to their own handling.
  */
 export function mapPrismaError(error: unknown): PrismaMappedError | undefined {
   if (!isPrismaClientError(error)) return undefined;
 
   if (error instanceof Prisma.PrismaClientKnownRequestError) {
+    const mapped = (code: ErrorCode, message: string, fields?: string[]) =>
+      new PrismaMappedError(code, message, error.code, fields, error);
     switch (error.code) {
-      case PRISMA_ERROR_CODES.UNIQUE_CONSTRAINT: {
-        const fields = uniqueTargetFields(error.meta);
-        const message = fields
-          ? `A resource with this ${fields.join(', ')} already exists`
-          : 'A resource with these unique attributes already exists';
-        return new PrismaMappedError(ErrorCode.CONFLICT, message, error.code, fields, error);
-      }
+      case PRISMA_ERROR_CODES.UNIQUE_CONSTRAINT:
+        return mapped(ErrorCode.CONFLICT, PRISMA_ERROR_MESSAGES.UNIQUE_CONSTRAINT, uniqueTargetFields(error.meta));
       case PRISMA_ERROR_CODES.RECORD_NOT_FOUND:
-        return new PrismaMappedError(ErrorCode.NOT_FOUND, 'Resource not found', error.code, undefined, error);
+        return mapped(ErrorCode.NOT_FOUND, PRISMA_ERROR_MESSAGES.RECORD_NOT_FOUND);
       case PRISMA_ERROR_CODES.FOREIGN_KEY_CONSTRAINT:
-        return new PrismaMappedError(
-          ErrorCode.BAD_REQUEST,
-          'Foreign key constraint failed: referenced resource does not exist or has dependent records',
-          error.code,
-          undefined,
-          error,
-        );
+        return mapped(ErrorCode.CONFLICT, PRISMA_ERROR_MESSAGES.FOREIGN_KEY_CONSTRAINT);
       case PRISMA_ERROR_CODES.VALUE_TOO_LONG:
-        return new PrismaMappedError(
-          ErrorCode.VALIDATION_ERROR,
-          'Provided value exceeds maximum allowed length for field',
-          error.code,
-          undefined,
-          error,
-        );
+        return mapped(ErrorCode.BAD_REQUEST, PRISMA_ERROR_MESSAGES.VALUE_TOO_LONG);
+      case PRISMA_ERROR_CODES.INCONSISTENT_COLUMN_DATA:
+        return mapped(ErrorCode.BAD_REQUEST, PRISMA_ERROR_MESSAGES.INCONSISTENT_COLUMN_DATA);
       default:
-        return new PrismaMappedError(
-          ErrorCode.INTERNAL_ERROR,
-          'An unexpected database error occurred',
-          error.code,
-          undefined,
-          error,
-        );
+        // A running client that loses the database reports connection
+        // failures with these codes; they get the same 503 as an
+        // initialisation error so clients back off instead of failing hard.
+        if (PRISMA_CONNECTION_ERROR_CODES.has(error.code)) {
+          return mapped(ErrorCode.DATABASE_UNAVAILABLE, PRISMA_ERROR_MESSAGES.UNAVAILABLE);
+        }
+        return mapped(ErrorCode.INTERNAL_ERROR, PRISMA_ERROR_MESSAGES.UNEXPECTED);
     }
   }
 
   if (error instanceof Prisma.PrismaClientValidationError) {
+    return new PrismaMappedError(ErrorCode.BAD_REQUEST, PRISMA_ERROR_MESSAGES.INVALID_QUERY, undefined, undefined, error);
+  }
+
+  // Connection / engine start-up failures and engine panics: clients and load
+  // balancers should back off and retry rather than treat this as a bug.
+  if (
+    error instanceof Prisma.PrismaClientInitializationError ||
+    error instanceof Prisma.PrismaClientRustPanicError
+  ) {
     return new PrismaMappedError(
-      ErrorCode.BAD_REQUEST,
-      'Invalid database query or input data',
-      undefined,
+      ErrorCode.DATABASE_UNAVAILABLE,
+      PRISMA_ERROR_MESSAGES.UNAVAILABLE,
+      error instanceof Prisma.PrismaClientInitializationError ? error.errorCode : undefined,
       undefined,
       error,
     );
   }
 
-  return new PrismaMappedError(
-    ErrorCode.INTERNAL_ERROR,
-    'An unexpected database error occurred',
-    undefined,
-    undefined,
-    error,
-  );
+  return new PrismaMappedError(ErrorCode.INTERNAL_ERROR, PRISMA_ERROR_MESSAGES.UNEXPECTED, undefined, undefined, error);
 }

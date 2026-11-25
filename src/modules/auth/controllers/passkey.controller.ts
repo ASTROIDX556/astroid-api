@@ -2,7 +2,6 @@ import { Body, Controller, Delete, Get, Param, Post, Req } from '@nestjs/common'
 import {
   ApiOperation,
   ApiTags,
-  ApiBearerAuth,
   ApiParam,
   ApiBody,
 } from '@nestjs/swagger';
@@ -26,6 +25,7 @@ import {
   PasskeyAuthenticationResultDto,
 } from '../dto/passkey.dto';
 import { PasskeyService } from '../services/passkey.service';
+import { ApiAuthenticated } from '../../../common/decorators/api-authenticated.decorator';
 
 /**
  * WebAuthn passkey endpoints.
@@ -42,6 +42,7 @@ import { PasskeyService } from '../services/passkey.service';
  */
 @ApiTags('auth')
 @Controller('auth/passkey')
+@ApiErrorResponses({ unauthorized: true, forbidden: true, tooManyRequests: true, serverError: true })
 export class PasskeyController {
   constructor(private readonly passkeyService: PasskeyService) {}
 
@@ -56,7 +57,7 @@ export class PasskeyController {
    * present to the authenticator. Stores the challenge for later verification.
    */
   @Post('register/options')
-  @ApiBearerAuth('access-token')
+  @ApiAuthenticated()
   @ThrottleTierDecorator('auth')
   @ApiOperation({
     summary: 'Generate WebAuthn registration options',
@@ -83,7 +84,7 @@ export class PasskeyController {
    * credential atomically.
    */
   @Post('register/verify')
-  @ApiBearerAuth('access-token')
+  @ApiAuthenticated()
   @ThrottleTierDecorator('auth')
   @ApiOperation({
     summary: 'Verify a WebAuthn registration challenge response',
@@ -123,7 +124,7 @@ export class PasskeyController {
    * registered passkey. Returns the list of allowed credentials.
    */
   @Post('authenticate/options')
-  @ApiBearerAuth('access-token')
+  @ApiAuthenticated()
   @ThrottleTierDecorator('auth')
   @ApiOperation({
     summary: 'Generate WebAuthn authentication options',
@@ -149,7 +150,7 @@ export class PasskeyController {
    * counter to prevent replay, and returns the authenticated user.
    */
   @Post('authenticate/verify')
-  @ApiBearerAuth('access-token')
+  @ApiAuthenticated()
   @ThrottleTierDecorator('auth')
   @ApiOperation({
     summary: 'Verify a WebAuthn authentication assertion',
@@ -184,7 +185,7 @@ export class PasskeyController {
    * Lists all registered passkey credentials for the authenticated user.
    */
   @Get('credentials')
-  @ApiBearerAuth('access-token')
+  @ApiAuthenticated()
   @ApiOperation({
     summary: 'List registered passkey credentials',
     description: 'Returns all passkey credentials for the authenticated user.',
@@ -204,7 +205,7 @@ export class PasskeyController {
    * Revokes (deletes) a specific passkey credential.
    */
   @Delete('credentials/:credentialId')
-  @ApiBearerAuth('access-token')
+  @ApiAuthenticated()
   @ApiOperation({
     summary: 'Revoke a passkey credential',
     description: 'Deletes a registered passkey credential by its ID.',

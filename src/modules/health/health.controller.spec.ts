@@ -11,6 +11,7 @@ import { RedisHealthIndicator } from './indicators/redis.health';
 import { StellarHealthIndicator } from './indicators/stellar.health';
 import { DatabaseMigrationHealthIndicator } from './indicators/database-migration.health';
 import { QueueHealthIndicator } from './indicators/queue.health';
+import { ShutdownCoordinator } from '../../common/shutdown/shutdown-coordinator.service';
 
 describe('HealthController', () => {
   let controller: HealthController;
@@ -139,6 +140,11 @@ describe('HealthController', () => {
         data: {
           status: 'up',
           timestamp: expect.any(String),
+          checks: [
+            { name: 'database', status: 'up', latencyMs: 5 },
+            { name: 'cache', status: 'up', latencyMs: 2 },
+            { name: 'queue', status: 'up', latencyMs: 1 },
+          ],
           services: {
             database: { status: 'up', latencyMs: 5, timestamp: expect.any(String) },
             cache: { status: 'up', latencyMs: 2, timestamp: expect.any(String) },
@@ -149,6 +155,36 @@ describe('HealthController', () => {
         meta: {},
         requestId: 'req-health-1',
       });
+    });
+
+    it('answers 503 not-ready as soon as shutdown starts, without probing any dependency', async () => {
+      const closing = new HealthController(
+        dbHealth as unknown as PrismaHealthIndicator,
+        redisHealth as unknown as RedisHealthIndicator,
+        stellarHealth as unknown as StellarHealthIndicator,
+        migrationHealth as unknown as DatabaseMigrationHealthIndicator,
+        queueHealth as unknown as QueueHealthIndicator,
+        { isShuttingDown: true } as unknown as ShutdownCoordinator,
+      );
+
+      await closing.ready(req as Request, res as Response);
+
+      expect(res.status).toHaveBeenCalledWith(503);
+      expect(body()).toMatchObject({
+        success: false,
+        data: {
+          status: 'down',
+          reason: 'shutting_down',
+          services: {
+            database: { status: 'down', error: 'unavailable' },
+            cache: { status: 'down', error: 'unavailable' },
+            queue: { status: 'down', error: 'unavailable' },
+          },
+        },
+      });
+      expect(dbHealth.check).not.toHaveBeenCalled();
+      expect(redisHealth.checkHealth).not.toHaveBeenCalled();
+      expect(queueHealth.checkHealth).not.toHaveBeenCalled();
     });
 
     it('returns 503 when only the queue connection is down', async () => {
@@ -203,6 +239,33 @@ describe('HealthController', () => {
       await controller.ready(req as Request, res as Response);
 
       expect(JSON.stringify(body())).not.toMatch(/ENOTFOUND|redis\.internal/);
+    });
+
+    it('lists every dependency under `checks` with name, status and latency, even when one is down', async () => {
+      redisHealth.checkHealth.mockResolvedValue({
+        status: 'down',
+        latencyMs: 9,
+        timestamp: new Date().toISOString(),
+        error: 'connect ECONNREFUSED 10.1.2.3:6379',
+      });
+
+      await controller.ready(req as Request, res as Response);
+
+      expect(res.status).toHaveBeenCalledWith(503);
+      expect(body().data.checks).toEqual([
+        { name: 'database', status: 'up', latencyMs: 5 },
+        { name: 'cache', status: 'down', latencyMs: 9, error: 'unavailable' },
+        { name: 'queue', status: 'up', latencyMs: 1 },
+      ]);
+      expect(JSON.stringify(body())).not.toMatch(/10.1.2.3|6379|ECONNREFUSED/);
+    });
+
+    it('passes the configured check timeout to each indicator', async () => {
+      await controller.ready(req as Request, res as Response);
+
+      expect(dbHealth.check).toHaveBeenCalledWith('database', 1_000);
+      expect(redisHealth.checkHealth).toHaveBeenCalledWith(1_000);
+      expect(queueHealth.checkHealth).toHaveBeenCalledWith(1_000);
     });
 
     it('returns 503 with success false during a simulated database outage', async () => {
@@ -406,7 +469,7 @@ describe('HealthController', () => {
       vi.useRealTimers();
     });
 
-    it('answers 503 once the 2s timeout fires when the database hangs', async () => {
+    it('answers 503 once the 1s timeout fires when the database hangs', async () => {
       vi.useFakeTimers();
       const hung = new Promise<never>(() => undefined);
       const prisma = { $queryRaw: vi.fn(() => hung) } as unknown as PrismaService;
@@ -420,7 +483,7 @@ describe('HealthController', () => {
       );
 
       const pending = real.ready(req as Request, res as Response);
-      await vi.advanceTimersByTimeAsync(PrismaHealthIndicator.DEFAULT_TIMEOUT_MS);
+      await vi.advanceTimersByTimeAsync(1_000);
       await pending;
 
       expect(res.status).toHaveBeenCalledWith(503);
@@ -430,7 +493,7 @@ describe('HealthController', () => {
       });
     });
 
-    it('answers 503 once the 2s timeout fires when Redis hangs', async () => {
+    it('answers 503 once the 1s timeout fires when Redis hangs', async () => {
       vi.useFakeTimers();
       const prisma = { $queryRaw: vi.fn().mockResolvedValue([{ '?column?': 1 }]) } as unknown as PrismaService;
       const redis = {
@@ -446,7 +509,7 @@ describe('HealthController', () => {
       );
 
       const pending = real.ready(req as Request, res as Response);
-      await vi.advanceTimersByTimeAsync(RedisHealthIndicator.DEFAULT_TIMEOUT_MS);
+      await vi.advanceTimersByTimeAsync(1_000);
       await pending;
 
       expect(res.status).toHaveBeenCalledWith(503);
@@ -755,6 +818,34 @@ describe('HealthController', () => {
         }),
       }),
     );
+  });
+
+  it('reports every diagnostic dependency down while shutting down', async () => {
+    const closing = new HealthController(
+      dbHealth as unknown as PrismaHealthIndicator,
+      redisHealth as unknown as RedisHealthIndicator,
+      stellarHealth as unknown as StellarHealthIndicator,
+      migrationHealth as unknown as DatabaseMigrationHealthIndicator,
+      queueHealth as unknown as QueueHealthIndicator,
+      { isShuttingDown: true } as unknown as ShutdownCoordinator,
+    );
+
+    await closing.getReadiness(res as Response);
+
+    expect(res.status).toHaveBeenCalledWith(503);
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: 'down',
+        reason: 'shutting_down',
+        services: {
+          database: expect.objectContaining({ status: 'down' }),
+          redis: expect.objectContaining({ status: 'down' }),
+          stellar: expect.objectContaining({ status: 'down' }),
+          migrations: expect.objectContaining({ status: 'down' }),
+        },
+      }),
+    );
+    expect(stellarHealth.checkHealth).not.toHaveBeenCalled();
   });
 
   it('serves the same payload from the default health route', async () => {

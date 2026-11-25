@@ -58,6 +58,48 @@ total available amount including carry-over.
 - Domain event emission happens after the transaction commits; event failures
   are logged and never roll back the period rollover.
 
+## Budget reservations and periods
+
+A transaction with a `budgetId` reserves its amount before it executes
+(`BudgetRepository.createReservation`). The limit check and the increment are a
+single conditional statement:
+
+```sql
+UPDATE "budgets" SET "spent" = "spent" + $amount
+WHERE "id" = $budgetId AND "organizationId" = $organizationId AND "deletedAt" IS NULL
+  AND ("periodEnd" IS NULL OR "periodEnd" > $now)
+  AND "spent" + $amount <= "limitAmount"
+RETURNING "periodStart"
+```
+
+Concurrent reservations queue on the budget row and each re-checks the
+condition against the latest committed `spent` (default READ COMMITTED
+isolation), so no interleaving can take `spent` past `limitAmount`, and an
+amount equal to the remaining balance is accepted. Zero matched rows means the
+reservation is refused: `422 BUDGET_EXCEEDED` in the standard error envelope
+(`{ success: false, error: { code, message }, meta: { requestId } }`), `404` for
+an unknown budget. Zero and negative amounts are rejected by
+request validation, and again by the repository.
+
+- **A reservation belongs to the period it was made in.** The reservation stores
+  the budget's `periodStart` at the time. If the period has ended but this
+  budget has not been rolled over yet, the reservation rolls it over first (the
+  same idempotent, row-locked rollover as the scheduled job) and then reserves in
+  the new period, so spend made after a boundary is never folded into the closed
+  period.
+- **Settle and release only touch the reservation's own period.** Once the
+  budget has rolled over, the hold is part of the closed period's snapshot:
+  releasing or settling it marks the reservation without changing the new
+  period's `spent`.
+- **Release is idempotent.** Only a `PENDING` reservation is released; the row is
+  locked first, so a retried or concurrent release never refunds twice. Settling
+  is idempotent the same way. Settling a reservation that was already released
+  records the actual amount again, because the payment did happen.
+- A reservation is released when the submission is rejected after the hold was
+  taken (for example by the agent budget check), when the network rejects or
+  fails the payment, and when the transaction is cancelled or its approval
+  expires.
+
 ## Domain event
 
 `budget.period_rollover` is emitted once per completed rollover:

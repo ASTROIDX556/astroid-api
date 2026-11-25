@@ -44,7 +44,17 @@ It also asserts that:
   while the document may describe the other),
 - every operation has a 2xx response with a **schema** in the standard envelope,
 - every body-accepting route references a named request DTO schema,
-- every error response documents a body,
+- every operation of an authenticated (not `@Public()`) route declares a security
+  scheme that the document defines (`access-token` or `api-key`),
+- every operation of an authenticated route offers **both** credentials as
+  alternatives, because `JwtAuthGuard` accepts a bearer JWT or an API key,
+- every error response documents a body, and that body is a `$ref` to a shared
+  component schema rather than an inline copy,
+- every operation documents the standard errors it can really answer with: 429
+  and 500 everywhere, 401 and 403 on authenticated routes, 400 when it accepts a
+  request body, and 404 when its path ends in a parameter addressing one
+  resource,
+- exactly one component schema (`ApiEnvelopeDto`) declares the success envelope,
 - every `$ref` of the document resolves — there are no missing type definitions,
 - every property of every schema is documented (directly or through the schema
   it references).
@@ -135,7 +145,40 @@ documents the status codes an endpoint can actually return and references the sh
 `true` uses the default description of the status code, a string overrides it.
 The supported statuses are `validation` (400), `unauthorized` (401),
 `forbidden` (403), `notFound` (404), `conflict` (409), `unprocessable` (422),
-`tooManyRequests` (429) and `serverError` (500).
+`tooManyRequests` (429), `serverError` (500) and `serviceUnavailable` (503).
+
+The errors every handler of a controller shares are declared once at class
+level; a handler-level declaration overrides the same status:
+
+```ts
+@ApiAuthenticated()
+@Controller('agents')
+@ApiErrorResponses({ unauthorized: true, forbidden: true, tooManyRequests: true, serverError: true })
+export class AgentController {}
+```
+
+A path parameter does not always address a stored resource: a literal sub-path
+under a parameter (`/audit/resources/{resourceId}/timeline`,
+`/admin/dlq/{queue}/purge`) is a scoped collection or action that answers an
+empty result rather than 404, so the 404 requirement applies only to paths ending
+in the parameter. The infrastructure probes (`/health/live`, `/health/ready`) are
+exempt from the standard-error and problem-details checks: they answer the
+success envelope with `success: false` and are not rate limited.
+
+### Authentication
+
+Protected controllers and handlers use `@ApiAuthenticated()`, which documents
+both credentials the guard accepts:
+
+```ts
+@ApiAuthenticated()   // ApiBearerAuth('access-token') + ApiSecurity('api-key')
+@Controller('wallets')
+export class WalletController {}
+```
+
+The two schemes are alternatives (`security: [{ 'access-token': [] }, { 'api-key': [] }]`),
+not a combined requirement. A controller mixing public and authenticated routes
+(`AuthController`) applies the decorator per handler instead.
 
 ### Request bodies
 

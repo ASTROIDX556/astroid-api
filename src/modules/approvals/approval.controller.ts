@@ -2,7 +2,6 @@ import { Body, Controller, Get, Headers, Param, Post, Query } from '@nestjs/comm
 import {
   ApiOperation,
   ApiTags,
-  ApiBearerAuth,
   ApiParam,
   ApiBody,
   ApiQuery,
@@ -30,10 +29,12 @@ import { ApiEnvelope, ApiPaginatedEnvelope } from '../../common/decorators/api-e
 import { ApiErrorResponses } from '../../common/decorators/api-error-responses.decorator';
 import { IDEMPOTENCY_KEY_HEADER } from '../../common/constants/headers';
 import { parseIdempotencyKey } from '../transactions/transaction.dto';
+import { ApiAuthenticated } from '../../common/decorators/api-authenticated.decorator';
 
 @ApiTags('approvals')
-@ApiBearerAuth('access-token')
+@ApiAuthenticated()
 @Controller('proposals')
+@ApiErrorResponses({ unauthorized: true, forbidden: true, tooManyRequests: true, serverError: true })
 export class ApprovalController {
   constructor(private readonly approvalService: ApprovalService) {}
 
@@ -131,6 +132,7 @@ export class ApprovalController {
     description: 'Approval recorded (transaction may execute automatically)',
   })
   @ApiErrorResponses({
+    validation: 'Malformed comment or Idempotency-Key header',
     unauthorized: true,
     forbidden: true,
     notFound: true,
@@ -173,6 +175,7 @@ export class ApprovalController {
   })
   @ApiEnvelope(ProposalResponseDto, { description: 'Rejection recorded (transaction cancelled)' })
   @ApiErrorResponses({
+    validation: 'Malformed comment or Idempotency-Key header',
     unauthorized: true,
     forbidden: true,
     notFound: true,

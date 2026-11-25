@@ -44,6 +44,7 @@ import {
 } from '../../common/idempotency/idempotency.constants';
 import { RequestContext } from '../../common/context/request-context';
 import { buildPaginationMeta, PaginationQuery, toPrismaPagination } from '../../common/helpers/pagination';
+import { TransactionPreflightService } from './services/transaction-preflight.service';
 
 /** Statuses that may never leave the execution pipeline once they got there. */
 const EXECUTED_STATUSES: readonly TransactionStatus[] = [
@@ -104,6 +105,7 @@ export class TransactionService {
     private readonly prisma: PrismaService,
     private readonly spendingLimits: SpendingLimitService,
     @Optional() private readonly transactions?: PrismaTransactionService,
+    @Optional() private readonly transactionPreflight?: TransactionPreflightService,
     @Optional() private readonly config?: ConfigService,
     @Optional() private readonly idempotency?: IdempotencyService,
     @Optional() private readonly approvalExpiry?: ApprovalExpiryQueue,
@@ -179,7 +181,11 @@ export class TransactionService {
       });
       return result;
     } catch (error) {
-      if (!transactionId) await store.release(reservation.record.id);
+      if (!transactionId) {
+        await store.release(reservation.record.id);
+      } else {
+        await store.failTransaction(transactionId);
+      }
       throw error;
     }
   }
@@ -295,32 +301,32 @@ export class TransactionService {
         requiresApproval,
         metadata: input.metadata as Prisma.InputJsonValue,
       });
-      const transaction = input.agentId && typeof this.budgets.withAgentBudgetLimit === 'function'
-        ? await this.budgets.withAgentBudgetLimit(
-            organizationId,
-            input.agentId,
-            input.asset,
-            amount,
-            createTransactionRow,
-          )
-        : await createTransactionRow();
+      let transaction: Transaction;
+      try {
+        transaction = input.agentId && typeof this.budgets.withAgentBudgetLimit === 'function'
+          ? await this.budgets.withAgentBudgetLimit(
+              organizationId,
+              input.agentId,
+              input.asset,
+              amount,
+              createTransactionRow,
+            )
+          : await createTransactionRow();
+      } catch (error) {
+        // The reservation is already taken, but the submission was rejected
+        // (e.g. the agent budget check) or the row could not be persisted.
+        // Nothing will ever settle or release it through the transaction, so
+        // return the held amount now (idempotent, best effort).
+        await this.releaseReservation(budgetReservationId);
+        throw error;
+      }
 
       return { transaction, assessment, requiresApproval, budgetReservationId: budgetReservationId as string | undefined };
     };
 
-    let result: Awaited<ReturnType<typeof enforceAndCreate>>;
-    try {
-      result = input.agentId
-        ? await this.spendingLimits.withSpendEnforcementLock(input.agentId, enforceAndCreate)
-        : await enforceAndCreate();
-    } catch (error) {
-      // If a reservation was made but the pipeline failed before persisting the
-      // transaction, release the held amount so the budget is not permanently
-      // reduced by an aborted submission.
-      // We cannot access budgetReservationId here directly because enforceAndCreate
-      // is a closure; the release is handled inside enforceAndCreate on throw.
-      throw error;
-    }
+    const result = input.agentId
+      ? await this.spendingLimits.withSpendEnforcementLock(input.agentId, enforceAndCreate)
+      : await enforceAndCreate();
 
     const { transaction, assessment, requiresApproval } = result;
 
@@ -390,6 +396,54 @@ export class TransactionService {
     const wallet = await this.wallets.getOrThrow(organizationId, tx.walletId);
     this.assertWalletSpendable(wallet);
 
+    if (!this.transactionPreflight) {
+      throw new Error('TransactionPreflightService is not available in this application context');
+    }
+
+    const requestId = RequestContext.getRequestId();
+    const executionActorId = actorId ?? RequestContext.getActorId();
+    const transactionXdr = await this.stellar.buildPaymentXdr({
+      sourceAddress: wallet.stellarAddress,
+      destinationAddress: tx.recipientAddress,
+      asset: tx.asset,
+      amount: tx.amount.toFixed(7),
+      memo: tx.memo ?? undefined,
+      network: toNetworkName(wallet.network),
+    });
+    const preflight = await this.transactionPreflight.simulate(transactionXdr);
+    if (preflight.kind === 'retryable_error') {
+      throw preflight.error;
+    }
+    if (preflight.kind === 'terminal_error') {
+      await this.repository.update(tx.id, {
+        status: TransactionStatus.FAILED,
+        simulatedAt: preflight.simulatedAt,
+        simulationErrorCode: preflight.code,
+        simulationErrorMessage: preflight.message,
+      });
+      await this.releaseReservation(tx.budgetReservationId);
+      await this.eventBus.emit(
+        DomainEventName.TransactionFailed,
+        {
+          transactionId: tx.id,
+          reason: preflight.message,
+          code: preflight.code,
+          requestId,
+        },
+        {
+          organizationId,
+          actorId: executionActorId,
+          aggregateType: 'transaction',
+          aggregateId: tx.id,
+        },
+      );
+      throw new DomainException(
+        ErrorCode.SIMULATION_FAILED,
+        `Transaction simulation failed (${preflight.code}): ${preflight.message}`,
+        { code: preflight.code, message: preflight.message, requestId },
+      );
+    }
+
     // Guarded DRAFT/PENDING -> SUBMITTED transition. Concurrent workers racing
     // on the same transaction (fee-bump retries, approvals landing while an
     // execute is in flight) previously clobbered each other's status writes;
@@ -406,7 +460,21 @@ export class TransactionService {
         if (EXECUTED_STATUSES.includes(current.status)) {
           throw new ConflictException(`Transaction '${transactionId}' has already been executed`);
         }
-        return this.repository.update(transactionId, { status: TransactionStatus.SUBMITTED }, client);
+        return this.repository.update(
+          transactionId,
+          {
+            status: TransactionStatus.SUBMITTED,
+            simulatedAt: preflight.simulatedAt,
+            minResourceFee: new Decimal(preflight.minResourceFee),
+            footprintSummary: {
+              readOnlyCount: preflight.footprintSummary.readOnlyCount,
+              readWriteCount: preflight.footprintSummary.readWriteCount,
+            },
+            simulationErrorCode: null,
+            simulationErrorMessage: null,
+          },
+          client,
+        );
       },
       {
         name: 'transaction.status->submitted',
@@ -415,8 +483,13 @@ export class TransactionService {
     );
     await this.eventBus.emit(
       DomainEventName.TransactionSubmitted,
-      { transactionId: tx.id },
-      { organizationId, actorId, aggregateType: 'transaction', aggregateId: tx.id },
+      { transactionId: tx.id, requestId },
+      {
+        organizationId,
+        actorId: executionActorId,
+        aggregateType: 'transaction',
+        aggregateId: tx.id,
+      },
     );
 
     try {
@@ -445,13 +518,23 @@ export class TransactionService {
           await this.budgets.consume(organizationId, tx.budgetId, Number(tx.amount));
         }
       }
+      if (!result.successful) {
+        // The network rejected the payment without throwing: no money moved,
+        // so the hold is returned exactly as on a thrown submission failure.
+        await this.releaseReservation(tx.budgetReservationId);
+      }
 
       await this.eventBus.emit(
         result.successful
           ? DomainEventName.TransactionCompleted
           : DomainEventName.TransactionFailed,
-        { transactionId: tx.id, stellarHash: result.hash },
-        { organizationId, actorId, aggregateType: 'transaction', aggregateId: tx.id },
+        { transactionId: tx.id, stellarHash: result.hash, requestId },
+        {
+          organizationId,
+          actorId: executionActorId,
+          aggregateType: 'transaction',
+          aggregateId: tx.id,
+        },
       );
       return completed;
     } catch (error) {
@@ -469,8 +552,13 @@ export class TransactionService {
       }
       await this.eventBus.emit(
         DomainEventName.TransactionFailed,
-        { transactionId: tx.id, reason: (error as Error).message },
-        { organizationId, actorId, aggregateType: 'transaction', aggregateId: tx.id },
+        { transactionId: tx.id, reason: (error as Error).message, requestId },
+        {
+          organizationId,
+          actorId: executionActorId,
+          aggregateType: 'transaction',
+          aggregateId: tx.id,
+        },
       );
       throw error;
     }

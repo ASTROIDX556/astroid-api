@@ -51,7 +51,12 @@ describe('WebhooksProcessor', () => {
           body: options.body.toString('utf8'),
           signal: AbortSignal.timeout(options.timeoutMs),
         });
-        return { status: response.status };
+        const headers: Record<string, string | string[] | undefined> = {};
+        const responseHeaders = response.headers ?? new Headers();
+        for (const [key, value] of responseHeaders.entries()) {
+          headers[key.toLowerCase()] = value;
+        }
+        return { status: response.status, headers };
       },
     };
     processor = new WebhooksProcessor(mockPrisma as never, undefined, undefined, destinationPolicy);
@@ -381,7 +386,7 @@ describe('WebhooksProcessor', () => {
         {
           post: async (_url, options) => {
             AbortSignal.timeout(options.timeoutMs);
-            return { status: 200 };
+            return { status: 200, headers: {} };
           },
         },
         { get: () => ({
@@ -435,7 +440,9 @@ describe('WebhooksProcessor', () => {
         undefined,
         { recordTerminalFailure } as never,
         {
-          post: async () => ({ status: 503 }),
+          post: async () => {
+            return { status: 503, headers: {} };
+          },
         },
       );
       fetchSpy.mockResolvedValue({ ok: false, status: 503, text: () => Promise.resolve('nope') });
@@ -465,7 +472,9 @@ describe('WebhooksProcessor', () => {
         undefined,
         { recordTerminalFailure } as never,
         {
-          post: async () => ({ status: 503 }),
+          post: async () => {
+            return { status: 503, headers: {} };
+          },
         },
       );
       fetchSpy.mockResolvedValue({ ok: false, status: 503, text: () => Promise.resolve('nope') });

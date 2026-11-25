@@ -2,7 +2,6 @@ import { Body, Controller, Get, Post } from '@nestjs/common';
 import {
   ApiOperation,
   ApiTags,
-  ApiBearerAuth,
   ApiBody,
 } from '@nestjs/swagger';
 import { ApiErrorResponses } from '../../common/decorators/api-error-responses.decorator';
@@ -18,14 +17,16 @@ import {
   SorobanResponseDto,
 } from './dto/soroban.dto';
 import { StellarNetworkDto } from './dto/stellar-network.dto';
+import { ApiAuthenticated } from '../../common/decorators/api-authenticated.decorator';
 
 /**
  * Read-only informational endpoints for the Stellar integration. Payment and
  * balance operations are exposed through the wallets module.
  */
 @ApiTags('stellar')
-@ApiBearerAuth('access-token')
+@ApiAuthenticated()
 @Controller('stellar')
+@ApiErrorResponses({ unauthorized: true, forbidden: true, tooManyRequests: true, serverError: true })
 export class StellarController {
   constructor(private readonly config: ConfigService) {}
 

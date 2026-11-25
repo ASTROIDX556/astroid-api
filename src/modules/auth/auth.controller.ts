@@ -2,7 +2,6 @@ import { Body, Controller, Get, Post, Req } from '@nestjs/common';
 import {
   ApiOperation,
   ApiTags,
-  ApiBearerAuth,
   ApiBody,
 } from '@nestjs/swagger';
 import { ApiErrorResponses } from '../../common/decorators/api-error-responses.decorator';
@@ -31,9 +30,11 @@ import { ThrottleTierDecorator } from '../../common/decorators/throttle-tier.dec
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 import { AuthenticatedUser } from '../../common/interfaces/authenticated-user.interface';
 import { UnauthorizedException } from '../../common/exceptions/domain.exception';
+import { ApiAuthenticated } from '../../common/decorators/api-authenticated.decorator';
 
 @ApiTags('auth')
 @Controller('auth')
+@ApiErrorResponses({ tooManyRequests: true, serverError: true })
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
 
@@ -118,7 +119,8 @@ export class AuthController {
   // ────────────────────────────────────────────
 
   @Post('logout')
-  @ApiBearerAuth('access-token')
+  @ApiAuthenticated()
+  @ApiErrorResponses({ unauthorized: true, forbidden: true })
   @ApiOperation({
     summary: 'Revoke the current session',
     description: 'Invalidates the JWT session so the access/refresh token pair can no longer be used.',
@@ -136,7 +138,8 @@ export class AuthController {
   }
 
   @Get('me')
-  @ApiBearerAuth('access-token')
+  @ApiAuthenticated()
+  @ApiErrorResponses({ unauthorized: true, forbidden: true })
   @ApiOperation({
     summary: 'Get the current authenticated user',
     description: 'Returns the profile and organization details of the authenticated user.',
@@ -148,7 +151,8 @@ export class AuthController {
   }
 
   @Get('session')
-  @ApiBearerAuth('access-token')
+  @ApiAuthenticated()
+  @ApiErrorResponses({ unauthorized: true, forbidden: true })
   @ApiOperation({
     summary: 'Get the current session principal',
     description: 'PRD alias of GET /auth/me — resolves the authenticated user.',

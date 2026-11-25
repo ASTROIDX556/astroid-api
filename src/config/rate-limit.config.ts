@@ -25,10 +25,19 @@ export type SensitiveRouteLimit = {
   windowSeconds: number;
 };
 
+/** Default per-credential quota when an API key has no override. */
+export type CredentialRateLimitConfig = {
+  perMinute: number;
+  perDay: number;
+  dayWindowSeconds: number;
+  quotaCacheSeconds: number;
+};
+
 export type RateLimitConfig = {
   windowSeconds: number;
   maxRequests: number;
   public: PublicRateLimitConfig;
+  credential: CredentialRateLimitConfig;
   /** Per-route limits of the `@SensitiveRateLimit` guard. */
   sensitive: Record<SensitiveRoute, SensitiveRouteLimit>;
 };
@@ -68,6 +77,12 @@ export const rateLimitConfig = registerAs('rateLimit', (): RateLimitConfig => {
       windowSeconds: env.PUBLIC_RATE_LIMIT_WINDOW_SECONDS,
       trustProxy: env.PUBLIC_RATE_LIMIT_TRUST_PROXY,
       clientIdentifiers: parseClientIdentifiers(env.PUBLIC_RATE_LIMIT_CLIENT_IDENTIFIERS),
+    },
+    credential: {
+      perMinute: env.RATE_LIMIT_CREDENTIAL_PER_MINUTE,
+      perDay: env.RATE_LIMIT_CREDENTIAL_PER_DAY,
+      dayWindowSeconds: env.RATE_LIMIT_CREDENTIAL_DAY_WINDOW_SECONDS,
+      quotaCacheSeconds: env.RATE_LIMIT_CREDENTIAL_QUOTA_CACHE_SECONDS,
     },
     sensitive: {
       login: {

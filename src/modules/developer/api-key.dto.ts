@@ -17,6 +17,7 @@ export const createApiKeySchema = z
     permissions: z.array(z.string().max(60)).max(50).default([]),
     allowedIps: z.array(z.string().max(45)).max(50).default([]),
     rateLimitPerMinute: z.number().int().positive().max(100000).optional(),
+    rateLimitPerDay: z.number().int().positive().max(10000000).optional(),
     expiresInDays: z.number().int().positive().max(365).optional(),
   })
   .strict();
@@ -64,6 +65,13 @@ export class CreateApiKeyDto {
     example: 600,
   })
   rateLimitPerMinute?: number;
+
+  @ApiPropertyOptional({
+    description:
+      'Optional requests-per-day override for this key. Omit to keep the configured default quota.',
+    example: 100000,
+  })
+  rateLimitPerDay?: number;
 
   @ApiPropertyOptional({ description: 'Optional expiry in days (max 365)' })
   expiresInDays?: number;
@@ -175,6 +183,12 @@ export class ApiKeyResponseDto {
     example: ['203.0.113.7'],
   })
   allowedIps?: string[];
+
+  @ApiPropertyOptional({ description: 'Requests-per-minute override for this key', example: 600 })
+  rateLimitPerMinute?: number | null;
+
+  @ApiPropertyOptional({ description: 'Requests-per-day override for this key', example: 100000 })
+  rateLimitPerDay?: number | null;
 
   @ApiPropertyOptional({ description: 'Moment the key was last used', example: '2026-01-15T10:30:00.000Z' })
   lastUsedAt?: string;

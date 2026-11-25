@@ -4,8 +4,6 @@ import { ApprovalController } from './approval.controller';
 import { ApprovalService } from './approval.service';
 import { ApprovalRepository } from './approval.repository';
 import { ApprovalIdempotencyRepository } from './approval-idempotency.repository';
-import { ApprovalExpiryScheduler } from './approval-expiry.scheduler';
-import { ApprovalExpiryWorker } from './approval-expiry.worker';
 import { TransactionModule } from '../transactions/transaction.module';
 import { BudgetModule } from '../budgets/budget.module';
 import { Queues } from '../../queues/queues.constants';
@@ -16,9 +14,9 @@ import { redisConfig } from '../../config/redis.config';
  * Approvals module. Imports the transactions and budget modules so proposals
  * can execute or cancel transactions and release held budgets upon expiration.
  *
- * Also owns the scheduled approval expiry sweep: the scheduler registers a
- * repeatable job on the `approval-sweep` queue and the worker delegates each
- * tick to {@link ApprovalService.expireStale}.
+ * The scheduled approval expiry sweep is registered in the WorkersModule
+ * via ApprovalSweepScheduler (uses upsertJobScheduler for idempotent
+ * registration) and ApprovalSweepWorker (delegates to ApprovalService.sweepExpired).
  */
 @Module({
   imports: [
@@ -42,8 +40,6 @@ import { redisConfig } from '../../config/redis.config';
     ApprovalService,
     ApprovalRepository,
     ApprovalIdempotencyRepository,
-    ApprovalExpiryScheduler,
-    ApprovalExpiryWorker,
   ],
   exports: [ApprovalService],
 })

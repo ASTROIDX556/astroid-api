@@ -1,28 +1,27 @@
-import { applyDecorators } from '@nestjs/common';
-import { ApiResponse } from '@nestjs/swagger';
+import { ApiErrorResponses as ApiStandardErrorResponses, ApiErrorResponsesOptions } from './api-error-responses.decorator';
 
-/** RFC 9457 problem details returned by AllExceptionsFilter. */
+const STATUS_OPTIONS: Record<number, keyof ApiErrorResponsesOptions> = {
+  400: 'validation',
+  401: 'unauthorized',
+  403: 'forbidden',
+  404: 'notFound',
+  409: 'conflict',
+  422: 'unprocessable',
+  429: 'tooManyRequests',
+  500: 'serverError',
+  503: 'serviceUnavailable',
+};
+
+/**
+ * Documents the given error statuses with the shared problem-details component.
+ * A thin alias of `ApiErrorResponses` from `api-error-responses.decorator`, kept
+ * for call sites that list statuses instead of naming them.
+ */
 export function ApiErrorResponses(...statuses: number[]) {
-  return applyDecorators(...statuses.map((status) => ApiResponse({
-    status,
-    description: status === 400 ? 'Invalid request' : status === 401 ? 'Authentication required' : status === 403 ? 'Forbidden' : status === 404 ? 'Resource not found' : status === 409 ? 'Conflict' : status === 422 ? 'Unprocessable request' : status === 429 ? 'Rate limit exceeded' : 'Request failed',
-    content: {
-      'application/problem+json': {
-        schema: {
-          type: 'object',
-          required: ['type', 'title', 'status', 'detail', 'instance', 'code', 'requestId'],
-          properties: {
-            type: { type: 'string', example: 'about:blank' },
-            title: { type: 'string', example: 'Bad Request' },
-            status: { type: 'integer', example: status },
-            detail: { type: 'string', example: 'Invalid request' },
-            instance: { type: 'string', example: '/api/v1/agents' },
-            code: { type: 'string', example: 'BAD_REQUEST' },
-            requestId: { type: 'string', example: 'req_018f...' },
-            details: { description: 'Optional validation or domain error details' },
-          },
-        },
-      },
-    },
-  })));
+  const options: ApiErrorResponsesOptions = {};
+  for (const status of statuses) {
+    const key = STATUS_OPTIONS[status];
+    if (key) options[key] = true;
+  }
+  return ApiStandardErrorResponses(options);
 }

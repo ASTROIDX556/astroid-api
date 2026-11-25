@@ -1,5 +1,5 @@
 import { Controller, Delete, Get, Param, Post, Query } from '@nestjs/common';
-import { ApiOperation, ApiTags, ApiParam, ApiQuery, ApiBearerAuth } from '@nestjs/swagger';
+import { ApiOperation, ApiTags, ApiParam, ApiQuery } from '@nestjs/swagger';
 import { ApiErrorResponses } from '../../common/decorators/api-error-responses.decorator';
 import { ApiEnvelope, ApiPaginatedEnvelope } from '../../common/decorators/api-envelope.decorator';
 import { ApiPaginationQuery } from '../../common/decorators/api-pagination-query.decorator';
@@ -10,6 +10,7 @@ import { DeadLetterService } from './dead-letter.service';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { DeadLetterEntryDto, DeadLetterRetryDto, DeadLetterPurgeDto } from './dead-letter.dto';
+import { ApiAuthenticated } from '../../common/decorators/api-authenticated.decorator';
 
 /**
  * Administrative dead-letter queue endpoints. Read-only inspection of captured
@@ -17,9 +18,10 @@ import { DeadLetterEntryDto, DeadLetterRetryDto, DeadLetterPurgeDto } from './de
  * Restricted to owners/admins like the audit trail.
  */
 @ApiTags('dead-letter')
-@ApiBearerAuth('access-token')
+@ApiAuthenticated()
 @Controller('admin/dead-letter')
 @Roles(UserRole.OWNER, UserRole.ADMIN)
+@ApiErrorResponses({ unauthorized: true, forbidden: true, tooManyRequests: true, serverError: true })
 export class DeadLetterController {
   constructor(private readonly deadLetterService: DeadLetterService) {}
 

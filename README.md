@@ -135,6 +135,14 @@ against its disposable PostgreSQL service.
 - [`docs/balance-cache.md`](docs/balance-cache.md) — the Redis cache-aside for
   wallet balance reads, its TTL and its invalidation.
 
+## Health Probes
+
+- `GET /health/live` — liveness, `200` while the process runs; touches no dependency.
+- `GET /health/ready` — readiness, `200` when PostgreSQL and Redis answer within the timeout, `503` otherwise.
+
+Both are unauthenticated, never rate limited and served outside the `/api/v1` prefix. See
+[`docs/health-probes.md`](docs/health-probes.md) for the response shape, timeouts and caching.
+
 ## Environment Variables
 
 All variables are validated against a single schema when the process starts;
