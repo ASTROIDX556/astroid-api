@@ -793,6 +793,7 @@ model ApiKey {
   expiresAt      DateTime?
   revokedAt      DateTime?
   rotatedAt      DateTime?
+  previousKeyExpiresAt DateTime?
   replacementId  String?
   createdAt      DateTime  @default(now())
 

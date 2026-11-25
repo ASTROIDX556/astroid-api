@@ -63,13 +63,15 @@ Integrators can rotate API keys without breaking live traffic via `POST /develop
 
 - **Rotation Flow**:
   - Mints a replacement key with the same scopes, permissions, and IP restrictions as the original key.
-  - The previous key is marked `status: 'rotating'` and assigned an `expiresAt` timestamp matching the grace period (default: 86,400 seconds / 24 hours, or customizable via `gracePeriodSeconds`).
-  - The new key is returned in plaintext exactly once in the response along with the previous key's `expiresAt`.
+  - The previous key remains a separate row with its hash and is marked `status: 'rotating'`; `previousKeyExpiresAt` limits its grace period without changing the key's original `expiresAt`.
+  - The new key is returned in plaintext exactly once in the response. If no new expiry is requested, it inherits the original key's expiry.
+  - The default grace period is 86,400 seconds (24 hours), configurable with `API_KEY_ROTATION_GRACE_PERIOD_SECONDS` or per request with `gracePeriodSeconds` (maximum 30 days).
 - **Grace Period Authentication**:
-  - Both the new key and the rotating key remain valid for authentication until `expiresAt`.
-  - Once `expiresAt` passes, authentication with the rotating key fails with standard `401 Unauthorized`.
+  - Both the new key and the rotating key remain valid until the earlier of the previous key's original expiry and `previousKeyExpiresAt`.
+  - Once that deadline passes, authentication with the rotating key fails with standard `401 Unauthorized`.
 - **Conflict Prevention**:
-  - Attempting to rotate a key that is already rotating, revoked, or expired immediately returns `409 Conflict`.
+  - Only the actor who created a key can rotate it. Attempting to rotate another actor's key returns `404 Not Found`.
+  - Attempting to rotate a key that is already rotating, revoked, or expired immediately returns `409 Conflict`; concurrent rotations are serialized so only one replacement is created.
 - **Immediate Revocation**:
   - Revoking a key (`DELETE /developer/api-keys/:id`) is immediate and rejects authentication immediately, regardless of any active grace period.
 - **Audit Logging**:

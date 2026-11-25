@@ -89,7 +89,7 @@ export const authEnvSchema = z.object({
   PASSKEY_RP_ID: z.string().default('localhost'),
   PASSKEY_RP_NAME: z.string().default('Astroid'),
   PASSKEY_ORIGIN: z.string().default('http://localhost:3001'),
-  API_KEY_ROTATION_GRACE_PERIOD_SECONDS: z.coerce.number().int().positive().default(86400),
+  API_KEY_ROTATION_GRACE_PERIOD_SECONDS: z.coerce.number().int().positive().max(2592000).default(86400),
 });
 
 export const stellarEnvSchema = z.object({
