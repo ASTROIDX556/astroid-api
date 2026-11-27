@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { Prisma, Transaction } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { PrismaPagination } from '../../common/helpers/pagination';
+import { ConflictException } from '../../common/exceptions/domain.exception';
 import { CursorPayload } from '../../common/pagination/cursor-pagination';
 
 /**
@@ -16,6 +17,116 @@ type TransactionWriteClient = PrismaService | Prisma.TransactionClient;
 @Injectable()
 export class TransactionRepository {
   constructor(private readonly prisma: PrismaService) {}
+
+  async reserveIdempotencyKey(input: {
+    principalId: string;
+    route: string;
+    keyHash: string;
+    requestHash: string;
+    expiresAt: Date;
+  }) {
+    const identity = {
+      principalId: input.principalId,
+      route: input.route,
+      keyHash: input.keyHash,
+    };
+    // Expired records are treated as absent, so a retry after the retention
+    // window executes again instead of replaying stale state.
+    await this.prisma.transactionIdempotencyRecord.deleteMany({
+      where: { ...identity, expiresAt: { lte: new Date() } },
+    });
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        const record = await this.prisma.transactionIdempotencyRecord.create({
+          data: {
+            // `operation` is the legacy column; it mirrors the route for rows
+            // written since keys became route-scoped.
+            operation: input.route,
+            ...input,
+          },
+        });
+        return { record, created: true };
+      } catch (error) {
+        if (
+          typeof error !== 'object' ||
+          error === null ||
+          !('code' in error) ||
+          error.code !== 'P2002'
+        ) {
+          throw error;
+        }
+
+        // A concurrent request won the unique constraint. Resolve to its
+        // record instead of a read-then-write check, which would race.
+        const record = await this.prisma.transactionIdempotencyRecord.findUnique({
+          where: { principalId_route_keyHash: identity },
+        });
+        if (!record) throw error;
+        if (record.expiresAt <= new Date()) {
+          await this.prisma.transactionIdempotencyRecord.deleteMany({ where: { id: record.id } });
+          continue;
+        }
+        return { record, created: false };
+      }
+    }
+
+    throw new ConflictException(
+      'The idempotency key could not be reserved; retry the request',
+    );
+  }
+
+  findIdempotencyKey(identity: {
+    principalId: string;
+    route: string;
+    keyHash: string;
+  }) {
+    return this.prisma.transactionIdempotencyRecord.findUnique({
+      where: { principalId_route_keyHash: identity },
+    });
+  }
+
+  completeIdempotencyResponse(
+    id: string,
+    response: Prisma.InputJsonValue,
+    expiresAt: Date,
+  ) {
+    return this.prisma.transactionIdempotencyRecord.update({
+      where: { id },
+      data: { status: 'COMPLETED', response, expiresAt },
+    });
+  }
+
+  attachIdempotencyTransaction(id: string, transactionId: string) {
+    return this.prisma.transactionIdempotencyRecord.update({
+      where: { id },
+      data: { transactionId },
+    });
+  }
+
+  completeIdempotencyKey(
+    id: string,
+    transactionId: string,
+    response: Prisma.InputJsonValue,
+    expiresAt: Date,
+  ) {
+    return this.prisma.transactionIdempotencyRecord.update({
+      where: { id },
+      data: { status: 'COMPLETED', transactionId, response, expiresAt },
+    });
+  }
+
+  releaseIdempotencyKey(id: string) {
+    return this.prisma.transactionIdempotencyRecord.deleteMany({
+      where: { id, transactionId: null },
+    });
+  }
+
+  deleteExpiredIdempotencyKeys(now = new Date()) {
+    return this.prisma.transactionIdempotencyRecord.deleteMany({
+      where: { expiresAt: { lte: now } },
+    });
+  }
 
   create(data: Prisma.TransactionCreateInput): Promise<Transaction> {
     return this.prisma.transaction.create({ data });

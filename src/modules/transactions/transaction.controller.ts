@@ -104,6 +104,12 @@ export class TransactionController {
   @ApiBody({ type: CreateTransactionDto })
   @ApiHeader({
     name: 'Idempotency-Key',
+    required: true,
+    description:
+      'Required key for replay-safe transaction submission (1-128 allowed ASCII characters). ' +
+      'Repeating the same key with the same body replays the original response with ' +
+      '`Idempotency-Replayed: true`; reusing it with a different body answers 409 without ' +
+      'creating another transaction.',
     required: false,
     description: 'Optional key for replay-safe transaction submission (8-255 characters after trimming).',
   })
@@ -112,7 +118,7 @@ export class TransactionController {
     description: 'Transaction created (may require approval)',
   })
   @ApiErrorResponses({
-    validation: 'Validation error',
+    validation: 'Validation error, or a missing/malformed Idempotency-Key header',
     unauthorized: true,
     forbidden: true,
     conflict: 'Insufficient budget, risk threshold exceeded, or the idempotency key is in use',

@@ -402,7 +402,7 @@ describe('OpenAPI Documentation', () => {
 
     expect(
       parameters.find((parameter) => parameter.in === 'header' && parameter.name === 'Idempotency-Key'),
-    ).toMatchObject({ required: false });
+    ).toMatchObject({ required: true });
   });
 
   it('documents at least one response for every operation', () => {

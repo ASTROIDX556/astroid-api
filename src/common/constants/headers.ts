@@ -9,6 +9,7 @@ export const WEBHOOK_DELIVERY_HEADER = 'x-astroid-delivery';
 export const WEBHOOK_EVENT_HEADER = 'x-astroid-event';
 export const WEBHOOK_SIGNATURE_VERSION_HEADER = 'x-astroid-signature-version';
 export const IDEMPOTENCY_KEY_HEADER = 'idempotency-key';
+/** Set to `true` when a response was replayed from an idempotency record. */
 /** Set to `true` on a response served from a stored idempotent result. */
 export const IDEMPOTENT_REPLAY_HEADER = 'idempotent-replay';
 /** Contract name of the replay marker; sent alongside the legacy header above. */

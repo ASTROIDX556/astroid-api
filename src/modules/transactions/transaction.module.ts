@@ -18,6 +18,10 @@ import { BullModule } from '@nestjs/bullmq';
 import { Queues } from '../../queues/queues.constants';
 import { createQueueRegistrationOptions } from '../../queues/queue-policy';
 import { TransactionWorker } from './workers/transaction.worker';
+import { TransactionIdempotencyCleanupService } from './transaction-idempotency-cleanup.service';
+import { TransactionIdempotencyStore } from './idempotency/transaction-idempotency.store';
+import { IdempotencyInterceptor } from '../../common/interceptors/idempotency.interceptor';
+import { IDEMPOTENCY_STORE } from '../../common/interceptors/idempotency-store';
 import { IdempotencyModule } from '../../common/idempotency/idempotency.module';
 import { ApprovalExpiryQueue } from '../../queues/approval-expiry.queue';
 
@@ -63,6 +67,10 @@ import { ApprovalExpiryQueue } from '../../queues/approval-expiry.queue';
     SpendingLimitService,
     SpendingLimitGuard,
     TransactionWorker,
+    TransactionIdempotencyCleanupService,
+    TransactionIdempotencyStore,
+    IdempotencyInterceptor,
+    { provide: IDEMPOTENCY_STORE, useExisting: TransactionIdempotencyStore },
     ApprovalExpiryQueue,
   ],
   exports: [TransactionService, ApprovalExpiryQueue, SorobanSimulationService, StellarSimulationService, GasEstimationService, SpendingLimitService],
