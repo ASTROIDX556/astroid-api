@@ -38,6 +38,8 @@ export class ApiKeyRepository {
           lastUsedAt: true,
           expiresAt: true,
           revokedAt: true,
+          graceExpiresAt: true,
+          rotatedFromId: true,
           createdAt: true,
         },
       }),
@@ -50,7 +52,9 @@ export class ApiKeyRepository {
     return this.prisma.apiKey.findFirst({ where: { id, organizationId } });
   }
 
-  /** Resolves a presented key by its hash (used for API-key authentication). */
+  /**
+   * Resolves a presented key by its hash (used for API-key authentication).
+   */
   findByHash(hashedKey: string): Promise<ApiKey | null> {
     return this.prisma.apiKey.findUnique({ where: { hashedKey } });
   }
@@ -137,5 +141,26 @@ export class ApiKeyRepository {
 
   touchLastUsed(id: string): Promise<ApiKey> {
     return this.prisma.apiKey.update({ where: { id }, data: { lastUsedAt: new Date() } });
+  }
+
+  /**
+   * Check if a key has already been rotated (i.e., another key has
+   * rotatedFromId pointing to it). Used to enforce the "one active
+   * predecessor" invariant.
+   */
+  async hasSuccessor(organizationId: string, id: string): Promise<boolean> {
+    const count = await this.prisma.apiKey.count({
+      where: { organizationId, rotatedFromId: id },
+    });
+    return count > 0;
+  }
+
+  /**
+   * Check if this key has already been rotated (i.e., it has a
+   * non-null rotatedFromId). Used to reject rotating an already-rotated key.
+   */
+  async hasBeenRotated(organizationId: string, id: string): Promise<boolean> {
+    const key = await this.findById(organizationId, id);
+    return !!key?.rotatedFromId;
   }
 }

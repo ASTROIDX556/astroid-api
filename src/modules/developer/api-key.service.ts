@@ -169,6 +169,13 @@ export class ApiKeyService {
     }
     await this.repository.revoke(id);
 
+    // If this key has a successor (replacement), immediately revoke it too.
+    const successor = key.rotatedFromId
+      ? await this.repository.findById(organizationId, key.rotatedFromId)
+      : null;
+    if (successor && !successor.revokedAt) {
+      await this.repository.revoke(successor.id)
+    };
     if (this.auditService && actorId) {
       try {
         await this.auditService.record({
@@ -189,13 +196,31 @@ export class ApiKeyService {
   }
 
   /**
+   * Verifies a presented raw key: matches by hash, checks it is neither revoked
+   * nor expired, and updates lastUsedAt. Returns the owning key or null.
+   * Also checks grace period expiry for predecessor keys.
    * Verifies a presented raw key: matches by Argon2 hash (with SHA-256 fallback for legacy keys),
    * checks it is neither revoked nor expired, and updates lastUsedAt. Returns the owning key or null.
    */
   async verify(rawKey: string) {
-    if (!rawKey || typeof rawKey !== 'string' || rawKey.trim().length === 0) {
+    if (!rawKey || rawKey.trim().length === 0) {
       return null;
     }
+    const key = await this.repository.findByHash(sha256(rawKey.trim()));
+    if (!key) {
+      return null;
+    }
+
+    // Revoked keys are never valid.
+    if (key.revokedAt) {
+      return null;
+    }
+
+    // Check grace period expiry for predecessor keys.
+    if (key.graceExpiresAt && key.graceExpiresAt.getTime() < Date.now()) {
+      return null;
+    }
+
     
     const trimmedKey = rawKey.trim();
     
@@ -247,5 +272,102 @@ export class ApiKeyService {
     } catch {
       // Gracefully continue even if updating lastUsedAt encounters an error
     }
+  }
+
+  /**
+   * Rotate an API key. Generates a replacement key while keeping the
+   * predecessor valid for a configurable grace period.
+   *
+   * Ownership is enforced: the key must belong to the authenticated caller.
+   * The predecessor key remains valid until its grace period expires.
+   * Revoking the replacement immediately invalidates the predecessor.
+   */
+  async rotateKey(organizationId: string, actorId: string, keyId: string) {
+    // 1. Find the key being rotated and verify ownership.
+    const predecessor = await this.repository.findById(organizationId, keyId);
+    if (!predecessor) {
+      throw new NotFoundException('ApiKey', keyId);
+    }
+    if (predecessor.organizationId !== organizationId) {
+      throw new NotFoundException('ApiKey', keyId);
+    }
+
+    // 2. Reject if the predecessor has already been rotated.
+    if (await this.repository.hasBeenRotated(organizationId, keyId)) {
+      throw new ConflictException('API key has already been rotated');
+    }
+
+    // 3. Reject if the predecessor has a successor already (another key
+    //    has rotatedFromId pointing to it). This prevents indefinite chains.
+    if (await this.repository.hasSuccessor(organizationId, keyId)) {
+      throw new ConflictException('This key already has a successor; rotation is not allowed');
+    }
+
+    // 4. Reject if the predecessor is revoked.
+    if (predecessor.revokedAt) {
+      throw new ConflictException('Cannot rotate a revoked API key');
+    }
+
+    // 5. Generate the replacement key.
+    const { raw, prefix, hashedKey } = generateApiKey('live');
+
+    // 6. Begin a Prisma transaction for atomicity.
+    const result = await this.prisma.$transaction(async (tx) => {
+      // 6a. Create the replacement key.
+      const replacement = await tx.apiKey.create({
+        data: {
+          organizationId,
+          createdById: actorId,
+          name: `${predecessor.name} (replacement)`,
+          prefix,
+          hashedKey,
+          permissions: predecessor.permissions,
+          allowedIps: predecessor.allowedIps,
+        },
+      });
+
+      // 6b. Update the predecessor: set graceExpiresAt.
+      await tx.apiKey.update({
+        where: { id: predecessor.id },
+        data: {
+          graceExpiresAt: new Date(Date.now() + this.getGracePeriodMillis()),
+        },
+      });
+
+      // 6c. Set the replacement's rotatedFromId to point to the predecessor.
+      await tx.apiKey.update({
+        where: { id: replacement.id },
+        data: { rotatedFromId: predecessor.id },
+      });
+
+      // 6d. Record the audit event.
+      await this.auditService.record({
+        organizationId: predecessor.organizationId,
+        userId: actorId,
+        action: 'API_KEY_ROTATE',
+        entity: 'ApiKey',
+        entityId: predecessor.id,
+        oldValue: {
+          keyId: predecessor.id,
+          name: predecessor.name,
+        },
+        newValue: {
+          keyId: replacement.id,
+          name: replacement.name,
+        },
+      });
+
+      return { replacement, predecessor };
+    });
+
+    // 7. Return the plaintext replacement key exactly once.
+    return {
+      id: result.replacement.id,
+      name: result.replacement.name,
+      prefix: result.replacement.prefix,
+      permissions: result.replacement.permissions,
+      graceExpiresAt: result.predecessor.graceExpiresAt,
+      key: raw,
+    };
   }
 }

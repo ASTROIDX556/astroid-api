@@ -397,6 +397,14 @@ export const shutdownEnvSchema = z.object({
   SHUTDOWN_GRACE_PERIOD_MS: z.coerce.number().int().positive().default(20_000),
 });
 
+export const rotationEnvSchema = z.object({
+  API_KEY_ROTATION_GRACE_PERIOD_HOURS: z
+    .coerce.number()
+    .int()
+    .positive()
+    .default(24),
+});
+
 export const aiEnvSchema = z.object({
   AI_PROVIDER: z.string().default('nvidia'),
   AI_PROVIDER_KEY: z.string().min(1, 'AI_PROVIDER_KEY is required'),

@@ -914,3 +914,298 @@ describe('ApiKeyService', () => {
     });
   });
 });
+
+  describe('rotateKey', () => {
+    const rawSecret = 'ak_live_abcdef1234567890abcdef1234567890abcdef12';
+    const hash = sha256(rawSecret);
+
+    beforeEach(() => {
+      vi.clearAllMocks();
+    });
+
+    it('creates a new key on successful rotation', async () => {
+      repository.findById.mockResolvedValue({
+        id: 'key-1',
+        organizationId: orgId,
+        name: 'Original Key',
+        prefix: 'ak_live_1234567890abcdef',
+        hashedKey: hash,
+        permissions: ['transactions:write'],
+        allowedIps: ['192.168.1.1'],
+        revokedAt: null,
+        graceExpiresAt: null,
+        rotatedFromId: null,
+      });
+
+      repository.hasBeenRotated.mockResolvedValue(false);
+      repository.hasSuccessor.mockResolvedValue(false);
+
+      const mockReplacement = {
+        id: 'key-2',
+        organizationId: orgId,
+        name: 'Original Key (replacement)',
+        prefix: 'ak_live_9876543210abcdef',
+        hashedKey: sha256('new-key-secret'),
+        permissions: ['transactions:write'],
+        allowedIps: ['192.168.1.1'],
+        revokedAt: null,
+        graceExpiresAt: null,
+        rotatedFromId: 'key-1',
+      };
+
+      repository.create.mockResolvedValue(mockReplacement);
+      repository.findById
+        .mockResolvedValueOnce({ id: 'key-1', organizationId: orgId, rotatedFromId: null, graceExpiresAt: null })
+        .mockResolvedValueOnce(mockReplacement);
+
+      const result = await service.rotateKey(orgId, userId, 'key-1');
+
+      expect(result.key).toMatch(/^ak_live_[a-f0-9]{48}$/);
+      expect(result.id).toBe('key-2');
+      expect(result.name).toBe('Original Key (replacement)');
+      expect(result.prefix).toBe('ak_live_9876543210abcdef');
+      expect(result.permissions).toEqual(['transactions:write']);
+      expect(result.allowedIps).toEqual(['192.168.1.1']);
+
+      expect(repository.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          organizationId: orgId,
+          createdById: userId,
+          name: 'Original Key (replacement)',
+          prefix: result.prefix,
+          hashedKey: expect.any(String),
+          permissions: ['transactions:write'],
+          allowedIps: ['192.168.1.1'],
+        }),
+      );
+    });
+
+    it('applies the configured grace period to the predecessor', async () => {
+      repository.findById.mockResolvedValue({
+        id: 'key-1',
+        organizationId: orgId,
+        name: 'Original Key',
+        prefix: 'ak_live_1234567890abcdef',
+        hashedKey: hash,
+        permissions: ['transactions:write'],
+        allowedIps: ['192.168.1.1'],
+        revokedAt: null,
+        graceExpiresAt: null,
+        rotatedFromId: null,
+      });
+
+      repository.hasBeenRotated.mockResolvedValue(false);
+      repository.hasSuccessor.mockResolvedValue(false);
+
+      const mockReplacement = {
+        id: 'key-2',
+        organizationId: orgId,
+        name: 'Original Key (replacement)',
+        prefix: 'ak_live_9876543210abcdef',
+        hashedKey: sha256('new-key-secret'),
+        permissions: ['transactions:write'],
+        allowedIps: ['192.168.1.1'],
+        revokedAt: null,
+        graceExpiresAt: null,
+        rotatedFromId: 'key-1',
+      };
+
+      ;(service['prisma'] as const).$transaction = async (fn: {
+      apiKey: {
+        create: () => mockReplacement;
+        update: () => mockReplacement;
+      },
+    }) => {
+      const result = await fn({
+        apiKey: {
+          create: () => mockReplacement,
+          update: () => mockReplacement,
+        },
+      });
+      return result;
+    };
+
+      const result = await service.rotateKey(orgId, userId, 'key-1');
+
+      expect(result.key).toMatch(/^ak_live_[a-f0-9]{48}$/);
+      expect(repository.hasBeenRotated).toHaveBeenCalledWith(orgId, 'key-1');
+      expect(repository.hasSuccessor).toHaveBeenCalledWith(orgId, 'key-1');
+    });
+
+    it('returns 404 when key does not exist', async () => {
+      repository.findById.mockResolvedValue(null);
+
+      await expect(service.rotateKey(orgId, userId, 'non-existent')).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+    });
+
+    it('returns 404 when key belongs to another organization', async () => {
+      repository.findById.mockResolvedValue({
+        id: 'key-1',
+        organizationId: 'other-org',
+        name: 'Original Key',
+        prefix: 'ak_live_1234567890abcdef',
+        hashedKey: hash,
+        permissions: ['transactions:write'],
+        allowedIps: ['192.168.1.1'],
+        revokedAt: null,
+        graceExpiresAt: null,
+        rotatedFromId: null,
+      });
+
+      await expect(service.rotateKey(orgId, userId, 'key-1')).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+    });
+
+    it('rejects rotating an already-rotated predecessor', async () => {
+      repository.findById.mockResolvedValue({
+        id: 'key-1',
+        organizationId: orgId,
+        name: 'Already Rotated',
+        prefix: 'ak_live_1234567890abcdef',
+        hashedKey: hash,
+        permissions: ['transactions:write'],
+        allowedIps: [],
+        revokedAt: null,
+        graceExpiresAt: null,
+        rotatedFromId: 'key-previous',
+      });
+
+      repository.hasBeenRotated.mockResolvedValue(true);
+
+      await expect(service.rotateKey(orgId, userId, 'key-1')).rejects.toBeInstanceOf(
+        ConflictException,
+      );
+    });
+
+    it('rejects rotating a key that already has a successor', async () => {
+      repository.findById.mockResolvedValue({
+        id: 'key-1',
+        organizationId: orgId,
+        name: 'Key With Successor',
+        prefix: 'ak_live_1234567890abcdef',
+        hashedKey: hash,
+        permissions: ['transactions:write'],
+        allowedIps: [],
+        revokedAt: null,
+        graceExpiresAt: null,
+        rotatedFromId: null,
+      });
+
+      repository.hasSuccessor.mockResolvedValue(true);
+
+      await expect(service.rotateKey(orgId, userId, 'key-1')).rejects.toBeInstanceOf(
+        ConflictException,
+      );
+    });
+
+    it('rejects rotating a revoked key', async () => {
+      repository.findById.mockResolvedValue({
+        id: 'key-1',
+        organizationId: orgId,
+        name: 'Revoked Key',
+        prefix: 'ak_live_1234567890abcdef',
+        hashedKey: hash,
+        permissions: ['transactions:write'],
+        allowedIps: [],
+        revokedAt: new Date(),
+        graceExpiresAt: null,
+        rotatedFromId: null,
+      });
+
+      await expect(service.rotateKey(orgId, userId, 'key-1')).rejects.toBeInstanceOf(
+        ConflictException,
+      );
+    });
+
+    it('records audit event on successful rotation', async () => {
+      repository.findById.mockResolvedValue({
+        id: 'key-1',
+        organizationId: orgId,
+        name: 'Original Key',
+        prefix: 'ak_live_1234567890abcdef',
+        hashedKey: hash,
+        permissions: [],
+        allowedIps: [],
+        revokedAt: null,
+        graceExpiresAt: null,
+        rotatedFromId: null,
+      });
+
+      repository.hasBeenRotated.mockResolvedValue(false);
+      repository.hasSuccessor.mockResolvedValue(false);
+
+      const mockReplacement = {
+        id: 'key-2',
+        organizationId: orgId,
+        name: 'Original Key (replacement)',
+        prefix: 'ak_live_9876543210abcdef',
+        hashedKey: sha256('new-key-secret'),
+        permissions: [],
+        allowedIps: [],
+
+      await service.rotateKey(orgId, userId, 'key-1');
+
+      expect(service['auditService'].record).toHaveBeenCalledWith(
+        expect.objectContaining({
+          organizationId: orgId,
+          action: 'API_KEY_ROTATE',
+          entity: 'ApiKey',
+          entityId: 'key-1',
+        }),
+      );
+    });
+
+    it('does not persist the plaintext key', async () => {
+      repository.findById.mockResolvedValue({
+        id: 'key-1',
+        organizationId: orgId,
+        name: 'Original Key',
+        prefix: 'ak_live_1234567890abcdef',
+        hashedKey: hash,
+        permissions: [],
+        allowedIps: [],
+        revokedAt: null,
+        graceExpiresAt: null,
+        rotatedFromId: null,
+      });
+
+      repository.hasBeenRotated.mockResolvedValue(false);
+      repository.hasSuccessor.mockResolvedValue(false);
+
+      const mockReplacement = {
+        id: 'key-2',
+        organizationId: orgId,
+        name: 'Original Key (replacement)',
+        prefix: 'ak_live_9876543210abcdef',
+        hashedKey: sha256('new-key-secret'),
+        permissions: [],
+        allowedIps: [],
+        revokedAt: null,
+        graceExpiresAt: null,
+        rotatedFromId: 'key-1',
+      };
+
+      repository.create.mockResolvedValue(mockReplacement);
+
+      ;(service['prisma'] as any).$transaction = async (fn: any) => {
+        const result = await fn({
+          apiKey: {
+            create: async () => mockReplacement,
+            update: async () => {},
+          },
+        } as any);
+        return result;
+      };
+
+      await service.rotateKey(orgId, userId, 'key-1');
+
+      expect(repository.create).toHaveBeenCalledWith(
+        expect.not.objectContaining({
+          key: expect.any(String),
+        }),
+      );
+    });
+  });
