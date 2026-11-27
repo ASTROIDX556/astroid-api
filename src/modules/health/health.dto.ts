@@ -90,6 +90,25 @@ export class DependencyProbeDto {
   error?: 'timeout' | 'unavailable';
 }
 
+/** One entry of the readiness `checks` list: the stable, machine-readable report. */
+export class ReadinessCheckDto {
+  @ApiProperty({ description: 'Name of the dependency', example: 'database' })
+  name!: string;
+
+  @ApiProperty({ description: 'Health of the dependency', enum: ['up', 'down'], example: 'up' })
+  status!: 'up' | 'down';
+
+  @ApiProperty({ description: 'Round-trip time of the check, in milliseconds', example: 3 })
+  latencyMs!: number;
+
+  @ApiPropertyOptional({
+    description: 'Why the dependency is down. Never contains hosts, credentials or stack traces.',
+    enum: ['timeout', 'unavailable'],
+    example: 'timeout',
+  })
+  error?: 'timeout' | 'unavailable';
+}
+
 /** Per-dependency results of the readiness probe. */
 export class ReadinessServicesDto {
   @ApiProperty({ description: 'PostgreSQL, probed with `SELECT 1`', type: DependencyProbeDto })
@@ -107,6 +126,12 @@ export class ReadinessServicesDto {
     type: DependencyProbeDto,
   })
   queue!: DependencyProbeDto;
+
+  @ApiProperty({
+    description: 'Soroban RPC, probed with a bounded `getHealth` call on the configured endpoint',
+    type: DependencyProbeDto,
+  })
+  soroban!: DependencyProbeDto;
 }
 
 /** Payload of the readiness probe. */
@@ -121,6 +146,13 @@ export class ReadinessDto {
   @ApiProperty({ description: 'Moment the probe answered', example: '2026-01-15T10:30:00.000Z' })
   timestamp!: string;
 
-  @ApiProperty({ description: 'Result of each dependency check', type: ReadinessServicesDto })
+  @ApiProperty({
+    description:
+      'Result of each dependency check, in a stable list: `{ name, status, latencyMs, error? }`',
+    type: [ReadinessCheckDto],
+  })
+  checks!: ReadinessCheckDto[];
+
+  @ApiProperty({ description: 'Result of each dependency check, keyed by name (kept for existing clients)', type: ReadinessServicesDto })
   services!: ReadinessServicesDto;
 }

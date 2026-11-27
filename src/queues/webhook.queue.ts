@@ -11,6 +11,23 @@ import { createWebhookBackoffStrategy } from '../utils/backoff.util';
 /** BullMQ job name used for every outbound webhook delivery. */
 export const WEBHOOK_JOB_NAME = 'webhook-delivery';
 
+/**
+ * Deterministic BullMQ job id for one (event, subscription) pair.
+ *
+ * The id is what makes delivery deduplication work: BullMQ ignores an `add`
+ * whose id already exists in the queue (waiting, active, delayed, failed or
+ * retained-completed), so the same event can never be delivered twice — and in
+ * particular never twice **concurrently** — to the same subscription.
+ *
+ * Both parts are URI-encoded and joined with `|`, a character
+ * `encodeURIComponent` never emits unescaped, so the id is unambiguous even
+ * when either id contains a separator-like character. The result also never
+ * contains `:`, which BullMQ rejects in custom job ids.
+ */
+export function buildWebhookJobId(eventId: string, webhookId: string): string {
+  return `${WEBHOOK_JOB_NAME}-${encodeURIComponent(eventId)}|${encodeURIComponent(webhookId)}`;
+}
+
 /** Default total delivery attempts (1 initial + 4 retries). */
 export const WEBHOOK_MAX_ATTEMPTS = 5;
 
@@ -23,6 +40,12 @@ export const WEBHOOK_FAILED_JOB_RETENTION_SECONDS = 24 * 3_600;
 
 /** Queue that permanently failed webhook deliveries are routed to for inspection. */
 export const WEBHOOK_DEAD_LETTER_QUEUE = Queues.DeadLetter;
+
+/**
+ * Default per-endpoint concurrency limit for webhook deliveries.
+ * Prevents one slow endpoint from starving the shared queue.
+ */
+export const WEBHOOK_PER_ENDPOINT_CONCURRENCY = 1;
 
 /**
  * Builds the retry policy of the webhook queue from the resolved
@@ -41,7 +64,7 @@ export function webhookJobOptionsFor(settings: WebhookConfig): JobsOptions {
       delay: settings.backoffBaseDelayMs,
     },
     removeOnComplete: { count: 1_000 },
-    removeOnFail: { age: 24 * 3_600 },
+    removeOnFail: { age: 24 * 3_600, count: 5_000 },
   });
 }
 
@@ -82,7 +105,7 @@ export function createWebhookJobOptions(config: QueueConfig = queueConfig()): Jo
   return buildJobOptions({
     attempts: config.webhookDeliveryMaxAttempts,
     backoff: { type: 'exponential', delay: config.webhookRetryDelayMs },
-    removeOnFail: { age: config.webhookFailedJobRetentionSeconds },
+    removeOnFail: { age: config.webhookFailedJobRetentionSeconds, count: 5_000 },
   });
 }
 

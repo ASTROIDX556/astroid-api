@@ -4,6 +4,7 @@ import { WebhookDeliveryService } from './webhook-delivery.service';
 import { Queue } from 'bullmq';
 import { WebhookJobData } from '../types/webhook-job.types';
 import { DEFAULT_WEBHOOK_CONFIG } from '../../../config/webhook.config';
+import { buildWebhookJobId } from '../../../queues/webhook.queue';
 
 describe('WebhookDeliveryService', () => {
   let service: WebhookDeliveryService;
@@ -43,7 +44,7 @@ describe('WebhookDeliveryService', () => {
           traceId: expect.any(String),
         },
       }),
-      {
+      expect.objectContaining({
         attempts: 5,
         backoff: {
           type: 'custom',
@@ -51,7 +52,7 @@ describe('WebhookDeliveryService', () => {
         },
         removeOnComplete: { count: 1000 },
         removeOnFail: { age: 24 * 3600, count: 5_000 },
-      },
+      }),
     );
   });
 
@@ -141,6 +142,48 @@ describe('WebhookDeliveryService', () => {
     await service.queueDelivery(createJobData({ url: 'https://example.com/hook?token=secret-value' }));
 
     expect(logger.debug.mock.calls.flat().join(' ')).not.toContain('secret-value');
+  });
+
+  describe('delivery deduplication', () => {
+    it('queues the job under a deterministic event + subscription id', async () => {
+      await service.queueDelivery(createJobData());
+
+      const callArgs = vi.mocked(mockQueue.add).mock.calls[0];
+      expect(callArgs?.[2]?.jobId).toBe(buildWebhookJobId('event-1', 'webhook-1'));
+    });
+
+    it('reuses the id when the same event is dispatched again', async () => {
+      await service.queueDelivery(createJobData());
+      await service.queueDelivery(createJobData());
+
+      const first = vi.mocked(mockQueue.add).mock.calls[0][2]?.jobId;
+      const second = vi.mocked(mockQueue.add).mock.calls[1][2]?.jobId;
+      expect(second).toBe(first);
+    });
+
+    it('uses a distinct id for a different event or a different subscription', async () => {
+      await service.queueDelivery(createJobData({ eventId: 'event-1' }));
+      await service.queueDelivery(createJobData({ eventId: 'event-2' }));
+      await service.queueDelivery(createJobData({ eventId: 'event-1', webhookId: 'webhook-2' }));
+
+      const ids = vi.mocked(mockQueue.add).mock.calls.map((call) => call[2]?.jobId);
+      expect(new Set(ids).size).toBe(3);
+    });
+
+    it('does not open a second delivery when BullMQ already holds the id', async () => {
+      // BullMQ returns the existing job for a duplicate id; the service must
+      // still resolve without throwing and must not alter the payload shape.
+      const existing = { id: buildWebhookJobId('event-1', 'webhook-1') };
+      vi.mocked(mockQueue.add).mockResolvedValue(existing as never);
+
+      await expect(service.queueDelivery(createJobData())).resolves.toBeUndefined();
+      expect(mockQueue.add).toHaveBeenCalledTimes(1);
+      expect(mockQueue.add).toHaveBeenCalledWith(
+        'webhook-delivery',
+        expect.objectContaining({ eventId: 'event-1', webhookId: 'webhook-1' }),
+        expect.objectContaining({ jobId: existing.id }),
+      );
+    });
   });
 
   it('handles queueing multiple webhooks sequentially', async () => {

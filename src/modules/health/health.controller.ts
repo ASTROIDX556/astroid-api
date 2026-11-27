@@ -14,15 +14,18 @@ import { PrismaHealthIndicator } from './indicators/prisma.health';
 import { RedisHealthIndicator } from './indicators/redis.health';
 import { StellarHealthIndicator } from './indicators/stellar.health';
 import { DatabaseMigrationHealthIndicator } from './indicators/database-migration.health';
+import { resolveHealthProbeConfig } from '../../config/health.config';
 import { QueueHealthIndicator } from './indicators/queue.health';
 import { ShutdownCoordinator } from '../../common/shutdown/shutdown-coordinator.service';
 import {
   DependencyProbeDto,
   HealthStatusDto,
   LivenessDto,
+  ReadinessCheckDto,
   ReadinessDto,
   StellarHealthDto,
 } from './health.dto';
+import { ReadinessCheck, ReadinessRunner } from './readiness-runner';
 
 /**
  * Body of the orchestrator probes: the standard `{ success, data, meta, requestId }`
@@ -62,8 +65,15 @@ interface ReadinessServiceReport {
 @SkipPublicRateLimit()
 @SkipCredentialRateLimit()
 @SkipThrottle({ api: true, auth: true })
-@ApiExtraModels(ApiEnvelopeDto, ReadinessDto, DependencyProbeDto)
+@ApiExtraModels(ApiEnvelopeDto, ReadinessDto, ReadinessCheckDto, DependencyProbeDto)
 export class HealthController {
+  /**
+   * The dependencies `GET /health/ready` gates traffic on. Append an entry (for
+   * example the Soroban RPC, with `required: false` while it is advisory) to add
+   * a dependency without touching the runner or the handler.
+   */
+  private readonly readinessChecks: readonly ReadinessCheck[];
+
   constructor(
     private readonly dbIndicator: PrismaHealthIndicator,
     private readonly redisIndicator: RedisHealthIndicator,
@@ -73,7 +83,23 @@ export class HealthController {
     // Global infrastructure: present in the running app, absent in unit tests
     // that construct the controller directly.
     @Optional() private readonly shutdown?: ShutdownCoordinator,
-  ) {}
+    @Optional()
+    private readonly readinessRunner: ReadinessRunner = new ReadinessRunner(
+      resolveHealthProbeConfig(),
+    ),
+  ) {
+    this.readinessChecks = [
+      {
+        name: 'database',
+        run: async (timeoutMs) => unwrap(await this.dbIndicator.check('database', timeoutMs), 'database'),
+      },
+      { name: 'cache', run: (timeoutMs) => this.redisIndicator.checkHealth(timeoutMs) },
+      { name: 'queue', run: (timeoutMs) => this.queueIndicator.checkHealth(timeoutMs) },
+      // Only the Soroban RPC is critical: Horizon is probed by the diagnostics
+      // endpoint, so a Horizon outage cannot take the API out of rotation.
+      { name: 'soroban', run: (timeoutMs) => this.stellarIndicator.checkSorobanRpcHealth(timeoutMs) },
+    ];
+  }
 
   @Get('live')
   @ApiOperation({
@@ -97,10 +123,12 @@ export class HealthController {
   @ApiOperation({
     summary: 'Readiness probe',
     description:
-      'Probes the critical dependencies (database, cache and the BullMQ queue connection) in ' +
-      'parallel, each bounded by a timeout. Returns 200 when every dependency is up and 503 when any is down, with ' +
+      'Probes the critical dependencies (database, cache, the BullMQ queue connection and the ' +
+      'Soroban RPC) in parallel, each bounded by a timeout. Returns 200 when every dependency is up and 503 when any is down, with ' +
       'per-dependency status and latency under `data.services`. A failure is reported as ' +
-      '`timeout` or `unavailable` only; driver messages stay in the server log.',
+      '`timeout` or `unavailable` only; driver messages stay in the server log. Infrastructure ' +
+      'endpoint for orchestrators and load balancers (served outside the versioned API prefix, ' +
+      'unauthenticated and not rate limited): it is not part of the public API contract.',
   })
   @ApiEnvelope(ReadinessDto, { description: 'All critical dependencies are reachable' })
   @ApiResponse({
@@ -122,26 +150,38 @@ export class HealthController {
     // Flip to not-ready as soon as shutdown starts, before probing anything, so
     // load balancers stop routing new traffic during the drain.
     if (this.shutdown?.isShuttingDown) {
-      return sendProbe(req, res, HttpStatus.SERVICE_UNAVAILABLE, shuttingDown(['database', 'cache', 'queue']));
+      return sendProbe(
+        req,
+        res,
+        HttpStatus.SERVICE_UNAVAILABLE,
+        shuttingDown(['database', 'cache', 'queue', 'soroban']),
+      );
     }
 
-    const [database, cache, queue] = await Promise.all([
-      this.dbIndicator.check('database'),
-      this.redisIndicator.checkHealth(),
-      this.queueIndicator.checkHealth(),
-    ]);
+    const report = await this.readinessRunner.run(this.readinessChecks);
 
-    const services = {
-      database: toProbe(unwrap(database, 'database')),
-      cache: toProbe(cache),
-      queue: toProbe(queue),
-    };
+    // `services` (keyed by name) predates `checks` and stays for existing clients.
+    const services: Record<string, DependencyProbeDto> = {};
+    for (const check of report.checks) {
+      services[check.name] = {
+        status: check.status,
+        latencyMs: check.latencyMs,
+        timestamp: check.timestamp,
+        ...(check.error ? { error: check.error } : {}),
+      };
+    }
 
-    const isReady = Object.values(services).every((s) => s.status === 'up');
+    const isReady = report.status === 'up';
     const data: ReadinessDto = {
-      status: isReady ? 'up' : 'down',
+      status: report.status,
       timestamp: new Date().toISOString(),
-      services,
+      checks: report.checks.map(({ name, status, latencyMs, error }) => ({
+        name,
+        status,
+        latencyMs,
+        ...(error ? { error } : {}),
+      })),
+      services: services as unknown as ReadinessDto['services'],
     };
     return sendProbe(req, res, isReady ? HttpStatus.OK : HttpStatus.SERVICE_UNAVAILABLE, data);
   }
@@ -336,27 +376,4 @@ function sendProbe<T>(req: Request, res: Response, status: HttpStatus, data: T) 
     requestId: (Array.isArray(header) ? header[0] : header) ?? 'unknown',
   };
   return res.status(status).json(body);
-}
-
-/** Matches the messages both indicators produce when their timeout fires. */
-const TIMEOUT_MESSAGE = /timed out/i;
-
-/**
- * Reduces a dependency report to what a public probe may show: status, latency,
- * time and a coarse reason. The indicators already log the full failure detail.
- */
-function toProbe(report: {
-  status: string;
-  timestamp?: string;
-  latencyMs?: unknown;
-  error?: unknown;
-}): DependencyProbeDto {
-  const up = report.status === 'up';
-  const reason = TIMEOUT_MESSAGE.test(String(report.error ?? '')) ? 'timeout' : 'unavailable';
-  return {
-    status: up ? 'up' : 'down',
-    latencyMs: typeof report.latencyMs === 'number' ? report.latencyMs : 0,
-    timestamp: report.timestamp ?? new Date().toISOString(),
-    ...(up ? {} : { error: reason }),
-  };
 }

@@ -21,6 +21,7 @@ import { parseIdempotencyKey } from '../transaction.dto';
 import { PrismaTransactionService } from '../../../database/prisma-transaction.service';
 import { IdempotencyService } from '../../../common/idempotency/idempotency.service';
 import { IdempotencyRecord } from '@prisma/client';
+import { TransactionPreflightService } from '../services/transaction-preflight.service';
 
 /**
  * Stand-in transaction manager that runs the callback straight through with a
@@ -251,6 +252,7 @@ describe('TransactionService - create', () => {
     waitTimeoutMs: number;
     pollIntervalMs: number;
   };
+  let transactionPreflight: { simulate: ReturnType<typeof vi.fn> };
 
   const wallet = {
     id: 'wallet_1',
@@ -265,6 +267,14 @@ describe('TransactionService - create', () => {
       keyTtlMs: 24 * 60 * 60 * 1000,
       waitTimeoutMs: 1_000,
       pollIntervalMs: 5,
+    };
+    transactionPreflight = {
+      simulate: vi.fn().mockResolvedValue({
+        kind: 'ok',
+        simulatedAt: new Date('2026-11-24T11:00:00.000Z'),
+        minResourceFee: '125000',
+        footprintSummary: { readOnlyCount: 1, readWriteCount: 2 },
+      }),
     };
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -346,6 +356,7 @@ describe('TransactionService - create', () => {
         {
           provide: StellarService,
           useValue: {
+            buildPaymentXdr: vi.fn().mockResolvedValue('safe-payment-xdr'),
             submitPayment: vi.fn().mockResolvedValue({
               hash: 'stellar_hash_1',
               ledger: 100,
@@ -359,6 +370,7 @@ describe('TransactionService - create', () => {
           useValue: { proposal: { findUnique: vi.fn().mockResolvedValue(null) } },
         },
         { provide: PrismaTransactionService, useValue: passthroughTxService },
+        { provide: TransactionPreflightService, useValue: transactionPreflight },
         {
           provide: SpendingLimitService,
           useValue: {
@@ -389,6 +401,17 @@ describe('TransactionService - create', () => {
   it('auto-executes and submits on-chain when policy and risk allow it', async () => {
     const result = await service.create('org_1', 'user_1', input);
 
+    expect(transactionPreflight.simulate).toHaveBeenCalledWith('safe-payment-xdr');
+    expect(transactionRepository.update).toHaveBeenNthCalledWith(
+      1,
+      'tx_1',
+      expect.objectContaining({
+        simulatedAt: new Date('2026-11-24T11:00:00.000Z'),
+        minResourceFee: expect.anything(),
+        footprintSummary: { readOnlyCount: 1, readWriteCount: 2 },
+      }),
+      expect.any(Object),
+    );
     expect(stellarService.submitPayment).toHaveBeenCalledWith(
       expect.objectContaining({
         sourceAddress: wallet.stellarAddress,
@@ -398,6 +421,29 @@ describe('TransactionService - create', () => {
     );
     expect(result.requiresApproval).toBe(false);
     expect(result.transaction.status).toBe(TransactionStatus.COMPLETED);
+  });
+
+  it('marks a failed simulation terminal and never submits the payment', async () => {
+    transactionPreflight.simulate.mockResolvedValueOnce({
+      kind: 'terminal_error',
+      code: 'txINSUFFICIENT_BALANCE',
+      message: 'not enough balance',
+      simulatedAt: new Date('2026-11-24T11:01:00.000Z'),
+    });
+
+    await expect(service.create('org_1', 'user_1', input)).rejects.toThrow(
+      'Transaction simulation failed (txINSUFFICIENT_BALANCE): not enough balance',
+    );
+
+    expect(stellarService.submitPayment).not.toHaveBeenCalled();
+    expect(transactionRepository.update).toHaveBeenCalledWith(
+      'tx_1',
+      expect.objectContaining({
+        status: TransactionStatus.FAILED,
+        simulationErrorCode: 'txINSUFFICIENT_BALANCE',
+        simulationErrorMessage: 'not enough balance',
+      }),
+    );
   });
 
   it('routes a high-risk transaction into the approval workflow instead of executing it', async () => {
@@ -525,7 +571,7 @@ describe('TransactionService - create', () => {
     expect(stellarService.submitPayment).toHaveBeenCalledTimes(1);
   });
 
-  it('rejects reuse of a key with a different payload', async () => {
+  it('rejects reuse of a key with a different payload as a 422 mismatch', async () => {
     await service.create('org_1', 'user_1', input, {
       principalId: 'principal_1',
       key: 'transaction-key-2',
@@ -536,7 +582,10 @@ describe('TransactionService - create', () => {
         principalId: 'principal_1',
         key: 'transaction-key-2',
       }),
-    ).rejects.toMatchObject({ status: 409 });
+    ).rejects.toMatchObject({
+      status: 422,
+      code: ErrorCode.IDEMPOTENCY_KEY_MISMATCH,
+    });
     expect(transactionRepository.create).toHaveBeenCalledTimes(1);
     expect(stellarService.submitPayment).toHaveBeenCalledTimes(1);
   });

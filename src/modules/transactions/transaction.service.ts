@@ -44,6 +44,7 @@ import {
 } from '../../common/idempotency/idempotency.constants';
 import { RequestContext } from '../../common/context/request-context';
 import { buildPaginationMeta, PaginationQuery, toPrismaPagination } from '../../common/helpers/pagination';
+import { TransactionPreflightService } from './services/transaction-preflight.service';
 
 /** Statuses that may never leave the execution pipeline once they got there. */
 const EXECUTED_STATUSES: readonly TransactionStatus[] = [
@@ -104,6 +105,7 @@ export class TransactionService {
     private readonly prisma: PrismaService,
     private readonly spendingLimits: SpendingLimitService,
     @Optional() private readonly transactions?: PrismaTransactionService,
+    @Optional() private readonly transactionPreflight?: TransactionPreflightService,
     @Optional() private readonly config?: ConfigService,
     @Optional() private readonly idempotency?: IdempotencyService,
     @Optional() private readonly approvalExpiry?: ApprovalExpiryQueue,
@@ -138,7 +140,8 @@ export class TransactionService {
 
     if (!reservation.created) {
       if (reservation.record.requestHash !== requestFingerprint) {
-        throw new ConflictException(
+        throw new DomainException(
+          ErrorCode.IDEMPOTENCY_KEY_MISMATCH,
           'Idempotency-Key was already used with a different transaction payload',
         );
       }
@@ -179,7 +182,11 @@ export class TransactionService {
       });
       return result;
     } catch (error) {
-      if (!transactionId) await store.release(reservation.record.id);
+      if (!transactionId) {
+        await store.release(reservation.record.id);
+      } else {
+        await store.failTransaction(transactionId);
+      }
       throw error;
     }
   }
@@ -390,6 +397,54 @@ export class TransactionService {
     const wallet = await this.wallets.getOrThrow(organizationId, tx.walletId);
     this.assertWalletSpendable(wallet);
 
+    if (!this.transactionPreflight) {
+      throw new Error('TransactionPreflightService is not available in this application context');
+    }
+
+    const requestId = RequestContext.getRequestId();
+    const executionActorId = actorId ?? RequestContext.getActorId();
+    const transactionXdr = await this.stellar.buildPaymentXdr({
+      sourceAddress: wallet.stellarAddress,
+      destinationAddress: tx.recipientAddress,
+      asset: tx.asset,
+      amount: tx.amount.toFixed(7),
+      memo: tx.memo ?? undefined,
+      network: toNetworkName(wallet.network),
+    });
+    const preflight = await this.transactionPreflight.simulate(transactionXdr);
+    if (preflight.kind === 'retryable_error') {
+      throw preflight.error;
+    }
+    if (preflight.kind === 'terminal_error') {
+      await this.repository.update(tx.id, {
+        status: TransactionStatus.FAILED,
+        simulatedAt: preflight.simulatedAt,
+        simulationErrorCode: preflight.code,
+        simulationErrorMessage: preflight.message,
+      });
+      await this.releaseReservation(tx.budgetReservationId);
+      await this.eventBus.emit(
+        DomainEventName.TransactionFailed,
+        {
+          transactionId: tx.id,
+          reason: preflight.message,
+          code: preflight.code,
+          requestId,
+        },
+        {
+          organizationId,
+          actorId: executionActorId,
+          aggregateType: 'transaction',
+          aggregateId: tx.id,
+        },
+      );
+      throw new DomainException(
+        ErrorCode.SIMULATION_FAILED,
+        `Transaction simulation failed (${preflight.code}): ${preflight.message}`,
+        { code: preflight.code, message: preflight.message, requestId },
+      );
+    }
+
     // Guarded DRAFT/PENDING -> SUBMITTED transition. Concurrent workers racing
     // on the same transaction (fee-bump retries, approvals landing while an
     // execute is in flight) previously clobbered each other's status writes;
@@ -406,7 +461,21 @@ export class TransactionService {
         if (EXECUTED_STATUSES.includes(current.status)) {
           throw new ConflictException(`Transaction '${transactionId}' has already been executed`);
         }
-        return this.repository.update(transactionId, { status: TransactionStatus.SUBMITTED }, client);
+        return this.repository.update(
+          transactionId,
+          {
+            status: TransactionStatus.SUBMITTED,
+            simulatedAt: preflight.simulatedAt,
+            minResourceFee: new Decimal(preflight.minResourceFee),
+            footprintSummary: {
+              readOnlyCount: preflight.footprintSummary.readOnlyCount,
+              readWriteCount: preflight.footprintSummary.readWriteCount,
+            },
+            simulationErrorCode: null,
+            simulationErrorMessage: null,
+          },
+          client,
+        );
       },
       {
         name: 'transaction.status->submitted',
@@ -415,8 +484,13 @@ export class TransactionService {
     );
     await this.eventBus.emit(
       DomainEventName.TransactionSubmitted,
-      { transactionId: tx.id },
-      { organizationId, actorId, aggregateType: 'transaction', aggregateId: tx.id },
+      { transactionId: tx.id, requestId },
+      {
+        organizationId,
+        actorId: executionActorId,
+        aggregateType: 'transaction',
+        aggregateId: tx.id,
+      },
     );
 
     try {
@@ -455,8 +529,13 @@ export class TransactionService {
         result.successful
           ? DomainEventName.TransactionCompleted
           : DomainEventName.TransactionFailed,
-        { transactionId: tx.id, stellarHash: result.hash },
-        { organizationId, actorId, aggregateType: 'transaction', aggregateId: tx.id },
+        { transactionId: tx.id, stellarHash: result.hash, requestId },
+        {
+          organizationId,
+          actorId: executionActorId,
+          aggregateType: 'transaction',
+          aggregateId: tx.id,
+        },
       );
       return completed;
     } catch (error) {
@@ -474,8 +553,13 @@ export class TransactionService {
       }
       await this.eventBus.emit(
         DomainEventName.TransactionFailed,
-        { transactionId: tx.id, reason: (error as Error).message },
-        { organizationId, actorId, aggregateType: 'transaction', aggregateId: tx.id },
+        { transactionId: tx.id, reason: (error as Error).message, requestId },
+        {
+          organizationId,
+          actorId: executionActorId,
+          aggregateType: 'transaction',
+          aggregateId: tx.id,
+        },
       );
       throw error;
     }

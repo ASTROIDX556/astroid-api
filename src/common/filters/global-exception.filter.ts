@@ -19,9 +19,11 @@ import {
  *    (`src/common/exceptions/prisma-error.mapper.ts`)
  *      P2002 (unique constraint)  → 409 CONFLICT
  *      P2025 (record not found)   → 404 NOT_FOUND
- *      P2003 (foreign key)        → 400 BAD_REQUEST
- *      P2000 (value too long)     → 422 VALIDATION_ERROR
+ *      P2003 (foreign key)        → 409 CONFLICT
+ *      P2000 (value too long)     → 400 BAD_REQUEST
+ *      P2023 (bad column data)    → 400 BAD_REQUEST
  *      PrismaClientValidationError → 400 BAD_REQUEST
+ *      initialisation / engine panic → 503 DATABASE_UNAVAILABLE
  *      other Prisma errors        → 500 INTERNAL_ERROR (no internals leaked)
  *  • `DomainException` subclasses → preserves `.code`, `.details`, status
  *  • `HttpException` (Nest built-ins, Throttler, ZodValidation, class-validator)

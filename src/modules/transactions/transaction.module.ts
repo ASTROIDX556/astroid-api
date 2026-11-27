@@ -10,6 +10,7 @@ import { BudgetModule } from '../budgets/budget.module';
 import { SorobanSimulationService } from './services/soroban-simulation.service';
 import { StellarSimulationService } from './services/stellar-simulation.service';
 import { GasEstimationService } from './services/gas-estimation.service';
+import { TransactionPreflightService } from './services/transaction-preflight.service';
 import { StellarModule } from '../stellar/stellar.module';
 import { SpendingLimitService } from './spending-limit.service';
 import { SpendingLimitGuard } from './guards/spending-limit.guard';
@@ -25,6 +26,9 @@ import { ApprovalExpiryQueue } from '../../queues/approval-expiry.queue';
  * and budgets to enforce governance on every payment. Stellar + events are
  * provided globally. Exports the service so the approvals module can execute an
  * approved proposal's transaction.
+ *
+ * IdempotencyModule is imported so IdempotencyService is available to both
+ * TransactionService and IdempotencyInterceptor on the create route.
  */
 @Module({
   imports: [
@@ -55,6 +59,7 @@ import { ApprovalExpiryQueue } from '../../queues/approval-expiry.queue';
     SorobanSimulationService,
     StellarSimulationService,
     GasEstimationService,
+    TransactionPreflightService,
     SpendingLimitService,
     SpendingLimitGuard,
     TransactionWorker,

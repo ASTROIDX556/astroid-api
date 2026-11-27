@@ -62,6 +62,14 @@ describe('ApiKeyStrategy', () => {
         UnauthorizedException,
       );
     });
+
+    it('rejects an expired previous key through the standard unauthorized path', async () => {
+      apiKeyService.verify.mockResolvedValue(null);
+
+      await expect(strategy.validate('ak_live_expired_previous')).rejects.toMatchObject({
+        code: 'UNAUTHORIZED',
+      });
+    });
   });
 
   describe('HeaderApiKeyPassportStrategy authenticate', () => {

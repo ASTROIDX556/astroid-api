@@ -24,13 +24,14 @@ so the counter is keyed by the identity the authentication guards verified:
 3. the client IP (`ip:<address>`), honouring `x-forwarded-for` only when
    `PUBLIC_RATE_LIMIT_TRUST_PROXY` is enabled.
 
-Every request is measured against **two fixed windows at once**: requests per
-minute and requests per day. A request is counted only when it fits in both;
+Every request is measured against **two sliding windows at once**: the trailing
+minute and trailing day. A request is counted only when it fits in both;
 rejected requests consume nothing.
 
 | Budget | Default | Variable | Per-key override |
 | --- | --- | --- | --- |
 | Requests per minute | `120` | `RATE_LIMIT_CREDENTIAL_PER_MINUTE` | `rateLimitPerMinute` |
+| Length of the minute window | `60` s | `RATE_LIMIT_CREDENTIAL_MINUTE_WINDOW_SECONDS` | — |
 | Requests per day | `10000` | `RATE_LIMIT_CREDENTIAL_PER_DAY` | `rateLimitPerDay` |
 | Length of the day window | `86400` s | `RATE_LIMIT_CREDENTIAL_DAY_WINDOW_SECONDS` | — |
 
@@ -44,19 +45,16 @@ malformed override keeps the configured default.
 
 The check is a single Lua script
 (`src/common/throttler/scripts/credential-rate-limit.lua.ts`) executed with
-`EVAL`, so reading and incrementing both counters is atomic: 50 concurrent
-requests against a budget of 10 let exactly 10 through, on any number of
-replicas.
+`EVAL`, so pruning old requests, checking both budgets and recording a request
+is atomic: 50 concurrent requests against a budget of 10 let exactly 10
+through, on any number of replicas.
 
 - The clock is read with Redis `TIME` inside the script, so app-server clock
   skew cannot move a window.
-- Windows are aligned to absolute epoch multiples (`floor(now / window) *
-  window`), so every replica agrees on the current bucket without coordination
-  and the day window rolls over at UTC midnight.
-- Counters expire with `PEXPIREAT` at the absolute window end, which stays
-  correct for very long windows (a 30-day window is simply a larger multiple).
-- Counters and their deadlines live in Redis, not in process memory, so a
-  restart of the API — or of a replica — does not reset anyone's budget.
+- Redis sorted sets retain the timestamps of accepted requests; entries older
+  than each window are pruned on the next request.
+- Each sorted set expires after its window, and both request logs live in Redis,
+  so an API or replica restart does not reset anyone's budget.
 
 ### Responses
 
@@ -65,7 +63,8 @@ Every response carries the quota of the window **closest to exhaustion**
 
 - `X-RateLimit-Limit` — budget of that window,
 - `X-RateLimit-Remaining` — requests left in it,
-- `X-RateLimit-Reset` — Unix seconds at which it rolls over.
+- `X-RateLimit-Reset` — Unix seconds when the oldest counted request in that
+  window expires and frees capacity.
 
 Exceeding either window answers **HTTP 429** (`RATE_LIMITED`) with the standard
 problem-details body (`details.limit`, `details.retryAfterSeconds`,
@@ -238,6 +237,7 @@ The same value, together with `rateLimitPerDay`, also overrides the
 | `THROTTLE_WEBHOOK_BURST` | `5` | Burst limit of the `webhook` tier. |
 | `THROTTLE_TTL` | `60` | Window of the tier throttlers. |
 | `RATE_LIMIT_CREDENTIAL_PER_MINUTE` | `120` | Default per-credential requests per minute. |
+| `RATE_LIMIT_CREDENTIAL_MINUTE_WINDOW_SECONDS` | `60` | Length of the per-credential minute window. |
 | `RATE_LIMIT_CREDENTIAL_PER_DAY` | `10000` | Default per-credential requests per day. |
 | `RATE_LIMIT_CREDENTIAL_DAY_WINDOW_SECONDS` | `86400` | Length of the per-credential day window. |
 | `RATE_LIMIT_CREDENTIAL_QUOTA_CACHE_SECONDS` | `60` | How long per-key quota overrides stay cached in Redis. |
@@ -280,5 +280,5 @@ caches it in Redis for five minutes.
 - `src/common/throttler/credential-rate-limit.redis.integration.spec.ts` — runs
   against a real Redis when `REDIS_URL` is set: 50 concurrent requests against a
   budget of 10, rejected requests consuming nothing, counters surviving a client
-  restart, the independent day window, epoch-aligned buckets and the expiry of a
-  30-day window.
+  restart, the independent day window, rolling-window boundaries and expiry for
+  a 30-day window.

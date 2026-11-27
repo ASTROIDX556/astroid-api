@@ -28,7 +28,8 @@ export const rotateApiKeySchema = z
     gracePeriodSeconds: z.number().int().positive().max(2592000).optional(),
     expiresInDays: z.number().int().positive().max(365).optional(),
   })
-  .strict();
+  .strict()
+  .default({});
 export type RotateApiKeyInput = z.input<typeof rotateApiKeySchema>;
 
 // ── Swagger DTOs ──

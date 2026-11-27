@@ -225,6 +225,13 @@ Webhook retries use BullMQ exponential backoff with 20% jitter. Permanent
 redirect and 4xx responses stop retrying; HTTP 408, 429, 5xx, and network or
 timeout failures are retried up to the configured attempt limit.
 
+### Queue observability
+
+| Variable                                  | Default | Description |
+| ----------------------------------------- | ------- | ----------- |
+| `QUEUE_OBSERVABILITY_ENABLED`             | `false` | Enables the queue observability endpoint (`/api/v1/queues/observability`). |
+| `QUEUE_OBSERVABILITY_MAX_FAILED_JOBS`     | `10` | Maximum number of failed jobs to return per queue; bounded to 20. |
+
 ### Webhook ingress
 
 | Variable | Default | Description |
@@ -292,6 +299,7 @@ deliveries of a failing endpoint instead of hammering it.
 | `RATE_LIMIT_WEBHOOK_ROTATE_MAX` | `10` | `POST /webhooks/:id/rotate-secret` requests per API key or user per window. |
 | `RATE_LIMIT_WEBHOOK_ROTATE_WINDOW_SECONDS` | `3600` | Window of the webhook secret rotation limit. |
 | `RATE_LIMIT_CREDENTIAL_PER_MINUTE` | `120` | Default requests per minute per verified API key (falls back to user, then IP). Overridden by a key's `rateLimitPerMinute`. |
+| `RATE_LIMIT_CREDENTIAL_MINUTE_WINDOW_SECONDS` | `60` | Length of the per-credential minute window. |
 | `RATE_LIMIT_CREDENTIAL_PER_DAY` | `10000` | Default requests per day per credential. Overridden by a key's `rateLimitPerDay`. |
 | `RATE_LIMIT_CREDENTIAL_DAY_WINDOW_SECONDS` | `86400` | Length of the per-credential day window. |
 | `RATE_LIMIT_CREDENTIAL_QUOTA_CACHE_SECONDS` | `60` | How long per-key quota overrides stay cached in Redis. |
@@ -305,6 +313,13 @@ deliveries of a failing endpoint instead of hammering it.
 | `BUDGET_ROLLOVER_INTERVAL_MINUTES` | `1` | Cadence of the repeatable rollover job. |
 | `BUDGET_ROLLOVER_BATCH_SIZE` | `100` | Budgets loaded per page (1–1000). |
 | `BUDGET_ROLLOVER_MAX_BATCHES` | `20` | Maximum pages processed in one run; later ticks pick up the rest. |
+
+### Health probes
+
+| Variable | Default | Description |
+| -------- | ------- | ----------- |
+| `HEALTH_CHECK_TIMEOUT_MS` | `1000` | Per-dependency timeout of `GET /health/ready` (`50`-`10000`). See [health-probes.md](health-probes.md). |
+| `HEALTH_READINESS_CACHE_TTL_MS` | `0` | Reuse a readiness result for this many ms (`0`-`10000`); `0` disables caching. |
 
 ### Metrics
 

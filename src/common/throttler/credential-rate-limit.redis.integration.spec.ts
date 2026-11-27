@@ -107,22 +107,22 @@ describe.skipIf(!redisUrl)('RedisCredentialRateLimitStore (real Redis)', () => {
     expect(blocked?.retryAfterMs).toBeGreaterThan(MINUTE);
   });
 
-  it('aligns windows to absolute epoch multiples so replicas agree without a shared clock', async () => {
-    const credential = identity('alignment');
-    await store.consume(
-      credential,
-      { perMinute: 5, perDay: 100 },
-      { minuteWindowMs: MINUTE, dayWindowMs: DAY },
-    );
+  it('keeps requests in the trailing window across an epoch boundary', async () => {
+    const credential = identity('sliding');
+    let now = 119_000;
+    const clockedStore = new RedisCredentialRateLimitStore(redis, () => now);
+    const quota = { perMinute: 1, perDay: 100 };
+    const windows = { minuteWindowMs: MINUTE, dayWindowMs: DAY };
 
-    const keys = await redis.keys(`astroid:rate-limit:credential:${credential}:*`);
-    expect(keys).toHaveLength(2);
-    for (const key of keys) {
-      const window = key.includes(':minute:') ? MINUTE : DAY;
-      const start = Number(key.slice(key.lastIndexOf(':') + 1));
-      expect(start % window).toBe(0);
-      expect(start).toBeLessThanOrEqual(Date.now());
-    }
+    expect((await clockedStore.consume(credential, quota, windows)).allowed).toBe(true);
+
+    now = 120_000;
+    const blocked = await clockedStore.consume(credential, quota, windows);
+    expect(blocked.allowed).toBe(false);
+    expect(blocked.retryAfterMs).toBe(59_000);
+
+    now = 179_000;
+    expect((await clockedStore.consume(credential, quota, windows)).allowed).toBe(true);
   });
 
   it('expires counters at the window end even for very long windows', async () => {
@@ -135,13 +135,11 @@ describe.skipIf(!redisUrl)('RedisCredentialRateLimitStore (real Redis)', () => {
       { minuteWindowMs: MINUTE, dayWindowMs: thirtyDays },
     );
 
-    const dayKey = (await redis.keys(`astroid:rate-limit:credential:${credential}:day:*`))[0];
+    const dayKey = `astroid:rate-limit:credential:${credential}:day`;
     const ttl = await redis.pttl(dayKey);
     expect(ttl).toBeGreaterThan(0);
     expect(ttl).toBeLessThanOrEqual(thirtyDays);
-    const dayStart = Number(dayKey.slice(dayKey.lastIndexOf(':') + 1));
-    expect(dayStart % thirtyDays).toBe(0);
-    expect(Math.abs(dayStart + thirtyDays - Date.now() - ttl)).toBeLessThan(5_000);
+    expect(Math.abs(thirtyDays - ttl)).toBeLessThan(5_000);
     expect(decision.allowed).toBe(true);
   });
 });

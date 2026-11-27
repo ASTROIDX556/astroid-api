@@ -10,6 +10,7 @@ const authConfig: AuthConfig = {
   refreshSecret: 'refresh-secret-at-least-sixteen-chars',
   accessTtl: 900,
   refreshTtl: 1209600,
+  apiKeyRotationGracePeriodSeconds: 86400,
   passkey: { rpId: 'localhost', rpName: 'Astroid', origin: 'http://localhost:3001' },
 };
 

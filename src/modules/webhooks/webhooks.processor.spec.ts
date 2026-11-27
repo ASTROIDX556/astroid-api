@@ -51,7 +51,12 @@ describe('WebhooksProcessor', () => {
           body: options.body.toString('utf8'),
           signal: AbortSignal.timeout(options.timeoutMs),
         });
-        return { status: response.status };
+        const headers: Record<string, string | string[] | undefined> = {};
+        const responseHeaders = response.headers ?? new Headers();
+        for (const [key, value] of responseHeaders.entries()) {
+          headers[key.toLowerCase()] = value;
+        }
+        return { status: response.status, headers };
       },
     };
     processor = new WebhooksProcessor(mockPrisma as never, undefined, undefined, destinationPolicy);
@@ -359,7 +364,7 @@ describe('WebhooksProcessor', () => {
         {
           post: async (_url, options) => {
             AbortSignal.timeout(options.timeoutMs);
-            return { status: 200 };
+            return { status: 200, headers: {} };
           },
         },
         { get: () => ({
@@ -381,6 +386,66 @@ describe('WebhooksProcessor', () => {
   });
 
   describe('retry lifecycle', () => {
+    it('re-signs each retry with a fresh timestamp and the same serialized body', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-11-24T15:00:00.000Z'));
+      fetchSpy.mockResolvedValue({ ok: true, status: 200, text: () => Promise.resolve('OK') });
+
+      try {
+        await processor.process(createMockJob({ attemptsMade: 0 } as Partial<Job<WebhookJobData>>));
+        const firstOptions = fetchSpy.mock.calls[0][1];
+        const firstTimestamp = firstOptions.headers['x-astroid-timestamp'];
+        const firstBody = Buffer.from(firstOptions.body);
+
+        vi.advanceTimersByTime(1_000);
+        await processor.process(createMockJob({ attemptsMade: 1 } as Partial<Job<WebhookJobData>>));
+        const retryOptions = fetchSpy.mock.calls[1][1];
+        const retryTimestamp = retryOptions.headers['x-astroid-timestamp'];
+        const retryBody = Buffer.from(retryOptions.body);
+
+        expect(retryTimestamp).not.toBe(firstTimestamp);
+        expect(retryBody).toEqual(firstBody);
+        expect(
+          verifyWebhookSignature(
+            WEBHOOK_SECRET,
+            firstTimestamp,
+            firstBody,
+            firstOptions.headers['x-astroid-signature'],
+          ),
+        ).toBe(true);
+        expect(
+          verifyWebhookSignature(
+            WEBHOOK_SECRET,
+            retryTimestamp,
+            retryBody,
+            retryOptions.headers['x-astroid-signature'],
+          ),
+        ).toBe(true);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('does not persist or log the signing secret or signature', async () => {
+      const upsert = vi.fn().mockResolvedValue({});
+      mockPrisma.webhookDelivery = { upsert };
+      const debug = vi.spyOn(processor['logger'], 'debug').mockImplementation(() => undefined);
+      const warn = vi.spyOn(processor['logger'], 'warn').mockImplementation(() => undefined);
+      const error = vi.spyOn(processor['logger'], 'error').mockImplementation(() => undefined);
+      fetchSpy.mockResolvedValue({ ok: true, status: 200, text: () => Promise.resolve('OK') });
+
+      await processor.process(createMockJob());
+
+      const signature = fetchSpy.mock.calls[0][1].headers['x-astroid-signature'];
+      const persisted = JSON.stringify(upsert.mock.calls[0][0]);
+      const logged = [debug, warn, error].flatMap((spy) => spy.mock.calls).flat().join(' ');
+
+      expect(persisted).not.toContain(WEBHOOK_SECRET);
+      expect(persisted).not.toContain(signature);
+      expect(logged).not.toContain(WEBHOOK_SECRET);
+      expect(logged).not.toContain(signature);
+    });
+
     it('marks the delivery RETRYING while attempts remain and FAILED on the last attempt', async () => {
       const upsert = vi.fn().mockResolvedValue({});
       mockPrisma.webhookDelivery = { upsert };
@@ -413,7 +478,9 @@ describe('WebhooksProcessor', () => {
         undefined,
         { recordTerminalFailure } as never,
         {
-          post: async () => ({ status: 503 }),
+          post: async () => {
+            return { status: 503, headers: {} };
+          },
         },
       );
       fetchSpy.mockResolvedValue({ ok: false, status: 503, text: () => Promise.resolve('nope') });
@@ -443,12 +510,76 @@ describe('WebhooksProcessor', () => {
         undefined,
         { recordTerminalFailure } as never,
         {
-          post: async () => ({ status: 503 }),
+          post: async () => {
+            return { status: 503, headers: {} };
+          },
         },
       );
       fetchSpy.mockResolvedValue({ ok: false, status: 503, text: () => Promise.resolve('nope') });
 
       await expect(auditedProcessor.process(createMockJob())).rejects.toThrow('HTTP 503');
+
+      expect(recordTerminalFailure).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('dead-letter integration', () => {
+    const withDeadLetter = (
+      recordTerminalFailure: ReturnType<typeof vi.fn>,
+      status = 503,
+    ) =>
+      new WebhooksProcessor(
+        mockPrisma as never,
+        undefined,
+        undefined,
+        { post: async () => ({ status, headers: {} }) },
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { recordTerminalFailure } as never,
+      );
+
+    it('dead-letters a delivery that exhausts its configured attempts', async () => {
+      const recordTerminalFailure = vi.fn().mockResolvedValue(undefined);
+      fetchSpy.mockResolvedValue({ ok: false, status: 503, text: () => Promise.resolve('nope') });
+
+      const job = createMockJob({ attemptsMade: 4 } as Partial<Job<WebhookJobData>>);
+      await expect(withDeadLetter(recordTerminalFailure).process(job)).rejects.toThrow('HTTP 503');
+
+      expect(recordTerminalFailure).toHaveBeenCalledTimes(1);
+      expect(recordTerminalFailure).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'job-1', data: expect.objectContaining({ eventId: EVENT_ID }) }),
+        expect.objectContaining({
+          failedReason: 'HTTP 503',
+          attemptsMade: 5,
+          responseStatus: 503,
+        }),
+      );
+    });
+
+    it('dead-letters a permanent rejection on the first attempt', async () => {
+      const recordTerminalFailure = vi.fn().mockResolvedValue(undefined);
+      fetchSpy.mockResolvedValue({ ok: false, status: 404, text: () => Promise.resolve('gone') });
+
+      await expect(
+        withDeadLetter(recordTerminalFailure, 404).process(createMockJob()),
+      ).rejects.toThrow(UnrecoverableError);
+
+      expect(recordTerminalFailure).toHaveBeenCalledWith(
+        expect.any(Object),
+        expect.objectContaining({ failedReason: 'HTTP 404', attemptsMade: 1, responseStatus: 404 }),
+      );
+    });
+
+    it('does not dead-letter a delivery that still has retries left', async () => {
+      const recordTerminalFailure = vi.fn().mockResolvedValue(undefined);
+      fetchSpy.mockResolvedValue({ ok: false, status: 503, text: () => Promise.resolve('nope') });
+
+      await expect(
+        withDeadLetter(recordTerminalFailure).process(createMockJob({ attemptsMade: 1 } as Partial<Job<WebhookJobData>>)),
+      ).rejects.toThrow('HTTP 503');
 
       expect(recordTerminalFailure).not.toHaveBeenCalled();
     });

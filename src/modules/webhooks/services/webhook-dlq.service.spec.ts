@@ -61,6 +61,19 @@ describe('WebhookDlqService (#450)', () => {
     expect(dispatcher.enqueueReplay).toHaveBeenCalledWith(sampleRecord);
   });
 
+  it('inspects one dead-lettered delivery with its attempt history', async () => {
+    const result = await service.getFailedDelivery('org_01', 'dlq_01');
+    expect(result).toBe(sampleRecord);
+    expect(store.findById).toHaveBeenCalledWith('org_01', 'dlq_01');
+  });
+
+  it('throws NotFoundException when inspecting an unknown DLQ record', async () => {
+    vi.mocked(store.findById).mockResolvedValueOnce(null);
+    await expect(service.getFailedDelivery('org_01', 'dlq_missing')).rejects.toThrow(
+      NotFoundException,
+    );
+  });
+
   it('throws NotFoundException when replaying an unknown DLQ record', async () => {
     vi.mocked(store.findById).mockResolvedValueOnce(null);
     await expect(service.replayDeadLetter('org_01', 'dlq_missing')).rejects.toThrow(

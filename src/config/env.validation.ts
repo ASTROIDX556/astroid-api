@@ -89,7 +89,7 @@ export const authEnvSchema = z.object({
   PASSKEY_RP_ID: z.string().default('localhost'),
   PASSKEY_RP_NAME: z.string().default('Astroid'),
   PASSKEY_ORIGIN: z.string().default('http://localhost:3001'),
-  API_KEY_ROTATION_GRACE_PERIOD_SECONDS: z.coerce.number().int().positive().default(86400),
+  API_KEY_ROTATION_GRACE_PERIOD_SECONDS: z.coerce.number().int().positive().max(2592000).default(86400),
 });
 
 export const stellarEnvSchema = z.object({
@@ -234,6 +234,13 @@ export const queueEnvSchema = z.object({
   WEBHOOK_HTTP_TIMEOUT_MS: z.coerce.number().int().positive().max(120_000).default(5_000),
   WEBHOOK_FAILED_JOB_RETENTION_SECONDS: z.coerce.number().int().positive().max(2_592_000).default(86_400),
   WEBHOOK_DEAD_LETTER_RETENTION_SECONDS: z.coerce.number().int().positive().max(2_592_000).default(604_800),
+  /** Enable the queue observability endpoint (off by default). */
+  QUEUE_OBSERVABILITY_ENABLED: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
+  /** Maximum failed jobs to return per queue (capped at 20). */
+  QUEUE_OBSERVABILITY_MAX_FAILED_JOBS: z.coerce.number().int().min(1).max(20).default(10),
 });
 
 /**
@@ -358,6 +365,7 @@ export const rateLimitEnvSchema = z.object({
   RATE_LIMIT_WEBHOOK_ROTATE_MAX: z.coerce.number().int().positive().default(10),
   RATE_LIMIT_WEBHOOK_ROTATE_WINDOW_SECONDS: z.coerce.number().int().positive().default(3600),
   RATE_LIMIT_CREDENTIAL_PER_MINUTE: z.coerce.number().int().positive().default(120),
+  RATE_LIMIT_CREDENTIAL_MINUTE_WINDOW_SECONDS: z.coerce.number().int().positive().default(60),
   RATE_LIMIT_CREDENTIAL_PER_DAY: z.coerce.number().int().positive().default(10000),
   RATE_LIMIT_CREDENTIAL_DAY_WINDOW_SECONDS: z.coerce.number().int().positive().default(86400),
   RATE_LIMIT_CREDENTIAL_QUOTA_CACHE_SECONDS: z.coerce.number().int().positive().default(60),

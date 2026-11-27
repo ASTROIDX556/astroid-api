@@ -1,11 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Job } from 'bullmq';
 import { createHmac } from 'crypto';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { WebhookDispatcher } from './webhook.dispatcher';
 import { WebhookDeliveryService } from './services/webhook-delivery.service';
 import { WebhooksProcessor } from './webhooks.processor';
 import type { WebhookJobData } from './types/webhook-job.types';
-import { WEBHOOK_JOB_NAME, webhookJobOptions } from '../../queues/webhook.queue';
+import { buildWebhookJobId, WEBHOOK_JOB_NAME, webhookJobOptions } from '../../queues/webhook.queue';
 import { verifyWebhookSignature } from './utils/signing';
 import { WebhookSignatureGuard } from '../../common/guards/webhook-signature.guard';
 import { WebhookIngressController } from './webhook-ingress.controller';
@@ -21,7 +23,12 @@ const createDestinationPolicy = () => ({
       body: options.body,
       signal: AbortSignal.timeout(options.timeoutMs),
     });
-    return { status: response.status };
+    const headers: Record<string, string | string[] | undefined> = {};
+    const responseHeaders = response.headers ?? new Headers();
+    for (const [key, value] of responseHeaders.entries()) {
+      headers[key.toLowerCase()] = value;
+    }
+    return { status: response.status, headers };
   },
 });
 
@@ -73,7 +80,11 @@ describe('webhook delivery integration', () => {
       typeof webhookJobOptions,
     ];
     expect(name).toBe(WEBHOOK_JOB_NAME);
-    expect(options).toEqual(webhookJobOptions);
+    expect(options).toEqual({
+      ...webhookJobOptions,
+      jobId: buildWebhookJobId(data.eventId, data.webhookId),
+      group: expect.any(String),
+    });
     expect(options.attempts).toBeGreaterThan(1);
     expect(options.backoff).toEqual(expect.objectContaining({ type: 'exponential' }));
     expect(data).not.toHaveProperty('secret');
@@ -155,6 +166,76 @@ describe('webhook delivery integration', () => {
     expect(fetch.mock.calls[0][1].body).toEqual(fetch.mock.calls[1][1].body);
     expect(fetch.mock.calls[0][1].headers['x-astroid-event-id']).toBe('evt-retry-stable');
     expect(fetch.mock.calls[1][1].headers['x-astroid-event-id']).toBe('evt-retry-stable');
+  });
+
+  it('retries a real endpoint that answers 500 and succeeds on the next attempt', async () => {
+    const secret = 'whsec_real_server_retry_secret';
+    const received: Array<{ body: Buffer; signature?: string; eventId?: string }> = [];
+
+    // A real HTTP endpoint: 500 on the first delivery, 200 on the retry.
+    const server = createServer((request, response) => {
+      const chunks: Buffer[] = [];
+      request.on('data', (chunk: Buffer) => chunks.push(chunk));
+      request.on('end', () => {
+        received.push({
+          body: Buffer.concat(chunks),
+          signature: request.headers['x-astroid-signature'] as string | undefined,
+          eventId: request.headers['x-astroid-event-id'] as string | undefined,
+        });
+        response.writeHead(received.length === 1 ? 500 : 200);
+        response.end(received.length === 1 ? 'boom' : 'ok');
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const { port } = server.address() as AddressInfo;
+    const endpoint = `http://127.0.0.1:${port}/webhook`;
+
+    try {
+      const prisma = {
+        webhook: {
+          findFirst: vi.fn().mockResolvedValue({ secret, url: endpoint, enabled: true }),
+        },
+        webhookDelivery: { upsert: vi.fn().mockResolvedValue({}) },
+      };
+      const processor = new WebhooksProcessor(
+        prisma as never,
+        undefined,
+        undefined,
+        createDestinationPolicy(),
+      );
+      const data: WebhookJobData = {
+        webhookId: 'wh-real',
+        organizationId: 'org-1',
+        url: endpoint,
+        eventName: 'transaction.completed',
+        payload: { transactionId: 'txn-real' },
+        eventId: 'evt-real-retry',
+      };
+      const job = (attemptsMade: number) =>
+        ({
+          id: buildWebhookJobId(data.eventId, data.webhookId),
+          name: WEBHOOK_JOB_NAME,
+          data,
+          attemptsMade,
+          opts: webhookJobOptions,
+        }) as Job<WebhookJobData>;
+
+      await expect(processor.process(job(0))).rejects.toThrow('HTTP 500');
+      expect(received).toHaveLength(1);
+
+      await expect(processor.process(job(1))).resolves.toMatchObject({
+        success: true,
+        statusCode: 200,
+      });
+
+      expect(received).toHaveLength(2);
+      // The retry delivers exactly the same signed event identity and bytes.
+      expect(received[1].body.equals(received[0].body)).toBe(true);
+      expect(received[1].eventId).toBe('evt-real-retry');
+      expect(received[1].signature).toMatch(/^t=\d+,v1=[0-9a-f]{64}$/);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 
   it('builds the receiver signature from the exact serialized delivery bytes', () => {

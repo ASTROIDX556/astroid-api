@@ -60,9 +60,12 @@ describe('PrismaExceptionFilter', () => {
       const body = renderedBody(response);
       expect(body.status).toBe(409);
       expect(body.code).toBe(ErrorCode.CONFLICT);
-      expect(body.detail).toBe('A resource with this email already exists');
+      expect(body.detail).toBe('A resource with these details already exists');
       expect(body.requestId).toBe('req-uniq-1');
       expect(body.detail).not.toContain('Prisma');
+      // The conflicting field names (meta.target) stay in the server log.
+      expect(body.details).toBeUndefined();
+      expect(JSON.stringify(body)).not.toContain('email');
     });
 
     it('maps P2002 without target field to 409 CONFLICT with generic safe message', () => {
@@ -78,7 +81,7 @@ describe('PrismaExceptionFilter', () => {
       const body = renderedBody(response);
       expect(body.status).toBe(409);
       expect(body.code).toBe(ErrorCode.CONFLICT);
-      expect(body.detail).toBe('A resource with these unique attributes already exists');
+      expect(body.detail).toBe('A resource with these details already exists');
     });
   });
 
@@ -105,7 +108,7 @@ describe('PrismaExceptionFilter', () => {
   });
 
   describe('P2003 - Foreign key constraint', () => {
-    it('maps P2003 to 400 BAD_REQUEST', () => {
+    it('maps P2003 to 409 CONFLICT', () => {
       const { host, response } = buildHost();
       const error = new Prisma.PrismaClientKnownRequestError('Foreign key constraint failed on the field: `userId`', {
         code: 'P2003',
@@ -114,18 +117,19 @@ describe('PrismaExceptionFilter', () => {
 
       filter.catch(error, host);
 
-      expect(response.status).toHaveBeenCalledWith(400);
+      expect(response.status).toHaveBeenCalledWith(409);
       const body = renderedBody(response);
-      expect(body.status).toBe(400);
-      expect(body.code).toBe(ErrorCode.BAD_REQUEST);
+      expect(body.status).toBe(409);
+      expect(body.code).toBe(ErrorCode.CONFLICT);
       expect(body.detail).toBe(
-        'Foreign key constraint failed: referenced resource does not exist or has dependent records',
+        'The operation conflicts with a related resource that does not exist or is still in use',
       );
+      expect(JSON.stringify(body)).not.toContain('userId');
     });
   });
 
   describe('P2000 - Value too long', () => {
-    it('maps P2000 to 422 VALIDATION_ERROR', () => {
+    it('maps P2000 to 400 BAD_REQUEST', () => {
       const { host, response } = buildHost();
       const error = new Prisma.PrismaClientKnownRequestError(
         "The provided value for the column is too long for the column's type.",
@@ -137,11 +141,61 @@ describe('PrismaExceptionFilter', () => {
 
       filter.catch(error, host);
 
-      expect(response.status).toHaveBeenCalledWith(422);
+      expect(response.status).toHaveBeenCalledWith(400);
       const body = renderedBody(response);
-      expect(body.status).toBe(422);
-      expect(body.code).toBe(ErrorCode.VALIDATION_ERROR);
-      expect(body.detail).toBe('Provided value exceeds maximum allowed length for field');
+      expect(body.status).toBe(400);
+      expect(body.code).toBe(ErrorCode.BAD_REQUEST);
+      expect(body.detail).toBe('A provided value is too long');
+    });
+  });
+
+  describe('P2023 - Inconsistent column data', () => {
+    it('maps a malformed UUID to 400 BAD_REQUEST', () => {
+      const { host, response } = buildHost({ headers: { 'x-request-id': 'req-uuid' } });
+      const error = new Prisma.PrismaClientKnownRequestError(
+        'Inconsistent column data: Error creating UUID, invalid character: expected an optional prefix of `urn:uuid:` followed by [0-9a-fA-F-], found `z` at 1',
+        { code: 'P2023', clientVersion: '5.22.0', meta: { modelName: 'Wallet', message: 'Error creating UUID' } },
+      );
+
+      filter.catch(error, host);
+
+      expect(response.status).toHaveBeenCalledWith(400);
+      const body = renderedBody(response);
+      expect(body).toMatchObject({
+        status: 400,
+        code: ErrorCode.BAD_REQUEST,
+        detail: 'A provided value has an invalid format',
+        requestId: 'req-uuid',
+      });
+      expect(JSON.stringify(body)).not.toMatch(/UUID|Wallet|urn:uuid/);
+    });
+  });
+
+  describe('Connection and engine failures', () => {
+    it.each([
+      [
+        'PrismaClientInitializationError',
+        () => new Prisma.PrismaClientInitializationError("Can't reach database server at `db.internal:5432`", '5.22.0', 'P1001'),
+      ],
+      [
+        'PrismaClientRustPanicError',
+        () => new Prisma.PrismaClientRustPanicError('PANIC: called `Option::unwrap()` on a `None` value', '5.22.0'),
+      ],
+    ])('maps %s to 503 DATABASE_UNAVAILABLE', (_name, build) => {
+      const { host, response } = buildHost({ headers: { 'x-request-id': 'req-db-down' } });
+
+      filter.catch(build(), host);
+
+      expect(response.status).toHaveBeenCalledWith(503);
+      const body = renderedBody(response);
+      expect(body).toMatchObject({
+        status: 503,
+        code: ErrorCode.DATABASE_UNAVAILABLE,
+        title: 'Database Unavailable',
+        detail: 'The database is temporarily unavailable; please retry later',
+        requestId: 'req-db-down',
+      });
+      expect(JSON.stringify(body)).not.toMatch(/db\.internal|PANIC|unwrap/);
     });
   });
 
@@ -237,6 +291,57 @@ describe('PrismaExceptionFilter', () => {
       });
       filter.catch(p9999, host);
       expect(errorSpy).toHaveBeenCalled();
+    });
+
+    it('logs the full original 4xx error (Prisma message, code, meta, stack) with the requestId, but returns only the safe message', () => {
+      const warnSpy = vi.spyOn(Logger.prototype, 'warn');
+      const { host, response } = buildHost({ headers: { 'x-request-id': 'req-log-dup' } });
+      const original = 'Unique constraint failed on the constraint: `users_email_key`';
+      const error = new Prisma.PrismaClientKnownRequestError(original, {
+        code: 'P2002',
+        clientVersion: '5.22.0',
+        meta: { target: ['email'] },
+      });
+
+      filter.catch(error, host);
+
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      const logged = String(warnSpy.mock.calls[0][0]);
+      expect(logged).toContain('[req-log-dup]');
+      expect(logged).toContain('-> 409 CONFLICT');
+      expect(logged).toContain('PrismaClientKnownRequestError');
+      expect(logged).toContain('Prisma code: P2002');
+      expect(logged).toContain('"target":["email"]');
+      expect(logged).toContain(original);
+      expect(logged).toContain(error.stack!.split('\n')[1].trim());
+
+      const body = JSON.stringify(renderedBody(response));
+      expect(body).not.toContain('users_email_key');
+      expect(body).not.toContain('email');
+      expect(body).not.toContain('Unique constraint failed');
+    });
+
+    it('logs the full original 5xx error with its stack at error level with the requestId', () => {
+      const errorSpy = vi.spyOn(Logger.prototype, 'error');
+      const { host, response } = buildHost({ headers: { 'x-request-id': 'req-log-down' } });
+      const error = new Prisma.PrismaClientInitializationError(
+        "Can't reach database server at `db.internal:5432`",
+        '5.22.0',
+        'P1001',
+      );
+
+      filter.catch(error, host);
+
+      expect(errorSpy).toHaveBeenCalledTimes(1);
+      const [message, stack] = errorSpy.mock.calls[0] as [string, string];
+      expect(message).toContain('[req-log-down]');
+      expect(message).toContain('-> 503 DATABASE_UNAVAILABLE');
+      expect(message).toContain('PrismaClientInitializationError');
+      expect(message).toContain('code: P1001');
+      expect(stack).toBe(error.stack);
+      expect(stack).toContain('db.internal:5432');
+
+      expect(JSON.stringify(renderedBody(response))).not.toContain('db.internal');
     });
   });
 });

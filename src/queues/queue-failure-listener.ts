@@ -1,6 +1,7 @@
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { Job, Queue, QueueEvents } from 'bullmq';
 import { Queues, DlqJobData } from './queues.constants';
+import { buildDeadLetterJobId } from './dlq';
 import { redisConfig } from '../config/redis.config';
 import { isTerminalJobFailure } from '../workers/dlq.processor';
 import { RequestContext } from '../common/context/request-context';
@@ -309,6 +310,9 @@ export class QueueFailureListener implements OnModuleInit, OnModuleDestroy {
         record.queue === Queues.Webhooks ? queueConfig().webhookDeadLetterRetentionSeconds : undefined;
       const retentionSeconds = webhookRetentionSeconds ?? 7 * 24 * 3_600;
       await queue.add(`dlq:${record.queue}:${record.jobId}`, data, {
+        // One entry per failed job: a worker that already dead-lettered the job
+        // used this same id, and BullMQ ignores the duplicate.
+        jobId: buildDeadLetterJobId(record.queue, record.jobId),
         removeOnComplete: { count: 5_000 },
         removeOnFail: { age: retentionSeconds, count: 5_000 },
       });

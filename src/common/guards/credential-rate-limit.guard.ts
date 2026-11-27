@@ -67,7 +67,7 @@ export class CredentialRateLimitGuard implements CanActivate {
     this.defaults = rateLimit.credential;
     this.trustProxy = rateLimit.public.trustProxy;
     this.windows = {
-      minuteWindowMs: 60_000,
+      minuteWindowMs: rateLimit.credential.minuteWindowSeconds * 1000,
       dayWindowMs: rateLimit.credential.dayWindowSeconds * 1000,
     };
     this.store = new RedisCredentialRateLimitStore(redis);
@@ -89,6 +89,12 @@ export class CredentialRateLimitGuard implements CanActivate {
     const request = http.getRequest<CredentialRequest>();
     const response = http.getResponse<Response>();
     const credentialId = this.credentialId(request);
+    // Authenticated JWT/dashboard traffic is not part of the API-key quota.
+    // Anonymous/public routes retain the existing IP fallback quota.
+    const user = request.user;
+    if (user?.isApiKey === false || (user && !user.isApiKey)) {
+      return true;
+    }
     const identity = credentialId
       ? `apikey:${credentialId}`
       : this.userIdentity(request) ?? `ip:${this.clientIp(request)}`;
@@ -104,12 +110,16 @@ export class CredentialRateLimitGuard implements CanActivate {
       this.logger.warn(
         `Credential rate-limit check failed for "${identity}"; allowing request (fails open): ${(error as Error).message}`,
       );
+      this.setFailOpenHeaders(response, quota);
       return true;
     }
 
     response.setHeader(RATE_LIMIT_LIMIT_HEADER, decision.limit);
     response.setHeader(RATE_LIMIT_REMAINING_HEADER, decision.remaining);
     response.setHeader(RATE_LIMIT_RESET_HEADER, Math.ceil(decision.resetAt / 1000));
+    response.setHeader('RateLimit-Limit', decision.limit);
+    response.setHeader('RateLimit-Remaining', decision.remaining);
+    response.setHeader('RateLimit-Reset', Math.ceil(decision.resetAt / 1000));
 
     if (!decision.allowed) {
       const retryAfterSeconds = Math.max(1, Math.ceil(decision.retryAfterMs / 1000));
@@ -125,6 +135,15 @@ export class CredentialRateLimitGuard implements CanActivate {
       );
     }
     return true;
+  }
+
+  /** Best-effort minute-budget headers when Redis cannot provide exact counters. */
+  private setFailOpenHeaders(response: Response, quota: CredentialQuota): void {
+    const now = Date.now();
+    const resetAt = now + this.windows.minuteWindowMs;
+    response.setHeader(RATE_LIMIT_LIMIT_HEADER, quota.perMinute);
+    response.setHeader(RATE_LIMIT_REMAINING_HEADER, quota.perMinute);
+    response.setHeader(RATE_LIMIT_RESET_HEADER, Math.ceil(resetAt / 1000));
   }
 
   /** Verified API key id, when the caller authenticated with one. */

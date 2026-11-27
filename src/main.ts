@@ -116,8 +116,7 @@ async function bootstrap() {
     SwaggerModule.setup('docs', app, document);
   }
 
-  // Prisma shutdown hook
-  await prisma.enableShutdownHooks(app);
+  app.enableShutdownHooks();
 
   await app.listen(appConfig.port);
 

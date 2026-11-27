@@ -6,7 +6,7 @@ export type AuthConfig = {
   refreshSecret: string;
   accessTtl: number;
   refreshTtl: number;
-  apiKeyRotationGracePeriodSeconds?: number;
+  apiKeyRotationGracePeriodSeconds: number;
   passkey: {
     rpId: string;
     rpName: string;
